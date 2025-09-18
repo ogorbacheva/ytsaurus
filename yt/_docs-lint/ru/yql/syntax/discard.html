@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>DISCARD | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/yql/syntax/discard.md">
+        <meta name="sourcePath" content="ru/yql/syntax/discard.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Вычисляет &lt;a href=\"ru/yql/syntax/select/index.html\"&gt;SELECT&lt;/a&gt;, &lt;a href=\"ru/yql/syntax/reduce.html\"&gt;REDUCE&lt;/a&gt; или &lt;a href=\"ru/yql/syntax/process.html\"&gt;PROCESS&lt;/a&gt;, но не возвращает результат ни в клиент, ни в таблицу. Не может быть задано одновременно с &lt;a href=\"ru/yql/syntax/into_result.html\"&gt;INTO RESULT&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;Полезно использовать в сочетании с &lt;a href=\"ru/yql/builtins/basic.html#ensure\"&gt;&lt;code&gt;Ensure&lt;/code&gt;&lt;/a&gt; для проверки выполнения пользовательских условий на финальный результат вычислений.&lt;/p&gt;\n&lt;h4 id=\"primery\"&gt;&lt;a href=\"ru/yql/syntax/discard.html#primery\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Примеры&lt;/span&gt;&lt;/a&gt;Примеры&lt;/h4&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs\"&gt;DISCARD SELECT 1;\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"9\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-9\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-9\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-9.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs\"&gt;INSERT INTO result_table WITH TRUNCATE\nSELECT * FROM\nmy_table\nWHERE value % 2 == 0;\n\nCOMMIT;\n\nDISCARD SELECT Ensure(\n    0, -- will discard result anyway\n    COUNT(*) &amp;gt; 1000,\n    \"Too small result table, got only \" || CAST(COUNT(*) AS String) || \" rows\"\n) FROM result_table;\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"10\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-10\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-10\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-10.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/yql/syntax/discard.md","sourcePath":"ru/yql/syntax/discard.md"},"headings":[],"title":"DISCARD"},"router":{"pathname":"ru/yql/syntax/discard","depth":4,"base":"../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

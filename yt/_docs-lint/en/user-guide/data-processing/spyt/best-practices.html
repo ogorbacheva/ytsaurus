@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Best practices |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/data-processing/spyt/best-practices.md">
+        <meta name="sourcePath" content="en/user-guide/data-processing/spyt/best-practices.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;ul&gt;\n&lt;li&gt;Each &lt;code&gt;DROP&lt;/code&gt; call adds a step to the plan, so it is better to avoid multiple column drops. A single &lt;code&gt;SELECT&lt;/code&gt; with the required set of columns is more efficient;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;LIMIT&lt;/code&gt; operation has its own traits that affect perfomance. It works the following way in Apache Spark: it executes a LocalLimit operation on every partition and each of its result is sent to shuffle and then a GlobalLimit operation is executed on shuffled data. In case of using &lt;code&gt;limit(x).collect()&lt;/code&gt; or &lt;code&gt;take(x)&lt;/code&gt; actions the &lt;code&gt;LIMIT&lt;/code&gt; operation executes iteratively. It starts with only one partition and increases its number by the value of &lt;code&gt;spark.sql.limit.scaleUpFactor&lt;/code&gt; parameter (which is 4 by default) with every iteration until the requested number of rows is reached. Actions like &lt;code&gt;count()&lt;/code&gt; or &lt;code&gt;write.save(\"/output/path\")&lt;/code&gt; execute LocalLimit operation on every partition which causes a performance bottleneck for &lt;code&gt;LIMIT&lt;/code&gt; on large datasets. There are two solutions for this issue:\n&lt;ul&gt;\n&lt;li&gt;for small values passed to &lt;code&gt;LIMIT&lt;/code&gt; when the result of &lt;code&gt;take(x)&lt;/code&gt; is fit to driver's memory one can use the following snippet: &lt;code&gt;limitedDf = spark.createDataFrame(spark.sparkContext.parallelize(df.take(10000)), df.schema)&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;as an alternative to &lt;code&gt;LIMIT&lt;/code&gt; a &lt;a href=\"https://spark.apache.org/docs/latest/sql-ref-syntax-qry-select-sampling.html\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;TABLESAMPLE&lt;/a&gt; operation can be used. Caution: &lt;code&gt;TABLESAMPLE (x ROWS)&lt;/code&gt; is an equivalent to &lt;code&gt;LIMIT x&lt;/code&gt; operation with LocalLimit and GlobalLimit stages in execution plan.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;/li&gt;\n&lt;li&gt;To read the data which uses a Hive-compatible partitioning scheme by directories in Cypress the &lt;code&gt;recursiveFileLookup&lt;/code&gt; option should be explicitly set to &lt;code&gt;false&lt;/code&gt;: &lt;code&gt;spark.read.option(\"recursiveFileLookup\", \"false\")&lt;/code&gt;. In SPYT it is set to &lt;code&gt;true&lt;/code&gt; by default for unification with YQL and CHYT behaviours.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/data-processing/spyt/best-practices.md","sourcePath":"en/user-guide/data-processing/spyt/best-practices.md"},"headings":[],"title":"Best practices"},"router":{"pathname":"en/user-guide/data-processing/spyt/best-practices","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

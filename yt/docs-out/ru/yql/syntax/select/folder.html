@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Перечисление содержимого директории на кластере | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/yql/syntax/select/folder.md">
+        <meta name="sourcePath" content="ru/yql/syntax/select/folder.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Указывается как функция &lt;code&gt;FOLDER&lt;/code&gt; в &lt;a href=\"ru/yql/syntax/select/from.html\"&gt;FROM&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;Аргументы:&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;Путь к директории;&lt;/li&gt;\n&lt;li&gt;Опционально строка со списком интересующих мета атрибутов через точку с запятой.&lt;/li&gt;\n&lt;/ol&gt;\n&lt;p&gt;В результате получается таблица с тремя фиксированными колонками:&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;&lt;strong&gt;Path&lt;/strong&gt; (&lt;code&gt;String&lt;/code&gt;) — полное имя таблицы;&lt;/li&gt;\n&lt;li&gt;&lt;strong&gt;Type&lt;/strong&gt; (&lt;code&gt;String&lt;/code&gt;) — тип узла (table, map_node, file, document и пр.);&lt;/li&gt;\n&lt;li&gt;&lt;strong&gt;Attributes&lt;/strong&gt; (&lt;code&gt;Yson&lt;/code&gt;) — Yson-словарь с заказанными во втором аргументе мета атрибутами.&lt;/li&gt;\n&lt;/ol&gt;\n&lt;p&gt;Рекомендации по использованию:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Чтобы получить только список таблиц, нужно не забывать добавлять &lt;code&gt;...WHERE Type == \"table\"&lt;/code&gt;. Затем, опционально добавив ещё условий, с помощью агрегатной функции &lt;a href=\"ru/yql/builtins/aggregation.html#aggregate-list\"&gt;AGGREGATE_LIST&lt;/a&gt; от колонки Path можно получить только список путей и передать их в &lt;a href=\"ru/yql/syntax/select/concat.html\"&gt;EACH&lt;/a&gt;.&lt;/li&gt;\n&lt;li&gt;Так как колонка Path выдаётся в том же формате, что и результат функции &lt;a href=\"ru/yql/builtins/basic.html#tablepath\"&gt;TablePath()&lt;/a&gt;, то их можно использоваться для JOIN атрибутов таблицы к её строкам.&lt;/li&gt;\n&lt;li&gt;C колонкой Attributes рекомендуется работать через &lt;a href=\"ru/yql/udf/list/yson.html\"&gt;Yson UDF&lt;/a&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;div class=\"yfm-note yfm-accent-warning\" note-type=\"warning\"&gt;&lt;p class=\"yfm-note-title\"&gt;Важно&lt;/p&gt;\n&lt;div class=\"yfm-note-content\"&gt;&lt;p&gt;Следует с осторожностью использовать FOLDER с атрибутами, содержащими большие значения (&lt;code&gt;schema&lt;/code&gt; может быть одним из таких). Запрос с  FOLDER на папке с большим число таблиц и тяжелым атрибутом может создать большую нагрузку на мастер YT.&lt;/p&gt;\n&lt;/div&gt;&lt;/div&gt;&lt;h2 id=\"primery\"&gt;&lt;a href=\"ru/yql/syntax/select/folder.html#primery\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Примеры&lt;/span&gt;&lt;/a&gt;Примеры&lt;/h2&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs\"&gt;USE hahn;\n\n$table_paths = (\n    SELECT AGGREGATE_LIST(Path)\n    FROM FOLDER(\"my_folder\", \"schema;row_count\")\n    WHERE\n        Type = \"table\" AND\n        Yson::GetLength(Attributes.schema) &amp;gt; 0 AND\n        Yson::LookupInt64(Attributes, \"row_count\") &amp;gt; 0\n);\n\nSELECT COUNT(*) FROM EACH($table_paths);\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"71\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-71\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-71\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-71.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/yql/syntax/select/folder.md","sourcePath":"ru/yql/syntax/select/folder.md"},"headings":[{"title":"Примеры","href":"ru/yql/syntax/select/folder.html#primery","level":2}],"title":"Перечисление содержимого директории на кластере"},"router":{"pathname":"ru/yql/syntax/select/folder","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

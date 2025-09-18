@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Динамический учёт потребления CPU | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/scheduler/job-cpu-monitor.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/scheduler/job-cpu-monitor.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;В случае, когда джоб потребляет существенно меньше CPU, чем было заказано в спецификации операции, гарантия CPU джоба может быть уменьшена. Освободившиеся ресурсы могут быть переданы другим джобам, работающим в операциях конкретного пула. За потреблением и изменением гарантий CPU джобов следит процесс &lt;code&gt;job-cpu-monitor&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;Периодически с контейнера с джобом снимается значение потребленного CPU за период (&lt;code&gt;check_period&lt;/code&gt;). К этому значению применяется экспоненциальное сглаживание с параметром &lt;code&gt;smoothing_factor&lt;/code&gt;. Далее рассматриваются последние &lt;code&gt;vote_window_size&lt;/code&gt; сглаженных значений и интервал (&lt;code&gt;relative_lower_bound*current_cpu_limit&lt;/code&gt;, &lt;code&gt;relative_upper_bound*current_cpu_limit&lt;/code&gt;), где &lt;code&gt;current_cpu_limit&lt;/code&gt; — текущий лимит, выставленный на контейнере.&lt;br /&gt;\nПосле этого каждое значение преобразуется по правилу:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;-1&lt;/code&gt; — значение &amp;lt; &lt;code&gt;relative_lower_bound*current_cpu_limit&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;1&lt;/code&gt; — значение &amp;gt; &lt;code&gt;relative_upper_bound*current_cpu_limit&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;0&lt;/code&gt; — в остальных случаях.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Полученные значения суммируются в переменную &lt;code&gt;votes_sum&lt;/code&gt;, текущее ограничение &lt;code&gt;current_cpu_limit&lt;/code&gt; пересчитывается:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;votes_sum &amp;gt; votes_decision_threshold =&amp;gt; current_cpu_limit *= increase_coefficient&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;votes_sum &amp;lt; -votes_decision_threshold =&amp;gt; current_cpu_limit *= decrease_coefficient&lt;/code&gt;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Значение &lt;code&gt;current_cpu_limit&lt;/code&gt; ограничено снизу опцией &lt;code&gt;min_cpu_limit&lt;/code&gt; из конфигурации &lt;code&gt;job-cpu-monitor&lt;/code&gt; и сверху опцией &lt;code&gt;cpu_limit&lt;/code&gt; из спецификации операции.&lt;br /&gt;\nВ случае, если значение переменной &lt;code&gt;current_cpu_limit&lt;/code&gt; изменилось, новое значение выставляется на контейнер и отправляется планировщику, чтобы актуализировать потребление ресурсов в пуле.&lt;/p&gt;\n&lt;p&gt;&lt;code&gt;job-cpu-monitor&lt;/code&gt; стремится держать текущее потребление CPU в интервале между &lt;code&gt;relative_lower_bound&lt;/code&gt; и &lt;code&gt;relative_upper_bound&lt;/code&gt; от выставленного на контейнере, и сдвигает указанный интервал в большую или меньшую сторону, если потребление выходит за его границы.&lt;/p&gt;\n&lt;p&gt;Значения по умолчанию (актуальные могут отличаться):&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;check_period = 1000&lt;/code&gt; (ms);&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;smoothing_factor = 0.1&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;relative_upper_bound = 0.9&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;relative_lower_bound = 0.6&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;increase_coefficient = 1.45&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;decrease_coefficient = 0.97&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;vote_window_size = 5&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;vote_decision_threshold = 3&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;min_cpu_limit = 1&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Перечисленные настройки можно задать в спецификации операции в секции &lt;code&gt;job-cpu-monitor&lt;/code&gt;. В секции можно указать опцию &lt;code&gt;enable_cpu_reclaim&lt;/code&gt;, которая включает/отключает изменение ограничения CPU. Актуальные значения опций можно посмотреть в веб-интерфейсе на странице операции, на вкладке &lt;code&gt;Specification&lt;/code&gt; -&amp;gt; &lt;code&gt;Resulting specification&lt;/code&gt; -&amp;gt; &lt;code&gt;job-cpu-monitor&lt;/code&gt;.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/scheduler/job-cpu-monitor.md","sourcePath":"ru/user-guide/data-processing/scheduler/job-cpu-monitor.md"},"headings":[],"title":"Динамический учёт потребления CPU"},"router":{"pathname":"ru/user-guide/data-processing/scheduler/job-cpu-monitor","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

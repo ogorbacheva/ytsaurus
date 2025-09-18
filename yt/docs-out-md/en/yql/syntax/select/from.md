@@ -1,0 +1,35 @@
+---
+metadata:
+  - name: generator
+    content: Diplodoc Platform v5.5.3
+csp:
+  - script-src-elem:
+      - https://mc.yandex.ru
+  - connect-src:
+      - https://*.algolia.net
+      - https://*.algolianet.com
+vcsPath: en/yql/syntax/select/from.md
+sourcePath: en/yql/syntax/select/from.md
+---
+## FROM {#from}
+
+Data source for `SELECT`. The argument can accept the table name, the result of another `SELECT`, or a [named expression](../expressions.md#named-nodes). Between `SELECT` and `FROM`, list the comma-separated column names from the source (or `*` to select all columns).
+
+The table is searched by name in the database specified by the operator [USE](../use.md).
+
+#### Examples
+
+```yql
+SELECT key FROM my_table;
+```
+
+```yql
+SELECT * FROM
+  (SELECT value FROM my_table);
+```
+
+```yql
+$table_name = "my_table";
+SELECT * FROM $table_name;
+```
+

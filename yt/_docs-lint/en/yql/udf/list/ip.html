@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Ip |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/yql/udf/list/ip.md">
+        <meta name="sourcePath" content="en/yql/udf/list/ip.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;The &lt;code&gt;Ip&lt;/code&gt; module supports both the IPv4 and IPv6 addresses. By default, they are represented as binary strings of 4 and 16 bytes, respectively.&lt;/p&gt;\n&lt;h2 id=\"list-of-functions\"&gt;&lt;a href=\"en/yql/udf/list/ip.html#list-of-functions\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;List of functions&lt;/span&gt;&lt;/a&gt;List of functions&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;Ip::FromString(String{Flags:AutoMap}) -&amp;gt; String?&lt;/code&gt; — From a human-readable representation to a binary representation.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::SubnetFromString(String{Flags:AutoMap}) -&amp;gt; String?&lt;/code&gt; — From a human-readable representation of a subnet to a binary representation.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::ToString(String{Flags:AutoMap}) -&amp;gt; String?&lt;/code&gt; — From a binary representation to a human-readable representation.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::ToString(String{Flags:AutoMap}) -&amp;gt; String?&lt;/code&gt; — From a binary representation of a subnet to a human-readable representation.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::IsIPv4(String?) -&amp;gt; Bool&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::IsIPv6(String?) -&amp;gt; Bool&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::IsEmbeddedIPv4(String?) -&amp;gt; Bool&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::ConvertToIPv6(String{Flags:AutoMap}) -&amp;gt; String&lt;/code&gt; — IPv6 remains unchanged, and IPv4 becomes embedded in IPv6.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::GetSubnet(String{Flags:AutoMap}, [Uint8?]) -&amp;gt; String&lt;/code&gt; — The second argument is the subnet size; by default, it's 24 for IPv4 and 64 for IPv6.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::GetSubnetByMask(String{Flags:AutoMap}, String{Flags:AutoMap}) -&amp;gt; String&lt;/code&gt; — The second argument is the subnet bitmask.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Ip::SubnetMatch(String{Flags:AutoMap}, String{Flags:AutoMap}) -&amp;gt; Bool&lt;/code&gt; — The first argument is the subnet, the second argument is the subnet or address.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h2 id=\"examples\"&gt;&lt;a href=\"en/yql/udf/list/ip.html#examples\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Examples&lt;/span&gt;&lt;/a&gt;Examples&lt;/h2&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs\"&gt;SELECT Ip::IsEmbeddedIPv4(\n  Ip::FromString(\"::ffff:77.75.155.3\")\n); -- true\n\nSELECT\n  Ip::ToString(\n    Ip::GetSubnet(\n      Ip::FromString(\"213.180.193.3\")\n    )\n  ); -- \"213.180.193.0\"\n\nSELECT\n  Ip::SubnetMatch(\n    Ip::SubnetFromString(\"192.168.0.1/16\"),\n    Ip::FromString(\"192.168.1.14\"),\n  ); -- true\n\nSELECT\n  Ip::ToString(\n    Ip::GetSubnetByMask(\n      Ip::FromString(\"192.168.0.1\"),\n      Ip::FromString(\"255.255.0.0\")\n    )\n  ); -- \"192.168.0.0\"\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"66\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-66\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-66\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-66.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/yql/udf/list/ip.md","sourcePath":"en/yql/udf/list/ip.md"},"headings":[{"title":"List of functions","href":"en/yql/udf/list/ip.html#list-of-functions","level":2},{"title":"Examples","href":"en/yql/udf/list/ip.html#examples","level":2}],"title":"Ip"},"router":{"pathname":"en/yql/udf/list/ip","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

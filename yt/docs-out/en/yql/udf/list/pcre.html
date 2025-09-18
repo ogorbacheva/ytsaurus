@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Pcre |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/yql/udf/list/pcre.md">
+        <meta name="sourcePath" content="en/yql/udf/list/pcre.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;The Pcre library is currently an alias to &lt;a href=\"en/yql/udf/list/hyperscan.html\"&gt;Hyperscan&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;If you rely on specific functionality of a certain regular expression engine, you should use a UDF with a particular library inside and treat Pcre as the current recommended option for simple matches, which might change in the future.&lt;/p&gt;\n&lt;p&gt;Currently available engines:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;a href=\"en/yql/udf/list/hyperscan.html\"&gt;Hyperscan&lt;/a&gt; &lt;span style=\"color:gray\"&gt;(Intel)&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;a href=\"en/yql/udf/list/pire.html\"&gt;Pire&lt;/a&gt; &lt;span style=\"color:gray\"&gt;(Yandex)&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;a href=\"en/yql/udf/list/re2.html\"&gt;Re2&lt;/a&gt; &lt;span style=\"color:gray\"&gt;(Google)&lt;/span&gt;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;All three modules provide nearly the same functionality with an identical interface, which lets you switch between them while minimizing changes to your query.&lt;/p&gt;\n&lt;p&gt;Inside Hyperscan, there are several implementations that use different sets of processor instructions, with the relevant instruction automatically selected based on the current processor. In HyperScan, some functions support backtracking (referencing the previously found part of the string). Those functions are implemented through hybrid use of the two libraries: Hyperscan and libpcre.&lt;/p&gt;\n&lt;p&gt;&lt;a href=\"https://github.com/yandex/pire\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;Pire&lt;/a&gt; (Perl Incompatible Regular Expressions) is a very fast regular expression library developed by Yandex. At the lower level, it parses the input string once without backtracking and uses 5 instructions per character (both for x86 and x86_64). However, its development was almost frozen in 2011–2013, so, as the name suggests (\"i\" stands for incompatible), you might have to adapt the expressions themselves.&lt;/p&gt;\n&lt;p&gt;Hyperscan and Pire are best-suited for Grep and Match.&lt;/p&gt;\n&lt;p&gt;Re2 uses &lt;a href=\"https://github.com/google/re2\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;google::RE2&lt;/a&gt;, which offers a wide range of options (&lt;a href=\"https://github.com/google/re2/wiki/Syntax\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;see official documentation&lt;/a&gt;). The key advantage of Re2 is a broad Capture and Replace functionality. Use this library if you need these capabilities.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/yql/udf/list/pcre.md","sourcePath":"en/yql/udf/list/pcre.md"},"headings":[],"title":"Pcre"},"router":{"pathname":"en/yql/udf/list/pcre","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

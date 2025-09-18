@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../" />
+        <title>Users and groups synchronization |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/admin-guide/identity-sync.md">
+        <meta name="sourcePath" content="en/admin-guide/identity-sync.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Sometimes it is required to keep users and group lists in sync with an external system. There is an app &lt;a href=\"https://github.com/tractoai/ytsaurus-identity-sync\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;ytsaurus-identity-sync&lt;/a&gt; which might help when such an issue arises. The application periodically collects users, groups and memberships from the external system and updates YTsaurus users and groups accordingly.&lt;/p&gt;\n&lt;div class=\"yfm-note yfm-accent-warning\" note-type=\"warning\"&gt;&lt;p class=\"yfm-note-title\"&gt;Warning&lt;/p&gt;\n&lt;div class=\"yfm-note-content\"&gt;&lt;p&gt;The &lt;code&gt;ytsaurus-identity-sync&lt;/code&gt; application only allows synchronization in one direction — from an external source to the YTsaurus system. Reverse synchronization from YTsaurus to an external system is not supported.&lt;/p&gt;\n&lt;/div&gt;&lt;/div&gt;&lt;p&gt;The application supports importing users and groups from the two sources:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Microsoft Entra (previously Azure Active Directory) via &lt;a href=\"https://learn.microsoft.com/en-us/graph/azuread-users-concept-overview\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;Microsoft Graph REST API&lt;/a&gt;.&lt;/li&gt;\n&lt;li&gt;&lt;a href=\"https://en.wikipedia.org/wiki/Lightweight_Directory_Access_Protocol\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;Lightweight Directory Access Protocol (LDAP)&lt;/a&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;More information on installation and configuration can be found in &lt;a href=\"https://github.com/tractoai/ytsaurus-identity-sync?tab=readme-ov-file#installing\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;application README&lt;/a&gt;.&lt;/p&gt;\n&lt;h2 id=\"see-also\"&gt;&lt;a href=\"en/admin-guide/identity-sync.html#see-also\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;See also&lt;/span&gt;&lt;/a&gt;See also&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;a href=\"admin-guide/cluster-operations.html#managing-users,-groups-and-access-controls\"&gt;Managing users, groups&lt;/a&gt; — this section describes the YTsaurus' users and groups manual management.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/admin-guide/identity-sync.md","sourcePath":"en/admin-guide/identity-sync.md"},"headings":[{"title":"See also","href":"en/admin-guide/identity-sync.html#see-also","level":2}],"title":"Users and groups synchronization"},"router":{"pathname":"en/admin-guide/identity-sync","depth":3,"base":"../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

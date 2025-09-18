@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Пример настройки пулов | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/scheduler/pool-examples.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/scheduler/pool-examples.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Рассмотрим структуру пулов проекта, операции которого можно разделить на три класса: ручные запросы (ad_hoc), батч-обработка и резервное копирование. В распоряжении проекта имеется квота в 100 вычислительных ядер и стандартные ограничения на количество операций. Требуется настроить пулы таким образом, чтобы ad_hoc операции выполнялись по возможности быстро и меньше ждали очереди на запуск. Для батч-обработки требуется использовать все свободные ресурсы, когда ad_hoc задач мало или они вовсе отсутствуют. Для операций резервного копирования необходима небольшая гарантия по ресурсам, чтобы процесс мог укладываться в отведённое время.&lt;/p&gt;\n&lt;p&gt;Для каждого класса операций необходимо создать отдельные пулы и поместить их в общий корневой пул проекта (&lt;code&gt;project-root&lt;/code&gt;). Настройки пулов приведены в таблице.&lt;/p&gt;\n&lt;table&gt;\n&lt;thead&gt;\n&lt;tr&gt;\n&lt;th&gt;pool_name&lt;/th&gt;\n&lt;th&gt;CPU&lt;/th&gt;\n&lt;th&gt;weight&lt;/th&gt;\n&lt;th&gt;max_running_operation_count&lt;/th&gt;\n&lt;th&gt;max_operation_count&lt;/th&gt;\n&lt;/tr&gt;\n&lt;/thead&gt;\n&lt;tbody&gt;\n&lt;tr&gt;\n&lt;td&gt;&lt;code&gt;project-root&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;100&lt;/td&gt;\n&lt;td&gt;1&lt;/td&gt;\n&lt;td&gt;10&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;&lt;code&gt;project-root/project-ad_hoc&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;80&lt;/td&gt;\n&lt;td&gt;1&lt;/td&gt;\n&lt;td&gt;10&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;&lt;code&gt;project-root/project-batch&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;0&lt;/td&gt;\n&lt;td&gt;10&lt;/td&gt;\n&lt;td&gt;4&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;&lt;code&gt;project-root/project-backup&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;20&lt;/td&gt;\n&lt;td&gt;1&lt;/td&gt;\n&lt;td&gt;2&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;/tbody&gt;\n&lt;/table&gt;\n&lt;p&gt;Сумма гарантий по CPU всех потомков пула не должна превышать гарантии по CPU родительского пула. Переподписка по CPU не допускается, иначе такая конфигурация воспринимается планировщиком как ошибка и не применяется. Допускается переподписка по обоим ограничениям на число операций. Должно выполняться условие:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;значение &lt;code&gt;max_running_operation_count&lt;/code&gt; каждого пула не может быть больше его &lt;code&gt;max_operation_count&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Если сумма ограничений &lt;code&gt;max_running_operation_count&lt;/code&gt; подпулов превышает аналогичное ограничение родительского пула, то может наступить ситуация, когда операция в каком-либо подпуле не сможет выполняться, даже если число выполняющихся операций в пуле не достигло ограничения. Это может произойти из-за того, что в других подпулах запущено и выполняется слишком много операций и их количество сравнялось с ограничением &lt;code&gt;max_running_operation_count&lt;/code&gt; родительского пула. Даже наличие гарантии по CPU у подпула в таком случае не приведёт к вытеснению уже работающих операций в других пулах. Вытесняться могут джобы, если их более одного в операции, но не сами операции.&lt;/p&gt;\n&lt;p&gt;В структуре пулов, приведённой в таблице, все гарантированные вычислительные ресурсы достаются пулам &lt;code&gt;project-ad_hoc&lt;/code&gt; и &lt;code&gt;project-backup&lt;/code&gt; в случае их полной загрузки, а джобы операций, запущенных в &lt;code&gt;project-batch&lt;/code&gt;, вытесняются. Но если операции хотя бы в одном из пулов с гарантиями не могут полностью утилизировать свой пул, невостребованные ресурсы могут быть переданы пулу &lt;code&gt;project-batch&lt;/code&gt; с бо́льшим приоритетом.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/scheduler/pool-examples.md","sourcePath":"ru/user-guide/data-processing/scheduler/pool-examples.md"},"headings":[],"title":"Пример настройки пулов"},"router":{"pathname":"ru/user-guide/data-processing/scheduler/pool-examples","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

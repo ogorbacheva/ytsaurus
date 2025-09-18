@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>UNIQUE DISTINCT hints | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/yql/syntax/select/unique_distinct_hints.md">
+        <meta name="sourcePath" content="ru/yql/syntax/select/unique_distinct_hints.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Непосредственно после &lt;code&gt;SELECT&lt;/code&gt; возможно добавить &lt;a href=\"ru/yql/syntax/lexer.html#sql-hints\"&gt;SQL хинты&lt;/a&gt; &lt;code&gt;unique&lt;/code&gt; или &lt;code&gt;distinct&lt;/code&gt; которые заявляют, что эта проекция порождает данные, содержащие уникальные значения в указанном наборе колонок строковой или колоночной таблицы. Это может, использоваться для оптимизации следующих подзапросов, выполняющихся над этой проекцией, или для записи в мета-атрибуты таблицы при &lt;code&gt;INSERT&lt;/code&gt; (временно не поддерживается для колоночных таблиц).&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Колонки указываются в значениях хинта через пробел.&lt;/li&gt;\n&lt;li&gt;Если набор колонок не задан, значит уникальность распространяется на полный набор колонок этой проекции.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;unique&lt;/code&gt; - означает уникальные либо &lt;code&gt;null&lt;/code&gt; значения. По стандарту SQL каждый null уникален: NULL = NULL -&amp;gt; NULL&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;distinct&lt;/code&gt; - означает полностью уникальные значение включая &lt;code&gt;null&lt;/code&gt;: NULL IS DISTINCT FROM NULL -&amp;gt; FALSE&lt;/li&gt;\n&lt;li&gt;Можно указать несколько наборов колонок в нескольких хинтах у одной проекции.&lt;/li&gt;\n&lt;li&gt;Если хинт содержит колонку, которой нет в проекции, он будет проигнорирован.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h2 id=\"primery\"&gt;&lt;a href=\"ru/yql/syntax/select/unique_distinct_hints.html#primery\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Примеры&lt;/span&gt;&lt;/a&gt;Примеры&lt;/h2&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs\"&gt;SELECT /*+ unique() */ * FROM Input;\nSELECT /*+ distinct() */ * FROM Input;\n\nSELECT /*+ distinct(key subkey) */ * FROM Input;\nSELECT /*+ unique(key) distinct(subkey value) */ * FROM Input;\n\n-- Missed column - ignore hint.\nSELECT /*+ unique(subkey value) */ key, value FROM Input;\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"38\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-38\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-38\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-38.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/yql/syntax/select/unique_distinct_hints.md","sourcePath":"ru/yql/syntax/select/unique_distinct_hints.md"},"headings":[{"title":"Примеры","href":"ru/yql/syntax/select/unique_distinct_hints.html#primery","level":2}],"title":"UNIQUE DISTINCT hints"},"router":{"pathname":"ru/yql/syntax/select/unique_distinct_hints","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

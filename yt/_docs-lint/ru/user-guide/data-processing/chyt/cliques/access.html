@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../../" />
+        <title>Права доступа | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/chyt/cliques/access.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/chyt/cliques/access.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;В данной статье обсуждаются типы доступов для клики и то, как их запросить.&lt;/p&gt;\n&lt;h2 id=\"authentication\"&gt;&lt;a href=\"ru/user-guide/data-processing/chyt/cliques/access.html#authentication\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Аутентификация&lt;/span&gt;&lt;/a&gt;Аутентификация&lt;/h2&gt;\n&lt;p&gt;Пользователи аутентифицируются в CHYT так же, как и в YTsaurus — с использованием токена от YTsaurus (подробнее см. &lt;a href=\"ru/user-guide/storage/auth.html\"&gt;Аутентификация&lt;/a&gt;).&lt;/p&gt;\n&lt;h2 id=\"access_types\"&gt;&lt;a href=\"ru/user-guide/data-processing/chyt/cliques/access.html#access_types\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Типы доступов&lt;/span&gt;&lt;/a&gt;Типы доступов&lt;/h2&gt;\n&lt;p&gt;При приёме запроса CHYT проверяет наличие прав двух видов:&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Права доступа к ресурсам клики&lt;/strong&gt; &lt;br /&gt;&lt;br /&gt;\nПри приёме запроса клика проверяет, что у пользователя, из-под которого совершён запрос, есть права на использование клики:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;для исполнения SQL запросов необходимо право &lt;code&gt;use&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;для изменения, просмотра и удаления конфигурации клики необходимы права &lt;code&gt;manage&lt;/code&gt;, &lt;code&gt;read&lt;/code&gt; и &lt;code&gt;remove&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Права на клику хранятся в специальном системном узле Access Control Object. Он находится по пути &lt;code&gt;//sys/access_control_object_namespaces/chyt/&amp;lt;alias&amp;gt;/principal&lt;/code&gt; и создаётся автоматически для каждой клики при её создании через &lt;a href=\"ru/user-guide/data-processing/chyt/cliques/controller.html\"&gt;CHYT Контроллер&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;Права на клику разграничивают доступ исключительно к вычислительным ресурсам клик.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Права доступа к данным&lt;/strong&gt; &lt;br /&gt;&lt;br /&gt;\nПри доступе к любым данным в YTsaurus происходит проверка доступа на чтение или запись ко всем упомянутым в запросе таблицам согласно стандартному механизму ACL, используемому в YTsaurus. Эта проверка гарантирует безопасность доступа к данным.&lt;/p&gt;\n&lt;/li&gt;\n&lt;/ol&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/chyt/cliques/access.md","sourcePath":"ru/user-guide/data-processing/chyt/cliques/access.md"},"headings":[{"title":"Аутентификация","href":"ru/user-guide/data-processing/chyt/cliques/access.html#authentication","level":2},{"title":"Типы доступов","href":"ru/user-guide/data-processing/chyt/cliques/access.html#access_types","level":2}],"title":"Права доступа"},"router":{"pathname":"ru/user-guide/data-processing/chyt/cliques/access","depth":6,"base":"../../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

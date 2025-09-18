@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Listing the contents of a directory in a cluster |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/yql/syntax/select/folder.md">
+        <meta name="sourcePath" content="en/yql/syntax/select/folder.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Specified as the &lt;code&gt;FOLDER&lt;/code&gt; function in &lt;a href=\"en/yql/syntax/select/from.html\"&gt;FROM&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;Arguments:&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;The path to the directory.&lt;/li&gt;\n&lt;li&gt;An optional string with a list of meta attributes separated by a semicolon.&lt;/li&gt;\n&lt;/ol&gt;\n&lt;p&gt;The result is a table with three fixed columns:&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;&lt;strong&gt;Path&lt;/strong&gt; (&lt;code&gt;String&lt;/code&gt;): The full name of the table.&lt;/li&gt;\n&lt;li&gt;&lt;strong&gt;Type&lt;/strong&gt; (&lt;code&gt;String&lt;/code&gt;): The node type (table, map_node, file, document, and others).&lt;/li&gt;\n&lt;li&gt;&lt;strong&gt;Attributes&lt;/strong&gt; (&lt;code&gt;Yson&lt;/code&gt;) is a Yson dictionary with meta attributes ordered in the second argument.&lt;/li&gt;\n&lt;/ol&gt;\n&lt;p&gt;Recommendations for use:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;To get only the list of tables, you must add &lt;code&gt;...WHERE Type == \"table\"&lt;/code&gt;. Then you can add more conditions if you want using the &lt;a href=\"en/yql/builtins/aggregation.html#aggregate-list\"&gt;AGGREGATE_LIST&lt;/a&gt; aggregate function from the Path column to get only the list of paths and pass them to &lt;a href=\"en/yql/syntax/select/concat.html\"&gt;EACH&lt;/a&gt;.&lt;/li&gt;\n&lt;li&gt;Because the Path column is returned in the same format as the &lt;a href=\"en/yql/builtins/basic.html#tablepath\"&gt;TablePath()&lt;/a&gt; function's output, you can use it for the table's JOIN attributes for its rows.&lt;/li&gt;\n&lt;li&gt;We recommend that you work with the Attributes column using &lt;a href=\"en/yql/udf/list/yson.html\"&gt;Yson UDF&lt;/a&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;div class=\"yfm-note yfm-accent-warning\" note-type=\"warning\"&gt;&lt;p class=\"yfm-note-title\"&gt;Warning&lt;/p&gt;\n&lt;div class=\"yfm-note-content\"&gt;&lt;p&gt;Use FOLDER with attributes containing large values with caution (&lt;code&gt;schema&lt;/code&gt; could be one of those). The query containing FOLDER in a folder with a large number of tables and a heavy attribute may cause a severe load on the YT wizard.&lt;/p&gt;\n&lt;/div&gt;&lt;/div&gt;&lt;h2 id=\"examples\"&gt;&lt;a href=\"en/yql/syntax/select/folder.html#examples\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Examples&lt;/span&gt;&lt;/a&gt;Examples&lt;/h2&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs\"&gt;USE hahn;\n\n$table_paths = (\n    SELECT AGGREGATE_LIST(Path)\n    FROM FOLDER(\"my_folder\", \"schema;row_count\")\n    WHERE\n        Type = \"table\" AND\n        Yson::GetLength(Attributes.schema) &amp;gt; 0 AND\n        Yson::LookupInt64(Attributes, \"row_count\") &amp;gt; 0\n);\n\nSELECT COUNT(*) FROM EACH($table_paths);\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"71\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-71\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-71\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-71.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/yql/syntax/select/folder.md","sourcePath":"en/yql/syntax/select/folder.md"},"headings":[{"title":"Examples","href":"en/yql/syntax/select/folder.html#examples","level":2}],"title":"Listing the contents of a directory in a cluster"},"router":{"pathname":"en/yql/syntax/select/folder","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

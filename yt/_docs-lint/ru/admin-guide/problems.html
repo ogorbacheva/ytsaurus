@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../" />
+        <title>Возможные проблемы | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/admin-guide/problems.md">
+        <meta name="sourcePath" content="ru/admin-guide/problems.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"lvc\"&gt;&lt;a href=\"ru/admin-guide/problems.html#lvc\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;LVC (Lost Vital Chunks)&lt;/span&gt;&lt;/a&gt;LVC (Lost Vital Chunks)&lt;/h2&gt;\n&lt;p&gt;Если какие-то чанки перестали быть доступы, загорается алерт &lt;code&gt;lost_vital_chunks&lt;/code&gt;. Такое может произойти, например, если какие-то &lt;code&gt;Data Nodes&lt;/code&gt; стали недоступны.&lt;/p&gt;\n&lt;p&gt;Посмотреть список недоступных чанков можно с помощью &lt;code&gt;yt list //sys/lost_vital_chunks&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;Понять, где были реплики данного чанка, можно с помощью &lt;code&gt;yt get #chunk-id/@last_seen_replicas&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;Для erasure-чанков может быть полезно посмотреть на &lt;code&gt;yt get #chunk_id/@stored_replicas&lt;/code&gt;, чтобы узнать, какие из частей чанка всё еще доступны.&lt;/p&gt;\n&lt;h2 id=\"tabletcellbundles\"&gt;&lt;a href=\"ru/admin-guide/problems.html#tabletcellbundles\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Tablet Cell Bundle's health is not good&lt;/span&gt;&lt;/a&gt;Tablet Cell Bundle's health is not good&lt;/h2&gt;\n&lt;p&gt;В UI на странице \"Bundles\" можно смотреть на состояние бандлов. Если какой-то из бандлов не в состоянии &lt;code&gt;Good&lt;/code&gt;, необходимо разобраться в причинах.&lt;/p&gt;\n&lt;div class=\"yfm-note yfm-accent-warning\" note-type=\"warning\"&gt;&lt;p class=\"yfm-note-title\"&gt;Замечание&lt;/p&gt;\n&lt;div class=\"yfm-note-content\"&gt;&lt;p&gt;Если каие-то из бандлов находятся не в состоянии &lt;code&gt;Good&lt;/code&gt;, невозможно запустить обновление кластера.&lt;/p&gt;\n&lt;/div&gt;&lt;/div&gt;","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/admin-guide/problems.md","sourcePath":"ru/admin-guide/problems.md"},"headings":[{"title":"LVC (Lost Vital Chunks)","href":"ru/admin-guide/problems.html#lvc","level":2},{"title":"Tablet Cell Bundle's health is not good","href":"ru/admin-guide/problems.html#tabletcellbundles","level":2}],"title":"Возможные проблемы"},"router":{"pathname":"ru/admin-guide/problems","depth":3,"base":"../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

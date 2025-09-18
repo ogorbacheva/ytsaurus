@@ -1,0 +1,697 @@
+title: YTsaurus
+href: index.md
+analytics:
+  text: >-
+    Мы используем <a href="https://yandex.ru/legal/cookies_policy">файлы
+    cookie</a>, чтобы вы могли наилучшим образом пользоваться нашим веб-сайтом.
+    Если вы продолжаете использовать наш веб-сайт, мы полагаем, что вы согласны
+    с таким использованием.
+  buttons:
+    accept:
+      text: Ок
+      theme: accent
+      size: xl
+items:
+  - name: YTsaurus
+    href: index.md
+  - name: Обзор
+    href: overview/about.md
+  - name: Как попробовать
+    href: overview/try-yt.md
+  - name: Руководство пользователя
+    expanded: true
+    items:
+      - name: Аутентификация
+        href: user-guide/storage/auth.md
+      - name: Хранение данных
+        items:
+          - name: Дерево метаинформации
+            href: user-guide/storage/cypress.md
+          - name: Атрибуты
+            href: user-guide/storage/attributes.md
+          - name: YSON
+            href: user-guide/storage/yson.md
+          - name: YPath
+            href: user-guide/storage/ypath.md
+          - name: Объекты
+            items:
+              - name: Общие сведения
+                href: user-guide/storage/objects.md
+              - name: Статические таблицы
+                href: user-guide/storage/static-tables.md
+              - name: Файлы
+                href: user-guide/storage/files.md
+              - name: Ссылки
+                href: user-guide/storage/links.md
+              - name: YSON-документы
+                href: user-guide/storage/yson-docs.md
+              - name: Транзакции
+                href: user-guide/storage/transactions.md
+              - name: Чанки
+                href: user-guide/storage/chunks.md
+          - name: Контроль доступа
+            items:
+              - name: Общие сведения
+                href: user-guide/storage/access-control.md
+              - name: Управление доступом к колонкам таблиц
+                href: user-guide/storage/columnar-acl.md
+          - name: Квотирование ресурсов
+            items:
+              - name: Квоты
+                href: user-guide/storage/quotas.md
+              - name: Аккаунты
+                href: user-guide/storage/accounts.md
+          - name: Настройки слоя хранения
+            items:
+              - name: Схема данных
+                href: user-guide/storage/static-schema.md
+              - name: Типы данных
+                href: user-guide/storage/data-types.md
+              - name: Бинарные данные в таблицах
+                href: user-guide/storage/blobtables.md
+              - name: Сжатие
+                href: user-guide/storage/compression.md
+              - name: Репликация и erasure-кодирование
+                href: user-guide/storage/replication.md
+              - name: Медиумы
+                href: user-guide/storage/media.md
+              - name: Аннотации
+                href: user-guide/storage/annotations.md
+          - name: Настройки чтения и записи
+            items:
+              - name: Форматы данных
+                href: user-guide/storage/formats.md
+              - name: Настройки ввода и вывода
+                href: user-guide/storage/io-configuration.md
+              - name: Формат Skiff
+                href: user-guide/storage/skiff.md
+              - name: Кеш
+                href: user-guide/storage/file-cache.md
+          - name: Примеры
+            items:
+              - name: Работа с деревом метаинформации
+                href: user-guide/storage/cypress-example.md
+              - name: Работа с объектами дерева метаинформации
+                href: user-guide/storage/examples.md
+              - name: Пакетная обработка запросов
+                href: user-guide/storage/batch-requests.md
+          - name: FAQ
+            href: user-guide/storage/faq.md
+      - name: Динамические таблицы
+        items:
+          - name: Обзор
+            href: user-guide/dynamic-tables/overview.md
+          - name: Основные понятия
+            href: user-guide/dynamic-tables/concepts.md
+          - name: Операции
+            href: user-guide/dynamic-tables/operations.md
+          - name: Сортированные таблицы
+            href: user-guide/dynamic-tables/sorted-dynamic-tables.md
+          - name: Упорядоченные таблицы
+            items:
+              - name: Обзор
+                href: user-guide/dynamic-tables/ordered-dynamic-tables.md
+              - name: Queue API
+                href: user-guide/dynamic-tables/queues.md
+          - name: Реплицированные таблицы
+            href: user-guide/dynamic-tables/replicated-dynamic-tables.md
+          - name: Транзакции
+            href: user-guide/dynamic-tables/transactions.md
+          - name: Шардирование
+            href: user-guide/dynamic-tables/resharding.md
+          - name: Автоматическое шардирование и балансировка таблиц
+            href: user-guide/dynamic-tables/tablet-balancing.md
+          - name: Фоновая компактификация
+            href: user-guide/dynamic-tables/compaction.md
+          - name: MapReduce по динамическим таблицам
+            href: user-guide/dynamic-tables/mapreduce.md
+          - name: Вставка из операций
+            href: user-guide/dynamic-tables/bulk-insert.md
+          - name: Версионированный формат взаимодействия с динамическими таблицами
+            href: user-guide/dynamic-tables/versioned-format.md
+          - name: Язык запросов
+            href: user-guide/dynamic-tables/dyn-query-language.md
+          - name: Вторичные индексы
+            href: user-guide/dynamic-tables/secondary-indices.md
+          - name: Ханки
+            href: user-guide/dynamic-tables/hunks-guide.md
+          - name: Примеры
+            items:
+              - name: Создание веб-сервиса
+                href: user-guide/dynamic-tables/tutorials/dyn-tables-tutorial.md
+              - name: Использование динамической таблицы как очереди
+                href: user-guide/dynamic-tables/tutorials/dynamic-table-queue.md
+              - name: Вставка и удаление данных из консоли
+                href: user-guide/dynamic-tables/tutorials/add-remove-line.md
+              - name: Конвертация динамической таблицы в статическую
+                href: user-guide/dynamic-tables/tutorials/dynamic-to-static.md
+              - name: Создание резервной копии динамической таблицы
+                href: user-guide/dynamic-tables/tutorials/backup-table.md
+          - name: FAQ
+            href: user-guide/dynamic-tables/faq.md
+      - name: Обработка данных
+        expanded: true
+        items:
+          - name: Обзор
+            href: user-guide/data-processing/overview.md
+          - name: Отказоустойчивость
+            href: user-guide/data-processing/reliability.md
+          - name: Планировщик и пулы
+            items:
+              - name: Обзор
+                href: user-guide/data-processing/scheduler/scheduler-and-pools.md
+              - name: Характеристики пулов
+                href: user-guide/data-processing/scheduler/pool-settings.md
+              - name: Вычисление fair share ratio
+                href: user-guide/data-processing/scheduler/fair-share.md
+              - name: Вытеснение
+                href: user-guide/data-processing/scheduler/preemption.md
+              - name: Интегральные гарантии
+                href: user-guide/data-processing/scheduler/integral-guarantees.md
+              - name: Лимиты на количество операций
+                href: user-guide/data-processing/scheduler/operations-limits.md
+              - name: Динамический учёт потребления CPU
+                href: user-guide/data-processing/scheduler/job-cpu-monitor.md
+              - name: Подбор памяти для джобов
+                href: user-guide/data-processing/scheduler/memory-digest.md
+              - name: Управление вычислительными пулами
+                href: user-guide/data-processing/scheduler/manage-pools.md
+              - name: Пример настройки пулов
+                href: user-guide/data-processing/scheduler/pool-examples.md
+          - name: Типы операций
+            items:
+              - name: Обзор
+                href: user-guide/data-processing/operations/overview.md
+              - name: Map
+                href: user-guide/data-processing/operations/map.md
+              - name: Reduce
+                href: user-guide/data-processing/operations/reduce.md
+              - name: MapReduce
+                href: user-guide/data-processing/operations/mapreduce.md
+              - name: Sort
+                href: user-guide/data-processing/operations/sort.md
+              - name: Merge
+                href: user-guide/data-processing/operations/merge.md
+              - name: Erase
+                href: user-guide/data-processing/operations/erase.md
+              - name: RemoteCopy
+                href: user-guide/data-processing/operations/remote-copy.md
+              - name: Vanilla
+                href: user-guide/data-processing/operations/vanilla.md
+          - name: Настройки операций
+            href: user-guide/data-processing/operations/operations-options.md
+          - name: Автоматическое слияние чанков на выходе операций
+            href: user-guide/data-processing/operations/automerge.md
+          - name: Автоматическое укрупнение чанков
+            href: user-guide/data-processing/operations/chunk-merger.md
+          - name: Рекомендации
+            href: user-guide/data-processing/operations/recommendations.md
+          - name: Образы ФС
+            href: user-guide/data-processing/layers/layer-paths.md
+          - name: Переключение таблиц
+            href: user-guide/data-processing/operations/table-switch.md
+          - name: CHYT
+            items:
+              - name: Обзор
+                href: user-guide/data-processing/chyt/about-chyt.md
+              - name: Как попробовать
+                href: user-guide/data-processing/chyt/try-chyt.md
+              - name: Концепции
+                items:
+                  - name: Введение
+                    href: user-guide/data-processing/chyt/general.md
+                  - name: Анатомия запроса
+                    href: user-guide/data-processing/chyt/queries/anatomy.md
+                  - name: Запросы JOIN
+                    href: user-guide/data-processing/chyt/queries/joins.md
+              - name: Работа с таблицами YTsaurus
+                href: user-guide/data-processing/chyt/yt-tables.md
+              - name: Клики
+                items:
+                  - name: Как запустить приватную клику
+                    href: user-guide/data-processing/chyt/cliques/start.md
+                  - name: Клика в интерфейсе YTsaurus
+                    href: user-guide/data-processing/chyt/cliques/ui.md
+                  - name: Права доступа
+                    href: user-guide/data-processing/chyt/cliques/access.md
+                  - name: Ресурсы и вытеснение
+                    href: user-guide/data-processing/chyt/cliques/resources.md
+              - name: CLI и Python API
+                href: user-guide/data-processing/chyt/cli-and-api.md
+              - name: Справочник
+                items:
+                  - name: Выполнение запросов
+                    href: user-guide/data-processing/chyt/reference/execute.md
+                  - name: Выбор координатора
+                    href: user-guide/data-processing/chyt/queries/instance-pick.md
+                  - name: Настройки запросов
+                    href: user-guide/data-processing/chyt/reference/settings.md
+                  - name: Конфигурация клики
+                    href: user-guide/data-processing/chyt/reference/configuration.md
+                  - name: Типы данных
+                    href: user-guide/data-processing/chyt/reference/data-types.md
+                  - name: Функции
+                    href: user-guide/data-processing/chyt/reference/functions.md
+                  - name: Пользовательские функции (UDF)
+                    href: >-
+                      user-guide/data-processing/chyt/reference/user-defined-functions.md
+              - name: Контроллер
+                href: user-guide/data-processing/chyt/cliques/controller.md
+              - name: Производительность и рекомендации
+                href: user-guide/data-processing/chyt/reference/performance.md
+              - name: FAQ
+                href: user-guide/data-processing/chyt/faq-chyt.md
+          - name: SPYT
+            items:
+              - name: Обзор
+                href: user-guide/data-processing/spyt/overview.md
+              - name: Запуск Spark задач на выполнение
+                href: user-guide/data-processing/spyt/launch.md
+              - name: Внутренний SPYT кластер
+                items:
+                  - name: Описание кластера
+                    href: user-guide/data-processing/spyt/cluster/cluster-desc.md
+                  - name: Запуск кластера
+                    href: user-guide/data-processing/spyt/cluster/cluster-start.md
+                  - name: Порядок обновления SPYT
+                    href: user-guide/data-processing/spyt/version.md
+                  - name: Livy server
+                    href: user-guide/data-processing/spyt/cluster/livy.md
+                  - name: History server
+                    href: user-guide/data-processing/spyt/cluster/shs.md
+                  - name: Конфигурации
+                    href: user-guide/data-processing/spyt/cluster/configuration.md
+                  - name: Логи
+                    href: user-guide/data-processing/spyt/logs.md
+                  - name: Решение проблем
+                    href: user-guide/data-processing/spyt/problems.md
+              - name: Structured Streaming
+                href: user-guide/data-processing/spyt/structured-streaming.md
+              - name: Spark SQL
+                href: user-guide/data-processing/spyt/spark-sql.md
+              - name: API
+                items:
+                  - name: SPYT в Python
+                    href: user-guide/data-processing/spyt/API/spyt-python.md
+                  - name: SPYT в Jupyter
+                    href: user-guide/data-processing/spyt/API/spyt-jupyter.md
+                  - name: SPYT в Scala
+                    href: user-guide/data-processing/spyt/API/spyt-scala.md
+                  - name: SPYT в Java
+                    href: user-guide/data-processing/spyt/API/spyt-java.md
+              - name: Справочник
+                items:
+                  - name: Конфигурационные параметры
+                    href: user-guide/data-processing/spyt/thesaurus/configuration.md
+                  - name: Опции чтения
+                    href: user-guide/data-processing/spyt/thesaurus/read-options.md
+                  - name: Чтение и запись под транзакцией
+                    href: user-guide/data-processing/spyt/read-transaction.md
+                  - name: Опции записи
+                    href: user-guide/data-processing/spyt/thesaurus/write-options.md
+                  - name: Использование GPU
+                    href: user-guide/data-processing/spyt/thesaurus/gpu-usage.md
+              - name: Best practices
+                href: user-guide/data-processing/spyt/best-practices.md
+          - name: YQL
+            items:
+              - name: Введение
+                href: yql/index.md
+              - name: Типы данных
+                items:
+                  - name: Обзор
+                    href: yql/types/index.md
+                  - name: Простые
+                    href: yql/types/primitive.md
+                  - name: Опциональные
+                    href: yql/types/optional.md
+                  - name: Контейнеры
+                    href: yql/types/containers.md
+                  - name: Специальные
+                    href: yql/types/special.md
+                  - name: Преобразования типов
+                    href: yql/types/cast.md
+                  - name: Текстовое представление типов данных
+                    href: yql/types/type_string.md
+              - name: Синтаксис
+                items:
+                  - name: Обзор
+                    href: yql/syntax/index.md
+                  - name: Лексическая структура
+                    href: yql/syntax/lexer.md
+                  - name: Выражения
+                    href: yql/syntax/expressions.md
+                  - name: ACTION
+                    href: yql/syntax/action.md
+                  - name: CREATE TABLE
+                    href: yql/syntax/create_table.md
+                  - name: COMMIT
+                    href: yql/syntax/commit.md
+                  - name: DISCARD
+                    href: yql/syntax/discard.md
+                  - name: DROP TABLE
+                    href: yql/syntax/drop_table.md
+                  - name: GROUP BY
+                    href: yql/syntax/group_by.md
+                  - name: EXPORT и IMPORT
+                    href: yql/syntax/export_import.md
+                  - name: FLATTEN
+                    href: yql/syntax/flatten.md
+                  - name: INSERT
+                    href: yql/syntax/insert_into.md
+                  - name: INTO RESULT
+                    href: yql/syntax/into_result.md
+                  - name: JOIN
+                    href: yql/syntax/join.md
+                  - name: PRAGMA
+                    items:
+                      - name: Обзор
+                        href: yql/syntax/pragma/index.md
+                      - name: Глобальные
+                        href: yql/syntax/pragma/global.md
+                      - name: Yson
+                        href: yql/syntax/pragma/yson.md
+                      - name: Работа с файлами
+                        href: yql/syntax/pragma/file.md
+                      - name: Отладочные и служебные
+                        href: yql/syntax/pragma/debug.md
+                      - name: YT-прагмы
+                        href: yql/syntax/pragma/yt.md
+                  - name: PROCESS
+                    href: yql/syntax/process.md
+                  - name: REDUCE
+                    href: yql/syntax/reduce.md
+                  - name: SELECT
+                    items:
+                      - name: Обзор
+                        href: yql/syntax/select/index.md
+                      - name: TEMPORARY TABLE
+                        href: yql/syntax/select/temporary_table.md
+                      - name: FROM
+                        href: yql/syntax/select/from.md
+                      - name: FROM AS_TABLE
+                        href: yql/syntax/select/from_as_table.md
+                      - name: FROM SELECT
+                        href: yql/syntax/select/from_select.md
+                      - name: FOLDER
+                        href: yql/syntax/select/folder.md
+                      - name: WalkFolders
+                        href: yql/syntax/select/walk_folders.md
+                      - name: DISTINCT
+                        href: yql/syntax/select/distinct.md
+                      - name: UNIQUE DISTINCT
+                        href: yql/syntax/select/unique_distinct_hints.md
+                      - name: UNION INTERSECT EXCEPT
+                        href: yql/syntax/select/operators.md
+                      - name: CONCAT / EACH / RANGE / LIKE / FILTER
+                        href: yql/syntax/select/concat.md
+                      - name: VIEW
+                        href: yql/syntax/select/view.md
+                      - name: WITH
+                        href: yql/syntax/select/with.md
+                      - name: WITHOUT
+                        href: yql/syntax/select/without.md
+                      - name: WHERE
+                        href: yql/syntax/select/where.md
+                      - name: ORDER BY
+                        href: yql/syntax/select/order_by.md
+                      - name: ASSUME ORDER BY
+                        href: yql/syntax/select/assume_order_by.md
+                      - name: LIMIT OFFSET
+                        href: yql/syntax/select/limit_offset.md
+                      - name: SAMPLE
+                        href: yql/syntax/select/sample.md
+                      - name: TABLESAMPLE
+                        href: yql/syntax/select/sample.md
+                  - name: SUBQUERY
+                    href: yql/syntax/subquery.md
+                  - name: USE
+                    href: yql/syntax/use.md
+                  - name: VALUES
+                    href: yql/syntax/values.md
+                  - name: WINDOW
+                    href: yql/syntax/window.md
+                  - name: Неподдерживаемые конструкции
+                    href: yql/syntax/not_yet_supported.md
+              - name: Встроенные функции
+                items:
+                  - name: Обзор
+                    href: yql/builtins/index.md
+                  - name: Базовые
+                    href: yql/builtins/basic.md
+                  - name: Агрегатные
+                    href: yql/builtins/aggregation.md
+                  - name: Оконные
+                    href: yql/builtins/window.md
+                  - name: Для работы со списками
+                    href: yql/builtins/list.md
+                  - name: Для работы со словарями
+                    href: yql/builtins/dict.md
+                  - name: Для работы со структурами
+                    href: yql/builtins/struct.md
+                  - name: Для работы с типами
+                    href: yql/builtins/types.md
+                  - name: Для работы с генерацией кода
+                    href: yql/builtins/codegen.md
+                  - name: Для работы с JSON
+                    href: yql/builtins/json.md
+                  - name: Библиотеки C++
+                    items:
+                      - name: Обзор
+                        href: yql/udf/list/index.md
+                      - name: ClickHouse
+                        href: yql/udf/list/clickhouse.md
+                      - name: Compress и Decompress
+                        href: yql/udf/list/compress_decompress.md
+                      - name: DateTime
+                        href: yql/udf/list/datetime.md
+                      - name: Digest
+                        href: yql/udf/list/digest.md
+                      - name: Dsv
+                        href: yql/udf/list/dsv.md
+                      - name: Histogram
+                        href: yql/udf/list/histogram.md
+                      - name: Hyperscan
+                        href: yql/udf/list/hyperscan.md
+                      - name: Ip
+                        href: yql/udf/list/ip.md
+                      - name: Math
+                        href: yql/udf/list/math.md
+                      - name: Pcre
+                        href: yql/udf/list/pcre.md
+                      - name: Pire
+                        href: yql/udf/list/pire.md
+                      - name: PostgreSQL
+                        href: yql/udf/list/postgres.md
+                      - name: Protobuf
+                        href: yql/udf/list/protobuf.md
+                      - name: Re2
+                        href: yql/udf/list/re2.md
+                      - name: Streaming
+                        href: yql/udf/list/streaming.md
+                      - name: String
+                        href: yql/udf/list/string.md
+                      - name: Unicode
+                        href: yql/udf/list/unicode.md
+                      - name: Url
+                        href: yql/udf/list/url.md
+                      - name: Yson
+                        href: yql/udf/list/yson.md
+              - name: Пользовательские функции (UDF)
+                items:
+                  - name: Предустановленные
+                    href: yql/udf/preinstalled.md
+                  - name: Разработка на Python
+                    href: yql/udf/python.md
+                  - name: Разработка на C++
+                    href: yql/udf/cpp.md
+                    items:
+                      - name: Коротко о С++ UDF
+                        href: yql/udf/cpp_about_udf.md
+                      - name: Обработка данных в C++ UDF
+                        href: yql/udf/cpp_data_processing.md
+                      - name: Type-Aware UDF
+                        href: yql/udf/cpp_type_aware_udf.md
+                      - name: YQL-Stream в C++ UDF
+                        href: yql/udf/cpp_stream.md
+              - name: Рецепты
+                items:
+                  - name: Пользовательские агрегатные функции в YQL
+                    href: yql/recipes/udaf.md
+                  - name: Метапрограммирование
+                    href: yql/recipes/metaprogramming.md
+                  - name: Кодогенерация
+                    href: yql/recipes/codegen.md
+                  - name: Доступ к JSON
+                    href: yql/recipes/accessing-json.md
+                  - name: Модификация JSON
+                    href: yql/recipes/modifying-json.md
+              - name: Отличия от других систем
+                items:
+                  - name: SQL ANSI
+                    href: yql/differences_from/ansi.md
+                  - name: ClickHouse
+                    href: yql/differences_from/clickhouse.md
+              - name: FAQ
+                items:
+                  - name: Типовые ошибки
+                    href: yql/faq/errors.md
+                  - name: Производительность
+                    href: yql/faq/performance.md
+                  - name: Временные данные
+                    href: yql/faq/temp.md
+                  - name: Запросы
+                    href: yql/faq/queries.md
+              - name: Прочее
+                items:
+                  - name: Этапы исполнения запроса
+                    href: yql/misc/exec_steps.md
+              - name: Список изменений
+                items:
+                  - name: Обзор
+                    href: yql/changelog/index.md
+                  - name: 2025.01
+                    href: yql/changelog/2025.01.md
+                  - name: 2025.02
+                    href: yql/changelog/2025.02.md
+                  - name: 2025.03
+                    href: yql/changelog/2025.03.md
+          - name: Решение проблем
+            items:
+              - name: Отладка MapReduce программ
+                href: user-guide/problems/mapreduce-debug.md
+              - name: Диагностика медленных джобов
+                href: user-guide/problems/jobshell-and-slowjobs.md
+              - name: Медленное чтение файлов и таблиц
+                href: user-guide/problems/slow-read.md
+              - name: Статистики джобов
+                href: user-guide/problems/jobstatistics.md
+              - name: Локальная отладка джобов
+                href: user-guide/problems/jobtool.md
+      - name: Распределённые блокировки
+        items:
+          - name: Обзор
+            href: user-guide/locking/cypress-as-locking-service.md
+      - name: Прокси
+        items:
+          - name: Обзор
+            href: user-guide/proxy/about.md
+          - name: HTTP-прокси
+            href: user-guide/proxy/http.md
+          - name: RPC-прокси
+            href: user-guide/proxy/rpc.md
+          - name: Справочник по HTTP-прокси
+            href: user-guide/proxy/http-reference.md
+          - name: gRPC-прокси
+            href: user-guide/proxy/grpc.md
+      - name: Импорт и экспорт данных
+        items:
+          - name: Импорт данных из Hive, S3, MongoDB и других систем
+            href: user-guide/import.md
+          - name: Работа с данными Microsoft Excel
+            href: user-guide/excel.md
+      - name: Query Tracker
+        items:
+          - name: Обзор
+            href: user-guide/query-tracker/about.md
+          - name: Python User Defined Functions
+            href: user-guide/query-tracker/system-python-udf.md
+      - name: Работа с Jupyter Notebooks
+        href: user-guide/jupyt.md
+  - name: API и справочник
+    items:
+      - name: Перечень API и клиентских библиотек
+        items:
+          - name: Работа из командной строки
+            items:
+              - name: Обзор
+                href: api/cli/cli.md
+              - name: Установка
+                href: api/cli/install.md
+              - name: Примеры
+                href: api/cli/examples.md
+              - name: CLI commands
+                href: api/cli/commands.md
+          - name: Python API
+            items:
+              - name: Введение
+                href: api/python/start.md
+              - name: Пользовательская документация
+                href: api/python/userdoc.md
+              - name: Справочник
+                href: https://pydoc.ytsaurus.tech
+              - name: Датаклассы
+                href: api/python/dataclass.md
+              - name: Примеры
+                href: api/python/examples.md
+          - name: Apache Airflow
+            href: api/airflow/userdoc.md
+          - name: C++
+            items:
+              - name: Описание
+                href: api/cpp/description.md
+              - name: Protobuf-представление таблиц
+                href: api/cpp/protobuf.md
+              - name: Лямбда-выражения
+                href: api/cpp/lambda.md
+              - name: Примеры использования
+                href: api/cpp/examples.md
+          - name: Go API
+            href: api/go/reference.md
+          - name: Java API
+            href: api/java/examples.md
+          - name: JavaScript Wrapper
+            href: api/js-wrapper.md
+      - name: Общие команды
+        href: api/commands.md
+      - name: Параметры запросов
+        href: api/query-parameters.md
+      - name: Коды ошибок
+        href: api/error-codes.md
+  - name: Руководство администратора
+    items:
+      - name: Компоненты кластера
+        href: admin-guide/components.md
+      - name: Установка YTsaurus
+        href: admin-guide/install-ytsaurus.md
+      - name: Подготовка спецификации YTsaurus
+        items:
+          - name: Описание
+            href: admin-guide/prepare-spec.md
+          - name: Разметка дисков и локаций
+            href: admin-guide/locations.md
+          - name: Настройка логирования
+            href: admin-guide/logging.md
+      - name: Установка дополнительных компонент
+        items:
+          - name: CHYT
+            href: admin-guide/chyt.md
+          - name: SPYT
+            href: admin-guide/spyt.md
+      - name: Настройка SSO
+        href: admin-guide/oauth.md
+      - name: Мониторинг
+        href: admin-guide/monitoring.md
+      - name: Обновление серверных компонент
+        href: admin-guide/update-ytsaurus.md
+      - name: Эксплуатация кластера
+        href: admin-guide/cluster-operations.md
+      - name: Администрирование нод
+        href: admin-guide/node-maintenance.md
+      - name: Тегирование нод кластера
+        href: admin-guide/node-tags.md
+      - name: Расширение мастер-сервера
+        href: admin-guide/cell-addition.md
+      - name: Возможные проблемы
+        href: admin-guide/problems.md
+      - name: Синхронизация пользователей и групп с внешней системой
+        href: admin-guide/identity-sync.md
+  - name: Release notes
+    href: admin-guide/releases.md
+  - name: FAQ
+    href: faq/index.md
+  - name: Как сообщить о проблеме
+    href: user-guide/problems/howtoreport.md
+  - name: Выступления на мероприятиях, публикации и семинары
+    href: other/video-posts.md
+path: ru/toc.yaml

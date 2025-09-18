@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Вытеснение | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/scheduler/preemption.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/scheduler/preemption.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Когда отдельные джобы операций выполняются долго, возможна ситуация, когда операция захватывает весь кластер и не позволяет другим операциям запустить джобы. В этом случае другие операции голодают (страдают, starve). Для решения описанной проблемы в планировщике реализован механизм вытеснения (preemption).&lt;/p&gt;\n&lt;p&gt;Каждая операция может находиться в одном из трех состояний:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;normal — операция получает достаточное количество ресурсов;&lt;/li&gt;\n&lt;li&gt;starving for fair_share — операция получает количество ресурсов, не меньше ее минимальной гарантированной доли, но заметно меньше честной доли;&lt;/li&gt;\n&lt;li&gt;starving for min-share — операция получает количество ресурсов, заметно меньше даже минимальной гарантированной доли.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Если статус операции отличается от normal продолжительное время, зависящее от типа операции, настроек кластера и размера операции, планировщик начинает принудительно прерывать джобы других normal операций. При этом вытеснению подвергаются джобы начиная с последних запущенных.&lt;/p&gt;\n&lt;h2 id=\"nastrojki-vytesneniya\"&gt;&lt;a href=\"ru/user-guide/data-processing/scheduler/preemption.html#nastrojki-vytesneniya\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Настройки вытеснения&lt;/span&gt;&lt;/a&gt;Настройки вытеснения&lt;/h2&gt;\n&lt;p&gt;Вытеснение регулируется следующими параметрами (в скобках указаны значения по умолчанию, если заданы):&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;fair_share_starvation_tolerance&lt;/code&gt; — максимально допустимое относительное отклонение &lt;code&gt;usage_share&lt;/code&gt; операции от её &lt;code&gt;fair_share&lt;/code&gt; при котором операция еще не считается страдающей. Параметр призван побороть проблемы возникающие из-за фрагментации ресурсов;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;fair_share_preemption_timeout&lt;/code&gt; — время, после которого операция с &lt;code&gt;usage_share&lt;/code&gt; меньшим, чем &lt;code&gt;fair_share * tolerance&lt;/code&gt;, считается страдающей;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;enable_aggressive_starvation&lt;/code&gt; (false) — включает агрессивное вытеснение ради операций в данном пуле и во всех потомках. Агрессивное вытеснение — возможность вытеснять джобы других операций: всех запущенных операций, не только операций в данном пуле и потомках, вплоть до того момента, когда у операции останется лишь определённая доля гарантированных ей ресурсов. Данная граница регулируется в настройках планировщика отдельно для каждого кластера. Эта опция позволяет дать гарантии по времени запуска крупных джобов, требующих существенную долю ресурсов узла кластера;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;allow_aggressive_starvation_preemption&lt;/code&gt; (true) — разрешает агрессивное вытеснение джобов в данном пуле, точнее, вытеснение джобов не будет запрещено данным пулом, если &lt;code&gt;usage_share&lt;/code&gt; у пула больше половины (точное значение границы является настройкой кластера) &lt;code&gt;fair_share&lt;/code&gt;. Когда на кластере есть агрессивно страдающие операции, по умолчанию разрешается вытеснять джобы других операций вплоть до половины доли, положенной не страдающим операциям. В случае если для процесса важны строгие гарантии времени его выполнения, данное вытеснение может такие гарантии нарушать. Поэтому для процессов, которым требуются гарантии, следует выключать агрессивное вытеснение.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/scheduler/preemption.md","sourcePath":"ru/user-guide/data-processing/scheduler/preemption.md"},"headings":[{"title":"Настройки вытеснения","href":"ru/user-guide/data-processing/scheduler/preemption.html#nastrojki-vytesneniya","level":2}],"title":"Вытеснение"},"router":{"pathname":"ru/user-guide/data-processing/scheduler/preemption","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Файловый кеш | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/storage/file-cache.md">
+        <meta name="sourcePath" content="ru/user-guide/storage/file-cache.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;В данном разделе содержится информация про файловый кеш.&lt;/p&gt;\n&lt;h2 id=\"common\"&gt;&lt;a href=\"ru/user-guide/storage/file-cache.html#common\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Общие сведения&lt;/span&gt;&lt;/a&gt;Общие сведения&lt;/h2&gt;\n&lt;p&gt;Файловый кеш позволяет однократно загрузить файл в &lt;a href=\"user-guide/storage/cypress.html\"&gt;Кипарис&lt;/a&gt;, а затем получать путь к файлу на кластере по заданному &lt;a href=\"https://ru.wikipedia.org/wiki/MD5\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;MD5 хешу&lt;/a&gt;.&lt;br /&gt;\nФайловый кеш необходим для запуска операций. Когда пользователи запускают операции, происходит загрузка исполняемого файла и всех его зависимостей.&lt;br /&gt;\nНапример, при использовании Python API загружается большое количество модулей и динамических библиотек. Чтобы не загружать одинаковые файлы много раз, достаточно загрузить их в кеш, а при следующих запусках запрашивать их путь в Кипарисе по MD5 хешу.&lt;/p&gt;\n&lt;h2 id=\"compute_md5\"&gt;&lt;a href=\"ru/user-guide/storage/file-cache.html#compute_md5\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Подсчёт MD5 хэша у загружаемых файлов&lt;/span&gt;&lt;/a&gt;Подсчёт MD5 хэша у загружаемых файлов&lt;/h2&gt;\n&lt;p&gt;Чтобы заказать подсчет MD5 загружаемого файла, передайте опцию &lt;code&gt;compute_md5=True&lt;/code&gt; в команду &lt;code&gt;write_file&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;Существует ряд ограничений:&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;При использовании &lt;code&gt;append&lt;/code&gt; заказать подсчет MD5 можно только в том случае, если до этого в файл производилась запись с подсчетом MD5;&lt;/li&gt;\n&lt;li&gt;Подсчитанный MD5 сбрасывается, если была вызвана команда &lt;code&gt;concatenate&lt;/code&gt;, результат которой записывается в соответствующий файл.&lt;/li&gt;\n&lt;/ol&gt;\n&lt;h2 id=\"komandy-api\"&gt;&lt;a href=\"ru/user-guide/storage/file-cache.html#komandy-api\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Команды API&lt;/span&gt;&lt;/a&gt;Команды API&lt;/h2&gt;\n&lt;p&gt;Для работы с файловым кешем предназначены команды &lt;code&gt;put_file_to_cache&lt;/code&gt; и &lt;code&gt;get_file_from_cache&lt;/code&gt;.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/storage/file-cache.md","sourcePath":"ru/user-guide/storage/file-cache.md"},"headings":[{"title":"Общие сведения","href":"ru/user-guide/storage/file-cache.html#common","level":2},{"title":"Подсчёт MD5 хэша у загружаемых файлов","href":"ru/user-guide/storage/file-cache.html#compute_md5","level":2},{"title":"Команды API","href":"ru/user-guide/storage/file-cache.html#komandy-api","level":2}],"title":"Файловый кеш"},"router":{"pathname":"ru/user-guide/storage/file-cache","depth":4,"base":"../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

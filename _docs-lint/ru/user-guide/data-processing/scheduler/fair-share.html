@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Как вычисляется fair share ratio | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/scheduler/fair-share.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/scheduler/fair-share.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Имеется дерево пулов, внутренние узлы которого являются пулами, а листья — операциями.&lt;/p&gt;\n&lt;p&gt;У каждой операции в дереве пулов имеются usage и demand — векторы ресурсов, задающие текущее потребление операцией ресурсов и максимально возможное потребление ресурсов. Данные характеристики (usage и demand) суммируются естественным образом по дереву и таким образом можно говорить о usage и demand внутренних узлов дерева. Кроме того, вектор ресурсов можно превратить в неотрицательное число, взяв отношение доминантного ресурса этого вектора к суммарному количеству данного ресурса на кластере. Таким образом, можно говорить о usage ratio и demand ratio в каждом узле дерева.&lt;/p&gt;\n&lt;p&gt;При вычислении fair share ratio для всех узлов дерева рекурсивно выполняется процедура деления fair share в данном узле между его детьми. В корне деление начинается с fair share, равного единице.&lt;/p&gt;\n&lt;p&gt;При раздаче fair share детям решается следующая задача. Пусть &lt;code&gt;F&lt;/code&gt; — это величина fair share, которую необходимо раздать детям &lt;code&gt;c_1, c_2, ... c_n&lt;/code&gt;. Вес детей обозначен &lt;code&gt;w_1, w_2, ... w_n&lt;/code&gt; . Также у детей имеется верхнее ограничение на fair share, обозначаемое &lt;code&gt;u_i&lt;/code&gt;. Данное ограничение вычисляется с учетом demand, гранулярности ресурсов, установленных resource limits и так далее. Нижнее ограничение на fair share обозначается &lt;code&gt;l_i&lt;/code&gt; (задается min share ratio). Алгоритм, который делит fair share, ищет такой &lt;code&gt;x&lt;/code&gt;, чтобы было выполнено:&lt;/p&gt;\n&lt;p&gt;&lt;img src=\"images/fair_share_formula.png\" alt=\"\" class=\"center\" /&gt;&lt;/p&gt;\n&lt;p&gt;Если у детей пула сумма &lt;code&gt;min share ratio&lt;/code&gt; превышает единицу, она нормируется до 1. В общем случае, &lt;code&gt;min share ratio&lt;/code&gt; сложная характеристика и её не рекомендуется выставлять у вложенных пулов. Иначе описанная выше задача не имела бы решения.&lt;/p&gt;\n&lt;p&gt;Несколько примеров вычисления fair share ratio:&lt;/p&gt;\n&lt;p&gt;Пусть в корне имеется два пула &lt;code&gt;A&lt;/code&gt; и &lt;code&gt;B&lt;/code&gt;, у пула &lt;code&gt;A&lt;/code&gt; min share ratio равен 0.6, у пула &lt;code&gt;B&lt;/code&gt; min share ratio равен 0.2. Пусть также в обоих пулах запущены объёмные операции с очень большим demand.&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;Вес у обоих пулов равен единице. В таком случае после вычисления fair share получится, что fair share ratio пула &lt;code&gt;A&lt;/code&gt; равен 0.6, а fair share ratio пула &lt;code&gt;B&lt;/code&gt; равен 0.4;&lt;/li&gt;\n&lt;li&gt;Вес пула &lt;code&gt;A&lt;/code&gt; равен трём, а вес пула &lt;code&gt;B&lt;/code&gt; равен единице. Тогда fair share ratio пула &lt;code&gt;A&lt;/code&gt; будет равен 0.75, а fair share ratio пула &lt;code&gt;B&lt;/code&gt; равен 0.25;&lt;/li&gt;\n&lt;li&gt;Вес у обоих пулов равен единице. Предположим, что помимо &lt;code&gt;A&lt;/code&gt; и &lt;code&gt;B&lt;/code&gt; имеется пул &lt;code&gt;C&lt;/code&gt;, у которого нет min share ratio, а вес также равен 1. Тогда fair share ratio пула &lt;code&gt;A&lt;/code&gt; будет равен 0.6, а fair share ratio пула &lt;code&gt;B&lt;/code&gt; равен 0.2, и fair share ratio пула &lt;code&gt;C&lt;/code&gt; также будет равен 0.2.&lt;/li&gt;\n&lt;/ol&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/scheduler/fair-share.md","sourcePath":"ru/user-guide/data-processing/scheduler/fair-share.md"},"headings":[],"title":"Как вычисляется fair share ratio"},"router":{"pathname":"ru/user-guide/data-processing/scheduler/fair-share","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

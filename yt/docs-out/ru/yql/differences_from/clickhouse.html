@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Отличия в SQL диалектах ClickHouse и YQL | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/yql/differences_from/clickhouse.md">
+        <meta name="sourcePath" content="ru/yql/differences_from/clickhouse.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"terminologiya\"&gt;&lt;a href=\"ru/yql/differences_from/clickhouse.html#terminologiya\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Терминология&lt;/span&gt;&lt;/a&gt;Терминология&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;ARRAY&lt;/code&gt; из ClickHouse называется &lt;code&gt;List&lt;/code&gt; в YQL, соответствующим образом отличается большинство работающих с ними функций.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;ARRAY JOIN&lt;/code&gt; из ClickHouse в YQL называется &lt;a href=\"ru/yql/syntax/flatten.html\"&gt;FLATTEN BY&lt;/a&gt;.&lt;/li&gt;\n&lt;li&gt;С точки зрения YQL, тип данных логической таблицы — &lt;code&gt;List&amp;lt;Struct&amp;lt;...&amp;gt;&amp;gt;&lt;/code&gt;, как физической, так и вложенной (Nested из ClickHouse). В YQL можно комбинировать &lt;a href=\"ru/yql/types/containers.html\"&gt;контейнерные типы данных&lt;/a&gt; произвольным образом.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h2 id=\"sintaksis\"&gt;&lt;a href=\"ru/yql/differences_from/clickhouse.html#sintaksis\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Синтаксис&lt;/span&gt;&lt;/a&gt;Синтаксис&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;В ClickHouse можно дать практически любой части выражения имя через &lt;code&gt;AS&lt;/code&gt; и затем использовать его в другой части запроса, а в YQL всё очень строго с областью видимости колонок в различных частях &lt;a href=\"ru/yql/syntax/select/index.html\"&gt;SELECT&lt;/a&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/yql/differences_from/clickhouse.md","sourcePath":"ru/yql/differences_from/clickhouse.md"},"headings":[{"title":"Терминология","href":"ru/yql/differences_from/clickhouse.html#terminologiya","level":2},{"title":"Синтаксис","href":"ru/yql/differences_from/clickhouse.html#sintaksis","level":2}],"title":"Отличия в SQL диалектах ClickHouse и YQL"},"router":{"pathname":"ru/yql/differences_from/clickhouse","depth":4,"base":"../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Erase |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/data-processing/operations/erase.md">
+        <meta name="sourcePath" content="en/user-guide/data-processing/operations/erase.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;The Erase operation deletes the specified row range from the table. If the range is not specified for the input table, all data is deleted from the table (the table itself remains).&lt;/p&gt;\n&lt;p&gt;General parameters for all operation types are described in &lt;a href=\"user-guide/data-processing/operations/operations-options.html\"&gt;Operation options&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;The Erase operation supports the following options (if set, default values are specified in brackets):&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;table_path&lt;/code&gt; — path to the input table. Enables specifying row ranges on the input table, such as &lt;code&gt;//path/table[#10:#100]&lt;/code&gt;. You can delete only a range of rows as opposed to all the data in the table.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;combine_chunks&lt;/code&gt; (false) — combine the remaining chunks in the table so that they are large enough.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;schema_inference_mode&lt;/code&gt; (auto) — schema definition mode. Possible values: auto, from_input, from_output. To learn more, see &lt;a href=\"user-guide/storage/static-schema.html#schema_inference\"&gt;Data schema&lt;/a&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h2 id=\"example-specification\"&gt;&lt;a href=\"en/user-guide/data-processing/operations/erase.html#example-specification\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Example specification&lt;/span&gt;&lt;/a&gt;Example specification&lt;/h2&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs yaml\"&gt;{\n  &lt;span class=\"hljs-string\"&gt;table_path&lt;/span&gt; &lt;span class=\"hljs-string\"&gt;=&lt;/span&gt; &lt;span class=\"hljs-string\"&gt;\"//tmp/input_table[#10:#100]\"&lt;/span&gt;&lt;span class=\"hljs-string\"&gt;;&lt;/span&gt;\n  &lt;span class=\"hljs-string\"&gt;combine_chunks&lt;/span&gt; &lt;span class=\"hljs-string\"&gt;=&lt;/span&gt; &lt;span class=\"hljs-string\"&gt;%true;&lt;/span&gt;\n}\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"29\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-29\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-29\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-29.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/data-processing/operations/erase.md","sourcePath":"en/user-guide/data-processing/operations/erase.md"},"headings":[{"title":"Example specification","href":"en/user-guide/data-processing/operations/erase.html#example-specification","level":2}],"title":"Erase"},"router":{"pathname":"en/user-guide/data-processing/operations/erase","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

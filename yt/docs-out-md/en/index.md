@@ -1,0 +1,92 @@
+---
+metadata:
+  - name: generator
+    content: Diplodoc Platform v5.5.3
+csp:
+  - script-src-elem:
+      - https://mc.yandex.ru
+  - connect-src:
+      - https://*.algolia.net
+      - https://*.algolianet.com
+title: documentation
+links:
+  - title: documentation
+    href: documentation/
+vcsPath: en/index.md
+sourcePath: en/index.md
+---
+
+# YTsaurus
+
+<style scoped>
+.grid-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  column-gap: 50px;
+  row-gap: 20px;
+}
+.grid-item {
+  display: flex;
+  flex-direction: column;
+}
+.last {
+  grid-column: -2;
+}
+h2 {
+  padding-top: 32px !important;
+  margin-top: 0 !important;
+}
+h3 {
+  padding-top: 8px !important;
+  margin-top: 0 !important;
+}
+</style>
+
+**YTsaurus** (IPA: [waɪtiːsɔːrəs], pronounced _wai-tee-saw-ruhs_) is a distributed storage and processing platform for large amounts of data. It includes [MapReduce](http://en.wikipedia.org/wiki/MapReduce) computation model, a distributed file system and a NoSQL key-value storage.
+
+<div class="grid-container">
+    <div class="grid-item">
+        <h3><a lang="en" href="overview/about">Overview</a></h3>
+        <p>System overview: YTsaurus purpose and key features of the platform.</p>
+    </div>
+    <div class="grid-item">
+        <h3><a lang="en" href="user-guide/storage/cypress">Data storage</a></h3>
+        <p>Storing data in YTsaurus: Cypress metadata storage, key system entities, static tables, transactions, data storage formats.</p>
+    </div>
+    <div class="grid-item">
+        <h3><a lang="en" href="overview/try-yt">How to try?</a></h3>
+        <p>Examples of basic actions with YTsaurus in the CLI and web interface.</p>
+    </div>
+    <div class="grid-item">
+        <h3><a lang="en" href="user-guide/dynamic-tables/overview">Dynamic tables</a></h3>
+        <p>NoSQL key-value database: transactions, query language, replicated dynamic tables.</p>
+    </div>
+    <div class="grid-item">
+        <h3><a lang="en" href="api/commands">API and reference</a></h3>
+        <p>Commands and their parameters, SDK description, and sample code for platform interaction.</p>
+    </div>
+    <div class="grid-item">
+        <h3><a lang="en" href="user-guide/data-processing/scheduler/scheduler-and-pools">Data processing</a></h3>
+        <p>Processing data with YTsaurus: scheduler, MapReduce paradigm, operations supported.</p>
+    <!-- <div class="grid-item">
+        <h3><a href="admin-guide/set-req">Administration Guide</a></h3>
+        <p>Configuration, installation process and instructions for basic administrative tasks.</p>
+    </div> -->
+        <ul>
+            <li><b><a lang="en" href="yql/index">YQL</a></b>: A declarative SQL-like query language.</li>
+            <li><b><a lang="en" href="user-guide/data-processing/chyt/about-chyt">CHYT</a></b>: A ClickHouse cluster running in YTsaurus.</li>
+            <li><b><a lang="en" href="user-guide/data-processing/spyt/overview">SPYT</a></b>: An Apache Spark cluster running in YTsaurus.</li>
+        </ul>
+    </div>
+
+
+</div>
+
+## Useful links { #links }
+
+* [GitHub](https://github.com/ytsaurus/ytsaurus)
+* [YTsaurus site](https://ytsaurus.tech)
+* [Telegram](https://t.me/ytsaurus)
+* [Stack Overflow](https://stackoverflow.com/tags/ytsaurus)
+* [Email for questions](mailto:community@ytsaurus.tech)
+

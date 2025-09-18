@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../../" />
+        <title>Selecting a coordinator |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/data-processing/chyt/queries/instance-pick.md">
+        <meta name="sourcePath" content="en/user-guide/data-processing/chyt/queries/instance-pick.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;A heavy proxy receives a user query and delegates it to one of the instances, which becomes the \"coordinator\" instance. The user can influence this choice: for example, for more efficient cache use.&lt;/p&gt;\n&lt;p&gt;Below are different strategies for picking the coordinator, listed in descending order of priority (if you attempt to include more than one strategy, the one with the higher priority will be selected):&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Selecting a specific instance.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;You need to add &lt;code&gt;job-cookie&lt;/code&gt; of the instance to the clique alias using the &lt;code&gt;@&lt;/code&gt; character. For an instance with &lt;code&gt;job-cookie=3&lt;/code&gt;, for example, the query will look like this: &lt;code&gt;http://cluster.domain.com/chyt?chyt.clique_alias=my-clique@3&lt;/code&gt;.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Selecting an instance within a session.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Within a single ClickHouse session, the proxy will* select the same instance.&lt;/p&gt;\n&lt;div class=\"yfm-note yfm-accent-info\" note-type=\"info\"&gt;&lt;p class=\"yfm-note-title\"&gt;Note&lt;/p&gt;\n&lt;div class=\"yfm-note-content\"&gt;&lt;p&gt;*If no instances have been restarted in the last few minutes.&lt;/p&gt;\n&lt;/div&gt;&lt;/div&gt;&lt;p&gt;A session is defined by the &lt;code&gt;session_id&lt;/code&gt; URL parameter (just like in the original ClickHouse). This results in the query &lt;code&gt;http://cluster.domain.com/chyt?chyt.clique_alias=my-clique&amp;amp;session_id=abracadabra&lt;/code&gt;.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;StickyGroup strategy.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;You can either specify the &lt;code&gt;QueryStickyGroupSize&lt;/code&gt; parameter in the clique configuration or pass it along with the query in the &lt;code&gt;chyt.query_sticky_group_size&lt;/code&gt; URL parameter.&lt;/p&gt;\n&lt;p&gt;In this case, the proxy will delegate identical queries to a group of instances of the &lt;code&gt;QueryStickyGroupSize&lt;/code&gt; size, which means that the same query will get into a random instance from that group.&lt;/p&gt;\n&lt;p&gt;The choice of the &lt;code&gt;QueryStickyGroupSize&lt;/code&gt; value can be based on the following reasoning: if the value is small, the cache in the selected group warms up quickly; if the value is large, the group is almost unaffected if one instance goes down, since most instances will preserve their cache.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Selecting a random instance.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;If there are no other strategies, the coordinator is selected equally likely among all available instances.&lt;/p&gt;\n&lt;/li&gt;\n&lt;/ol&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/data-processing/chyt/queries/instance-pick.md","sourcePath":"en/user-guide/data-processing/chyt/queries/instance-pick.md"},"headings":[],"title":"Selecting a coordinator"},"router":{"pathname":"en/user-guide/data-processing/chyt/queries/instance-pick","depth":6,"base":"../../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

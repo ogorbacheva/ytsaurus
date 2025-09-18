@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Preemption |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/data-processing/scheduler/preemption.md">
+        <meta name="sourcePath" content="en/user-guide/data-processing/scheduler/preemption.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;When it takes a long time to complete individual operations, an operation to take over the entire cluster and prevent other operations from running jobs is possible. In this case, other operations starve. To solve this problem, the scheduler has a preemption mechanism.&lt;/p&gt;\n&lt;p&gt;Each operation can be in one of two states:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;normal: The operation gets enough resources.&lt;/li&gt;\n&lt;li&gt;starving for fair_share: The operation gets an amount of resources that is not less than its minimum guaranteed share, but significantly less than its fair_share.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;If the operation status differs from normal for a long time depending on the operation type, cluster settings, and operation size, the scheduler starts forcibly aborting jobs of other normal operations. In this case, jobs starting with recently run ones are subject to preemption.&lt;/p&gt;\n&lt;h2 id=\"preemption-settings\"&gt;&lt;a href=\"en/user-guide/data-processing/scheduler/preemption.html#preemption-settings\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Preemption settings&lt;/span&gt;&lt;/a&gt;Preemption settings&lt;/h2&gt;\n&lt;p&gt;Preemption is regulated by the following parameters (default values in brackets if set):&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;fair_share_starvation_tolerance&lt;/code&gt;: The maximum allowable relative deviation of the &lt;code&gt;usage_share&lt;/code&gt; of the operation from its &lt;code&gt;fair_share&lt;/code&gt; at which the operation is not yet considered starving. The parameter is intended to overcome problems caused by resource fragmentation.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;fair_share_preemption_timeout&lt;/code&gt;: The time after which an operation with &lt;code&gt;usage_share&lt;/code&gt; less than &lt;code&gt;fair_share * tolerance&lt;/code&gt; is considered starving.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;enable_aggressive_starvation&lt;/code&gt; (false): Enables aggressive preemption for the sake of operations in a given pool and in all descendants. Aggressive preemption is the ability to preempt jobs of other operations: all running operations, not just those in a given pool and descendants, up to the point when the operation has only half of its guaranteed resources left. This limit is adjusted in the scheduler settings separately for each cluster. This option enables you to guarantee the start time of large jobs that require a significant share of the cluster node resources.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;allow_aggressive_starvation_preemption&lt;/code&gt; (true): Allows aggressive preemption of jobs in a given pool. More precisely, preemption of jobs will not be prohibited by a given pool if the &lt;code&gt;usage_share&lt;/code&gt; of the pool is greater than half (the exact limit value is the cluster setting) of the &lt;code&gt;fair_share&lt;/code&gt;. When a cluster has aggressively starving operations, it is allowed by default to preempt the jobs of other operations up to half of the share allocated to non-starving operations. If strict timing guarantees are important for the process, this preemption may violate such guarantees. Therefore, aggressive preemption should be disabled for processes that require guarantees.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/data-processing/scheduler/preemption.md","sourcePath":"en/user-guide/data-processing/scheduler/preemption.md"},"headings":[{"title":"Preemption settings","href":"en/user-guide/data-processing/scheduler/preemption.html#preemption-settings","level":2}],"title":"Preemption"},"router":{"pathname":"en/user-guide/data-processing/scheduler/preemption","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

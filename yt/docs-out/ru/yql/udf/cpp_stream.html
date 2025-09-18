@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/yql/udf/cpp_stream.md">
+        <meta name="sourcePath" content="ru/yql/udf/cpp_stream.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h3 id=\"rabota-s-yql-stream-v-c-udf\"&gt;&lt;a href=\"ru/yql/udf/cpp_stream.html#rabota-s-yql-stream-v-c-udf\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Работа с YQL-Stream в C++ UDF&lt;/span&gt;&lt;/a&gt;Работа с YQL-Stream в C++ UDF&lt;/h3&gt;\n&lt;p&gt;YQL-Stream - это однопроходный итератор. В YQL его можно получить на выходе &lt;code&gt;PROCESS&lt;/code&gt; или &lt;code&gt;REDUCE&lt;/code&gt; (см. документацию YQL).&lt;/p&gt;\n&lt;p&gt;В сpp YQL-Stream - это класс-наследник &lt;code&gt;TBoxedValue&lt;/code&gt; с переопределённым &lt;code&gt;Fetch()&lt;/code&gt; методом.&lt;/p&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs cpp\"&gt;&lt;span class=\"hljs-keyword\"&gt;class&lt;/span&gt; &lt;span class=\"hljs-title class_\"&gt;TMyStreamProvider&lt;/span&gt;: &lt;span class=\"hljs-keyword\"&gt;public&lt;/span&gt; TBoxedValue {\n&lt;span class=\"hljs-keyword\"&gt;public&lt;/span&gt;:\n    &lt;span class=\"hljs-built_in\"&gt;TMyStreamProvider&lt;/span&gt;(...) {\n        ...\n    }\n\n    &lt;span class=\"hljs-built_in\"&gt;TMyStreamProvider&lt;/span&gt;() = &lt;span class=\"hljs-keyword\"&gt;delete&lt;/span&gt;;\n    &lt;span class=\"hljs-built_in\"&gt;TMyStreamProvider&lt;/span&gt;(&lt;span class=\"hljs-type\"&gt;const&lt;/span&gt; TMyStreamProvider&amp;amp;) = &lt;span class=\"hljs-keyword\"&gt;delete&lt;/span&gt;;\n    &lt;span class=\"hljs-keyword\"&gt;virtual&lt;/span&gt; ~&lt;span class=\"hljs-built_in\"&gt;TMyStreamProvider&lt;/span&gt;() = &lt;span class=\"hljs-keyword\"&gt;default&lt;/span&gt;;\n    &lt;span class=\"hljs-type\"&gt;void&lt;/span&gt; &lt;span class=\"hljs-keyword\"&gt;operator&lt;/span&gt;=(&lt;span class=\"hljs-type\"&gt;const&lt;/span&gt; TMyStreamProvider&amp;amp;) = &lt;span class=\"hljs-keyword\"&gt;delete&lt;/span&gt;;\n    &lt;span class=\"hljs-built_in\"&gt;TMyStreamProvider&lt;/span&gt;(TMyStreamProvider&amp;amp;&amp;amp; other) = &lt;span class=\"hljs-keyword\"&gt;default&lt;/span&gt;;\n    TMyStreamProvider&amp;amp; &lt;span class=\"hljs-keyword\"&gt;operator&lt;/span&gt;=(TMyStreamProvider&amp;amp;&amp;amp; other) = &lt;span class=\"hljs-keyword\"&gt;default&lt;/span&gt;;\n\n    &lt;span class=\"hljs-function\"&gt;EFetchStatus &lt;span class=\"hljs-title\"&gt;Fetch&lt;/span&gt;&lt;span class=\"hljs-params\"&gt;(TUnboxedValue&amp;amp; result)&lt;/span&gt; &lt;span class=\"hljs-keyword\"&gt;override&lt;/span&gt;&lt;/span&gt;;\n};\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"9\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-9\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-9\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-9.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n&lt;p&gt;&lt;code&gt;Fetch()&lt;/code&gt; может вернуть 3 статуса:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;code&gt;EFetchStatus::Ok&lt;/code&gt;&lt;/p&gt;\n&lt;p&gt;Символизирует успешную запись значения в result.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;code&gt;EFetchStatus::Finish&lt;/code&gt;&lt;/p&gt;\n&lt;p&gt;Символизирует конец потока, result - не изменяется.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;code&gt;EFetchStatus::Yield&lt;/code&gt;&lt;/p&gt;\n&lt;p&gt;Специальный статус. Если на входе у UDF-функции нет YQL-Stream'а, то ваш поток никогда не должен генерировать этот статус. Если входной поток выдал статус &lt;code&gt;EFetchStatus::Yield&lt;/code&gt;, то в выходной поток может отдать 0 или больше значений, но всё равно необходимо сгенерировать и вернуть статус &lt;code&gt;EFetchStatus::Yield&lt;/code&gt;.&lt;/p&gt;\n&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Важно помнить, что после того, как udf-функция в cpp-коде вернула поток, то всё что было в теле &lt;code&gt;Run()&lt;/code&gt; разрушается деструктором. Поэтому всё необходимое нужно прокидывать через конструктор в класс Stream'а, чтобы он был владельцем всех ресурсов.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/yql/udf/cpp_stream.md","sourcePath":"ru/yql/udf/cpp_stream.md"},"headings":[],"title":""},"router":{"pathname":"ru/yql/udf/cpp_stream","depth":4,"base":"../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

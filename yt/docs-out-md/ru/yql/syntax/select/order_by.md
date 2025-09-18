@@ -1,0 +1,33 @@
+---
+metadata:
+  - name: generator
+    content: Diplodoc Platform v5.5.3
+csp:
+  - script-src-elem:
+      - https://mc.yandex.ru
+  - connect-src:
+      - https://*.algolia.net
+      - https://*.algolianet.com
+vcsPath: ru/yql/syntax/select/order_by.md
+sourcePath: ru/yql/syntax/select/order_by.md
+---
+# ORDER BY
+
+Сортировка результата `SELECT` по разделенному запятыми перечню критериев сортировки. В качестве критерия может выступать значение столбца, или выражение над столбцами. Не поддерживается указание порядкового номера колонки выборки (`ORDER BY N`, где `N` - номер).
+
+Направление сортировки может быть указано после каждого критерия:
+
+- `ASC` — по возрастанию. Применяется по умолчанию.
+- `DESC` — по убыванию.
+
+Несколько критериев сортировки будут применены слева направо.
+
+## Пример
+
+```yql
+SELECT key, string_column
+FROM my_table
+ORDER BY key DESC, LENGTH(string_column) ASC;
+```
+
+Ключевое слово `ORDER BY` также может использоваться в механизме [оконных функций](../window.md).

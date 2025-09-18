@@ -1,0 +1,563 @@
+common:
+  - from: /api/c/
+    to: /api/cpp/
+    type: redirect
+  - from: /api/c\+\+/
+    to: /api/cpp/
+    type: redirect
+  - from: /user-guide/data-processing/porto/
+    to: /user-guide/data-processing/layers/
+    type: redirect
+  - from: /user-guide/data-processing/table-switch.md
+    to: /user-guide/data-processing/operations/table-switch.md
+    type: redirect
+  - from: /yql/syntax/select.md
+    to: /yql/syntax/select/index.md
+    type: redirect
+  - from: /faq/faq.md
+    to: /faq/index.md
+    type: redirect
+ru:
+  - from: /api/c\+\+/c\+\+_api.md
+    to: /api/cpp/description.md
+    type: redirect
+  - from: /api/error_codes.md
+    to: /api/error-codes.md
+    type: redirect
+  - from: /api/java/examples_iceberg.md
+    to: /api/java/examples-iceberg.md
+    type: redirect
+  - from: /api/java/examples_ytclient.md
+    to: /api/java/examples-ytclient.md
+    type: redirect
+  - from: /api/java/java_api.md
+    to: /api/java/java-api.md
+    type: redirect
+  - from: /api/python/cpp_jobs.md
+    to: /api/python/cpp-jobs.md
+    type: redirect
+  - from: /api/python/for_developer.md
+    to: /api/python/for-developer.md
+    type: redirect
+  - from: /api/python/tests_in_arcadia.md
+    to: /api/python/tests-in-arcadia.md
+    type: redirect
+  - from: /api/request_parameters.md
+    to: /api/query-parameters.md
+    type: redirect
+  - from: /best_practices/howtorunproduction.md
+    to: /user-guide/best-practice/howtorunproduction.md
+    type: redirect
+  - from: /best_practices/quota_monitoring.md
+    to: /user-guide/best-practice/quota-monitoring.md
+    type: redirect
+  - from: /best_practices/resource_planning.md
+    to: /user-guide/best-practice/resource-planning.md
+    type: redirect
+  - from: /description/chyt/about_chyt.md
+    to: /user-guide/data-processing/chyt/about-chyt.md
+    type: redirect
+  - from: /description/chyt/cli_and_api.md
+    to: /user-guide/data-processing/chyt/cli-and-api.md
+    type: redirect
+  - from: /description/chyt/cliques/access.md
+    to: /user-guide/data-processing/chyt/cliques/access.md
+    type: redirect
+  - from: /description/chyt/cliques/controller.md
+    to: /user-guide/data-processing/chyt/cliques/controller.md
+    type: redirect
+  - from: /description/chyt/cliques/dashboard.md
+    to: /user-guide/data-processing/chyt/cliques/dashboard.md
+    type: redirect
+  - from: /description/chyt/cliques/resources.md
+    to: /user-guide/data-processing/chyt/cliques/resources.md
+    type: redirect
+  - from: /description/chyt/cliques/start.md
+    to: /user-guide/data-processing/chyt/cliques/start.md
+    type: redirect
+  - from: /description/chyt/cliques/ui.md
+    to: /user-guide/data-processing/chyt/cliques/ui.md
+    type: redirect
+  - from: /description/chyt/philosophy.md
+    to: /user-guide/data-processing/chyt/general.md
+    type: redirect
+  - from: /description/chyt/queries/anatomy.md
+    to: /user-guide/data-processing/chyt/queries/anatomy.md
+    type: redirect
+  - from: /description/chyt/queries/joins.md
+    to: /user-guide/data-processing/chyt/queries/joins.md
+    type: redirect
+  - from: /description/chyt/reference/configuration.md
+    to: /user-guide/data-processing/chyt/reference/configuration.md
+    type: redirect
+  - from: /description/chyt/reference/data_types.md
+    to: /user-guide/data-processing/chyt/reference/data-types.md
+    type: redirect
+  - from: /description/chyt/reference/execute.md
+    to: /user-guide/data-processing/chyt/reference/execute.md
+    type: redirect
+  - from: /description/chyt/reference/functions.md
+    to: /user-guide/data-processing/chyt/reference/functions.md
+    type: redirect
+  - from: /description/chyt/reference/performance.md
+    to: /user-guide/data-processing/chyt/reference/performance.md
+    type: redirect
+  - from: /description/chyt/reference/settings.md
+    to: /user-guide/data-processing/chyt/reference/settings.md
+    type: redirect
+  - from: /description/chyt/yt_tables.md
+    to: /user-guide/data-processing/chyt/yt-tables.md
+    type: redirect
+  - from: /description/common/_access_contol_internal.md
+    to: /user-guide/storage/_access_contol_internal.md
+    type: redirect
+  - from: /description/common/access_control.md
+    to: /user-guide/storage/access-control.md
+    type: redirect
+  - from: /description/common/access_log.md
+    to: /user-guide/storage/access-log.md
+    type: redirect
+  - from: /user-guide/storage/access_log.md
+    to: /user-guide/storage/access-log.md
+    type: redirect
+  - from: /description/common/accounts.md
+    to: /user-guide/storage/accounts.md
+    type: redirect
+  - from: /description/common/acl_manage.md
+    to: /user-guide/storage/acl-manage.md
+    type: redirect
+  - from: /description/common/attributes.md
+    to: /user-guide/storage/attributes.md
+    type: redirect
+  - from: /description/common/auth.md
+    to: /user-guide/storage/auth.md
+    type: redirect
+  - from: /description/common/columnar_acl.md
+    to: /user-guide/storage/columnar-acl.md
+    type: redirect
+  - from: /description/common/compression.md
+    to: /user-guide/storage/compression.md
+    type: redirect
+  - from: /description/common/cypress.md
+    to: /user-guide/storage/cypress.md
+    type: redirect
+  - from: /description/common/dynamic-tables-resources.md
+    to: /user-guide/dynamic-tables/dynamic-tables-resources.md
+    type: redirect
+  - from: /description/common/examples/batch_requests.md
+    to: /api/python/userdoc.md
+    type: redirect
+  - from: /description/common/examples/cypress_example.md
+    to: /user-guide/storage/cypress-example.md
+    type: redirect
+  - from: /description/common/media.md
+    to: /user-guide/storage/media.md
+    type: redirect
+  - from: /description/common/objects.md
+    to: /user-guide/storage/objects.md
+    type: redirect
+  - from: /description/common/quota_request.md
+    to: /user-guide/storage/quota-request.md
+    type: redirect
+  - from: /description/common/quotas.md
+    to: /user-guide/storage/quotas.md
+    type: redirect
+  - from: /description/common/regular_system_processes.md
+    to: /user-guide/storage/regular-system-processes.md
+    type: redirect
+  - from: /description/common/replication.md
+    to: /user-guide/storage/replication.md
+    type: redirect
+  - from: /description/common/security_tags.md
+    to: /user-guide/storage/security-tags.md
+    type: redirect
+  - from: /description/common/troubleshooting.md
+    to: /user-guide/storage/troubleshooting.md
+    type: redirect
+  - from: /description/common/ypath.md
+    to: /user-guide/storage/ypath.md
+    type: redirect
+  - from: /description/common/yson.md
+    to: /user-guide/storage/yson.md
+    type: redirect
+  - from: /description/dynamic_tables/bulk_insert.md
+    to: /user-guide/dynamic-tables/bulk-insert.md
+    type: redirect
+  - from: /description/dynamic_tables/compaction.md
+    to: /user-guide/dynamic-tables/compaction.md
+    type: redirect
+  - from: /description/dynamic_tables/dynamic_tables_diagnostics.md
+    to: /user-guide/dynamic-tables/dynamic-tables-diagnostics.md
+    type: redirect
+  - from: /description/dynamic_tables/dynamic_tables_internals.md
+    to: /user-guide/dynamic-tables/dynamic-tables-internals.md
+    type: redirect
+  - from: /description/dynamic_tables/dynamic_tables_mapreduce.md
+    to: /user-guide/dynamic-tables/mapreduce.md
+    type: redirect
+  - from: /description/dynamic_tables/dynamic_tables_overview.md
+    to: /user-guide/dynamic-tables/overview.md
+    type: redirect
+  - from: /description/dynamic_tables/dynamic_tables_profiling.md
+    to: /user-guide/dynamic-tables/dynamic-tables-profiling.md
+    type: redirect
+  - from: /description/dynamic_tables/_dynamic_tables_quotas.md
+    to: /user-guide/dynamic-tables/_dynamic_tables_quotas.md
+    type: redirect
+  - from: /description/dynamic_tables/dyn_query_language.md
+    to: /user-guide/dynamic-tables/dyn-query-language.md
+    type: redirect
+  - from: /description/dynamic_tables/examples/dyn_tables_tutorial.md
+    to: /user-guide/dynamic-tables/tutorials/dyn_tables_tutorial.md
+    type: redirect
+  - from: /description/dynamic_tables/_map_reduce_over_dyn.md
+    to: /user-guide/dynamic-tables/_map_reduce_over_dyn.md
+    type: redirect
+  - from: /description/dynamic_tables/ordered_dynamic_tables.md
+    to: /user-guide/dynamic-tables/operations.md
+    type: redirect
+  - from: /description/dynamic_tables/queues.md
+    to: /user-guide/dynamic-tables/queues.md
+    type: redirect
+  - from: /description/dynamic_tables/replicated_dynamic_tables.md
+    to: /user-guide/dynamic-tables/replicated-dynamic-tables.md
+    type: redirect
+  - from: /description/dynamic_tables/resharding.md
+    to: /user-guide/dynamic-tables/resharding.md
+    type: redirect
+  - from: /description/dynamic_tables/tablet-balancing.md
+    to: /user-guide/dynamic-tables/tablet-balancing.md
+    type: redirect
+  - from: /description/dynamic_tables/sorted_dynamic_tables.md
+    to: /user-guide/dynamic-tables/sorted-dynamic-tables.md
+    type: redirect
+  - from: /description/locking/cypress_as_locking_service.md
+    to: /user-guide/locking/cypress-as-locking-service.md
+    type: redirect
+  - from: /description/mr/acl.md
+    to: /user-guide/data-processing/operations/acl.md
+    type: redirect
+  - from: /description/mr/automerge.md
+    to: /user-guide/data-processing/operations/automerge.md
+    type: redirect
+  - from: /description/mr/erase.md
+    to: /user-guide/data-processing/operations/erase.md
+    type: redirect
+  - from: /description/mr/examples/mr_python_sdk.md
+    to: /user-guide/data-processing/operations/examples/mr-python-sdk.md
+    type: redirect
+  - from: /description/mr/examples/mr_streaming.md
+    to: /user-guide/data-processing/operations/examples/mr-streaming.md
+    type: redirect
+  - from: /description/mr/gpu.md
+    to: /user-guide/data-processing/operations/gpu.md
+    type: redirect
+  - from: /description/mr/job_plots.md
+    to: /user-guide/data-processing/operations/job-plots.md
+    type: redirect
+  - from: /description/mr/jobs.md
+    to: /user-guide/data-processing/operations/jobs.md
+    type: redirect
+  - from: /description/mr/list_jobs.md
+    to: /user-guide/data-processing/operations/list-jobs.md
+    type: redirect
+  - from: /description/mr/map.md
+    to: /user-guide/data-processing/operations/map.md
+    type: redirect
+  - from: /description/mr/mapreduce.md
+    to: /user-guide/data-processing/operations/mapreduce.md
+    type: redirect
+  - from: /description/mr/map_reduce_overview.md
+    to: /user-guide/data-processing/operations/overview.md
+    type: redirect
+  - from: /description/mr/merge.md
+    to: /user-guide/data-processing/operations/merge.md
+    type: redirect
+  - from: /description/mr/mr_recommendations.md
+    to: /user-guide/data-processing/operations/mr-recommendations.md
+    type: redirect
+  - from: /description/mr/mtn.md
+    to: /user-guide/data-processing/operations/mtn.md
+    type: redirect
+  - from: /description/mr/operations.md
+    to: /user-guide/data-processing/operations/overview.md
+    type: redirect
+  - from: /description/mr/operations_options.md
+    to: /user-guide/data-processing/operations/operations-options.md
+    type: redirect
+  - from: /description/mr/porto/layer_paths.md
+    to: /user-guide/data-processing/layers/layer-paths.md
+    type: redirect
+  - from: /description/mr/porto/layers_in_yt_operation.md
+    to: /user-guide/data-processing/layers/layers-in-yt-operation.md
+    type: redirect
+  - from: /description/mr/porto/layers_sandbox_tasks.md
+    to: /user-guide/data-processing/layers/layers-sandbox-tasks.md
+    type: redirect
+  - from: /description/mr/porto/recommendation.md
+    to: /user-guide/data-processing/layers/recommendation.md
+    type: redirect
+  - from: /description/mr/reduce.md
+    to: /user-guide/data-processing/operations/reduce.md
+    type: redirect
+  - from: /description/mr/remote_copy.md
+    to: /user-guide/data-processing/operations/remote-copy.md
+    type: redirect
+  - from: /description/mr/scheduler/fair_share.md
+    to: /user-guide/data-processing/scheduler/fair-share.md
+    type: redirect
+  - from: /description/mr/scheduler/integral_guarantees.md
+    to: /user-guide/data-processing/scheduler/integral-guarantees.md
+    type: redirect
+  - from: /description/mr/scheduler/job_cpu_monitor.md
+    to: /user-guide/data-processing/scheduler/job-cpu-monitor.md
+    type: redirect
+  - from: /description/mr/scheduler/manage_pools.md
+    to: /user-guide/data-processing/scheduler/manage-pools.md
+    type: redirect
+  - from: /description/mr/scheduler/memory_digest.md
+    to: /user-guide/data-processing/scheduler/memory-digest.md
+    type: redirect
+  - from: /description/mr/scheduler/pool_examples.md
+    to: /user-guide/data-processing/scheduler/pool-examples.md
+    type: redirect
+  - from: /description/mr/scheduler/pool_settings.md
+    to: /user-guide/data-processing/scheduler/pool-settings.md
+    type: redirect
+  - from: /description/mr/scheduler/preemption.md
+    to: /user-guide/data-processing/scheduler/preemption.md
+    type: redirect
+  - from: /description/mr/scheduler/scheduler_and_pools.md
+    to: /user-guide/data-processing/scheduler/scheduler-and-pools.md
+    type: redirect
+  - from: /description/mr/scheduler/scheduling_ui.md
+    to: /user-guide/data-processing/scheduler/scheduling-ui.md
+    type: redirect
+  - from: /description/mr/sort.md
+    to: /user-guide/data-processing/operations/sort.md
+    type: redirect
+  - from: /description/mr/table_switch.md
+    to: /user-guide/data-processing/operations/table-switch.md
+    type: redirect
+  - from: /description/mr/vanilla.md
+    to: /user-guide/data-processing/operations/vanilla.md
+    type: redirect
+  - from: /description/proxy/about_proxy.md
+    to: /user-guide/proxy/about.md
+    type: redirect
+  - from: /description/proxy/grpc.md
+    to: /user-guide/proxy/grpc.md
+    type: redirect
+  - from: /description/proxy/http_proxy.md
+    to: /user-guide/proxy/http.md
+    type: redirect
+  - from: /description/proxy/http_proxy_reference.md
+    to: /user-guide/proxy/http-reference.md
+    type: redirect
+  - from: /description/proxy/rpc_proxy.md
+    to: /user-guide/proxy/rpc.md
+    type: redirect
+  - from: /description/storage/annotations.md
+    to: /user-guide/storage/annotations.md
+    type: redirect
+  - from: /description/storage/blobtables.md
+    to: /user-guide/storage/blobtables.md
+    type: redirect
+  - from: /description/storage/chunks.md
+    to: /user-guide/storage/chunks.md
+    type: redirect
+  - from: /description/storage/chunk_merger.md
+    to: /user-guide/data-processing/operations/chunk-merger.md
+    type: redirect
+  - from: /description/storage/data_types.md
+    to: /user-guide/storage/data-types.md
+    type: redirect
+  - from: /description/storage/examples/static_tables.md
+    to: /user-guide/storage/static-tables-examples.md
+    type: redirect
+  - from: /description/storage/file_cache.md
+    to: /user-guide/storage/file-cache.md
+    type: redirect
+  - from: /description/storage/files.md
+    to: /user-guide/storage/files.md
+    type: redirect
+  - from: /description/storage/formats.md
+    to: /user-guide/storage/formats.md
+    type: redirect
+  - from: /description/storage/io_configuration.md
+    to: /user-guide/storage/io-configuration.md
+    type: redirect
+  - from: /description/storage/links.md
+    to: /user-guide/storage/links.md
+    type: redirect
+  - from: /description/storage/skiff.md
+    to: /user-guide/storage/skiff.md
+    type: redirect
+  - from: /description/storage/static_schema.md
+    to: /user-guide/storage/static-schema.md
+    type: redirect
+  - from: /description/storage/static_tables_overview.md
+    to: /user-guide/storage/static-tables.md
+    type: redirect
+  - from: /description/storage/transactions.md
+    to: /user-guide/storage/transactions.md
+    type: redirect
+  - from: /description/storage/vitality.md
+    to: /user-guide/storage/chunks.md
+    type: redirect
+  - from: /description/storage/yson_docs.md
+    to: /user-guide/storage/yson-docs.md
+    type: redirect
+  - from: /description/_transfer_manager.md
+    to: /user-guide/_transfer_manager.md
+    type: redirect
+  - from: /instructions/chyt/change_acl_of_clique.md
+    to: /instructions/chyt/change-acl-of-clique.md
+    type: redirect
+  - from: /instructions/chyt/run_chyt_query.md
+    to: /instructions/chyt/run-chyt-query.md
+    type: redirect
+  - from: /instructions/chyt/update_clique.md
+    to: /instructions/chyt/update-clique.md
+    type: redirect
+  - from: /instructions/dynamic_tables/add_remove_line.md
+    to: /instructions/dynamic-tables/add-remove-line.md
+    type: redirect
+  - from: /instructions/dynamic_tables/backup_table.md
+    to: /user-guide/dynamic-tables/tutorials/backup_table.md
+    type: redirect
+  - from: /instructions/dynamic_tables/debug.md
+    to: /user-guide/dynamic-tables/tutorials/debug.md
+    type: redirect
+  - from: /instructions/dynamic_tables/dynamic_table_queue.md
+    to: /user-guide/dynamic-tables/tutorials/dynamic_table_queue.md
+    type: redirect
+  - from: /instructions/dynamic_tables/dynamic_to_static.md
+    to: /user-guide/dynamic-tables/tutorials/dynamic_to_static.md
+    type: redirect
+  - from: /instructions/dynamic_tables/tablet_cell_bundle_access.md
+    to: /user-guide/dynamic-tables/tutorials/tablet_cell_bundle_access.md
+    type: redirect
+  - from: /instructions/dynamic_tables/tablet_cell_bundle_load.md
+    to: /user-guide/dynamic-tables/tutorials/tablet_cell_bundle_load.md
+    type: redirect
+  - from: /instructions/dynamic_tables/tutorial.md
+    to: /instructions/dynamic-tables/tutorial.md
+    type: redirect
+  - from: /instructions/instructions_overview.md
+    to: /instructions/instructions-overview.md
+    type: redirect
+  - from: /instructions/operations/find_resource_op_in_pool.md
+    to: /instructions/operations/find-resource-op-in-pool.md
+    type: redirect
+  - from: /instructions/operations/get_op_cpu_usage.md
+    to: /instructions/operations/get-op-cpu-usage.md
+    type: redirect
+  - from: /instructions/operations/how_to_compare_operations.md
+    to: /instructions/operations/how-to-compare-operations.md
+    type: redirect
+  - from: /instructions/other/new_features.md
+    to: /instructions/other/new-features.md
+    type: redirect
+  - from: /instructions/quota/get_current_quota.md
+    to: /instructions/quota/get-current-quota.md
+    type: redirect
+  - from: /instructions/quota/get_detail_usage.md
+    to: /instructions/quota/get-detail-usage.md
+    type: redirect
+  - from: /instructions/quota/get_more_node_chunks.md
+    to: /instructions/quota/get-more-node-chunks.md
+    type: redirect
+  - from: /instructions/quota/hw_order.md
+    to: /instructions/quota/hw-order.md
+    type: redirect
+  - from: /instructions/storage/check_permission.md
+    to: /instructions/storage/check-permission.md
+    type: redirect
+  - from: /instructions/storage/copy_acl.md
+    to: /instructions/storage/copy-acl.md
+    type: redirect
+  - from: /instructions/storage/copy_dirA_to_dirB.md
+    to: /instructions/storage/copy-dirA-to-dirB.md
+    type: redirect
+  - from: /instructions/storage/copy_objects_example.md
+    to: /instructions/storage/copy-objects-example.md
+    type: redirect
+  - from: /instructions/storage/create_objects_example.md
+    to: /instructions/storage/create-objects-example.md
+    type: redirect
+  - from: /instructions/storage/download_table.md
+    to: /instructions/storage/download-table.md
+    type: redirect
+  - from: /instructions/storage/get_access_log.md
+    to: /instructions/storage/get-access-log.md
+    type: redirect
+  - from: /instructions/storage/get_object_attributes.md
+    to: /instructions/storage/get-object-attributes.md
+    type: redirect
+  - from: /instructions/storage/move_objects_example.md
+    to: /instructions/storage/move-objects-example.md
+    type: redirect
+  - from: /instructions/storage/move_to_another_media.md
+    to: /instructions/storage/move-to-another-media.md
+    type: redirect
+  - from: /instructions/storage/nightly_compression.md
+    to: /instructions/storage/nightly-compression.md
+    type: redirect
+  - from: /instructions/storage/set_object_attributes.md
+    to: /instructions/storage/set-object-attributes.md
+    type: redirect
+  - from: /instructions/storage/upload_table.md
+    to: /instructions/storage/upload-table.md
+    type: redirect
+  - from: /other/event_logs.md
+    to: /other/event-logs.md
+    type: redirect
+  - from: /other/local_mode.md
+    to: /other/local-mode.md
+    type: redirect
+  - from: /other/notifications_policy.md
+    to: /other/notifications-policy.md
+    type: redirect
+  - from: /other/resource_planner.md
+    to: /other/resource-planner.md
+    type: redirect
+  - from: /other/video_posts.md
+    to: /other/video-posts.md
+    type: redirect
+  - from: /overview/about_YT.md
+    to: /overview/about.md
+    type: redirect
+  - from: /overview/main_features.md
+    to: /overview/main-features.md
+    type: redirect
+  - from: /overview/_overview.md
+    to: /user-guide/dynamic-tables/operations.md
+    type: redirect
+  - from: /press_releases/2019.08_defaut_porto_layers.md
+    to: /press-releases/2019.08_defaut_porto_layers.md
+    type: redirect
+  - from: /problems/howtoreport.md
+    to: /user-guide/problems/howtoreport.md
+    type: redirect
+  - from: /problems/jobshell_and_slowjobs.md
+    to: /user-guide/problems/jobshell-and-slowjobs.md
+    type: redirect
+  - from: /problems/jobstatistics.md
+    to: /user-guide/problems/jobstatistics.md
+    type: redirect
+  - from: /problems/jobtool.md
+    to: /user-guide/problems/jobtool.md
+    type: redirect
+  - from: /problems/mapreduce_debug.md
+    to: /user-guide/problems/mapreduce-debug.md
+    type: redirect
+  - from: /problems/selfdiag.md
+    to: /user-guide/problems/selfdiag.md
+    type: redirect
+  - from: /problems/slow_read.md
+    to: /user-guide/problems/slow-read.md
+    type: redirect
+  - from: /problems/woodpeckers.md
+    to: /user-guide/problems/woodpeckers.md
+    type: redirect

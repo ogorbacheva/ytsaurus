@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="./" />
+        <title>Поиск</title>
+        <meta robots="noindex">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="../../_bundle/search.css"/>
+        <link type="text/css" rel="stylesheet" href="../../_bundle/vendor.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"lang":"ru","enabled":true,"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = {
+                search: JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText)),
+            }
+        </script>
+        <script type="application/json" id="diplodoc-state">
+            {"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{},"lang":"ru"}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+        </script>
+        <script type="application/javascript" defer src="../../_bundle/react.js"></script>
+        <script type="application/javascript" defer src="../../_bundle/search.js"></script>
+        <script type="application/javascript" defer src="../../_bundle/vendor.js"></script>
+        
+    </body>
+</html>

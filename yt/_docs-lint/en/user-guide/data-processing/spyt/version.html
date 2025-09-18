@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Versioning rules |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/data-processing/spyt/version.md">
+        <meta name="sourcePath" content="en/user-guide/data-processing/spyt/version.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;SPYT includes two components:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;A cluster with Spark pre-installed.&lt;/li&gt;\n&lt;li&gt;A client where the &lt;code&gt;ytsaurus-spyt&lt;/code&gt; package is installed via &lt;code&gt;pip&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;SPYT is built from the following artifacts:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;A &lt;code&gt;.tar&lt;/code&gt; archive with patched Spark that is deployed to YTsaurus and read at cluster startup;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;ytsaurus-pyspark&lt;/code&gt; pip package with patched Spark files as in the &lt;code&gt;.tar&lt;/code&gt; above;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;ytsaurus-spyt&lt;/code&gt; pip package which in turn depends on &lt;code&gt;ytsaurus-pyspark&lt;/code&gt; package. It contains the assembly of all SPYT modules and their dependencies that are not included in Spark distributive. The package is deployed to pypi repository and client hosts. It also contains CLI utilities for launching an inner Spark standalone cluster and for submitting applications to it.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;When a new version of &lt;code&gt;ytsaurus-spyt&lt;/code&gt; is installed &lt;code&gt;ytsaurus-pyspark&lt;/code&gt; updates automatically.&lt;/p&gt;\n&lt;p&gt;In most cases, a &lt;code&gt;ytsaurus-spyt&lt;/code&gt; update is sufficient. However, sometimes, to make new functionality work, you will have to update your cluster. You can find out the update procedure and scope based on the specific version.&lt;/p&gt;\n&lt;h2 id=\"how\"&gt;&lt;a href=\"en/user-guide/data-processing/spyt/version.html#how\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Update procedure&lt;/span&gt;&lt;/a&gt;Update procedure&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;Cluster and client version number consists of three parts. Update of the last (minor) part means that backward compatibility is preserved and the change affects only one component.&lt;/li&gt;\n&lt;li&gt;When a middle (major) part of the version is updated backward compatibility with clusters of previous versions may not be preserved so it is recommended to use a client with the same major version as cluster.&lt;/li&gt;\n&lt;li&gt;Cluster version can be chosen on launching via &lt;code&gt;spark-launch-yt&lt;/code&gt; in &lt;code&gt;--spyt-version&lt;/code&gt; parameter. When the version is not specified the last release version will be used.&lt;/li&gt;\n&lt;li&gt;Client version in &lt;code&gt;client mode&lt;/code&gt; (Jupyter notebooks) is the same as &lt;code&gt;ytsaurus-spyt&lt;/code&gt; package version.&lt;/li&gt;\n&lt;li&gt;Client version in &lt;code&gt;cluster mode&lt;/code&gt; can be specified using &lt;code&gt;--spyt-version&lt;/code&gt; parameter for &lt;code&gt;spark-submit-yt&lt;/code&gt; command. When the version is not specified the last compatible with the cluster version will be used.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/data-processing/spyt/version.md","sourcePath":"en/user-guide/data-processing/spyt/version.md"},"headings":[{"title":"Update procedure","href":"en/user-guide/data-processing/spyt/version.html#how","level":2}],"title":"Versioning rules"},"router":{"pathname":"en/user-guide/data-processing/spyt/version","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

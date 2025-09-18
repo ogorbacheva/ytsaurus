@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Differences between ClickHouse and YQL dialects of SQL |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/yql/differences_from/clickhouse.md">
+        <meta name="sourcePath" content="en/yql/differences_from/clickhouse.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"terminology\"&gt;&lt;a href=\"en/yql/differences_from/clickhouse.html#terminology\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Terminology&lt;/span&gt;&lt;/a&gt;Terminology&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;A ClickHouse &lt;code&gt;ARRAY&lt;/code&gt; is called a &lt;code&gt;List&lt;/code&gt; in YQL, with the same naming difference applying to most functions used to handle them.&lt;/li&gt;\n&lt;li&gt;The ClickHouse &lt;code&gt;ARRAY JOIN&lt;/code&gt; operation is called &lt;a href=\"en/yql/syntax/flatten.html\"&gt;FLATTEN BY&lt;/a&gt; in YQL.&lt;/li&gt;\n&lt;li&gt;From the YQL perspective, the data type of both physical and nested (Nested in ClickHouse) logical tables is &lt;code&gt;List&amp;lt;Struct&amp;lt;...&amp;gt;&amp;gt;&lt;/code&gt;. In YQL, &lt;a href=\"en/yql/types/containers.html\"&gt;container data types&lt;/a&gt; can be combined in any way.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h2 id=\"syntax\"&gt;&lt;a href=\"en/yql/differences_from/clickhouse.html#syntax\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Syntax&lt;/span&gt;&lt;/a&gt;Syntax&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;In ClickHouse, you can assign an alias to almost any part of an expression using &lt;code&gt;AS&lt;/code&gt; and then reference that alias in another part of the query. In contrast, YQL is very strict about the scope of columns in different parts of a &lt;a href=\"en/yql/syntax/select/index.html\"&gt;SELECT&lt;/a&gt; statement.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/yql/differences_from/clickhouse.md","sourcePath":"en/yql/differences_from/clickhouse.md"},"headings":[{"title":"Terminology","href":"en/yql/differences_from/clickhouse.html#terminology","level":2},{"title":"Syntax","href":"en/yql/differences_from/clickhouse.html#syntax","level":2}],"title":"Differences between ClickHouse and YQL dialects of SQL"},"router":{"pathname":"en/yql/differences_from/clickhouse","depth":4,"base":"../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

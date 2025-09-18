@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Temporary data |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/yql/faq/temp.md">
+        <meta name="sourcePath" content="en/yql/faq/temp.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"directory-for-temporary-data\"&gt;&lt;a href=\"en/yql/faq/temp.html#directory-for-temporary-data\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Directory for temporary data&lt;/span&gt;&lt;/a&gt;Directory for temporary data&lt;/h2&gt;\n&lt;p&gt;Using the &lt;code&gt;yt.TmpFolder&lt;/code&gt; pragma, the user can set a directory for hosting temporary tables and files. This might be needed in the following cases:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;There is no access to the &lt;code&gt;//tmp&lt;/code&gt; directory of the YTsaurus cluster.&lt;/li&gt;\n&lt;li&gt;The query is processing tables with sensitive data. By default, temporary tables and files are saved to //tmp where any cluster user can access them. To avoid disclosure of sensitive information, protect the temporary file directory used in your queries by an ACL.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h2 id=\"control-of-tmpfolder-directory-growth\"&gt;&lt;a href=\"en/yql/faq/temp.html#control-of-tmpfolder-directory-growth\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Control of TmpFolder directory growth&lt;/span&gt;&lt;/a&gt;Control of TmpFolder directory growth&lt;/h2&gt;\n&lt;p&gt;When you use the &lt;code&gt;yt.TmpFolder&lt;/code&gt; pragma in your query, the specified directory begins to accumulate data gradually. The following subdirectories are created in it:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;query_cache: &lt;a href=\"en/yql/syntax/pragma#querycache\"&gt;Query cache&lt;/a&gt;.&lt;/li&gt;\n&lt;li&gt;tmp: Temporary tables that exist only while the query is running.&lt;/li&gt;\n&lt;li&gt;new_cache: YTsaurus API file cache:\n&lt;ul&gt;\n&lt;li&gt;YQL executables.&lt;/li&gt;\n&lt;li&gt;Custom and system UDFs.&lt;/li&gt;\n&lt;li&gt;Files attached to the query.&lt;/li&gt;\n&lt;li&gt;Tables used in MapJoin (if transmitted not in a YTsaurus-native manner).&lt;/li&gt;\n&lt;/ul&gt;\n&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;The query_cache subdirectory and its contents' time-to-live are managed by the &lt;a href=\"en/yql/syntax/pragma#querycache\"&gt;yt.QueryCacheMode&lt;/a&gt; and &lt;a href=\"en/yql/syntax/pragma#ytquerycachettl\"&gt;yt.QueryCacheTtl&lt;/a&gt; pragmas. For &lt;code&gt;yt.QueryCacheMode=\"disable\"&lt;/code&gt;, the query cache is fully disabled and this subdirectory isn't created or used. The &lt;code&gt;yt.QueryCacheTtl&lt;/code&gt; pragma enables you to limit the tables' TTL in the query cache.&lt;/p&gt;\n&lt;p&gt;Once the query is completed, the query's temporary tables are cleared automatically from the tmp subdirectory. Exceptions are the queries with the &lt;code&gt;yt.ReleaseTempData=\"never\"&lt;/code&gt; and tables delivered in query results as \"Full result\". You can manage time-to-live for these tables using the &lt;a href=\"en/yql/syntax/pragma#yttemptablesttl\"&gt;yt.TempTablesTtl&lt;/a&gt; pragma. You can override the path to temporary tables using the &lt;a href=\"en/yql/syntax/pragma#yttablestmpfolder\"&gt;yt.TablesTmpFolder&lt;/a&gt; pragma.&lt;/p&gt;\n&lt;p&gt;For objects inside new_cache, time-to-live is managed by the &lt;a href=\"en/yql/syntax/pragma#ytfilecachettl\"&gt;yt.FileCacheTtl&lt;/a&gt; pragma. To exclude executable YQL and UDF files from this directory, use the &lt;a href=\"en/yql/syntax/pragma#ytbinarytmpfolder\"&gt;yt.BinaryTmpFolder&lt;/a&gt; pragma to set up a separate directory and TTL for them (see &lt;a href=\"en/yql/syntax/pragma#ytbinaryexpirationinterval\"&gt;yt.BinaryExpirationInterval&lt;/a&gt;). You can also move your tables used in MapJoin to a separate directory by the &lt;a href=\"en/yql/syntax/pragma#yt.tablecontenttmpfolder\"&gt;yt.TableContentTmpFolder&lt;/a&gt; pragma. Keep in mind, however, that such tables can include sensitive data.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/yql/faq/temp.md","sourcePath":"en/yql/faq/temp.md"},"headings":[{"title":"Directory for temporary data","href":"en/yql/faq/temp.html#directory-for-temporary-data","level":2},{"title":"Control of TmpFolder directory growth","href":"en/yql/faq/temp.html#control-of-tmpfolder-directory-growth","level":2}],"title":"Temporary data"},"router":{"pathname":"en/yql/faq/temp","depth":4,"base":"../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

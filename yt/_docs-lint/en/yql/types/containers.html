@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Containers |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/yql/types/containers.md">
+        <meta name="sourcePath" content="en/yql/types/containers.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;YQL supports container types to define complex data structures organized in various ways.&lt;br /&gt;\nValues of container types can be passed to YQL queries as input parameters or returned from YQL queries as columns of the set of results.&lt;/p&gt;\n\n&lt;table&gt;\n&lt;thead&gt;\n&lt;tr&gt;\n&lt;th&gt;Type&lt;/th&gt;\n&lt;th&gt;Declaration,&lt;br /&gt;example&lt;/th&gt;\n&lt;th&gt;Description&lt;/th&gt;\n&lt;/tr&gt;\n&lt;/thead&gt;\n&lt;tbody&gt;\n&lt;tr&gt;\n&lt;td&gt;List&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;List&amp;lt;Type&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;List&amp;lt;Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;A variable-length sequence consisting of same-type elements.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Dictionary&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Dict&amp;lt;KeyType, ValueType&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Dict&amp;lt;String,Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Set of key-value pairs with a fixed type of keys and values.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Set&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Set&amp;lt;KeyType&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Set&amp;lt;String&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;A set of elements with a fixed type is a special case of a dictionary with the &lt;code&gt;Void&lt;/code&gt; value type.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Tuple&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Tuple&amp;lt;Type1, ..., TypeN&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Tuple&amp;lt;Int32,Double&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Set of unnamed fixed-length elements with types specified for all elements.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Structure&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Struct&amp;lt;Name1:Type1, ..., NameN:TypeN&amp;gt;&lt;/code&gt;,&lt;br /&gt; &lt;code&gt;Struct&amp;lt;Name:String,Age:Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;A set of named fields with specified value types, fixed at query start (must be data-independent).&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Stream&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Stream&amp;lt;Type&amp;gt;&lt;/code&gt;,&lt;br /&gt; &lt;code&gt;Stream&amp;lt;Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Single-pass iterator by same-type values, not serializable&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Variant on tuple&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Variant&amp;lt;Type1, Type2&amp;gt;&lt;/code&gt;,&lt;br /&gt; &lt;code&gt;Variant&amp;lt;Int32,String&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;A tuple known to have exactly one element filled&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Variant on structure&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Variant&amp;lt;Name1:Type1, Name2:Type2&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Variant&amp;lt;value:Int32,error:String&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;A structure known to have exactly one element filled&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Enumeration&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Enum&amp;lt;Name1, Name2&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Enum&amp;lt;value,error&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;A container with exactly one enumeration element selected and defined only by its name.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;/tbody&gt;\n&lt;/table&gt;\n&lt;p&gt;If necessary, you can nest containers in any combination, for example, &lt;code&gt;List&amp;lt;Tuple&amp;lt;Int32,Int32&amp;gt;&amp;gt;&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;In certain contexts, &lt;a href=\"en/yql/types/optional.html\"&gt;optional values&lt;/a&gt; can also be considered a container type (&lt;code&gt;Optional&amp;lt;Type&amp;gt;&lt;/code&gt;) that behaves like a list of length 0 or 1.&lt;/p&gt;\n&lt;p&gt;To create literals of list containers, dictionary containers, set containers, tuple containers, or structure containers, you can use the &lt;a href=\"en/yql/builtins/basic.html#containerliteral\"&gt;operator notation&lt;/a&gt;.&lt;br /&gt;\nTo create a variant literal over a tuple or structure, use the function &lt;a href=\"en/yql/builtins/basic.html#variant\"&gt;Variant&lt;/a&gt;.&lt;br /&gt;\nTo create an enumeration literal, use the function &lt;a href=\"en/yql/builtins/basic.html#enum\"&gt;Enum&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;To access the container elements, use a &lt;a href=\"en/yql/syntax/expressions.html#items-access\"&gt;dot or square brackets&lt;/a&gt;, depending on the container type.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/yql/types/containers.md","sourcePath":"en/yql/types/containers.md"},"headings":[],"title":"Containers"},"router":{"pathname":"en/yql/types/containers","depth":4,"base":"../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Операции с динамическими таблицами | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/dynamic-tables/operations.md">
+        <meta name="sourcePath" content="ru/user-guide/dynamic-tables/operations.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"mount_table\"&gt;&lt;a href=\"ru/user-guide/dynamic-tables/operations.html#mount_table\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Монтирование&lt;/span&gt;&lt;/a&gt;Монтирование&lt;/h2&gt;\n&lt;p&gt;При чтении или записи в таблицу клиент использует кеш метаданных, чтобы понять, какие таблеты при этом оказываются затронуты. Чтобы иметь возможность исполнять запросы, необходимо, чтобы соответствующие таблеты были смонтированы.&lt;/p&gt;\n&lt;p&gt;После создания таблет не смонтирован — находится в состоянии &lt;code&gt;unmounted&lt;/code&gt;. Чтобы смонтировать таблет, следует использовать команду &lt;code&gt;mount-table&lt;/code&gt;. Состояние задействованных таблетов сменится с &lt;code&gt;unmounted&lt;/code&gt; на &lt;code&gt;mounting&lt;/code&gt;, а затем на &lt;code&gt;mounted&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;При монтировании таблета система YTsaurus выбирает таблет-селл, который будет обслуживать данный таблет. Такой селл можно указать самостоятельно в аргументах команды &lt;code&gt;mount-table&lt;/code&gt; или доверить выбор системе. В текущей реализации система выбирает случайный селл, находящийся в рабочем состоянии, но в будущих версиях возможны улучшения алгоритма и более точная балансировка с учётом нагрузки.&lt;/p&gt;\n&lt;p&gt;Отмонтировать таблет можно командой &lt;code&gt;unmount-table&lt;/code&gt;. Таблет перейдет в состояние &lt;code&gt;unmounting&lt;/code&gt;, а затем в &lt;code&gt;unmounted&lt;/code&gt;. Размонтированный таблет не может обслуживать запросы ни на запись, ни на чтение. Чтобы решардировать таблеты, нужно предварительно отмонтировать их.&lt;/p&gt;\n&lt;p&gt;Чтобы отмонтировать таблет:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;дождитесь окончания всех пишущих транзакций и не разрешайте новые;&lt;/li&gt;\n&lt;li&gt;дождитесь записи всех данных из памяти dynamic_store в чанки chunk_store.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Отмонтирование может занять определенное время.&lt;/p&gt;\n&lt;p&gt;Можно выполнить принудительное отмонтирование (опция &lt;code&gt;force&lt;/code&gt;), которое работает мгновенно, но может привести к потере данных и зависанию некоторых двухфазных коммитов.&lt;/p&gt;\n&lt;h2 id=\"freeze\"&gt;&lt;a href=\"ru/user-guide/dynamic-tables/operations.html#freeze\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Заморозка&lt;/span&gt;&lt;/a&gt;Заморозка&lt;/h2&gt;\n&lt;p&gt;Помимо команд &lt;code&gt;mount_table&lt;/code&gt; и &lt;code&gt;unmount_table&lt;/code&gt; в системе YTsaurus существуют близкие аналоги: команды &lt;code&gt;freeze_table&lt;/code&gt; и &lt;code&gt;unfreeze_table&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;Команда &lt;code&gt;freeze_table&lt;/code&gt; переводит таблеты таблицы — все или часть — в специальное «замороженное» состояние &lt;code&gt;frozen&lt;/code&gt;. Из таких таблетов можно читать данные, но в них нельзя записывать.&lt;/p&gt;\n&lt;p&gt;Команда &lt;code&gt;unfreeze_table&lt;/code&gt; возвращает «замороженные» таблеты обратно в обычное смонтированное состояние &lt;code&gt;mounted&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;Переход из &lt;code&gt;mounted&lt;/code&gt; во &lt;code&gt;frozen&lt;/code&gt; помимо блокирования записи также вызывает запись всех накопленных в памяти данных в виде чанков на диск. Данный процесс не мгновенный и может занять минуты. В процессе записи данных на диск состояние таблета будет равно &lt;code&gt;freezing&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;Заморозка динамической таблицы полезна для создания её копии, при этом таблица остаётся доступна для чтения.&lt;/p&gt;\n&lt;h2 id=\"copy\"&gt;&lt;a href=\"ru/user-guide/dynamic-tables/operations.html#copy\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Копирование динамических таблиц&lt;/span&gt;&lt;/a&gt;Копирование динамических таблиц&lt;/h2&gt;\n&lt;p&gt;В том случае, если все таблеты динамической таблицы отмонтированы или заморожены, таблицу можно скопировать как обычную статическую с помощью команды &lt;code&gt;copy&lt;/code&gt;. При этом копия таблицы исходно будет использовать тот же набор чанков, что и исходная. По мере того как состояние этих таблиц начнет меняться, количество общих чанков начнет сокращаться при компактификации. В пределе физически потребляемое данными таблицами место на диске станет равно сумме их объемов.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/dynamic-tables/operations.md","sourcePath":"ru/user-guide/dynamic-tables/operations.md"},"headings":[{"title":"Монтирование","href":"ru/user-guide/dynamic-tables/operations.html#mount_table","level":2},{"title":"Заморозка","href":"ru/user-guide/dynamic-tables/operations.html#freeze","level":2},{"title":"Копирование динамических таблиц","href":"ru/user-guide/dynamic-tables/operations.html#copy","level":2}],"title":"Операции с динамическими таблицами"},"router":{"pathname":"ru/user-guide/dynamic-tables/operations","depth":4,"base":"../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

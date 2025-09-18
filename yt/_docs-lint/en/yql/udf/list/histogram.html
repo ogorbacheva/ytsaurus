@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Histogram |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/yql/udf/list/histogram.md">
+        <meta name="sourcePath" content="en/yql/udf/list/histogram.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Set of auxiliary functions for the &lt;a href=\"en/yql/builtins/aggregation.html\"&gt;&lt;code&gt;HISTOGRAM&lt;/code&gt; aggregate function&lt;/a&gt;. In the signature description below, HistogramStruct refers to the result of the aggregate function &lt;code&gt;HISTOGRAM&lt;/code&gt;, &lt;code&gt;LinearHistogram&lt;/code&gt; or &lt;code&gt;LogarithmicHistogram&lt;/code&gt; being a structure of a certain type.&lt;/p&gt;\n&lt;h2 id=\"function-list\"&gt;&lt;a href=\"en/yql/udf/list/histogram.html#function-list\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;List of functions&lt;/span&gt;&lt;/a&gt;List of functions&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;Histogram::Print(HistogramStruct{Flags:AutoMap}, Byte?) -&amp;gt; String&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::Normalize(HistogramStruct{Flags:AutoMap}, [Double?]) -&amp;gt; HistogramStruct&lt;/code&gt;. In the second argument, the desired histogram area is 100 by default.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::ToCumulativeDistributionFunction(HistogramStruct{Flags:AutoMap}) -&amp;gt; HistogramStruct&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::GetSumAboveBound(HistogramStruct{Flags:AutoMap}, Double) -&amp;gt; Double&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::GetSumBelowBound(HistogramStruct{Flags:AutoMap}, Double) -&amp;gt; Double&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::GetSumInRange(HistogramStruct{Flags:AutoMap}, Double, Double) -&amp;gt; Double&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::CalcUpperBound(HistogramStruct{Flags:AutoMap}, Double) -&amp;gt; Double&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::CalcLowerBound(HistogramStruct{Flags:AutoMap}, Double) -&amp;gt; Double&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::CalcUpperBoundSafe(HistogramStruct{Flags:AutoMap}, Double) -&amp;gt; Double&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;Histogram::CalcLowerBoundSafe(HistogramStruct{Flags:AutoMap}, Double) -&amp;gt; Double&lt;/code&gt;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;&lt;code&gt;Histogram::Print&lt;/code&gt; has an optional numeric argument that sets the maximum length of the histogram columns (the length is in characters, since the histogram is rendered in ASCII art). The default value is 25. First and foremost, this function serves to view histograms on the console. Web interface performs their interactive visualization automatically.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/yql/udf/list/histogram.md","sourcePath":"en/yql/udf/list/histogram.md"},"headings":[{"title":"List of functions","href":"en/yql/udf/list/histogram.html#function-list","level":2}],"title":"Histogram"},"router":{"pathname":"en/yql/udf/list/histogram","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

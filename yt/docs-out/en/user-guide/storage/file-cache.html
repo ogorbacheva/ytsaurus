@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>File cache |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/storage/file-cache.md">
+        <meta name="sourcePath" content="en/user-guide/storage/file-cache.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;This section provides information on the file cache.&lt;/p&gt;\n&lt;h2 id=\"common\"&gt;&lt;a href=\"en/user-guide/storage/file-cache.html#common\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;General information&lt;/span&gt;&lt;/a&gt;General information&lt;/h2&gt;\n&lt;p&gt;The file cache enables you to upload a file to &lt;a href=\"user-guide/storage/cypress.html\"&gt;Cypress&lt;/a&gt; once and then obtain a path to the file multiple times via a specified &lt;a href=\"https://en.wikipedia.org/wiki/MD5\" target=\"_blank\" rel=\"noreferrer noopener\"&gt;MD5 hash&lt;/a&gt;.&lt;br /&gt;\nThe file cache is required to run operations. When users run tasks, this uploads an executable and all its dependencies.&lt;br /&gt;\nUsing Python, for instance, requires loading a large number of modules and dynamic link libraries. To avoid loading identical files multiple times, you only need to read them into the cache and request the path to these files in Cypress using an MD5 hash for any subsequent runs.&lt;/p&gt;\n&lt;h2 id=\"compute_md5\"&gt;&lt;a href=\"en/user-guide/storage/file-cache.html#compute_md5\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Computing an MD5 hash for uploaded files&lt;/span&gt;&lt;/a&gt;Computing an MD5 hash for uploaded files&lt;/h2&gt;\n&lt;p&gt;To request an MD5 hash computation for an uploaded file, send &lt;code&gt;compute_md5=True&lt;/code&gt; to the &lt;code&gt;write_file&lt;/code&gt; command.&lt;/p&gt;\n&lt;p&gt;There are some constraints:&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;When using &lt;code&gt;append&lt;/code&gt;, you cannot request an MD5 computation unless there was a previous write to the file with an MD5 computation.&lt;/li&gt;\n&lt;li&gt;A computed MD5 hash is reset if there is a call to the &lt;code&gt;concatenate&lt;/code&gt; command and its output is written to the relevant file.&lt;/li&gt;\n&lt;/ol&gt;\n&lt;h2 id=\"api-commands\"&gt;&lt;a href=\"en/user-guide/storage/file-cache.html#api-commands\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;API commands&lt;/span&gt;&lt;/a&gt;API commands&lt;/h2&gt;\n&lt;p&gt;For working with the file cache, there are the &lt;code&gt;put_file_to_cache&lt;/code&gt; and the &lt;code&gt;get_file_from_cache&lt;/code&gt; commands.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/storage/file-cache.md","sourcePath":"en/user-guide/storage/file-cache.md"},"headings":[{"title":"General information","href":"en/user-guide/storage/file-cache.html#common","level":2},{"title":"Computing an MD5 hash for uploaded files","href":"en/user-guide/storage/file-cache.html#compute_md5","level":2},{"title":"API commands","href":"en/user-guide/storage/file-cache.html#api-commands","level":2}],"title":"File cache"},"router":{"pathname":"en/user-guide/storage/file-cache","depth":4,"base":"../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

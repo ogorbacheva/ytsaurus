@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Правила версионирования | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/spyt/version.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/spyt/version.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;SPYT состоит из двух частей:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;кластер, в который заранее установлен Spark;&lt;/li&gt;\n&lt;li&gt;клиент, в который ставится пакет &lt;code&gt;ytsaurus-spyt&lt;/code&gt; через &lt;code&gt;pip&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;SPYT собирается в несколько артефактов:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;архив &lt;code&gt;.tar&lt;/code&gt; с модифицированной сборкой Spark, который выкладывается в YTsaurus и читается при запуске кластера;&lt;/li&gt;\n&lt;li&gt;pip-пакет &lt;code&gt;ytsaurus-pyspark&lt;/code&gt;. Внутрь пакета кладутся все файлы модифицированного Spark, как в &lt;code&gt;.tar&lt;/code&gt; из предыдущего пункта;&lt;/li&gt;\n&lt;li&gt;pip-пакет &lt;code&gt;ytsaurus-spyt&lt;/code&gt;, зависящий в свою очередь от пакета &lt;code&gt;ytsaurus-pyspark&lt;/code&gt;. Содержит сборку всех модулей SPYT и их зависимостей, не входящих в дистрибутив Spark. Выкладывается в репозиторий и устанавливается на клиентские хосты. Также в состав этого пакета входят необходимые CLI утилиты для запуска внутреннего standalone кластера и запуска на нём Spark приложений.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;При установке новой версии &lt;code&gt;ytsaurus-spyt&lt;/code&gt; автоматически обновляется &lt;code&gt;ytsaurus-pyspark&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;В большинстве случаев достаточно обновить &lt;code&gt;ytsaurus-spyt&lt;/code&gt;. Но иногда, чтобы заработала новая функциональность, придется обновить кластер. Порядок и объём обновления можно узнать по версиям.&lt;/p&gt;\n&lt;h2 id=\"how\"&gt;&lt;a href=\"ru/user-guide/data-processing/spyt/version.html#how\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Порядок обновления&lt;/span&gt;&lt;/a&gt;Порядок обновления&lt;/h2&gt;\n&lt;ul&gt;\n&lt;li&gt;Номер версии кластера и клиента состоит из трех частей. Обновление последней части (минорной) версии означает, что никакая совместимость не нарушена, изменение было локальным в одной компоненте.&lt;/li&gt;\n&lt;li&gt;В случае обновления средней части (мажорной) версии может быть нарушена обратная совместимость с кластерами предыдущих версий, поэтому рекомендуется использовать такой клиент, мажорная версия которого совпадает с мажорной версией используемого кластера.&lt;/li&gt;\n&lt;li&gt;Версию кластера можно выбрать в момент запуска в &lt;code&gt;spark-launch-yt&lt;/code&gt;, указав её в параметре &lt;code&gt;--spyt-version&lt;/code&gt;. Если версия не указана, запустится последняя релизная версия.&lt;/li&gt;\n&lt;li&gt;Версия клиента в &lt;code&gt;client mode&lt;/code&gt; (в Jupyter) — это установленная через &lt;code&gt;pip&lt;/code&gt; версия пакета &lt;code&gt;ytsaurus-spyt&lt;/code&gt;.&lt;/li&gt;\n&lt;li&gt;Версию клиента в &lt;code&gt;cluster mode&lt;/code&gt; можно указать при запуске команды &lt;code&gt;spark-submit-yt&lt;/code&gt; в параметре &lt;code&gt;--spyt-version&lt;/code&gt;. Если версия не указана, запустится последняя релизная версия, совместимая с кластером.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/spyt/version.md","sourcePath":"ru/user-guide/data-processing/spyt/version.md"},"headings":[{"title":"Порядок обновления","href":"ru/user-guide/data-processing/spyt/version.html#how","level":2}],"title":"Правила версионирования"},"router":{"pathname":"ru/user-guide/data-processing/spyt/version","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Временные данные | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/yql/faq/temp.md">
+        <meta name="sourcePath" content="ru/yql/faq/temp.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"direktoriya-dlya-vremennyh-dannyh\"&gt;&lt;a href=\"ru/yql/faq/temp.html#direktoriya-dlya-vremennyh-dannyh\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Директория для временных данных&lt;/span&gt;&lt;/a&gt;Директория для временных данных&lt;/h2&gt;\n&lt;p&gt;Через прагму &lt;code&gt;yt.TmpFolder&lt;/code&gt; пользователь может задавать директорию для размещения временных таблиц и файлов. Такая необходимость возникает в следующих случаях:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Нет доступа на запись в директорию &lt;code&gt;//tmp&lt;/code&gt; YTsaurus-кластера.&lt;/li&gt;\n&lt;li&gt;Запрос обрабатывает таблицы с чувствительными данными. По умолчанию временные таблицы и файлы сохраняются в &lt;code&gt;//tmp&lt;/code&gt;, куда есть доступ на чтение у всех пользователей кластера. Чтобы избежать раскрытия чувствительной информации, необходимо явно задавать в запросе директорию для временных данных, закрытую ACL.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h2 id=\"kontrol-rosta-tmpfolder-direktorii\"&gt;&lt;a href=\"ru/yql/faq/temp.html#kontrol-rosta-tmpfolder-direktorii\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Контроль роста TmpFolder директории&lt;/span&gt;&lt;/a&gt;Контроль роста TmpFolder директории&lt;/h2&gt;\n&lt;p&gt;При использовании в запросе прагмы &lt;code&gt;yt.TmpFolder&lt;/code&gt; в указанной директории постепенно начинают накапливаться данные. В ней создаются следующие поддиректории:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;query_cache — &lt;a href=\"ru/yql/syntax/pragma#querycache\"&gt;кеш запросов&lt;/a&gt;;&lt;/li&gt;\n&lt;li&gt;tmp — временные таблицы, которые существуют только на время работы запроса;&lt;/li&gt;\n&lt;li&gt;new_cache — файловый кеш YTsaurus API:\n&lt;ul&gt;\n&lt;li&gt;исполняемые файлы YQL;&lt;/li&gt;\n&lt;li&gt;пользовательские и системные UDF;&lt;/li&gt;\n&lt;li&gt;приложенные к запросу файлы;&lt;/li&gt;\n&lt;li&gt;таблицы, используемые в MapJoin, если передаются не родным для YTsaurus способом.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;Поддиректория query_cache и время жизни её содержимого управляется прагмами &lt;a href=\"ru/yql/syntax/pragma#querycache\"&gt;yt.QueryCacheMode&lt;/a&gt; и &lt;a href=\"ru/yql/syntax/pragma#ytquerycachettl\"&gt;yt.QueryCacheTtl&lt;/a&gt;. Для &lt;code&gt;yt.QueryCacheMode=\"disable\"&lt;/code&gt; кеш запросов полностью отключается и данная поддиректория не создаётся/не используется. Прагма &lt;code&gt;yt.QueryCacheTtl&lt;/code&gt; позволяет ограничить время жизни таблиц в кеше запросов.&lt;/p&gt;\n&lt;p&gt;Временные таблицы запроса из поддиректории tmp очищаются автоматически после завершения запроса. Исключение составляют запросы, в которых задана прагма &lt;code&gt;yt.ReleaseTempData=\"never\"&lt;/code&gt;, и таблицы, которые отдаются в результатах запросов как Full result. Временем жизни таких таблиц можно управлять прагмой &lt;a href=\"ru/yql/syntax/pragma#yttemptablesttl\"&gt;yt.TempTablesTtl&lt;/a&gt;. Расположение временных таблиц можно отдельно переопределить через прагму &lt;a href=\"ru/yql/syntax/pragma#yttablestmpfolder\"&gt;yt.TablesTmpFolder&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;Время жизни объектов внутри new_cache управляется прагмой &lt;a href=\"ru/yql/syntax/pragma#ytfilecachettl\"&gt;yt.FileCacheTtl&lt;/a&gt;. Из этой директории можно исключить исполняемые файлы YQL и UDF-ки, задав прагму &lt;a href=\"ru/yql/syntax/pragma#ytbinarytmpfolder\"&gt;yt.BinaryTmpFolder&lt;/a&gt; с указанием отдельной директории и своим TTL (см. &lt;a href=\"ru/yql/syntax/pragma#ytbinaryexpirationinterval\"&gt;yt.BinaryExpirationInterval&lt;/a&gt;). Также можно вынести таблицы, используемые в MapJoin, в отдельную директорию через прагму &lt;a href=\"ru/yql/syntax/pragma#yt.tablecontenttmpfolder\"&gt;yt.TableContentTmpFolder&lt;/a&gt;, но при этом стоит помнить, что в данных таблицах могут присутствовать чувствительные данные.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/yql/faq/temp.md","sourcePath":"ru/yql/faq/temp.md"},"headings":[{"title":"Директория для временных данных","href":"ru/yql/faq/temp.html#direktoriya-dlya-vremennyh-dannyh","level":2},{"title":"Контроль роста TmpFolder директории","href":"ru/yql/faq/temp.html#kontrol-rosta-tmpfolder-direktorii","level":2}],"title":"Временные данные"},"router":{"pathname":"ru/yql/faq/temp","depth":4,"base":"../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

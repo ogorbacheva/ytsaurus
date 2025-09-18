@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../" />
+        <title>Контейнеры | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/yql/types/containers.md">
+        <meta name="sourcePath" content="ru/yql/types/containers.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;YQL поддерживает контейнерные типы для определения сложных структур данных различной организации.&lt;br /&gt;\nЗначения контейнерных типов могут быть переданы в запросы YQL в качестве входных параметров, либо возвращены из запросов YQL в качестве выходных колонок набора результатов.&lt;/p&gt;\n&lt;table&gt;\n&lt;thead&gt;\n&lt;tr&gt;\n&lt;th&gt;Тип&lt;/th&gt;\n&lt;th&gt;Объявление,&lt;br /&gt;пример&lt;/th&gt;\n&lt;th&gt;Описание&lt;/th&gt;\n&lt;/tr&gt;\n&lt;/thead&gt;\n&lt;tbody&gt;\n&lt;tr&gt;\n&lt;td&gt;Список&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;List&amp;lt;Type&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;List&amp;lt;Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Последовательность переменной длины, состоящая из элементов одного типа.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Словарь&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Dict&amp;lt;KeyType, ValueType&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Dict&amp;lt;String,Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Набор пар ключ—значение с фиксированным типом ключей и значений.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Множество&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Set&amp;lt;KeyType&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Set&amp;lt;String&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Набор элементов с фиксированным типом, является частным случаем словаря с типом значения &lt;code&gt;Void&lt;/code&gt;.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Кортеж&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Tuple&amp;lt;Type1, ..., TypeN&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Tuple&amp;lt;Int32,Double&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Набор безымянных элементов фиксированной длины с указанными типами всех элементов.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Структура&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Struct&amp;lt;Name1:Type1, ..., NameN:TypeN&amp;gt;&lt;/code&gt;,&lt;br /&gt; &lt;code&gt;Struct&amp;lt;Name:String,Age:Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Набор именованных полей с указанными типами значений, фиксированный на момент начала запроса (то есть обязательно не зависящий от данных).&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Поток&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Stream&amp;lt;Type&amp;gt;&lt;/code&gt;,&lt;br /&gt; &lt;code&gt;Stream&amp;lt;Int32&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Однопроходной итератор по значениям одного типа. Не является сериализуемым.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Вариант над кортежем&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Variant&amp;lt;Type1, Type2&amp;gt;&lt;/code&gt;,&lt;br /&gt; &lt;code&gt;Variant&amp;lt;Int32,String&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Кортеж, про который известно, что заполнен ровно один элемент.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Вариант над структурой&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Variant&amp;lt;Name1:Type1, Name2:Type2&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Variant&amp;lt;value:Int32,error:String&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Структура, про которую известно, что заполнен ровно один элемент.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;Перечисление&lt;/td&gt;\n&lt;td&gt;&lt;code&gt;Enum&amp;lt;Name1, Name2&amp;gt;&lt;/code&gt;,&lt;br /&gt;&lt;code&gt;Enum&amp;lt;value,error&amp;gt;&lt;/code&gt;&lt;/td&gt;\n&lt;td&gt;Контейнер, в котором выбран ровно один элемент перечисления, который определяется только своим именем.&lt;/td&gt;\n&lt;/tr&gt;\n&lt;/tbody&gt;\n&lt;/table&gt;\n&lt;p&gt;При необходимости контейнеры можно вкладывать друг в друга в произвольных комбинациях, например &lt;code&gt;List&amp;lt;Tuple&amp;lt;Int32,Int32&amp;gt;&amp;gt;&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;&lt;a href=\"ru/yql/types/optional.html\"&gt;Опциональные значения&lt;/a&gt; в некоторых контекстах также могут рассматриваться как один из видов контейнеров (&lt;code&gt;Optional&amp;lt;Type&amp;gt;&lt;/code&gt;), который ведёт себя как список длины 0 или 1.&lt;/p&gt;\n&lt;p&gt;Для создания литералов контейнеров списка, словаря, множества, кортежа, структуры можно использовать &lt;a href=\"ru/yql/builtins/basic.html#containerliteral\"&gt;операторную запись&lt;/a&gt;.&lt;br /&gt;\nДля создания литерала варианта над кортежем или структурой используется функция &lt;a href=\"ru/yql/builtins/basic.html#variant\"&gt;Variant&lt;/a&gt;.&lt;br /&gt;\nДля создания литерала перечисления используется функция &lt;a href=\"ru/yql/builtins/basic.html#enum\"&gt;Enum&lt;/a&gt;.&lt;/p&gt;\n&lt;p&gt;Для обращения к элементам контейнера используется &lt;a href=\"ru/yql/syntax/expressions.html#items-access\"&gt;точка или квадратные скобки&lt;/a&gt;, в зависимости от его типа.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/yql/types/containers.md","sourcePath":"ru/yql/types/containers.md"},"headings":[],"title":"Контейнеры"},"router":{"pathname":"ru/yql/types/containers","depth":4,"base":"../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

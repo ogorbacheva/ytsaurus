@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Example of setting up pools |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/data-processing/scheduler/pool-examples.md">
+        <meta name="sourcePath" content="en/user-guide/data-processing/scheduler/pool-examples.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Consider the pool structure of the project, whose operations can be divided into three classes: manual queries (ad_hoc), batch processing, and backups. The project has a quota of 100 computing cores and standard limits on the number of operations. The pools need to be set up so that ad_hoc operations are performed as quickly as possible and there is less waiting in the queue to run. Batch processing requires the use of all available resources when there are few or no ad_hoc tasks. Backup operations require a small resource guarantee so that the process can be complete within the allotted time.&lt;/p&gt;\n&lt;p&gt;Separate pools must be created for each operation class and placed in the shared project root pool (project-root). The pool settings are shown in the table.&lt;/p&gt;\n&lt;table&gt;\n&lt;thead&gt;\n&lt;tr&gt;\n&lt;th&gt;pool_name&lt;/th&gt;\n&lt;th&gt;CPU&lt;/th&gt;\n&lt;th&gt;weight&lt;/th&gt;\n&lt;th&gt;max_running_operation_count&lt;/th&gt;\n&lt;th&gt;max_operation_count&lt;/th&gt;\n&lt;/tr&gt;\n&lt;/thead&gt;\n&lt;tbody&gt;\n&lt;tr&gt;\n&lt;td&gt;project-root&lt;/td&gt;\n&lt;td&gt;100&lt;/td&gt;\n&lt;td&gt;1&lt;/td&gt;\n&lt;td&gt;10&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;project-root/project-ad_hoc&lt;/td&gt;\n&lt;td&gt;80&lt;/td&gt;\n&lt;td&gt;1&lt;/td&gt;\n&lt;td&gt;10&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;project-root/project-batch&lt;/td&gt;\n&lt;td&gt;0&lt;/td&gt;\n&lt;td&gt;10&lt;/td&gt;\n&lt;td&gt;4&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;tr&gt;\n&lt;td&gt;project-root/project-backup&lt;/td&gt;\n&lt;td&gt;20&lt;/td&gt;\n&lt;td&gt;1&lt;/td&gt;\n&lt;td&gt;2&lt;/td&gt;\n&lt;td&gt;50&lt;/td&gt;\n&lt;/tr&gt;\n&lt;/tbody&gt;\n&lt;/table&gt;\n&lt;p&gt;The sum of CPU guarantees of all descendants of the pool must not exceed the CPU guarantees of the parent pool. CPU oversubscription is not allowed, such a configuration will be perceived by the scheduler as an error and will not be applied. Oversubscription for both limits on the number of operations is allowed. The following condition must be met:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;The &lt;code&gt;max_running_operation_count&lt;/code&gt; value of each pool cannot be greater than its &lt;code&gt;max_operation_count&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;If the &lt;code&gt;max_running_operation_count&lt;/code&gt; sum of limits of the subpools exceeds its counterpart limit of the parent pool, this may lead to an operation in a subpool not being able to be executed even if the number of running operations in the pool has not reached the limit. This may occur if there are too many running operations in other subpools and their number is equal to the &lt;code&gt;max_running_operation_count&lt;/code&gt; limit of the parent pool. In this case, even if a subpool has a CPU guarantee, it will not preempt operations already running in other pools. Jobs can be preempted if there are more than one of them in an operation, but not operations themselves.&lt;/p&gt;\n&lt;p&gt;In the pool structure shown in the table, all guaranteed computing resources go to project-ad_hoc and project-backup pools when they are fully loaded and running operations in project-batch are preempted. But if operations in at least one of the guarantee pools cannot fully utilize their pool, unclaimed resources can be allocated to the project-batch pool with a higher priority.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/data-processing/scheduler/pool-examples.md","sourcePath":"en/user-guide/data-processing/scheduler/pool-examples.md"},"headings":[],"title":"Example of setting up pools"},"router":{"pathname":"en/user-guide/data-processing/scheduler/pool-examples","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

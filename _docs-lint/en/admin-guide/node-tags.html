@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../" />
+        <title> YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/admin-guide/node-tags.md">
+        <meta name="sourcePath" content="en/admin-guide/node-tags.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"node_tags\"&gt;&lt;a href=\"en/admin-guide/node-tags.html#node_tags\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Tagging cluster nodes&lt;/span&gt;&lt;/a&gt;Tagging cluster nodes&lt;/h2&gt;\n&lt;p&gt;Cluster nodes can be marked with special string literals called tags.&lt;/p&gt;\n&lt;p&gt;Certain tags, usually called system tags, are determined by the node itself based on its config and environment. The environment is set by the cluster administrators. Nodes can be assigned additional tags using the &lt;code&gt;user_tags&lt;/code&gt; attribute on the node host in Cypress.&lt;/p&gt;\n&lt;p&gt;Tags can be used to filter a set of nodes using Boolean formulas.&lt;/p&gt;\n&lt;p&gt;A boolean formula is an expression that:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Contain the operators &lt;code&gt;&amp;amp;&lt;/code&gt; (logical AND), &lt;code&gt;|&lt;/code&gt; (logical OR), &lt;code&gt;!&lt;/code&gt; (logical NOT), or parentheses.&lt;/li&gt;\n&lt;li&gt;Are formed by literals. A literal is a string of Latin characters and the special characters &lt;code&gt;_&lt;/code&gt;, &lt;code&gt;/&lt;/code&gt;, &lt;code&gt;-&lt;/code&gt;, &lt;code&gt;.&lt;/code&gt;, &lt;code&gt;:&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;The expression is evaluated for a specific node. The literal value is substituted with \"true\" if the node's tag list includes the literal and \"false\" if it doesn't. Next, the expression is evaluated using the standard rules of Boolean expressions. Empty expressions always return \"false\".&lt;/p&gt;\n&lt;p&gt;Expressions on tags are used in two scenarios:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;The &lt;code&gt;scheduling_tag_filter&lt;/code&gt; option in the operation specification. This option specifies a filter for a subset of nodes allowed to execute jobs of the operation.&lt;/li&gt;\n&lt;li&gt;Keys in the &lt;code&gt;//sys/cluster_nodes/@config&lt;/code&gt; dynamic node config.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;details class=\"yfm-cut\"&gt;&lt;summary class=\"yfm-cut-title\"&gt;Starting an operation with specified scheduling_tag_filter &lt;/summary&gt;&lt;div class=\"yfm-cut-content\"&gt;&lt;p&gt;&lt;small&gt;Listing 1 — Setting a custom tag on the node&lt;/small&gt;&lt;/p&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs bash\"&gt;$ yt &lt;span class=\"hljs-built_in\"&gt;set&lt;/span&gt; //sys/cluster_nodes/exe-0.my_cluster.net:9012/@user_tags &lt;span class=\"hljs-string\"&gt;'[test]'&lt;/span&gt;\n$ yt &lt;span class=\"hljs-built_in\"&gt;set&lt;/span&gt; //sys/cluster_nodes/exe-1.my_cluster.net:9012/@user_tags &lt;span class=\"hljs-string\"&gt;'[test]'&lt;/span&gt;\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"53\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-53\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-53\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-53.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n&lt;p&gt;&lt;small&gt;Listing 2 — Launching an operation specifying the tag&lt;/small&gt;&lt;/p&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs bash\"&gt;$ yt map --spec &lt;span class=\"hljs-string\"&gt;'{scheduling_tag_filter=\"test\"}'&lt;/span&gt; ...\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"57\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-57\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-57\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-57.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n&lt;/div&gt;&lt;/details&gt;","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/admin-guide/node-tags.md","sourcePath":"en/admin-guide/node-tags.md"},"headings":[{"title":"Tagging cluster nodes","href":"en/admin-guide/node-tags.html#node_tags","level":2}],"title":""},"router":{"pathname":"en/admin-guide/node-tags","depth":3,"base":"../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-a29ea7877730322f2ce693378d06d02ac2b374cd-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

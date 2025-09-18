@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Dynamic monitoring of CPU consumption |  YTsaurus </title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="en/user-guide/data-processing/scheduler/job-cpu-monitor.md">
+        <meta name="sourcePath" content="en/user-guide/data-processing/scheduler/job-cpu-monitor.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;If a job consumes significantly fewer cpu resources than ordered in the operation specification, the job CPU guarantee may be reduced. The freed up resources can be transferred to other jobs working in the operations of a particular pool. The &lt;code&gt;job-cpu-monitor&lt;/code&gt; process monitors job CPU consumption and guarantee changes.&lt;/p&gt;\n&lt;p&gt;The value of CPU consumption for the period (&lt;code&gt;check_period&lt;/code&gt;) is regularly read from the job container. Exponential smoothing with the &lt;code&gt;smoothing_factor&lt;/code&gt; parameter is applied to this value. The last &lt;code&gt;vote_window_size&lt;/code&gt; smoothed values and the interval (&lt;code&gt;relative_lower_bound*current_cpu_limit&lt;/code&gt;, &lt;code&gt;relative_upper_bound*current_cpu_limit&lt;/code&gt;) where current_cpu_limit is a current limit set on the container are considered next.&lt;br /&gt;\nAfter that, each value is converted according to the rule:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;-1&lt;/code&gt;: Value &amp;lt; &lt;code&gt;relative_lower_bound*current_cpu_limit&lt;/code&gt;.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;1&lt;/code&gt;: Value &amp;gt; &lt;code&gt;relative_upper_bound*current_cpu_limit&lt;/code&gt;.&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;0&lt;/code&gt;: In other cases.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;The resulting values are summed into the &lt;code&gt;votes_sum&lt;/code&gt; variable and the &lt;code&gt;current_cpu_limit&lt;/code&gt; limit is recalculated:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;votes_sum &amp;gt; votes_decision_threshold =&amp;gt; current_cpu_limit *= increase_coefficient&lt;/code&gt;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;votes_sum &amp;lt; -votes_decision_threshold =&amp;gt; current_cpu_limit *= decrease_coefficient&lt;/code&gt;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;The &lt;code&gt;current_cpu_limit&lt;/code&gt; value is limited at the bottom by the &lt;code&gt;min_cpu_limit&lt;/code&gt; option from the &lt;code&gt;job-cpu-monitor&lt;/code&gt; configuration and at the top by the &lt;code&gt;cpu_limit&lt;/code&gt; option from the operation specification.&lt;br /&gt;\nIf the value of the current_cpu_limit variable has changed, the new value is set on the container and sent to the scheduler to update resource consumption in the pool.&lt;/p&gt;\n&lt;p&gt;&lt;code&gt;Job-cpu-monitor&lt;/code&gt; aims to keep the current CPU consumption in the interval between &lt;code&gt;relative_lower_bound&lt;/code&gt; and &lt;code&gt;relative_upper_bound&lt;/code&gt; from that set on the container and shifts the specified interval up or down if the consumption exceeds its limits.&lt;/p&gt;\n&lt;p&gt;The default values (the current values may be different):&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;code&gt;check_period = 1000&lt;/code&gt; (ms);&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;smoothing_factor = 0.1&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;relative_upper_bound = 0.9&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;relative_lower_bound = 0.6&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;increase_coefficient = 1.45&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;decrease_coefficient = 0.97&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;vote_window_size = 5&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;vote_decision_threshold = 3&lt;/code&gt;;&lt;/li&gt;\n&lt;li&gt;&lt;code&gt;min_cpu_limit = 1&lt;/code&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;The listed settings can be specified in the &lt;code&gt;job-cpu-monitor&lt;/code&gt; section of the operation specification. In the section, you can specify the &lt;code&gt;enable_cpu_reclaim&lt;/code&gt; option that enables/disables cpu limit changes. You can view the actual option values in the web interface on the operation page, on the &lt;code&gt;Specification&lt;/code&gt; -&amp;gt; &lt;code&gt;Resulting specification&lt;/code&gt; -&amp;gt; &lt;code&gt;job-cpu-monitor&lt;/code&gt; tab.&lt;/p&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"en/user-guide/data-processing/scheduler/job-cpu-monitor.md","sourcePath":"en/user-guide/data-processing/scheduler/job-cpu-monitor.md"},"headings":[],"title":"Dynamic monitoring of CPU consumption"},"router":{"pathname":"en/user-guide/data-processing/scheduler/job-cpu-monitor","depth":5,"base":"../../../../"},"lang":"en","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/en/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-en","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="en/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

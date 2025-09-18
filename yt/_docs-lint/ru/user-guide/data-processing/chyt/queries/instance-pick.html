@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../../" />
+        <title>Выбор координатора | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/chyt/queries/instance-pick.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/chyt/queries/instance-pick.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;p&gt;Тяжёлая прокси получает запрос от пользователя и делегирует его одному из инстансов, который называется «координатором». Пользователь может повлиять на стратегию выбора, например, для эффективного использования кеша.&lt;/p&gt;\n&lt;p&gt;Ниже перечислены различные стратегии выбора координатора в порядке убывания приоритетности (при попытке включить несколько стратегий будет выбрана более приоритетная):&lt;/p&gt;\n&lt;ol&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Выбор конкретного инстанса.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Нужно добавить &lt;code&gt;job-cookie&lt;/code&gt; интересующего инстанса к алиасу клики через символ &lt;code&gt;@&lt;/code&gt;. Например, для инстанса с &lt;code&gt;job-cookie=3&lt;/code&gt; получится запрос такого вида &lt;code&gt;http://cluster.domain.com/chyt?chyt.clique_alias=my-clique@3&lt;/code&gt;.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Выбор инстанса в пределах сессии.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;В пределах одной ClickHouse-сессии прокси будет* выбирать один и тот же инстанс.&lt;/p&gt;\n&lt;div class=\"yfm-note yfm-accent-info\" note-type=\"info\"&gt;&lt;p class=\"yfm-note-title\"&gt;Примечание&lt;/p&gt;\n&lt;div class=\"yfm-note-content\"&gt;&lt;p&gt;*Если в последние несколько минут не происходило перезапуска инстансов.&lt;/p&gt;\n&lt;/div&gt;&lt;/div&gt;&lt;p&gt;Сессия определяется url-параметром &lt;code&gt;session_id&lt;/code&gt; (так же как в оригинальном ClickHouse). Таким образом получается запрос вида &lt;code&gt;http://cluster.domain.com/chyt?chyt.clique_alias=my-clique&amp;amp;session_id=abracadabra&lt;/code&gt;.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Стратегия StickyGroup.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Параметр &lt;code&gt;QueryStickyGroupSize&lt;/code&gt; можно указать либо в конфигурации клики, либо передавать вместе в запросом в url-параметре &lt;code&gt;chyt.query_sticky_group_size&lt;/code&gt;.&lt;/p&gt;\n&lt;p&gt;В таком случае прокси будет делегировать одинаковые запросы группе инстансов размера &lt;code&gt;QueryStickyGroupSize&lt;/code&gt;, то есть один и тот же запрос будет попадать в случайный инстанс из этой группы.&lt;/p&gt;\n&lt;p&gt;Выбор значения &lt;code&gt;QueryStickyGroupSize&lt;/code&gt; может быть основан на следующих рассуждениях: при маленьких значениях кеш в выделенной группе прогревается быстро, а при больших — группа почти не страдает в случае выпадения одного инстанса, т. к. кеш большинства инстансов сохранится.&lt;/p&gt;\n&lt;/li&gt;\n&lt;li&gt;\n&lt;p&gt;&lt;strong&gt;Выбор случайного инстанса.&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;За отсутствием других стратегий координатор выбирается равновероятно среди всех доступных инстансов.&lt;/p&gt;\n&lt;/li&gt;\n&lt;/ol&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/chyt/queries/instance-pick.md","sourcePath":"ru/user-guide/data-processing/chyt/queries/instance-pick.md"},"headings":[],"title":"Выбор координатора"},"router":{"pathname":"ru/user-guide/data-processing/chyt/queries/instance-pick","depth":6,"base":"../../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-b374e81616f80236d1bb7d0038f65f666195580-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>

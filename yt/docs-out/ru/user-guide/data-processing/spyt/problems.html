@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" dir="ltr">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <base href="../../../../" />
+        <title>Решение проблем | YTsaurus</title>
+        <meta name="generator" content="Diplodoc Platform v5.5.3">
+        <meta name="vcsPath" content="ru/user-guide/data-processing/spyt/problems.md">
+        <meta name="sourcePath" content="ru/user-guide/data-processing/spyt/problems.md">
+        
+        <style type="text/css">html, body {min-height:100vh; height:100vh;}</style>
+        
+        
+        <link type="text/css" rel="stylesheet" href="_bundle/vendor.css"/>
+        <link type="text/css" rel="stylesheet" href="_bundle/app.css"/>
+    </head>
+    <body class="g-root g-root_theme_light">
+        <div id="root"></div>
+        <script type="application/json" id="diplodoc-state">
+            {"data":{"leading":false,"html":"&lt;h2 id=\"klaster-zapustilsya-s-oshibkami\"&gt;&lt;a href=\"ru/user-guide/data-processing/spyt/problems.html#klaster-zapustilsya-s-oshibkami\" class=\"yfm-anchor\" aria-hidden=\"true\"&gt;&lt;span class=\"visually-hidden\" data-no-index=\"true\"&gt;Кластер запустился с ошибками&lt;/span&gt;&lt;/a&gt;Кластер запустился с ошибками&lt;/h2&gt;\n&lt;p&gt;Для получения информации о запущенной операции используется утилита &lt;code&gt;spark-discovery-yt&lt;/code&gt;:&lt;/p&gt;\n\n    &lt;div class=\"yfm-clipboard\"&gt;\n        &lt;pre&gt;&lt;code class=\"hljs bash\"&gt;spark-discovery-yt &amp;lt;cluster-name&amp;gt; --discovery-path my_discovery_path\n&lt;/code&gt;&lt;/pre&gt;\n\n        &lt;button class=\"yfm-clipboard-button\"&gt;\n            &lt;svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" class=\"yfm-clipboard-icon\" data-animation=\"6\"&gt;\n                &lt;path fill=\"currentColor\" d=\"M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z\"&gt;&lt;/path&gt;\n                &lt;path stroke=\"currentColor\" fill=\"transparent\" stroke-width=\"1.5\" d=\"M9.5 13l3 3l5 -5\" visibility=\"hidden\"&gt;\n                    &lt;animate id=\"visibileAnimation-6\" attributeName=\"visibility\" from=\"hidden\" to=\"visible\" dur=\"0.2s\" fill=\"freeze\" begin&gt;&lt;/animate&gt;\n                    &lt;animate id=\"hideAnimation-6\" attributeName=\"visibility\" from=\"visible\" to=\"hidden\" dur=\"1s\" begin=\"visibileAnimation-6.end+1\" fill=\"freeze\"&gt;&lt;/animate&gt;\n                &lt;/path&gt;\n            &lt;/svg&gt;\n        &lt;/button&gt;\n    &lt;/div&gt;\n&lt;p&gt;В списке задач данной операции всегда присутствует мастер, воркер и Spark History Server. Если не работает мастер, то не работают и другие компоненты. При корректной работе в логе воркера можно увидеть данные о принятой задаче и запуске её исполнения.&lt;/p&gt;\n&lt;p&gt;При ошибке запуска задачи необходимо:&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;зайти в лог задачи через Master Web UI, в нём имеются ссылки на логи драйвера и экзекьютора;&lt;/li&gt;\n&lt;li&gt;зайти в Worker UI через Master Web UI и посмотреть как происходил запуск приложения;&lt;/li&gt;\n&lt;li&gt;посмотреть &lt;a href=\"user-guide/data-processing/spyt/logs.html\"&gt;Event Log&lt;/a&gt;.&lt;/li&gt;\n&lt;/ul&gt;\n","meta":{"metadata":[{"name":"generator","content":"Diplodoc Platform v5.5.3"}],"vcsPath":"ru/user-guide/data-processing/spyt/problems.md","sourcePath":"ru/user-guide/data-processing/spyt/problems.md"},"headings":[{"title":"Кластер запустился с ошибками","href":"ru/user-guide/data-processing/spyt/problems.html#klaster-zapustilsya-s-oshibkami","level":2}],"title":"Решение проблем"},"router":{"pathname":"ru/user-guide/data-processing/spyt/problems","depth":5,"base":"../../../../"},"lang":"ru","langs":["ru","en"],"viewerInterface":{"toc":true,"search":true,"feedback":true},"search":{"provider":"algolia","api":"_search/api.js","link":"_search/ru/index.html","appId":"WW7EWG7Y6T","indexName":"ytsaurus-docs-ru","searchApiKey":"f039bc42de5c29003db67eb703353c1d","querySettings":{}}}
+        </script>
+        <script type="application/javascript">
+            const data = document.querySelector('script#diplodoc-state');
+            window.__DATA__ = JSON.parse((function unescape(string) {
+                return string.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+              })(data.innerText));
+            window.STATIC_CONTENT = false;
+        </script>
+        <script type="application/javascript" defer src="ru/toc.js"></script>
+        <script type="application/javascript" defer src="_search/api.js"></script>
+        <script type="application/javascript" defer src="_bundle/react.js"></script>
+        <script type="application/javascript" defer src="_bundle/app.js"></script>
+        <script type="application/javascript" defer src="_bundle/vendor.js"></script>
+        
+    </body>
+</html>
