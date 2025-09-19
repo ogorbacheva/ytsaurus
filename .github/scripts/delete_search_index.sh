@@ -10,7 +10,7 @@ response=$(curl -s -H "X-Algolia-API-Key: $ALGOLIA_API_KEY" \
     -H "X-Algolia-Application-Id: $ALGOLIA_APP_ID" \
     "https://${ALGOLIA_APP_ID}-dsn.algolia.net/1/indexes")
 
-echo "Response from Algolia: $response"
+echo "ALGOLIA_API_KEY: $ALGOLIA_API_KEY"
 
 # Count the number of indexes.
 count=$(echo "$response" | jq '.items | length')
