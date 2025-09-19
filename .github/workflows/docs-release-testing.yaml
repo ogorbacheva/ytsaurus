@@ -28,7 +28,7 @@ jobs:
 
       - name: Delete search index
         run: |
-          bash .github/scripts/delete_search_index.sh
+          bash .github/scripts/delete_search_index.sh ${{ env.app-id }} ${{ secrets.ALGOLIA_API_KEY }}
 
       - name: Build doc md2html
         id: build-md2html
