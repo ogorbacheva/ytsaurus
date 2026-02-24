@@ -12,6 +12,7 @@ jobs:
       build-root: "./_docs-build"
       lint-root: "./_docs-lint"
       revision: "${{ github.sha }}"
+      version: "${{ github.ref_name }}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
