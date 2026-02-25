@@ -110,6 +110,7 @@ jobs:
         uses: diplodoc-platform/docs-upload-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: "${{ github.ref_name }}"
           storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
           storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
           storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}

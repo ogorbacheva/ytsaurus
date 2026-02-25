@@ -3,7 +3,8 @@ apply-presets: true
 varsPreset: public
 langs: ['ru', 'en']
 allow-custom-resources: true
-#mtimes: true
+mtimes: true
+authors: true
 
 docs-viewer:
   project-name: YTsaurus
