@@ -26,8 +26,13 @@ jobs:
 
       - name: Install diplodoc
         run: |
-          npm install -g @diplodoc/cli
+          npm install -g @diplodoc/cli@latest
           npm install -g @diplodoc/algolia-extension
+        shell: bash
+
+      - name: Check diplodoc version
+        run: |
+          yfm --version
         shell: bash
 
       - name: Delete search index
