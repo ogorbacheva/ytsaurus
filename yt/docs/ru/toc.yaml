@@ -22,10 +22,12 @@ navigation:
         url: "overview/about.md"
       - text: "Telegram"
         type: "link"
-        url: "https://t.me/diplodoc_ru"
+        url: "https://t.me/ytsaurus_ru"
+        icon: https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-telegram.svg
       - text: "GitHub"
         type: "link"
         url: "https://github.com/ytsaurus/ytsaurus"
+        icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
     rightItems:
       - type: controls
 items:
