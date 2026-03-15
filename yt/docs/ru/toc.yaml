@@ -23,7 +23,7 @@ navigation:
       - text: "Telegram"
         type: "link"
         url: "https://t.me/ytsaurus_ru"
-        icon: https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-telegram.svg
+        icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-telegram.svg"
       - text: "GitHub"
         type: "link"
         url: "https://github.com/ytsaurus/ytsaurus"
