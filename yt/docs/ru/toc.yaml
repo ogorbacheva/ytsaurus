@@ -16,10 +16,10 @@ navigation:
     light:
       icon: "https://ytsaurus.tech/assets/logo-light.svg"
   header:
-    leftItems:
+    rightItems:
       - text: "Как всё устроено"
         type: "link"
-        url: "overview/about.md"
+        url: "overview/about"
       - text: "Telegram"
         type: "link"
         url: "https://t.me/ytsaurus_ru"
