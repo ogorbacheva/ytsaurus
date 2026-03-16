@@ -21,9 +21,9 @@ navigation:
         type: "dropdown"
         items:
           - text: "Обзор системы"
-            href: overview/about.md
+            href: overview/about
           - text: "Версии"
-            href: overview/about.md
+            href: overview/about
       - text: "Telegram"
         type: "link"
         url: "https://t.me/ytsaurus"
@@ -42,4 +42,4 @@ items:
        - name: Архитектура
          href: overview/about.md
        - name: Как попробовать
-         href: overview/try-yt.md
+         href: overview/about.md
