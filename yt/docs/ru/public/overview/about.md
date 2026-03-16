@@ -1,1 +1,1 @@
-{% include [О {{product-name}}](../_includes/overview/about.md) %}
+{% include [О {{product-name}}](../../_includes/overview/about.md) %}
