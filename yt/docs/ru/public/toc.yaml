@@ -20,9 +20,75 @@ navigation:
       - text: "Как всё устроено"
         type: "dropdown"
         items:
-          - text: "Обзор системы"
+          - text: "Быстрый старт"
             href: overview/about
-          - text: "Версии"
+          - text: "Архитектура YTsaurus"
+            href: overview/about
+          - text: "Кипарис"
+            href: overview/about
+          - text: "Хранение данных"
+            href: overview/about
+          - text: "Обработка данных"
+            href: overview/about
+          - text: "Глоссарий"
+            href: overview/about
+          - text: "Версии продукта"
+            href: overview/about
+      - text: "Разработчикам"
+        type: "dropdown"
+        items:
+          - text: "MapReduce"
+            href: overview/about
+          - text: Работа с динамическими таблицами
+            href: overview/about
+          - text: "Транзакции и конкурентный доступ"
+            href: overview/about
+          - text: "SDK и API"
+            href: overview/about
+          - text: "Очереди (Queue API)"
+            href: overview/about
+          - text: "Локальное тестирование и CI/CD"
+            href: overview/about
+      - text: "Администраторам"
+        type: "dropdown"
+        items:
+          - text: "Развертывание кластера"
+            href: overview/about
+          - text: "Управление вычислительными пулами"
+            href: overview/about
+          - text: "Контроль доступа (ACL и Аккаунты)"
+            href: overview/about
+          - text: "Управление динамическими таблицами"
+            href: overview/about
+          - text: "Мониторинг и метрики"
+            href: overview/about
+          - text: "Траблшутинг"
+            href: overview/about
+      - text: "ML / AI"
+        type: "dropdown"
+        items:
+          - text: "SPYT (Spark поверх YT)"
+            href: overview/about
+          - text: "Запуск SPYT из Jupyter Notebook"
+            href: overview/about
+          - text: "Управление Python-окружениями"
+            href: overview/about
+          - text: "Работа с GPU-пулами"
+            href: overview/about
+          - text: "Интеграция с ML-фреймворками"
+            href: overview/about
+      - text: "Инструменты"
+        type: "dropdown"
+        items:
+          - text: "Справочник YQL"
+            href: overview/about
+          - text: "Справочник CHYT"
+            href: overview/about
+          - text: "CLI интерфейс (yt-утилита)"
+            href: overview/about
+          - text: "Python SDK (yt-wrapper)"
+            href: overview/about
+          - text: "Query Tracker API"
             href: overview/about
       - text: "Telegram"
         type: "link"
