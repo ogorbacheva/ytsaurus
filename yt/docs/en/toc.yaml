@@ -21,7 +21,6 @@ header:
         type: "link"
         url: "https://github.com/ytsaurus/ytsaurus"
         icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
-    rightItems:
       - type: controls
 items:
    - name: " {{product-name}} "

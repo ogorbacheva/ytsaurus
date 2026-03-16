@@ -28,7 +28,6 @@ navigation:
         type: "link"
         url: "https://github.com/ytsaurus/ytsaurus"
         icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
-    rightItems:
       - type: controls
 items:
   - include: { mode: merge, path: yandex-specific/toc-internal.yaml }
