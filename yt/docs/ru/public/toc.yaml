@@ -98,7 +98,7 @@ navigation:
         type: "link"
         url: "https://github.com/ytsaurus/ytsaurus"
         icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
-      - type: controls
+
 items:
    - name: " Начало работы "
      labeled: true
