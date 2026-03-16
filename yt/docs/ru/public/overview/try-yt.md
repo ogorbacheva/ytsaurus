@@ -1,1 +1,1 @@
-{% include [Как попробовать](../_includes/overview/try-yt.md) %}
+{% include [Как попробовать](../../_includes/overview/try-yt.md) %}
