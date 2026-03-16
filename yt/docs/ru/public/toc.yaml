@@ -20,13 +20,11 @@ navigation:
       - text: "Как всё устроено"
         type: "dropdown"
         items:
-          - text: "Быстрый старт"
-            href: overview/about
           - text: "Архитектура YTsaurus"
             href: overview/about
           - text: "Кипарис"
             href: overview/about
-          - text: "Хранение данных"
+          - text: "Планировщик и пулы"
             href: overview/about
           - text: "Обработка данных"
             href: overview/about
@@ -37,7 +35,7 @@ navigation:
       - text: "Разработчикам"
         type: "dropdown"
         items:
-          - text: "MapReduce"
+          - text: "Запустить свой первый MapReduce"
             href: overview/about
           - text: Работа с динамическими таблицами
             href: overview/about
@@ -109,3 +107,21 @@ items:
          href: overview/about.md
        - name: Как попробовать
          href: overview/about.md
+       - name: Глоссарий
+         href: overview/about.md
+       - name: Сообщить о проблеме
+         href: overview/about.md
+       - name: Полезные материалы
+         href: overview/about.md
+   - name: "Хранение данных"
+     labeled: true
+     items:
+        - name: "Кипарис"
+          href: overview/about.md
+        - name: "Форматы"
+          href: overview/about.md
+   - name: "Обработка данных"
+     labeled: true
+     items:
+        - name: "Планировщик"
+          href: overview/about.md
