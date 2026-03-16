@@ -8,7 +8,14 @@ analytics:
       text: "Ok"
       theme: "accent"
       size: "xl"
-header:
+navigation:
+  logo:
+    url: "https://ytsaurus.tech/"
+    dark:
+      icon: "https://ytsaurus.tech/assets/logo-dark.svg"
+    light:
+      icon: "https://ytsaurus.tech/assets/logo-light.svg"
+  header:
     rightItems:
       - text: "How it works"
         type: "link"
