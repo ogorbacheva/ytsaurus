@@ -37,6 +37,8 @@ docs-viewer:
 
 resources:
   csp:
+    - default-src:
+        - https://mc.yandex.ru
     - script-src-elem:
         - https://mc.yandex.ru
     - connect-src:
