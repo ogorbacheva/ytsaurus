@@ -43,7 +43,6 @@ jobs:
           echo "exitcode=$?" >> $GITHUB_OUTPUT
         shell: bash
 
-      - name:
       - name: Build md2md
         id: build-md2md
         run: |
