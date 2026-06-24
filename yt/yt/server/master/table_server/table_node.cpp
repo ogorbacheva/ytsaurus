@@ -1,5 +1,6 @@
 #include "table_node.h"
 
+#include "config.h"
 #include "private.h"
 #include "master_table_schema.h"
 #include "mount_config_attributes.h"
@@ -230,13 +231,28 @@ const TTableNode* TTableNode::GetTrunkNode() const
     return TTabletOwnerBase::GetTrunkNode()->As<TTableNode>();
 }
 
+void TTableNode::ValidateBeginUpload(const TBeginUploadContext& context)
+{
+    // COMPAT(h0pless): This check protects from requests from pre-24.2 clients.
+    // It is safe to remove once we become brave enough.
+    YT_LOG_ALERT_AND_THROW_UNLESS(context.TableSchema, "Schema is missing in begin upload context");
+
+    const auto& config = context.Bootstrap->GetConfigManager()->GetConfig();
+    if (config->TableManager->ValidateNoDescendingSortOrder) {
+        if (!config->EnableDescendingSortOrder || (IsDynamic() && !config->EnableDescendingSortOrderDynamic)) {
+            const auto& compactTableSchema = context.TableSchema->AsCompactTableSchema();
+            ValidateNoDescendingSortOrder(compactTableSchema->GetSortOrders(), compactTableSchema->GetKeyColumns());
+        }
+    }
+}
+
 void TTableNode::BeginUpload(const TBeginUploadContext &context)
 {
     const auto& tableManager = context.Bootstrap->GetTableManager();
     if (IsDynamic()) {
         auto contextMode = context.SchemaMode;
         auto* contextSchema = context.TableSchema;
-        if ((contextMode && SchemaMode_ != contextMode) ||
+        if ((SchemaMode_ != contextMode) ||
             (contextSchema && *GetSchema()->AsCompactTableSchema() != *contextSchema->AsCompactTableSchema()))
         {
             YT_LOG_ALERT("Schema of a dynamic table changed during upload (TableId: %v, TransactionId: %v, "
@@ -250,11 +266,11 @@ void TTableNode::BeginUpload(const TBeginUploadContext &context)
         }
     }
 
-    if (context.SchemaMode) {
-        SchemaMode_ = *context.SchemaMode;
+    if (context.OptimizeFor) {
+        OptimizeFor_.Set(*context.OptimizeFor);
     }
 
-    YT_LOG_ALERT_AND_THROW_UNLESS(context.TableSchema, "Schema is missing in begin upload context");
+    SchemaMode_ = context.SchemaMode;
     tableManager->SetTableSchema(this, context.TableSchema);
 
     TTabletOwnerBase::BeginUpload(context);

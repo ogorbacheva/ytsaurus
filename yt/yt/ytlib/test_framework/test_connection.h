@@ -216,6 +216,7 @@ public:
     MOCK_METHOD(NSignature::ISignatureGeneratorPtr, GetSignatureGenerator, (), (const, override));
     MOCK_METHOD(void, SetSignatureGenerator, (NSignature::ISignatureGeneratorPtr), (override));
     MOCK_METHOD(NApi::NNative::IClientPtr, CreateNativeClient, (const NApi::NNative::TClientOptions& options), (override));
+    MOCK_METHOD(const NRpc::IChannelPtr&, GetOffshoreDataGatewayChannel, (), (override));
 
     const NApi::NNative::TConnectionStaticConfigPtr& GetStaticConfig() const override;
     const NNodeTrackerClient::TNetworkPreferenceList& GetNetworks() const override;
@@ -230,6 +231,7 @@ public:
 
     const NRpc::IChannelPtr& GetSchedulerChannel() override;
     const NRpc::IChannelPtr& GetBundleControllerChannel() override;
+    const NRpc::IChannelPtr& GetTabletBalancerChannel() override;
     const NRpc::IChannelPtr& GetCypressProxyChannel() override;
 
     const NTransactionClient::IClockManagerPtr& GetClockManager() override;
@@ -266,6 +268,7 @@ private:
     const NNodeTrackerClient::INodeDirectorySynchronizerPtr NodeDirectorySynchronizer_;
     const NRpc::IChannelPtr SchedulerChannel_;
     const NRpc::IChannelPtr BundleControllerChannel_;
+    const NRpc::IChannelPtr TabletBalancerChannel_;
     const NRpc::IChannelPtr CypressProxyChannel_;
     const NTransactionClient::IClockManagerPtr ClockManager_;
     const NHiveClient::ICellDirectoryPtr CellDirectory_;

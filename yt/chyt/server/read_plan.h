@@ -39,7 +39,7 @@ struct TFilterInfo
     //! Removes filter column if RemoveFilterColumn is |true|,
     //! called from Execute, but sometimes it needs to be called separately.
     //! NB: Modifies the passed TBlockWithFilter.
-    DB::IColumn::Ptr RemoveColumnIfNeeded(TBlockWithFilter& blockWithFilter) const;
+    DB::IColumn::Ptr RemoveColumnIfNeeded(TBlockWithFilter* blockWithFilter) const;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -84,9 +84,9 @@ TReadPlanWithFilterPtr ExtractPrewhereOnlyReadPlan(const TReadPlanWithFilterPtr&
 
 ////////////////////////////////////////////////////////////////////////////////
 
-DB::Block DeriveHeaderBlockFromReadPlan(const TReadPlanWithFilterPtr& readPlan,  const TCompositeSettingsPtr& settings);
+DB::Block DeriveHeaderBlockFromReadPlan(const TReadPlanWithFilterPtr& readPlan,  const TConversionSettingsPtr& settings);
 
-bool SuitableForDistinctReadOptimization(const TReadPlanWithFilterPtr& readPlan, const TCompositeSettingsPtr& settings);
+bool SuitableForDistinctReadOptimization(const TReadPlanWithFilterPtr& readPlan, const TConversionSettingsPtr& settings);
 
 ////////////////////////////////////////////////////////////////////////////////
 

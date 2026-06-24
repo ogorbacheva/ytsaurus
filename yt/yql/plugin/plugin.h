@@ -21,7 +21,8 @@ namespace NYT::NYqlPlugin {
 
 using TQueryId = TGuid;
 
-struct TYqlPluginOptions
+//! Applicable for native and process plugins.
+struct TYqlNativePluginOptions
 {
     NYson::TYsonString SingletonsConfig;
     NYson::TYsonString GatewayConfig;
@@ -31,6 +32,8 @@ struct TYqlPluginOptions
     NYson::TYsonString SolomonGatewayConfig;
     NYson::TYsonString DqManagerConfig;
     NYson::TYsonString FileStorageConfig;
+    NYson::TYsonString TvmConfig;
+    NYson::TYsonString YtAccessProviderConfig;
     NYson::TYsonString OperationAttributes;
     NYson::TYsonString Libraries;
 
@@ -43,6 +46,14 @@ struct TYqlPluginOptions
     std::string MaxYqlLangVersion;
 
     bool StartDqManager;
+};
+
+//! Applicable only for qtworker plugin.
+struct TYqlQTWorkerPluginOptions
+    : public TYqlNativePluginOptions
+{
+    THolder<TLogBackend> QtWorkerLogBackend;
+    int QtWorkerInspectorPort = 32391;
 };
 
 struct TYqlPluginDynamicConfig
@@ -132,21 +143,25 @@ struct IYqlPlugin
 
     virtual NYTree::IMapNodePtr GetOrchidNode() const;
 
+    virtual void RegisterQuery(TQueryId queryId) = 0;
+    virtual void UnregisterQuery(TQueryId queryId) = 0;
+
     virtual ~IYqlPlugin() = default;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TYqlPluginOptions ConvertToOptions(
+TYqlNativePluginOptions ConvertToNativePluginOptions(
     TYqlPluginConfigPtr config,
     NYson::TYsonString singletonsConfigString,
     THolder<TLogBackend> logBackend,
     std::string maxSupportedYqlVersion,
     bool startDqManager = false);
 
-////////////////////////////////////////////////////////////////////////////////
-
-Y_WEAK std::unique_ptr<IYqlPlugin> CreateYqlPlugin(TYqlPluginOptions& options) noexcept;
+TYqlQTWorkerPluginOptions ConvertToQtWorkerPluginOptions(
+    TYqlNativePluginOptions nativeOptions,
+    THolder<TLogBackend> qtWorkerLogBackend,
+    int qtWorkerInspectorPort);
 
 ////////////////////////////////////////////////////////////////////////////////
 

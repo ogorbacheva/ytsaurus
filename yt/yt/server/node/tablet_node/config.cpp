@@ -124,13 +124,20 @@ void TTabletManagerDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("extended_snapshot_eviction_timeout", &TThis::ExtendedSnapshotEvictionTimeout)
         .Default(TDuration::Minutes(3));
+
+    registrar.Parameter("yield_before_building_lsm_actions", &TThis::YieldBeforeBuildingLsmActions)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 void TTabletCellWriteManagerDynamicConfig::Register(TRegistrar registrar)
 {
-    registrar.Parameter("write_failure_probability", &TThis::WriteFailureProbability)
+    registrar.Parameter("failure_probability_before_write", &TThis::FailureProbabilityBeforeWrite)
+        .InRange(0.0, 1.0)
+        .Default();
+    registrar.Parameter("failure_probability_after_write", &TThis::FailureProbabilityAfterWrite)
+        .InRange(0.0, 1.0)
         .Default();
 
     registrar.Parameter("detect_transient_transactions_per_tablet", &TThis::DetectTransientTransactionsPerTablet)
@@ -490,10 +497,30 @@ void TStatisticsReporterConfig::Register(TRegistrar registrar)
         .GreaterThan(0);
     registrar.Parameter("report_backoff_time", &TThis::ReportBackoffTime)
         .Default(TDuration::Seconds(30));
+    registrar.Parameter("write_timeout", &TThis::WriteTimeout)
+        .Default(TDuration::Seconds(30));
     registrar.Parameter("table_path", &TThis::TablePath)
         .Default("//sys/tablet_balancer/performance_counters");
 
     registrar.Parameter("periodic_options",&TThis::PeriodicOptions)
+        .Default({
+            .Period = TDuration::Seconds(10),
+            .Splay = TDuration::Seconds(5),
+            .Jitter = 0.2,
+        });
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TOverloadReporterConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enable", &TThis::Enable)
+        .Default(false);
+
+    registrar.Parameter("max_evaluator_cache_size", &TThis::MaxEvaluatorCacheSize)
+        .Default(100);
+
+    registrar.Parameter("periodic_executor", &TThis::PeriodicExecutor)
         .Default({
             .Period = TDuration::Seconds(10),
             .Splay = TDuration::Seconds(5),
@@ -563,6 +590,27 @@ void TSmoothMovementTrackerDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("source_tablet_snapshot_eviction_timeout", &TThis::SourceTabletSnapshotEvictionTimeout)
         .Default(TDuration::Minutes(1));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TRowCacheControllerDynamicConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enabled", &TThis::Enabled)
+        .Default(false);
+    registrar.Parameter("period", &TThis::Period)
+        .Default(TDuration::Minutes(2));
+    registrar.Parameter("memory_limit_gap_in_bytes", &TThis::MemoryLimitGapInBytes)
+        .Default(0)
+        .GreaterThanOrEqual(0);
+    registrar.Parameter("memory_limit_gap_fraction", &TThis::MemoryLimitGapFraction)
+        .Default(0)
+        .GreaterThanOrEqual(0)
+        .LessThanOrEqual(1);
+    registrar.Parameter("rotation_memory_threshold", &TThis::RotationMemoryThreshold)
+        .Default(0.95)
+        .GreaterThanOrEqual(0)
+        .LessThanOrEqual(1);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -673,7 +721,13 @@ void TTabletNodeDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("statistics_reporter", &TThis::StatisticsReporter)
         .DefaultNew();
 
+    registrar.Parameter("overload_reporter", &TThis::OverloadReporter)
+        .DefaultNew();
+
     registrar.Parameter("error_manager", &TThis::ErrorManager)
+        .DefaultNew();
+
+    registrar.Parameter("row_cache_controller", &TThis::RowCacheController)
         .DefaultNew();
 
     registrar.Parameter("enable_chunk_fragment_reader_throttling", &TThis::EnableChunkFragmentReaderThrottling)

@@ -1,0 +1,6 @@
+/* postgres can not */
+use plato;
+pragma OrderedColumns;
+
+select distinct * from Input order by subkey, key;
+

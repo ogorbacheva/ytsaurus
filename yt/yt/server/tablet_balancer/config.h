@@ -5,13 +5,15 @@
 #include <yt/yt/server/lib/tablet_balancer/config.h>
 #include <yt/yt/server/lib/tablet_balancer/public.h>
 
-#include <yt/yt/server/lib/cypress_election/config.h>
-
 #include <yt/yt/server/lib/misc/config.h>
 
 #include <yt/yt/ytlib/api/native/public.h>
 
+#include <yt/yt/ytlib/tablet_balancer_client/public.h>
+
 #include <yt/yt/core/misc/arithmetic_formula.h>
+
+#include <yt/yt/library/cypress_election/config.h>
 
 #include <yt/yt/library/dynamic_config/config.h>
 
@@ -65,7 +67,7 @@ struct TTabletBalancerDynamicConfig
     double ParameterizedNodeDeviationThreshold;
     double ParameterizedCellDeviationThreshold;
     double ParameterizedMinRelativeMetricImprovement;
-    TString DefaultParameterizedMetric;
+    std::string DefaultParameterizedMetric;
     TComponentFactorConfigPtr ParameterizedFactors;
 
     TTimeFormula Schedule;
@@ -195,7 +197,9 @@ struct TTabletBalancerBootstrapConfig
     NCypressElection::TCypressElectionManagerConfigPtr ElectionManager;
 
     NDynamicConfig::TDynamicConfigManagerConfigPtr DynamicConfigManager;
-    TString DynamicConfigPath;
+    NYPath::TYPath DynamicConfigPath;
+
+    TDryRunConfigPtr DryRun;
 
     REGISTER_YSON_STRUCT(TTabletBalancerBootstrapConfig);
 
@@ -216,6 +220,25 @@ struct TTabletBalancerProgramConfig
 };
 
 DEFINE_REFCOUNTED_TYPE(TTabletBalancerProgramConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TDryRunConfig
+    : public NYTree::TYsonStruct
+{
+    bool IsDryRun;
+    bool CreateTabletActions;
+
+    std::string Bundle;
+    THashSet<TGroupName> Groups;
+    NTabletBalancerClient::EBalancingRequestMode Mode;
+
+    REGISTER_YSON_STRUCT(TDryRunConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDryRunConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 

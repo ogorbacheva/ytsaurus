@@ -10,8 +10,6 @@
 
 #include <yt/yt/server/lib/exec_node/config.h>
 
-#include <yt/yt/library/profiling/public.h>
-
 #include <yt/yt/core/actions/new_with_offloaded_dtor.h>
 
 #include <yt/yt/core/misc/protobuf_helpers.h>
@@ -19,6 +17,8 @@
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
 #include <yt/yt/core/ytree/ypath_service.h>
+
+#include <yt/yt/library/profiling/public.h>
 
 #include <library/cpp/yt/error/error_helpers.h>
 
@@ -63,7 +63,7 @@ public:
                     .Counter("/settlement_requests_succeeded"),
                 Profiler_
                     .WithTag("is_job_first", "true")
-                    .Counter("/settlement_requests_succeeded")
+                    .Counter("/settlement_requests_succeeded"),
             }
     { }
 
@@ -210,8 +210,7 @@ TAllocation::TAllocation(
         Bootstrap_->GetControllerAgentConnectorPool()->GetControllerAgentConnector(ControllerAgentInfo_.GetDescriptor()))
     , FSSecretary_(New<TJobFSSecretary>(
         Bootstrap_,
-        Logger,
-        Bootstrap_->GetConfig()->ExecNode->SlotManager->EnableTmpfs))
+        Logger))
 {
     YT_VERIFY(bootstrap);
 
@@ -380,15 +379,16 @@ void TAllocation::Abort(TError error)
 
     FinishError_ = std::move(error);
 
+    TJobPtr lastJob;
     if (Job_) {
         TransferResourcesToJob();
-        auto job = EvictJob();
-        job->Abort(FinishError_);
+        lastJob = EvictJob();
+        lastJob->Abort(FinishError_);
     } else {
         YT_LOG_DEBUG("Empty allocation aborted");
     }
 
-    OnAllocationFinished(EAllocationFinishReason::Aborted);
+    OnAllocationFinished(EAllocationFinishReason::Aborted, std::move(lastJob));
 }
 
 void TAllocation::Complete(EAllocationFinishReason finishReason)
@@ -404,14 +404,15 @@ void TAllocation::Complete(EAllocationFinishReason finishReason)
 
     State_ = EAllocationState::Finished;
 
+    TJobPtr lastJob;
     if (Job_) {
         TransferResourcesToJob();
-        EvictJob();
+        lastJob = EvictJob();
     } else {
         YT_LOG_DEBUG("Empty allocation completed");
     }
 
-    OnAllocationFinished(finishReason);
+    OnAllocationFinished(finishReason, std::move(lastJob));
 }
 
 void TAllocation::Preempt(
@@ -750,7 +751,9 @@ void TAllocation::InterruptJob(NScheduler::EInterruptionReason interruptionReaso
         /*preemptedFor*/ std::nullopt);
 }
 
-void TAllocation::OnAllocationFinished(EAllocationFinishReason finishReason)
+void TAllocation::OnAllocationFinished(
+    EAllocationFinishReason finishReason,
+    TJobPtr lastJob)
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -758,11 +761,62 @@ void TAllocation::OnAllocationFinished(EAllocationFinishReason finishReason)
 
     AllocationFinished_.Fire(MakeStrong(this));
 
+    NJobAgent::TResourceHolderPtr resourceHolder;
+    IUserSlotPtr userSlot;
     if (ResourceHolder_) {
+        resourceHolder = ResourceHolder_;
+        userSlot = StaticPointerCast<IUserSlot>(ResourceHolder_->GetUserSlot());
         ResourceHolder_->ResetOwner({});
     }
 
     ResourceHolder_.Reset();
+
+    auto fsSecretary = FSSecretary_;
+    auto allocationLogger = Logger;
+
+    // The resource holder is captured to keep the user slot alive (enabled and not
+    // returned to the slot pool) until porto place cleanup completes; otherwise the
+    // same SlotIndex may be picked by another allocation that would then race with
+    // our cleanup. The resource holder destructor releases base resources (calling
+    // UserSlot_->ResetState which requires JobThread affinity), so the callback
+    // runs on JobInvoker.
+    auto cleanupAllocation =
+        [fsSecretary, allocationLogger, userSlot, resourceHolder = std::move(resourceHolder)] (const TError& error) {
+            const auto& Logger = allocationLogger;
+
+            YT_VERIFY(error.IsOK());
+
+            for (auto& volume : fsSecretary->ReleaseVolumes()) {
+                if (!volume) {
+                    continue;
+                }
+
+                auto removeResult = WaitFor(volume->Remove());
+                YT_LOG_ERROR_IF(
+                    !removeResult.IsOK(),
+                    removeResult,
+                    "Volume remove failed (VolumePath: %v)",
+                    volume->GetPath());
+            }
+
+            fsSecretary->ReleasePreparedLayers();
+            fsSecretary->ReleaseArtifacts();
+
+            if (userSlot) {
+                try {
+                    userSlot->CleanPortoPlace();
+                } catch (const std::exception& ex) {
+                    YT_LOG_ERROR(ex, "Failed to clean porto place");
+                }
+            }
+        };
+
+    auto cleanupTrigger = lastJob ? lastJob->GetCleanupFinishedEvent() : OKFuture;
+    cleanupTrigger.Subscribe(
+        BIND_NO_PROPAGATE(std::move(cleanupAllocation))
+            .Via(Bootstrap_->GetJobInvoker()));
+
+    FSSecretary_.Reset();
 
     AllocationProfiler->OnAllocationFinished(TotalJobCount_, finishReason);
 }
@@ -788,6 +842,14 @@ void TAllocation::OnJobFinished(TJobPtr job)
                 "Job finished and allocation is preempted, completing allocation (JobId: %v)",
                 job->GetId());
             finishReason = EAllocationFinishReason::Preempted;
+            return false;
+        }
+
+        if (Bootstrap_->GetJobController()->AreJobsDisabled()) {
+            YT_LOG_INFO(
+                "Jobs disabled on node, completing allocation without settling new job (JobId: %v)",
+                job->GetId());
+            finishReason = EAllocationFinishReason::JobsDisabledOnNode;
             return false;
         }
 
@@ -874,6 +936,16 @@ void TAllocation::OnJobFinished(TJobPtr job)
                         Complete(EAllocationFinishReason::UserSlotDisabled);
                         return;
                     }
+                }
+
+                if (Bootstrap_->GetJobController()->AreJobsDisabled()) {
+                    YT_LOG_INFO(
+                        "Jobs disabled on node, skip new job settlement (JobId: %v)",
+                        jobId);
+
+                    Complete(EAllocationFinishReason::JobsDisabledOnNode);
+
+                    return;
                 }
 
                 YT_LOG_INFO(

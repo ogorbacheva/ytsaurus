@@ -16,6 +16,7 @@
 #include <yt/yt/server/master/chunk_server/medium_base.h>
 
 #include <yt/yt/server/master/cypress_server/cypress_manager.h>
+#include <yt/yt/server/master/cypress_server/expiration_tracker.h>
 
 #include <yt/yt/server/master/object_server/yson_intern_registry.h>
 
@@ -683,6 +684,9 @@ void TNontemplateCypressNodeProxyBase::ListSystemAttributes(std::vector<TAttribu
         .SetPresent(node->GetExpirationTimeoutLastResetTime().has_value()));
 
     if (Bootstrap_->GetConfig()->ExposeTestingFacilities) {
+        descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::FailedExpirationAttempts)
+            .SetPresent(node->IsNative())
+            .SetOpaque(true));
         descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::WrongDoorSync)
             .SetOpaque(true));
         descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::WrongDoorAsync)
@@ -1007,6 +1011,25 @@ bool TNontemplateCypressNodeProxyBase::GetBuiltinAttribute(
             return true;
         }
 
+        case EInternedAttributeKey::FailedExpirationAttempts: {
+            if (!Bootstrap_->GetConfig()->ExposeTestingFacilities) {
+                break;
+            }
+            if (!trunkNode || !isNative) {
+                break;
+            }
+            const auto& expirationTracker = Bootstrap_->GetExpirationTracker();
+            auto attempts = expirationTracker->GetFailedExpirationAttempts(trunkNode);
+            BuildYsonFluently(consumer)
+                .DoMapFor(attempts, [] (TFluentMap fluent, const auto& pair) {
+                    fluent
+                        .DoIf(IsObjectAlive(pair.first), [&] (TFluentMap fluent) {
+                            fluent.Item(pair.first->GetName()).Value(pair.second);
+                        });
+                });
+            return true;
+        }
+
         case EInternedAttributeKey::WrongDoorSync: {
             if (!Bootstrap_->GetConfig()->ExposeTestingFacilities) {
                 break;
@@ -1071,7 +1094,8 @@ void TNontemplateCypressNodeProxyBase::BeforeInvoke(const IYPathServiceContextPt
 {
     AccessTrackingSuppressed_ = GetSuppressAccessTracking(context->RequestHeader());
     ExpirationTimeoutRenewalSuppressed_ = GetSuppressExpirationTimeoutRenewal(context->RequestHeader());
-    SequoiaNodeEffectiveAcl_ = GetSequoiaNodeEffectiveAcl(context->RequestHeader());
+    SequoiaNodeEffectiveAcl_ = TryGetSequoiaNodeEffectiveAcl(context->RequestHeader());
+    SequoiaNodeHasRowLevelAce_ = GetSequoiaNodeHasRowLevelAce(context->RequestHeader());
     ValidateMethodWhitelistedForTransaction(context->GetMethod());
 
     TObjectProxyBase::BeforeInvoke(context);
@@ -1081,8 +1105,9 @@ void TNontemplateCypressNodeProxyBase::AfterInvoke(const IYPathServiceContextPtr
 {
     SetAccessed();
     SetTouched();
-    SequoiaNodeEffectiveAcl_.reset();
+    SequoiaNodeEffectiveAcl_ = {};
     SequoiaNodeDeserializedEffectiveAcl_.reset();
+    SequoiaNodeHasRowLevelAce_ = false;
     TObjectProxyBase::AfterInvoke(context);
 }
 
@@ -1422,7 +1447,7 @@ TPermissionCheckResponse TNontemplateCypressNodeProxyBase::DoCheckPermission(
 {
     const auto& securityManager = Bootstrap_->GetSecurityManager();
     if (Object_->IsSequoia()) {
-        if (!SequoiaNodeEffectiveAcl_.has_value()) {
+        if (!SequoiaNodeEffectiveAcl_) {
             YT_LOG_ALERT(
                 "Missing effective ACL on permission validation for Sequoia node (NodeId: %v)",
                 TrunkNode_->GetId());
@@ -1431,7 +1456,7 @@ TPermissionCheckResponse TNontemplateCypressNodeProxyBase::DoCheckPermission(
         }
 
         if (!SequoiaNodeDeserializedEffectiveAcl_.has_value()) {
-            auto aclNode = ConvertToNode(TYsonStringBuf(*SequoiaNodeEffectiveAcl_));
+            auto aclNode = ConvertToNode(SequoiaNodeEffectiveAcl_);
             // After removed, the Sequoia ACL table still contains the subject
             // until the next GUQM sync.
             auto result = DeserializeAclGatherMissingAndPendingRemovalSubjectsOrThrow(
@@ -1446,6 +1471,18 @@ TPermissionCheckResponse TNontemplateCypressNodeProxyBase::DoCheckPermission(
                 "(NodeId: %v, MissingSubjects: %v)",
                 TrunkNode_->GetId(),
                 result.MissingSubjects);
+        }
+
+        if (permission == EPermission::FullRead) {
+            if (options.Columns) {
+                THROW_ERROR_EXCEPTION(
+                    "Cannot specify columns for %Qlv permission check",
+                    permission)
+                    << TErrorAttribute("columns", options.Columns);
+            }
+            const auto& objectManager = Bootstrap_->GetObjectManager();
+            const auto& handler = objectManager->GetHandler(Object_);
+            options.Columns = handler->ListColumns(Object_);
         }
 
         return securityManager->CheckPermission(
@@ -1501,7 +1538,7 @@ void TNontemplateCypressNodeProxyBase::ValidateAdHocPermission(
     }
 
     // TODO(danilalexeev): YT-24575. Remove this check.
-    if (!SequoiaNodeEffectiveAcl_.has_value()) {
+    if (!SequoiaNodeEffectiveAcl_) {
         return;
     }
 
@@ -1517,18 +1554,14 @@ void TNontemplateCypressNodeProxyBase::ValidateAdHocPermission(
     }
 }
 
-TCompactVector<TObject*, 1> TNontemplateCypressNodeProxyBase::ListDescendantsForPermissionValidation(TCypressNode* node)
+TCompactVector<TCypressNode*, 1> TNontemplateCypressNodeProxyBase::ListDescendantsForPermissionValidation(TCypressNode* node)
 {
     const auto& cypressManager = Bootstrap_->GetCypressManager();
     auto* trunkNode = node->GetTrunkNode();
-    auto descendants = cypressManager->ListSubtreeNodes(trunkNode, Transaction_, false);
-
-    return TCompactVector<TObject*, 1>(
-        descendants.begin(),
-        descendants.end());
+    return cypressManager->ListSubtreeNodes(trunkNode, Transaction_, false);
 }
 
-TObject* TNontemplateCypressNodeProxyBase::GetParentForPermissionValidation(TCypressNode* node)
+TCypressNode* TNontemplateCypressNodeProxyBase::GetParentForPermissionValidation(TCypressNode* node)
 {
     return node->GetParent();
 }
@@ -2055,8 +2088,7 @@ DEFINE_YPATH_SERVICE_METHOD(TNontemplateCypressNodeProxyBase, Copy)
         mode);
 
     const auto& cypressManager = Bootstrap_->GetCypressManager();
-    // TODO(cherepashka): fix this.
-    auto sourceProxy = cypressManager->TryResolvePathToNodeProxy(sourcePath, /*method*/ "", /*service*/ "", Transaction_);
+    auto sourceProxy = cypressManager->TryResolvePathToNodeProxy(sourcePath, context->GetMethod(), context->GetService(), Transaction_);
     if (!sourceProxy) {
         THROW_ERROR_EXCEPTION(
             NObjectClient::EErrorCode::CrossCellAdditionalPath,
@@ -2297,8 +2329,8 @@ DEFINE_YPATH_SERVICE_METHOD(TNontemplateCypressNodeProxyBase, LockCopySource)
             THROW_ERROR_EXCEPTION("Portal entrances cannot be copied");
         }
 
-        if (nodeType != EObjectType::MapNode && nodeType != EObjectType::PortalExit) {
-            // NB: Other types that can have children are all Sequoia-related and are handled on Cypress proxy.
+        if (!IsCompositeNodeType(nodeType) || IsSequoiaNode(nodeType)) {
+            // NB: All Sequoia-related and are handled on Cypress proxy.
             continue;
         }
 
@@ -2442,8 +2474,12 @@ DEFINE_YPATH_SERVICE_METHOD(TNontemplateCypressNodeProxyBase, CalculateInherited
             continue;
         }
 
-        if (currentNode->GetType() != EObjectType::MapNode && currentNode->GetType() != EObjectType::PortalExit) {
-            THROW_ERROR_EXCEPTION("Type %Qlv cannot be cross-cell copied", currentNode->GetType());
+        if (auto currentNodeType = currentNode->GetType();
+            currentNodeType != EObjectType::MapNode &&
+            currentNodeType != EObjectType::PortalExit &&
+            currentNodeType != EObjectType::ClusterProxyNode)
+        {
+            THROW_ERROR_EXCEPTION("Type %Qlv cannot be cross-cell copied", currentNodeType);
         }
 
         TKeyToCypressNode keyToChildMapStorage;
@@ -3351,7 +3387,7 @@ void TCypressMapNodeProxy::Clear()
     auto keyToChildList = SortHashMapByKeys(keyToChildMap);
 
     // Take shared locks for children.
-    using TChild = std::pair<std::string, TCypressNode*>;
+    using TChild = std::pair<TKey, TCypressNode*>;
     std::vector<TChild> children;
     children.reserve(keyToChildList.size());
     for (const auto& [key, child] : keyToChildList) {
@@ -3375,7 +3411,7 @@ int TCypressMapNodeProxy::GetChildCount() const
         Transaction_);
 }
 
-std::vector<std::pair<std::string, INodePtr>> TCypressMapNodeProxy::GetChildren() const
+auto TCypressMapNodeProxy::GetChildren() const -> std::vector<std::pair<TKey, TValue>>
 {
     TKeyToCypressNode keyToChildStorage;
     const auto& keyToChildMap = GetMapNodeChildMap(
@@ -3384,7 +3420,7 @@ std::vector<std::pair<std::string, INodePtr>> TCypressMapNodeProxy::GetChildren(
         Transaction_,
         &keyToChildStorage);
 
-    std::vector<std::pair<std::string, INodePtr>> result;
+    std::vector<std::pair<TKey, TValue>> result;
     result.reserve(keyToChildMap.size());
     for (const auto& [key, child] : keyToChildMap) {
         result.emplace_back(key, GetProxy(child));
@@ -3393,7 +3429,7 @@ std::vector<std::pair<std::string, INodePtr>> TCypressMapNodeProxy::GetChildren(
     return result;
 }
 
-std::vector<std::string> TCypressMapNodeProxy::GetKeys() const
+auto TCypressMapNodeProxy::GetKeys() const -> std::vector<TKey>
 {
     TKeyToCypressNode keyToChildStorage;
     const auto& keyToChildMap = GetMapNodeChildMap(
@@ -3404,7 +3440,7 @@ std::vector<std::string> TCypressMapNodeProxy::GetKeys() const
     return NYT::GetKeys(keyToChildMap);
 }
 
-INodePtr TCypressMapNodeProxy::FindChild(const std::string& key) const
+auto TCypressMapNodeProxy::FindChild(TKeyView key) const -> TValue
 {
     auto* trunkChildNode = FindMapNodeChild(
         Bootstrap_->GetCypressManager(),
@@ -3414,7 +3450,7 @@ INodePtr TCypressMapNodeProxy::FindChild(const std::string& key) const
     return trunkChildNode ? GetProxy(trunkChildNode) : nullptr;
 }
 
-bool TCypressMapNodeProxy::AddChild(const std::string& key, const NYTree::INodePtr& child)
+bool TCypressMapNodeProxy::AddChild(TKeyView key, const TValue& child)
 {
     YT_ASSERT(!key.empty());
 
@@ -3427,7 +3463,7 @@ bool TCypressMapNodeProxy::AddChild(const std::string& key, const NYTree::INodeP
     auto* childImpl = LockImpl(trunkChildImpl);
 
     auto& children = impl->MutableChildren();
-    children.Set(key, trunkChildImpl);
+    children.Set(TKey(key), trunkChildImpl);
 
     const auto& securityManager = Bootstrap_->GetSecurityManager();
     securityManager->UpdateMasterMemoryUsage(TrunkNode_);
@@ -3441,7 +3477,7 @@ bool TCypressMapNodeProxy::AddChild(const std::string& key, const NYTree::INodeP
     return true;
 }
 
-bool TCypressMapNodeProxy::RemoveChild(const std::string& key)
+bool TCypressMapNodeProxy::RemoveChild(TKeyView key)
 {
     auto* trunkChildImpl = FindMapNodeChild(
         Bootstrap_->GetCypressManager(),
@@ -3454,7 +3490,7 @@ bool TCypressMapNodeProxy::RemoveChild(const std::string& key)
 
     auto* childImpl = LockImpl(trunkChildImpl, ELockMode::Exclusive, true);
     auto* impl = LockThisImpl(TLockRequest::MakeSharedChild(key));
-    DoRemoveChild(impl, key, childImpl);
+    DoRemoveChild(impl, TKey(key), childImpl);
 
     SetModified(EModificationType::Content);
 
@@ -3510,7 +3546,7 @@ void TCypressMapNodeProxy::ReplaceChild(const INodePtr& oldChild, const INodePtr
     SetModified(EModificationType::Content);
 }
 
-std::optional<std::string> TCypressMapNodeProxy::FindChildKey(const IConstNodePtr& child) const
+auto TCypressMapNodeProxy::FindChildKey(const IConstNodePtr& child) const -> std::optional<TKey>
 {
     return FindNodeKey(
         Bootstrap_->GetCypressManager(),
@@ -3735,34 +3771,12 @@ bool TSequoiaMapNodeProxy::GetBuiltinAttribute(
 }
 
 void TSequoiaMapNodeProxy::GetSelf(
-    TReqGet* request,
-    TRspGet* response,
+    TReqGet* /*request*/,
+    TRspGet* /*response*/,
     const TCtxGetPtr& context)
 {
-    auto attributeFilter = request->has_attributes()
-        ? FromProto<TAttributeFilter>(request->attributes())
-        : TAttributeFilter();
-
-    // NB: Since Sequoia tree cannot be traversed on master side (due to the fact that nodes live on different cells),
-    // limit field in request does nothing.
-    context->SetRequestInfo("AttributeFilter: %v",
-        MakeShrunkFormattableView(
-            attributeFilter,
-            GetDynamicCypressManagerConfig()->MaxAttributeFilterSizeToLog));
-
-    TLimitedAsyncYsonWriter writer(context->GetReadRequestComplexityLimiter());
-    WriteAttributes(&writer, attributeFilter, false);
-    writer.OnBeginMap();
-    writer.OnEndMap();
-
-    writer.Finish().Subscribe(BIND([=] (const TErrorOr<TYsonString>& resultOrError) {
-        if (resultOrError.IsOK()) {
-            response->set_value(ToProto(resultOrError.Value()));
-            context->Reply();
-        } else {
-            context->Reply(resultOrError);
-        }
-    }));
+    context->SetRequestInfo();
+    context->Reply();
 }
 
 void TSequoiaMapNodeProxy::ListSelf(
@@ -3770,7 +3784,6 @@ void TSequoiaMapNodeProxy::ListSelf(
     TRspList* /*response*/,
     const TCtxListPtr& context)
 {
-    // TODO(danilalexeev): Support list with attributes.
     context->SetRequestInfo();
     context->Reply();
 }

@@ -52,6 +52,7 @@ public:
 
     // Thread affinity: Profiler thread.
     void ProfileStarvationIntervals(const TPoolTreeSnapshotPtr& treeSnapshot);
+
 private:
     const NProfiling::TProfiler Profiler_;
     const bool SparsifyMetrics_;
@@ -70,7 +71,7 @@ private:
 
     struct TOperationUserProfilingTag
     {
-        TString PoolId;
+        std::string PoolId;
         std::string UserName;
         std::optional<TString> CustomTag;
 
@@ -80,7 +81,7 @@ private:
     struct TOperationState
     {
         int SlotIndex;
-        TString ParentPoolId;
+        std::string ParentPoolId;
         std::vector<TOperationUserProfilingTag> UserProfilingTags;
 
         NProfiling::TBufferedProducerPtr BufferedProducer;

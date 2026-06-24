@@ -490,6 +490,7 @@ message TReqCommitTransaction
     required NYT.NProto.TGuid transaction_id = 1;
     reserved 6;
     repeated NYT.NProto.TGuid additional_participant_cell_ids = 7;
+    repeated uint32 expected_prepare_signatures = 9;
     optional uint64 max_allowed_commit_timestamp = 8;
 
     optional TPrerequisiteOptions prerequisite_options = 101;
@@ -512,6 +513,7 @@ message TReqFlushTransaction
 message TRspFlushTransaction
 {
     repeated NYT.NProto.TGuid participant_cell_ids = 1;
+    repeated uint32 expected_prepare_signatures = 2;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -543,6 +545,8 @@ message TReqLookupRows
 
     optional bool enable_partial_result = 7 [default = false];
     optional bool use_lookup_cache = 9 [default = false];
+
+    optional bool allow_missing_key_columns = 14 [default = false];
 
     optional TTabletReadOptions tablet_read_options = 106;
     optional EReplicaConsistency replica_consistency = 11;
@@ -590,6 +594,8 @@ message TReqVersionedLookupRows
     optional bool enable_partial_result = 7 [default = false];
     optional bool use_lookup_cache = 9 [default = false];
 
+    optional bool allow_missing_key_columns = 12 [default = false];
+
     optional TTabletReadOptions tablet_read_options = 106;
     optional EReplicaConsistency replica_consistency = 10;
 
@@ -621,6 +627,8 @@ message TReqMultiLookup
 
         optional bool enable_partial_result = 4 [default = false];
         optional bool use_lookup_cache = 5 [default = false];
+
+        optional bool allow_missing_key_columns = 10 [default = false];
 
         required TRowsetDescriptor rowset_descriptor = 6;
 
@@ -737,6 +745,7 @@ message TReqSelectRows
     optional int32 statistics_aggregation = 33; // EStatisticsAggregation
     optional int32 optimization_level = 35; // EOptimizationLevel
     optional int32 hyper_log_log_precision = 36;
+    optional bool enable_parallelize_unordered_group_by = 37;
 
     optional TSuppressableAccessTrackingOptions suppressable_access_tracking_options = 104;
 
@@ -2216,7 +2225,7 @@ message TColumnarStatistics
     // Per-column hyperloglog digest to approximate number of unique values
     repeated NYT.NProto.THyperLogLogDigest column_hyperloglog_digests = 14;
 
-    optional int64 read_size_estimation = 15;
+    optional int64 read_size_estimate = 15;
 }
 
 message TRspGetColumnarStatistics
@@ -2280,12 +2289,14 @@ message TReqPartitionTables
     optional TFetcherConfig fetcher_config = 3;
     optional TChunkSliceFetcherConfig chunk_slice_fetcher_config = 4;
     required EPartitionTablesMode partition_mode = 5;
-    required int64 data_weight_per_partition = 6;
+    optional int64 data_weight_per_partition = 6;
+    optional int64 compressed_data_size_per_partition = 14;
     optional int32 max_partition_count = 7;
     optional bool enable_key_guarantee = 8;
     optional bool adjust_data_weight_per_partition = 9;
 
     optional bool enable_cookies = 10;
+    optional bool fetch_cookie_node_descriptors = 15;
 
     optional bool omit_inaccessible_rows = 13;
 
@@ -3922,6 +3933,14 @@ message TReqStartShuffle
     required NYT.NProto.TGuid parent_transaction_id = 3;
     optional string medium = 4;
     optional int32 replication_factor = 5;
+    optional bool use_push_based_shuffle = 6 [default = false];
+
+    // Currently this field is required only when use_push_based_shuffle is set.
+    // COMPAT(apollo1321): Make this field required for both push and pull shuffle modes in 26.3.
+    optional TTableSchema schema = 7;
+
+    // YSON-serialized TPushShuffleConfig; push-based only.
+    optional bytes push_config = 8;
 }
 
 message TRspStartShuffle

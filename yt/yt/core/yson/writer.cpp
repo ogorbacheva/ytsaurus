@@ -257,7 +257,7 @@ void TYsonWriter::OnDoubleScalar(double value)
         char buf[256];
         auto str = TStringBuf(buf, NYT::NDetail::FloatToStringWithNanInf(value, buf, sizeof(buf)));
         Stream_->Write(str);
-        if (str.find('.') == TString::npos && str.find('e') == TString::npos && std::isfinite(value)) {
+        if (str.find('.') == std::string::npos && str.find('e') == std::string::npos && std::isfinite(value)) {
             Stream_->Write(".");
         }
     }
@@ -379,14 +379,14 @@ Y_FORCE_INLINE void TBufferedBinaryYsonWriter::BeginCollection()
 {
     ++Depth_;
     if (Depth_ > NestingLevelLimit_) {
-        THROW_ERROR_EXCEPTION("Depth limit exceeded while writing YSON")
+        THROW_ERROR_EXCEPTION(EErrorCode::DepthLimitExceeded, "Depth limit exceeded while writing YSON")
             << TErrorAttribute("limit", NestingLevelLimit_);
     }
 }
 
 Y_FORCE_INLINE void TBufferedBinaryYsonWriter::EndNode()
 {
-    if (Y_LIKELY(Type_ != EYsonType::Node || Depth_ > 0)) {
+    if (Type_ != EYsonType::Node || Depth_ > 0) [[likely]] {
         TokenWriter_->WriteItemSeparator();
     }
 }

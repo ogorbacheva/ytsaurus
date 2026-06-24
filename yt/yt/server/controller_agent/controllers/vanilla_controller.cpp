@@ -6,8 +6,8 @@
 #include "task.h"
 
 #include <yt/yt/server/controller_agent/config.h>
-#include <yt/yt/server/controller_agent/operation.h>
 #include <yt/yt/server/controller_agent/helpers.h>
+#include <yt/yt/server/controller_agent/operation.h>
 
 #include <yt/yt/server/lib/chunk_pools/vanilla_chunk_pool.h>
 
@@ -65,7 +65,7 @@ public:
     //! Used only for persistence.
     TVanillaTask() = default;
 
-    TString GetTitle() const override;
+    std::string GetTitle() const override;
     TString GetName() const;
 
     TDataFlowGraph::TVertexDescriptor GetVertexDescriptor() const override;
@@ -82,7 +82,7 @@ public:
 
     void BuildJobSpec(TJobletPtr joblet, TJobSpec* jobSpec) override;
 
-    THashMap<TString, TString> BuildJobEnvironment() const override;
+    THashMap<std::string, std::string> BuildJobEnvironment() const override;
 
     EJobType GetJobType() const override;
 
@@ -261,7 +261,7 @@ void TVanillaTask::RegisterMetadata(auto&& registrar)
     });
 }
 
-TString TVanillaTask::GetTitle() const
+std::string TVanillaTask::GetTitle() const
 {
     return Format("Vanilla(%v)", Name_);
 }
@@ -325,11 +325,11 @@ void TVanillaTask::BuildJobSpec(TJobletPtr joblet, TJobSpec* jobSpec)
     AddOutputTableSpecs(jobSpec, joblet);
 }
 
-THashMap<TString, TString> TVanillaTask::BuildJobEnvironment() const
+THashMap<std::string, std::string> TVanillaTask::BuildJobEnvironment() const
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
-    return THashMap<TString, TString>{
+    return THashMap<std::string, std::string>{
         {"YT_TASK_NAME", GetName()},
     };
 }
@@ -484,6 +484,14 @@ void TVanillaController::RegisterMetadata(auto&& registrar)
     PHOENIX_REGISTER_FIELD(2, Options_);
     PHOENIX_REGISTER_FIELD(3, Tasks_);
     PHOENIX_REGISTER_FIELD(4, TaskOutputTables_);
+    PHOENIX_REGISTER_FIELD(5, TotalTargetJobCount_,
+        .SinceVersion(ESnapshotVersion::PersistVanillaJobCounts)
+        // COMPAT(pogorelov)
+        .WhenMissing([] (TThis* this_, auto& /*context*/) {
+            for (const auto& task : this_->Tasks_) {
+                this_->TotalTargetJobCount_ += task->GetTargetJobCount();
+            }
+        }));
 }
 
 void TVanillaController::CustomMaterialize()
@@ -506,7 +514,8 @@ void TVanillaController::CustomMaterialize()
         auto task = CreateTask(
             this,
             taskSpec,
-            taskName,
+            // TODO(babenko): migrate to std::string
+            TString(taskName),
             std::move(streamDescriptors),
             std::vector<TInputStreamDescriptorPtr>{},
             GetOrCrash(dynamicSpec->Tasks, taskName)->JobCount);
@@ -520,7 +529,8 @@ void TVanillaController::CustomMaterialize()
         TotalTargetJobCount_ += task->GetTargetJobCount();
 
         Tasks_.emplace_back(std::move(task));
-        ValidateUserFileCount(taskSpec, taskName);
+        // TODO(babenko): migrate to std::string
+        ValidateUserFileCount(taskSpec, TString(taskName));
     }
 }
 
@@ -722,18 +732,18 @@ TOperationSpecBaseConfigurator TVanillaController::GetOperationSpecBaseConfigura
     auto configurator = TConfigurator<TVanillaOperationSpec>();
 
     auto& tasksRegistrar = configurator.MapField("tasks", &TVanillaOperationSpec::Tasks)
-        .ValidateOnAdded(BIND_NO_PROPAGATE([] (const TString& key, const TVanillaTaskSpecPtr& /*newSpec*/) {
+        .ValidateOnAdded(BIND_NO_PROPAGATE([] (const std::string& key, const TVanillaTaskSpecPtr& /*newSpec*/) {
             THROW_ERROR_EXCEPTION("Cannot create a new task")
                 << TErrorAttribute("new_task_name", key);
         }))
-        .ValidateOnRemoved(BIND_NO_PROPAGATE([] (const TString& key, const TVanillaTaskSpecPtr& /*oldSpec*/) {
+        .ValidateOnRemoved(BIND_NO_PROPAGATE([] (const std::string& key, const TVanillaTaskSpecPtr& /*oldSpec*/) {
             THROW_ERROR_EXCEPTION("Cannot remove a task")
                 << TErrorAttribute("old_task_name", key);
         }))
-        .OnAdded(BIND_NO_PROPAGATE([] (const TString& /*key*/, const TVanillaTaskSpecPtr& /*newSpec*/) -> TConfigurator<TVanillaTaskSpec> {
+        .OnAdded(BIND_NO_PROPAGATE([] (const std::string& /*key*/, const TVanillaTaskSpecPtr& /*newSpec*/) -> TConfigurator<TVanillaTaskSpec> {
             YT_ABORT();
         }))
-        .OnRemoved(BIND_NO_PROPAGATE([] (const TString& /*key*/, const TVanillaTaskSpecPtr& /*oldSpec*/) {
+        .OnRemoved(BIND_NO_PROPAGATE([] (const std::string& /*key*/, const TVanillaTaskSpecPtr& /*oldSpec*/) {
             YT_ABORT();
         }));
 
@@ -899,7 +909,7 @@ private:
     IChunkPoolOutput::TCookie ExtractCookieForAllocation(
         const TAllocation& allocation) final;
 
-    THashMap<TString, TString> BuildJobEnvironment() const final;
+    THashMap<std::string, std::string> BuildJobEnvironment() const final;
 
     TGangOperationController& GetOperationController() const;
 
@@ -951,9 +961,9 @@ public:
     TJobletPtr CreateJoblet(
         TTask* task,
         TJobId jobId,
-        TString treeId,
+        std::string treeId,
         int taskJobIndex,
-        std::optional<TString> poolPath,
+        std::optional<std::string> poolPath,
         bool treeIsTentative) final;
 
     bool IsOperationGang() const noexcept final;
@@ -990,6 +1000,8 @@ private:
     void ReportOperationIncarnationStartedEventToArchive(TIncarnationSwitchData data) const;
 
     const TOperationEventReporterPtr& GetOperationEventReporter() const;
+
+    void LogOperationIncarnationStarted(const TIncarnationSwitchData& data);
 
     void ReportGangRankToArchive(const TGangJobletPtr& joblet) const;
 
@@ -1219,7 +1231,7 @@ IChunkPoolOutput::TCookie TGangTask::ExtractCookieForAllocation(
     return VanillaChunkPool_->Extract(NodeIdFromAllocationId(allocation.Id));
 }
 
-THashMap<TString, TString> TGangTask::BuildJobEnvironment() const
+THashMap<std::string, std::string> TGangTask::BuildJobEnvironment() const
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -1363,6 +1375,14 @@ void TGangOperationController::RegisterMetadata(auto&& registrar)
     registrar.template BaseType<TVanillaController>();
 
     PHOENIX_REGISTER_FIELD(1, Incarnation_);
+    PHOENIX_REGISTER_FIELD(2, TotalGangSize_,
+        .SinceVersion(ESnapshotVersion::PersistVanillaJobCounts)
+        // COMPAT(pogorelov)
+        .WhenMissing([] (TThis* this_, auto& /*context*/) {
+            for (const auto& task : this_->Tasks_) {
+                this_->TotalGangSize_ += static_cast<const TGangTask*>(task.Get())->GetGangSize();
+            }
+        }));
 }
 
 bool TGangOperationController::OnJobCompleted(
@@ -1499,9 +1519,9 @@ bool TGangOperationController::OnJobAborted(
 TJobletPtr TGangOperationController::CreateJoblet(
     TTask* task,
     TJobId jobId,
-    TString treeId,
+    std::string treeId,
     int taskJobIndex,
-    std::optional<TString> poolPath,
+    std::optional<std::string> poolPath,
     bool treeIsTentative)
 {
     YT_ASSERT_INVOKER_POOL_AFFINITY(CancelableInvokerPool_);
@@ -1569,7 +1589,7 @@ void TGangOperationController::RestartAllRunningJobsPreservingAllocations(bool o
             // TODO(pogorelov): It could be fixed by defering job releasing untill the end of method, think about it.
             Host_->AbortJob(jobId, abortReason, /*requestNewJob*/ true);
 
-            if ([[maybe_unused]] auto operationFinished = !OnJobAborted(joblet, std::make_unique<TAbortedJobSummary>(jobId, abortReason))) {
+            if ([[maybe_unused]] auto operationFinished = !OnJobAborted(joblet, CreateAbortedJobSummary(jobId, abortReason))) {
                 YT_LOG_DEBUG("Operation finished during restarting jobs (JobId: %v)", jobId);
                 return;
             }
@@ -1725,6 +1745,15 @@ void TGangOperationController::ReportOperationIncarnationStartedEventToArchive(T
 const TOperationEventReporterPtr& TGangOperationController::GetOperationEventReporter() const
 {
     return Host_->GetOperationEventReporter();
+}
+
+void TGangOperationController::LogOperationIncarnationStarted(const TIncarnationSwitchData& data)
+{
+    LogEventFluently(ELogEventType::OperationIncarnationStarted)
+        .Item("operation_id").Value(GetOperationId())
+        .Item("operation_incarnation").Value(Incarnation_.Underlying())
+        .OptionalItem("incarnation_switch_reason", data.IncarnationSwitchReason)
+        .Item("incarnation_switch_info").Value(data.IncarnationSwitchInfo);
 }
 
 void TGangOperationController::ReportGangRankToArchive(const TGangJobletPtr& joblet) const
@@ -1912,6 +1941,7 @@ void TGangOperationController::CustomMaterialize()
         TotalGangSize_ += static_cast<const TGangTask*>(task.Get())->GetGangSize();
     }
 
+    LogOperationIncarnationStarted(TIncarnationSwitchData{});
     ReportOperationIncarnationStartedEventToArchive(TIncarnationSwitchData{});
 }
 
@@ -1923,6 +1953,7 @@ void TGangOperationController::OnOperationIncarnationChanged(bool operationIsRev
 
     OperationIncarnationSwitchCounters[data.GetSwitchReason()].Increment();
 
+    LogOperationIncarnationStarted(data);
     ReportOperationIncarnationStartedEventToArchive(std::move(data));
 
     RestartAllRunningJobsPreservingAllocations(operationIsReviving);
@@ -2068,8 +2099,12 @@ IOperationControllerPtr CreateVanillaController(
     TOperation* operation)
 {
     auto options = CreateOperationOptions(config->VanillaOperationOptions, operation->GetOptionsPatch());
-    auto spec = ParseOperationSpec<TVanillaOperationSpec>(
-        UpdateSpec(options->SpecTemplate, operation->GetSpec()));
+    auto spec = ParseOperationSpec<TVanillaOperationSpec>(UpdateSpec(options->SpecTemplate, operation->GetSpec()));
+    auto providedSpec = ParseOperationSpec<TVanillaOperationSpec>(operation->GetProvidedSpec());
+
+    for (const auto& [taskName, taskSpec] : spec->Tasks) {
+        ValidateAndEnrichVolumeSpec(config, spec, host, taskSpec.Get(), taskSpec.Get());
+    }
 
     for (const auto& [taskName, taskSpec] : spec->Tasks) {
         if (taskSpec->GangOptions) {

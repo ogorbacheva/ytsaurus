@@ -12,6 +12,8 @@
 
 #include <yt/yt/ytlib/api/native/public.h>
 
+#include <yt/yt/ytlib/cell_master_client/public.h>
+
 #include <yt/yt/ytlib/chunk_client/config.h>
 
 #include <yt/yt/ytlib/event_log/public.h>
@@ -25,13 +27,15 @@
 
 #include <yt/yt/client/ypath/rich.h>
 
-#include <yt/yt/library/program/config.h>
-
 #include <yt/yt/library/server_program/config.h>
+
+#include <yt/yt/library/program/config.h>
 
 #include <yt/yt/library/re2/public.h>
 
 #include <yt/yt/core/concurrency/public.h>
+
+#include <yt/yt/core/misc/arithmetic_formula.h>
 
 #include <yt/yt/core/ytree/yson_struct.h>
 
@@ -810,7 +814,7 @@ DEFINE_REFCOUNTED_TYPE(TDockerRegistryConfig)
 struct TRemoteOperationsConfig
     : public NYTree::TYsonStruct
 {
-    THashSet<TString> AllowedUsers;
+    THashSet<std::string> AllowedUsers;
 
     bool AllowedForEveryone;
 
@@ -1124,7 +1128,7 @@ struct TControllerAgentConfig
     NYTree::INodePtr VanillaOperationOptionsNode;
 
     //! Default environment variables set for every job.
-    THashMap<TString, TString> Environment;
+    THashMap<std::string, std::string> Environment;
 
     //! If |true|, jobs are revived from snapshot.
     bool EnableJobRevival;
@@ -1154,6 +1158,10 @@ struct TControllerAgentConfig
 
     TAlertManagerConfigPtr AlertManager;
 
+    //! User job thread count to add operation alert as a function of cpu (variable "cpu" = ceil(job cpu_limit)).
+    //! Empty formula disables the corresponding operation alert.
+    TArithmeticFormula MaxJobThreadCountFormula;
+
     //! Chunk size in per-controller row buffers.
     i64 ControllerRowBufferChunkSize;
 
@@ -1167,15 +1175,15 @@ struct TControllerAgentConfig
     // Cypress path to a special layer containing YT-specific data required to
     // run jobs with custom rootfs, e.g. statically linked ytserver-exec.
     // Is applied on top of user layers if they are used.
-    std::optional<TString> SystemLayerPath;
+    std::optional<NYPath::TYPath> SystemLayerPath;
 
     // Cypress path to a default layer for user jobs, if no layers were specified explicitly.
-    std::optional<TString> DefaultLayerPath;
+    std::optional<NYPath::TYPath> DefaultLayerPath;
 
     // Cypress path to the directory with CUDA toolkit layers which are required for some
     // GPU jobs. The layer is applied as an additional user layer on top of the others if they are
     // present.
-    std::optional<TString> CudaToolkitLayerDirectoryPath;
+    std::optional<NYPath::TYPath> CudaToolkitLayerDirectoryPath;
 
     //! Controls handling docker images specified in user spec.
     TDockerRegistryConfigPtr DockerRegistry;
@@ -1249,7 +1257,7 @@ struct TControllerAgentConfig
     bool EnableBypassArtifactCache;
 
     //! List of the tags assigned to controller agent.
-    std::vector<TString> Tags;
+    std::vector<std::string> Tags;
 
     TUserJobMonitoringConfigPtr UserJobMonitoring;
 
@@ -1260,6 +1268,9 @@ struct TControllerAgentConfig
 
     //! List of media that are deprecated to be used in disk requests.
     THashSet<std::string> DeprecatedMedia;
+
+    //! List of media allowed for NBD disks.
+    THashSet<std::string> NbdMedia;
 
     //! The name of the fast medium (SSD) in the communal intermediate account.
     std::string FastIntermediateMedium;
@@ -1286,7 +1297,7 @@ struct TControllerAgentConfig
     //! Enables job profiling.
     bool EnableJobProfiling;
 
-    std::optional<TString> CudaProfilerLayerPath;
+    std::optional<NYPath::TYPath> CudaProfilerLayerPath;
 
     THashMap<std::string, std::string> CudaProfilerEnvironmentVariables;
     // COMPAT(omgronnny)
@@ -1299,11 +1310,13 @@ struct TControllerAgentConfig
 
     TJobTrackerConfigPtr JobTracker;
 
-    THashSet<TString> NetworkProjectsAllowedForOffloading;
+    THashSet<std::string> NetworkProjectsAllowedForOffloading;
 
     bool EnableNetworkInOperationDemand;
 
     NRpc::TServerDynamicConfigPtr RpcServer;
+
+    NCellMasterClient::TCellDirectorySynchronizerOverrideDynamicConfigPtr MasterCellDirectorySynchronizer;
 
     //! How many initial successive job aborts are needed to fail operation.
     THashMap<EAbortReason, int> MaxJobAbortsUntilOperationFailure;

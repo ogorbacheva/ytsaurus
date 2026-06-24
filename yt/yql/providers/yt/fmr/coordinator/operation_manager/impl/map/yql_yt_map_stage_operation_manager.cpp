@@ -24,13 +24,14 @@ public:
         const auto& partIdStats = context.PartIdStats;
         auto ytCoordinatorService = context.YtCoordinatorService;
 
-        if (operationParams.IsOrdered) {
+        TPartitionResult result;
+        if (operationParams.MapJobType == EFmrJobType::OrderedMap) {
             // Ordered map -> ordered partition
             auto orderedPartitionerSettings = GetOrderedPartitionerSettings(fmrOperationSpec);
             auto orderedPartitioner = TOrderedPartitioner(partIdsForTables, partIdStats, orderedPartitionerSettings);
 
             std::vector<TOperationTableRef> inputTables = operationParams.Input;
-            return PartitionInputTablesIntoTasksOrdered(inputTables, orderedPartitioner, ytCoordinatorService, clusterConnections);
+            result = PartitionInputTablesIntoTasksOrdered(inputTables, orderedPartitioner, ytCoordinatorService, clusterConnections);
         } else {
             // Unordered map -> unordered partition
             auto fmrPartitionerSettings = GetFmrPartitionerSettings(fmrOperationSpec);
@@ -47,15 +48,35 @@ public:
                 }
             }
 
-            return PartitionInputTablesIntoTasks(ytInputTables, fmrInputTables, fmrPartitioner, ytCoordinatorService, clusterConnections, ytPartitionerSettings);
+            result = PartitionInputTablesIntoTasks(ytInputTables, fmrInputTables, fmrPartitioner, ytCoordinatorService, clusterConnections, ytPartitionerSettings);
         }
+
+        if (operationParams.ForceSingleTask && !result.Error && result.TaskInputs.size() > 1) {
+            // JobCount=1 in Map spec — collapse all partitions into a single task.
+            TTaskTableInputRef merged;
+            for (auto& taskInput: result.TaskInputs) {
+                for (auto& input: taskInput.Inputs) {
+                    merged.Inputs.emplace_back(std::move(input));
+                }
+            }
+            result.TaskInputs = {std::move(merged)};
+            YQL_CLOG(INFO, FastMapReduce) << "Map: ForceSingleTask collapsed partitions into 1 task";
+        }
+        return result;
     }
 
     TGenerateTasksResult GenerateTasksImpl(
         const TGenerateTasksContext& context
-    ) {
+    ) override {
         const auto& mapOperationParams = std::get<TMapOperationParams>(context.OperationParams);
 
+        if (mapOperationParams.MapJobType == EFmrJobType::OrderedMap) {
+            YQL_CLOG(INFO, FastMapReduce) << "Starting Ordered Map operation";
+        } else {
+            YQL_CLOG(INFO, FastMapReduce) << "Starting Map operation";
+        }
+
+        TGenerateTasksResult result;
         std::vector<TGeneratedTaskInfo> generatedTasks;
         for (auto& task: context.PartitionResult.TaskInputs) {
             TMapTaskParams mapTaskParams;
@@ -65,9 +86,15 @@ public:
                 return TFmrTableOutputRef(fmrTableRef);
             });
 
+            TString newPartId = GenerateId();
+            for (auto& fmrTableOutputRef: fmrTableOutputRefs) {
+                fmrTableOutputRef.PartId = newPartId;
+                result.PartIdsToUpdate[fmrTableOutputRef.TableId].emplace_back(newPartId);
+            }
+
             mapTaskParams.Output = fmrTableOutputRefs;
             mapTaskParams.SerializedMapJobState = mapOperationParams.SerializedMapJobState;
-            mapTaskParams.IsOrdered = mapOperationParams.IsOrdered;
+            mapTaskParams.MapJobType = mapOperationParams.MapJobType;
 
             generatedTasks.push_back(TGeneratedTaskInfo{
                 .TaskType = ETaskType::Map,
@@ -75,24 +102,63 @@ public:
             });
         }
 
-        return TGenerateTasksResult{.Tasks = std::move(generatedTasks)};
+        result.Tasks = std::move(generatedTasks);
+        return result;
     }
 
-    TGetNewPartIdsForTaskResult GetNewPartIdsForTask(const TGetNewPartIdsForTaskContext& context) {
+    TGetNewPartIdsForTaskResult GetNewPartIdsForTask(const TGetNewPartIdsForTaskContext& context) override {
         TGetNewPartIdsForTaskResult result;
         TMapTaskParams& mapTaskParams = std::get<TMapTaskParams>(context.Task->TaskParams);
-        TString newPartId = GenerateId();
 
         for (auto& fmrTableOutputRef: mapTaskParams.Output) {
+            if (fmrTableOutputRef.PartId.empty()) {
+                return {.Error = TFmrError{
+                    .Component = EFmrComponent::Coordinator,
+                    .Reason = EFmrErrorReason::RestartQuery,
+                    .ErrorMessage = "Map task has empty output PartId",
+                    .TaskId = context.TaskId,
+                    .OperationId = context.OperationId
+                }};
+            }
             TString tableId = fmrTableOutputRef.TableId;
-            fmrTableOutputRef.PartId = newPartId;
-            result.NewPartIdsForTables[tableId].emplace_back(newPartId);
+            TString partId = fmrTableOutputRef.PartId;
+
+            const auto& partIdsIter = context.PartIdsForTables.find(tableId);
+            if (partIdsIter == context.PartIdsForTables.end()) {
+                return {.Error = TFmrError{
+                    .Component = EFmrComponent::Coordinator,
+                    .Reason = EFmrErrorReason::RestartQuery,
+                    .ErrorMessage = "Map task output PartId is missing in coordinator part list",
+                    .TaskId = context.TaskId,
+                    .OperationId = context.OperationId
+                }};
+            }
+
+            const auto& partIds = partIdsIter->second;
+            if (std::find(partIds.begin(), partIds.end(), partId) == partIds.end()) {
+                return {.Error = TFmrError{
+                    .Component = EFmrComponent::Coordinator,
+                    .Reason = EFmrErrorReason::RestartQuery,
+                    .ErrorMessage = "Map task output PartId is missing in coordinator part list",
+                    .TaskId = context.TaskId,
+                    .OperationId = context.OperationId
+                }};
+            }
         }
 
         return result;
     }
 
-    std::vector<TPartIdInfo> GetPartIdsForTask(const GetPartIdsForTaskContext& context) {
+    std::vector<TString> GetExpectedOutputTableIds(const TOperationParams& params) const override {
+        const auto& mapParams = std::get<TMapOperationParams>(params);
+        std::vector<TString> ids;
+        for (const auto& output : mapParams.Output) {
+            ids.emplace_back(output.FmrTableId.Id);
+        }
+        return ids;
+    }
+
+    std::vector<TPartIdInfo> GetPartIdsForTask(const GetPartIdsForTaskContext& context) override {
         std::vector<TPartIdInfo> groupsToClear;
         TMapTaskParams& mapTaskParams = std::get<TMapTaskParams>(context.Task->TaskParams);
         for (auto& fmrTableOutputRef: mapTaskParams.Output) {

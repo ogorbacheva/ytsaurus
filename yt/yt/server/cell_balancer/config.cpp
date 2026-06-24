@@ -35,6 +35,9 @@ void TBundleControllerConfig::Register(TRegistrar registrar)
     registrar.Parameter("cluster", &TThis::Cluster)
         .NonEmpty();
 
+    registrar.Parameter("use_dedicated_user_name", &TThis::UseDedicatedUserName)
+        .Default();
+
     registrar.Parameter("bundle_scan_period", &TThis::BundleScanPeriod)
         .Default(TDuration::Seconds(10));
 
@@ -112,6 +115,11 @@ void TBundleControllerConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("chaos_config", &TThis::ChaosConfig)
         .DefaultNew();
+
+    registrar.Parameter("annotate_new_nodes", &TThis::AnnotateNewNodes)
+        .Default(false);
+    registrar.Parameter("annotate_new_proxies", &TThis::AnnotateNewProxies)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -123,6 +131,9 @@ void TNodeTrackerDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("heartbeat_timeout", &TThis::HeartbeatTimeout)
         .Default(TDuration::Seconds(10));
+
+    registrar.Parameter("max_detected_offline_nodes", &TThis::MaxDetectedOfflineNodes)
+        .Default(5);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -134,6 +145,36 @@ void TBundleControllerDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("node_tracker", &TThis::NodeTracker)
         .DefaultNew();
+
+    registrar.Parameter("remove_tags_from_offline_nodes", &TThis::RemoveTagsFromOfflineNodes)
+        .Default(false);
+
+    registrar.Parameter("remove_instance_cypress_node_after", &TThis::RemoveInstanceCypressNodeAfter)
+        .Default();
+    registrar.Parameter("offline_instance_grace_period", &TThis::OfflineInstanceGracePeriod)
+        .Default();
+
+    registrar.Parameter("max_concurrent_cypress_write_requests", &TThis::MaxConcurrentCypressWriteRequests)
+        .Default(50);
+    registrar.Parameter("max_released_nodes_per_iteration", &TThis::MaxReleasedNodesPerIteration)
+        .Default(50);
+
+    registrar.Parameter("flush_log_after_mutations", &TThis::FlushLogAfterMutations)
+        .Default(false);
+
+    registrar.Parameter("enable_chaos_bundle_management", &TThis::EnableChaosBundleManagement)
+        .Default();
+
+    registrar.Parameter("foreign_cluster_request_timeout", &TThis::ForeignClusterRequestTimeout)
+        .Default(TDuration::Minutes(1));
+
+    registrar.Parameter("annotate_new_nodes", &TThis::AnnotateNewNodes)
+        .Default();
+    registrar.Parameter("annotate_new_proxies", &TThis::AnnotateNewProxies)
+        .Default();
+
+    registrar.Parameter("use_data_node_racks", &TThis::UseDataNodeRacks)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -165,6 +206,10 @@ void TCellBalancerBootstrapConfig::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("dynamic_config_path", &TThis::DynamicConfigPath)
         .Default(DefaultBundleControllerConfigPath);
+
+    registrar.Preprocessor([] (TThis* config) {
+        config->DynamicConfigManager->IgnoreConfigAbsence = true;
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////

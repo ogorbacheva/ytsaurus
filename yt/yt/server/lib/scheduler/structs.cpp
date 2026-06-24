@@ -56,7 +56,7 @@ void FromProto(
     }
     if (protoAttributes.has_cuda_toolkit_version()) {
         attributes->CudaToolkitVersion
-            = FromProto<TString>(protoAttributes.cuda_toolkit_version());
+            = FromProto<std::string>(protoAttributes.cuda_toolkit_version());
     }
     {
         auto& diskRequest =
@@ -119,6 +119,8 @@ void ToProto(
         ToProto(
             protoResponse->mutable_allocation_attributes(),
             startDescriptor.AllocationAttributes);
+
+        protoResponse->set_allocation_group_name(startDescriptor.AllocationGroupName);
     }
 
     protoResponse->set_duration(ToProto(scheduleJobResult.Duration));

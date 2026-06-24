@@ -8,6 +8,7 @@
 #include <yt/yt/library/query/base/functions.h>
 
 #include <yt/yt/library/query/engine_api/builtin_function_profiler.h>
+#include <yt/yt/library/query/engine_api/append_function_implementation.h>
 #include <yt/yt/library/query/engine_api/column_evaluator.h>
 #include <yt/yt/library/query/engine_api/config.h>
 #include <yt/yt/library/query/engine_api/coordinator.h>
@@ -17,6 +18,7 @@
 #include <yt/yt/library/query/engine/functions_cg.h>
 
 #include <yt/yt/core/concurrency/action_queue.h>
+#include <yt/yt/core/concurrency/scheduler_api.h>
 
 #include <yt/yt/core/misc/collection_helpers.h>
 
@@ -25,6 +27,8 @@
 #include <util/string/split.h>
 #include <util/string/strip.h>
 #include <util/string/subst.h>
+
+#include <library/cpp/resource/resource.h>
 
 #include <tuple>
 
@@ -45,6 +49,13 @@ using namespace NYson;
 using NCodegen::EExecutionBackend;
 
 YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "TestLogger");
+
+TEnumIndexedArray<EExecutionBackend, TSharedRef> GetTestUdfImplementationFiles(TStringBuf name)
+{
+    auto result = TEnumIndexedArray<EExecutionBackend, TSharedRef>();
+    result[EExecutionBackend::Native] = TSharedRef::FromString(::NResource::Find(std::string("/llvm_bc/") + std::string(name)));
+    return result;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -67,15 +78,14 @@ protected:
         TStringBuf query,
         TMatcher matcher,
         TYsonStringBuf placeholderValues = {},
-        int syntaxVersion = 1)
+        TPreparePlanFragmentOptions options = {.BuilderVersion = DefaultExpressionBuilderVersion})
     {
         EXPECT_THROW_THAT(
-            BIND([&] {
-                ParseAndPreparePlanFragment(&PrepareMock_, query, placeholderValues, syntaxVersion);
+            NConcurrency::WaitFor(BIND([&] {
+                ParseAndPreparePlanFragment(&PrepareMock_, query, placeholderValues, options);
             })
             .AsyncVia(ActionQueue_->GetInvoker())
-            .Run()
-            .BlockingGet()
+            .Run())
             .ThrowOnError(),
             matcher);
     }
@@ -315,6 +325,28 @@ TEST_F(TQueryPrepareTest, TooBigQuery2)
         ContainsRegex("Maximum expression depth exceeded"));
 }
 
+TEST_F(TQueryPrepareTest, DeeplyNestedSubquery)
+{
+    constexpr int Depth = 2000;
+
+    std::string query;
+    query.reserve(Depth * 20);
+    for (int level = 0; level < Depth; ++level) {
+        query += "SELECT * FROM (\n";
+    }
+    query += "SELECT * FROM [//t]";
+    for (int level = 0; level < Depth; ++level) {
+        query += ")";
+    }
+
+    EXPECT_CALL(PrepareMock_, GetInitialSplit("//t"))
+        .WillRepeatedly(Return(MakeFuture(MakeSimpleSplit())));
+
+    ExpectPrepareThrowsWithDiagnostics(
+        query,
+        HasSubstr("Maximum subquery depth exceeded"));
+}
+
 #endif // !defined(_asan_enabled_) && !defined(_msan_enabled_)
 
 TEST_F(TQueryPrepareTest, BigQuery)
@@ -367,7 +399,7 @@ TEST_F(TQueryPrepareTest, NullTypeInference)
     EXPECT_CALL(PrepareMock_, GetInitialSplit("//t"))
         .WillOnce(Return(MakeFuture(MakeSimpleSplit())));
 
-    ParseAndPreparePlanFragment(&PrepareMock_, "null from [//t]", {}, 1);
+    ParseAndPreparePlanFragment(&PrepareMock_, "null from [//t]");
 }
 
 TEST_F(TQueryPrepareTest, AdditionPrecedence)
@@ -712,8 +744,12 @@ TEST_F(TQueryPrepareTest, SplitWherePredicateWithJoin)
         )");
         auto query = ParseAndPreparePlanFragment(&PrepareMock_, queryString)->Query;
 
+        auto joinProfilerRegistry1 = TJoinProfilerRegistry({}, {}, nullptr, {});
+        for (int joinIndex = 0; joinIndex < std::ssize(query->JoinClauses); ++joinIndex) {
+            joinProfilerRegistry1.InsertJoinProfilerOrThrow(joinIndex, MakeNullJoinSubqueryProfiler());
+        }
         TCGVariables variables;
-        ProfileForBothExecutionBackends(query, &id1, &variables, {MakeNullJoinSubqueryProfiler()});
+        ProfileForBothExecutionBackends(query, &id1, &variables, std::move(joinProfilerRegistry1));
     }
 
     llvm::FoldingSetNodeID id2;
@@ -728,8 +764,12 @@ TEST_F(TQueryPrepareTest, SplitWherePredicateWithJoin)
         )");
         auto query = ParseAndPreparePlanFragment(&PrepareMock_, queryString)->Query;
 
+        auto joinProfilerRegistry2 = TJoinProfilerRegistry({}, {}, nullptr, {});
+        for (int joinIndex = 0; joinIndex < std::ssize(query->JoinClauses); ++joinIndex) {
+            joinProfilerRegistry2.InsertJoinProfilerOrThrow(joinIndex, MakeNullJoinSubqueryProfiler());
+        }
         TCGVariables variables;
-        ProfileForBothExecutionBackends(query, &id2, &variables, {MakeNullJoinSubqueryProfiler()});
+        ProfileForBothExecutionBackends(query, &id2, &variables, std::move(joinProfilerRegistry2));
     }
 
     EXPECT_EQ(id1, id2);
@@ -757,7 +797,7 @@ TEST_F(TQueryPrepareTest, DisjointGroupBy)
         auto query = ParseAndPreparePlanFragment(&PrepareMock_, queryString)->Query;
 
         TCGVariables variables;
-        ProfileForBothExecutionBackends(query, &id1, &variables, {MakeNullJoinSubqueryProfiler()});
+        ProfileForBothExecutionBackends(query, &id1, &variables);
     }
 
     llvm::FoldingSetNodeID id2;
@@ -766,7 +806,7 @@ TEST_F(TQueryPrepareTest, DisjointGroupBy)
         auto query = ParseAndPreparePlanFragment(&PrepareMock_, queryString)->Query;
 
         TCGVariables variables;
-        ProfileForBothExecutionBackends(query, &id2, &variables, {MakeNullJoinSubqueryProfiler()});
+        ProfileForBothExecutionBackends(query, &id2, &variables);
     }
 
     EXPECT_NE(id1, id2);
@@ -785,7 +825,7 @@ TEST_F(TQueryPrepareTest, GroupByWithLimitFolding)
         auto query = ParseAndPreparePlanFragment(&PrepareMock_, "* from [//t] group by 1")->Query;
 
         TCGVariables variables;
-        ProfileForBothExecutionBackends(query, &id1, &variables, {MakeNullJoinSubqueryProfiler()});
+        ProfileForBothExecutionBackends(query, &id1, &variables);
     }
 
     llvm::FoldingSetNodeID id2;
@@ -793,7 +833,7 @@ TEST_F(TQueryPrepareTest, GroupByWithLimitFolding)
         auto query = ParseAndPreparePlanFragment(&PrepareMock_, "* from [//t] group by 1 limit 1")->Query;
 
         TCGVariables variables;
-        ProfileForBothExecutionBackends(query, &id2, &variables, {MakeNullJoinSubqueryProfiler()});
+        ProfileForBothExecutionBackends(query, &id2, &variables);
     }
 
     EXPECT_NE(id1, id2);
@@ -854,6 +894,89 @@ TEST_F(TQueryPrepareTest, OrderByPrimaryKeyPrefix)
     EXPECT_TRUE(query->OrderClause);
 }
 
+TEST_F(TQueryPrepareTest, ReverseScanForOrderBy)
+{
+    EXPECT_CALL(PrepareMock_, GetInitialSplit("//t"))
+        .WillRepeatedly(Return(MakeFuture(MakeSplit({
+            TColumnSchema("k", EValueType::Int64, ESortOrder::Ascending),
+            TColumnSchema("l", EValueType::Int64, ESortOrder::Ascending),
+            TColumnSchema("m", EValueType::Int64, ESortOrder::Ascending),
+            TColumnSchema("v", EValueType::Int64),
+        }))));
+
+    const TPreparePlanFragmentOptions optionsOn{
+        .BuilderVersion = DefaultExpressionBuilderVersion,
+        .AllowReverseScanForOrderBy = true,
+    };
+    const TPreparePlanFragmentOptions optionsOff{
+        .BuilderVersion = DefaultExpressionBuilderVersion,
+        .AllowReverseScanForOrderBy = false,
+    };
+
+    // Full primary key prefix DESC: reverse scan applies.
+    {
+        auto query = ParseAndPreparePlanFragment(&PrepareMock_,
+            "* from [//t] order by k desc, l desc, m desc limit 10", {}, optionsOn)->Query;
+        EXPECT_TRUE(query->OrderClause);
+        EXPECT_TRUE(query->IsReverseScan);
+        EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Reversed);
+    }
+
+    // Partial primary key prefix DESC: reverse scan applies.
+    {
+        auto query = ParseAndPreparePlanFragment(&PrepareMock_,
+            "* from [//t] order by k desc limit 10", {}, optionsOn)->Query;
+        EXPECT_TRUE(query->OrderClause);
+        EXPECT_TRUE(query->IsReverseScan);
+        EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Reversed);
+    }
+
+    // Two-key prefix DESC: reverse scan applies.
+    {
+        auto query = ParseAndPreparePlanFragment(&PrepareMock_,
+            "* from [//t] order by k desc, l desc limit 10", {}, optionsOn)->Query;
+        EXPECT_TRUE(query->OrderClause);
+        EXPECT_TRUE(query->IsReverseScan);
+        EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Reversed);
+    }
+
+    // Mixed ASC/DESC: reverse scan does not apply.
+    {
+        auto query = ParseAndPreparePlanFragment(&PrepareMock_,
+            "* from [//t] order by k desc, l asc limit 10", {}, optionsOn)->Query;
+        EXPECT_TRUE(query->OrderClause);
+        EXPECT_FALSE(query->IsReverseScan);
+        EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Unordered);
+    }
+
+    // Non-prefix-start DESC (skips k): reverse scan does not apply.
+    {
+        auto query = ParseAndPreparePlanFragment(&PrepareMock_,
+            "* from [//t] order by l desc limit 10", {}, optionsOn)->Query;
+        EXPECT_TRUE(query->OrderClause);
+        EXPECT_FALSE(query->IsReverseScan);
+        EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Unordered);
+    }
+
+    // Feature flag off: reverse scan does not apply.
+    {
+        auto query = ParseAndPreparePlanFragment(&PrepareMock_,
+            "* from [//t] order by k desc limit 10", {}, optionsOff)->Query;
+        EXPECT_TRUE(query->OrderClause);
+        EXPECT_FALSE(query->IsReverseScan);
+        EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Unordered);
+    }
+
+    // GROUP BY present: reverse scan is forbidden.
+    {
+        auto query = ParseAndPreparePlanFragment(&PrepareMock_,
+            "sum(v) from [//t] group by k order by k desc limit 10", {}, optionsOn)->Query;
+        EXPECT_TRUE(query->OrderClause);
+        EXPECT_FALSE(query->IsReverseScan);
+        EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Unordered);
+    }
+}
+
 TEST_F(TQueryPrepareTest, InvalidUdfImpl)
 {
     TTypeInferrerMapPtr TypeInferrers_ = New<TTypeInferrerMap>();
@@ -881,9 +1004,14 @@ TEST_F(TQueryPrepareTest, InvalidUdfImpl)
             "short_invalid_ir",
             "short_invalid_ir",
             files,
+            /*nativeObjectCode*/ nullptr,
             GetCallingConvention(ECallingConvention::Simple),
             TSharedRef(),
             false));
+
+        EXPECT_THROW_THAT({
+            MakeUdfNativeObjectCode(files, "short_invalid_ir", {"short_invalid_ir"});
+        }, HasSubstr("LLVM bitcode"));
     }
 
     {
@@ -898,9 +1026,14 @@ TEST_F(TQueryPrepareTest, InvalidUdfImpl)
             "long_invalid_ir",
             "long_invalid_ir",
             files,
+            /*nativeObjectCode*/ nullptr,
             GetCallingConvention(ECallingConvention::Simple),
             TSharedRef(),
             false));
+
+        EXPECT_THROW_THAT({
+            MakeUdfNativeObjectCode(files, "long_invalid_ir", {"long_invalid_ir"});
+        }, HasSubstr("LLVM bitcode"));
     }
 
     auto bcImplementations = "test_udfs";
@@ -990,6 +1123,84 @@ TEST_F(TQueryPrepareTest, InvalidUdfImpl)
             ParseAndPrepareExpression("abs_udf_double(s)", *schema, TypeInferrers_);
         }, HasSubstr("No matching function"));
     }
+}
+
+TEST_F(TQueryPrepareTest, AppendFunctionImplementationWithUdfObjectCodeCache)
+{
+    auto typeInferrers = New<TTypeInferrerMap>();
+    auto aggregateProfilers = New<TAggregateProfilerMap>();
+    auto firstFunctionProfilers = New<TFunctionProfilerMap>();
+    auto secondFunctionProfilers = New<TFunctionProfilerMap>();
+    StrictMock<TPrepareCallbacksMock> prepareMock(typeInferrers);
+
+    MergeFrom(typeInferrers.Get(), *GetBuiltinTypeInferrers());
+    MergeFrom(aggregateProfilers.Get(), *GetBuiltinAggregateProfilers());
+
+    const auto functionName = std::string("cached_abs_udf");
+    typeInferrers->emplace(functionName, CreateFunctionTypeInferrer(
+        EValueType::Int64,
+        std::vector<TType>{EValueType::Int64}));
+
+    auto implementationFiles = GetTestUdfImplementationFiles("test_udfs");
+    auto fingerprint = TSharedRef::FromString("append-function-implementation-test");
+
+    AppendFunctionImplementation(
+        firstFunctionProfilers,
+        aggregateProfilers,
+        /*functionIsAggregate*/ false,
+        functionName,
+        /*functionSymbolName*/ "abs_udf",
+        ECallingConvention::Simple,
+        fingerprint,
+        EValueType::Null,
+        /*functionRepeatedArgIndex*/ -1,
+        /*functionUseFunctionContext*/ false,
+        {.AllowUdfObjectCodeCache = true},
+        implementationFiles);
+
+    AppendFunctionImplementation(
+        secondFunctionProfilers,
+        aggregateProfilers,
+        /*functionIsAggregate*/ false,
+        functionName,
+        /*functionSymbolName*/ "abs_udf",
+        ECallingConvention::Simple,
+        fingerprint,
+        EValueType::Null,
+        /*functionRepeatedArgIndex*/ -1,
+        /*functionUseFunctionContext*/ false,
+        {.AllowUdfObjectCodeCache = true},
+        implementationFiles);
+
+    auto schema = New<TTableSchema>(std::vector<TColumnSchema>{
+        {"a", EValueType::Int64},
+    });
+
+    auto expr = ParseAndPrepareExpression("cached_abs_udf(a)", *schema, typeInferrers);
+
+    TCGVariables variables;
+    auto codegen = Profile(
+        expr,
+        schema,
+        nullptr,
+        &variables,
+        /*useCanonicalNullRelations*/ false,
+        EExecutionBackend::Native,
+        secondFunctionProfilers);
+    auto callback = codegen();
+
+    auto value = MakeUnversionedInt64Value(-42);
+    auto result = TValue{};
+    auto instance = callback.Instantiate();
+    instance.Run(
+        variables.GetLiteralValues(),
+        variables.GetOpaqueData(),
+        variables.GetOpaqueDataSizes(),
+        &result,
+        TRange<TValue>(&value, 1),
+        New<TRowBuffer>());
+
+    EXPECT_EQ(MakeUnversionedInt64Value(42), result);
 }
 
 TEST_F(TQueryPrepareTest, WronglyTypedAggregate)
@@ -1205,7 +1416,7 @@ TEST_F(TQueryPrepareTest, RewriteCardinalityIntoHyperLogLogWithPrecision)
         }))));
 
     auto getFingerprint = [this] (TStringBuf query) -> std::string {
-        auto parsedSource = ParseSource(query, EParseMode::Query, {}, /*syntaxVersion*/ 1);
+        auto parsedSource = ParseSource(query, EParseMode::Query, {}, /*syntaxVersion*/ 2);
         auto plan = PreparePlanFragment(
             &PrepareMock_,
             parsedSource->Source,
@@ -1222,15 +1433,15 @@ TEST_F(TQueryPrepareTest, RewriteCardinalityIntoHyperLogLogWithPrecision)
     };
 
     {
-        auto fingerprint = getFingerprint("select cardinality(v) from [//t] group by 0");
+        auto fingerprint = getFingerprint("select cardinality(v) from `//t` group by 0");
         EXPECT_TRUE(fingerprint.starts_with("SELECT hll_7(v) AS hll_7(v) GROUP BY"));
     }
     {
-        auto fingerprint = getFingerprint("select * from [//t] group by 0 having cardinality(v) > 42");
+        auto fingerprint = getFingerprint("select * from `//t` group by 0 having cardinality(v) > 42");
         EXPECT_TRUE(fingerprint.contains("HAVING hll_7(v) >"));
     }
     {
-        auto fingerprint = getFingerprint("select k from [//t] group by k order by 1, (25 + cardinality(v)) limit 10");
+        auto fingerprint = getFingerprint("select k from `//t` group by k order by 1, (25 + cardinality(v)) limit 10");
         EXPECT_TRUE(fingerprint.contains("ORDER BY ? ASC, ? + hll_7(v) ASC LIMIT ?"));
     }
     {
@@ -1247,7 +1458,7 @@ TEST_F(TQueryPrepareTest, RewriteCardinalityIntoHyperLogLogWithPrecision)
             ) AS Subquery_2
             GROUP BY 0)";
 
-        auto parsedSource = ParseSource(query, EParseMode::Query, {}, /*syntaxVersion*/ 1);
+        auto parsedSource = ParseSource(query, EParseMode::Query, {}, /*syntaxVersion*/ 2);
 
         auto plan = PreparePlanFragment(
             &PrepareMock_,
@@ -1273,19 +1484,43 @@ TEST_F(TQueryPrepareTest, RewriteCardinalityIntoHyperLogLogWithPrecision)
     }
     {
         EXPECT_THROW_THAT(
-            getFingerprint("select * from [//t] where cardinality(v) > 42 group by 0"),
+            getFingerprint("select * from `//t` where cardinality(v) > 42 group by 0"),
             HasSubstr("Misuse of aggregate function \"hll_7\""));
     }
     {
         EXPECT_THROW_THAT(
-            getFingerprint("select * from [//t] group by cardinality(v)"),
+            getFingerprint("select * from `//t` group by cardinality(v)"),
             HasSubstr("Misuse of aggregate function \"hll_7\""));
     }
     {
         EXPECT_THROW_THAT(
-            getFingerprint("select max(cardinality(v)) from [//t] group by 0"),
+            getFingerprint("select max(cardinality(v)) from `//t` group by 0"),
             HasSubstr("Misuse of aggregate function \"hll_7\""));
     }
+}
+
+TEST_F(TQueryPrepareTest, InvalidColumnIdInExpression)
+{
+    EXPECT_CALL(PrepareMock_, GetInitialSplit("//t"))
+        .WillRepeatedly(Return(MakeFuture(MakeSplit({
+            {"spec.revision", EValueType::Int64},
+        }))));
+
+    auto query = "select if_null(t.`spec.revision`, 0) from `//t` as t";
+    auto parsedSource = ParseSource(query, EParseMode::Query, {}, /*syntaxVersion*/ 2);
+    auto plan = PreparePlanFragment(
+        &PrepareMock_,
+        parsedSource->Source,
+        std::get<NAst::TQuery>(parsedSource->AstHead.Ast),
+        parsedSource->AstHead,
+        TPreparePlanFragmentOptions{
+            .SyntaxVersion = 2,
+            .BuilderVersion = DefaultExpressionBuilderVersion,
+            .ExecutionBackend = EExecutionBackend::Native,
+        });
+    auto fingerprint = InferName(plan->Query, {.OmitValues = true});
+
+    EXPECT_TRUE(fingerprint.contains("t.`spec.revision`"));
 }
 
 TEST_F(TQueryPrepareTest, OmitOrderByUsingFixedInferredPrefix)
@@ -1309,7 +1544,7 @@ TEST_F(TQueryPrepareTest, OmitOrderByUsingFixedInferredPrefix)
     };
 
     EXPECT_NE(fragment->Query->OrderClause, nullptr);
-    EXPECT_FALSE(fragment->Query->IsOrdered(false));
+    EXPECT_EQ(fragment->Query->GetScanOrder(false), EScanOrder::Unordered);
 
     auto [dataSource, query] = InferRanges(
         columnEvaluatorCache,
@@ -1323,7 +1558,7 @@ TEST_F(TQueryPrepareTest, OmitOrderByUsingFixedInferredPrefix)
         Logger());
 
     EXPECT_EQ(query->OrderClause, nullptr);
-    EXPECT_TRUE(query->IsOrdered(false));
+    EXPECT_EQ(query->GetScanOrder(false), EScanOrder::Ordered);
 }
 
 TEST_F(TQueryPrepareTest, LeftJoinOptionalizesType)
@@ -3340,7 +3575,7 @@ TEST_F(TQueryEvaluateTest, GroupByCoordinatedWithTotalsTotalRowCount)
             sources,
             AnyMatcher);
 
-        EXPECT_EQ(std::ssize(cardinality), statistics.GroupedRowCount.GetTotal());
+        EXPECT_EQ(std::ssize(cardinality), statistics.Statistics.GroupedRowCount.GetTotal());
     }
 
     {
@@ -3350,7 +3585,7 @@ TEST_F(TQueryEvaluateTest, GroupByCoordinatedWithTotalsTotalRowCount)
             sources,
             AnyMatcher);
 
-        EXPECT_EQ(std::ssize(cardinality), statistics.GroupedRowCount.GetTotal());
+        EXPECT_EQ(std::ssize(cardinality), statistics.Statistics.GroupedRowCount.GetTotal());
     }
 
     {
@@ -3360,7 +3595,7 @@ TEST_F(TQueryEvaluateTest, GroupByCoordinatedWithTotalsTotalRowCount)
             sources,
             AnyMatcher);
 
-        EXPECT_EQ(std::ssize(cardinality), statistics.GroupedRowCount.GetTotal());
+        EXPECT_EQ(std::ssize(cardinality), statistics.Statistics.GroupedRowCount.GetTotal());
     }
 }
 
@@ -6033,6 +6268,51 @@ TEST_F(TQueryEvaluateTest, LeftJoinWithCondition)
         OrderedResultMatcher(result2, {"a"}));
 
     SUCCEED();
+}
+
+TEST_F(TQueryEvaluateTest, JoinListContainsWithEntityGuard)
+{
+    TSplitMap splits;
+    std::vector<TSource> sources;
+
+    auto leftSplit = MakeSplit({
+        {"a", EValueType::Int64},
+    });
+
+    splits["//left"] = leftSplit;
+    sources.push_back({
+        "a=1",
+        "a=2",
+    });
+
+    // Store YSON as strings, convert to Any in query via yson_string_to_any
+    // to produce real YSON entity values (test framework converts # to NULL sentinel).
+    auto rightSplit = MakeSplit({
+        {"a", EValueType::Int64},
+        {"l", EValueType::String},
+    });
+
+    splits["//right"] = rightSplit;
+    sources.push_back({
+        R"(a=1;l="[foo;available-for-support]")",
+        R"(a=2;l="#")",
+    });
+
+    auto resultSplit = MakeSplit({
+        {"a", EValueType::Int64},
+    });
+
+    auto result = YsonToRows({
+        "a=1",
+    }, resultSplit);
+
+    Evaluate(
+        "a FROM [//left] join [//right] using a "
+        "where yson_string_to_any(l) != make_entity() "
+        "AND list_contains(yson_string_to_any(l), \"available-for-support\")",
+        splits,
+        sources,
+        ResultMatcher(result));
 }
 
 TEST_F(TQueryEvaluateTest, ComplexAlias)
@@ -9358,7 +9638,7 @@ void TQueryEvaluateComplexTest::DoTest(
     };
 
     auto query = Evaluate(queryString, splits, sources, resultMatcher);
-    EXPECT_TRUE(query->IsOrdered(/*allowUnorderedGroupByWithLimit*/ true));
+    EXPECT_EQ(query->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true), EScanOrder::Ordered);
 }
 
 TEST_P(TQueryEvaluateComplexTest, All)
@@ -11246,6 +11526,91 @@ TEST_F(TQueryEvaluateTest, ListHasIntersection)
     SUCCEED();
 }
 
+TEST_F(TQueryEvaluateTest, YsonLengthComposite)
+{
+    auto split = MakeSplit({
+        {"list", ListLogicalType(SimpleLogicalType(ESimpleLogicalValueType::Int64))},
+    });
+
+    auto source = TSource{
+        "list=[1; 2; 3]",
+        "list=[4; 5]",
+        "list=[]",
+    };
+
+    auto resultSplit = MakeSplit({
+        {"length", EValueType::Int64}
+    });
+
+    auto result = YsonToRows({
+        "length=3",
+        "length=2",
+        "length=0",
+    }, resultSplit);
+
+    Evaluate("yson_length(list) as length FROM [//t]", split, source, ResultMatcher(result));
+
+    SUCCEED();
+}
+
+TEST_F(TQueryEvaluateTest, YsonLengthCompositeStruct)
+{
+    auto split = MakeSplit({
+        {"struct", StructLogicalType(
+            {
+                {"a", "a", SimpleLogicalType(ESimpleLogicalValueType::Int64)},
+                {"b", "b", SimpleLogicalType(ESimpleLogicalValueType::String)},
+                {"c", "c", SimpleLogicalType(ESimpleLogicalValueType::Boolean)},
+            },
+            /*removedFieldStableNames*/ {})},
+    });
+
+    auto source = TSource{
+        "struct={a=1;b=hello;c=%true}",
+        "struct={a=2;b=world;c=%false}",
+    };
+
+    auto resultSplit = MakeSplit({
+        {"length", EValueType::Int64}
+    });
+
+    auto result = YsonToRows({
+        "length=3",
+        "length=3",
+    }, resultSplit);
+
+    Evaluate("yson_length(struct) as length FROM [//t]", split, source, ResultMatcher(result));
+
+    SUCCEED();
+}
+
+TEST_F(TQueryEvaluateTest, YsonLengthCompositeNestedList)
+{
+    auto split = MakeSplit({
+        {"nested", ListLogicalType(ListLogicalType(SimpleLogicalType(ESimpleLogicalValueType::Int64)))},
+    });
+
+    auto source = TSource{
+        "nested=[[1;2];[3;4;5];[6]]",
+        "nested=[[1]]",
+        "nested=[]",
+    };
+
+    auto resultSplit = MakeSplit({
+        {"length", EValueType::Int64}
+    });
+
+    auto result = YsonToRows({
+        "length=3",
+        "length=1",
+        "length=0",
+    }, resultSplit);
+
+    Evaluate("yson_length(nested) as length FROM [//t]", split, source, ResultMatcher(result));
+
+    SUCCEED();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 TEST_F(TQueryEvaluateTest, OrderByAny)
@@ -11500,6 +11865,190 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_tuple(
             "avg(a % 2) from `//t` group by 1",
             "Misuse of aggregate function \"avg\"")));
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Tests for reverse scan semantics: ORDER BY primary key DESC with LIMIT
+// should activate IsReverseScan and, once the scan reversal is implemented,
+// read only the tail tablets instead of all tablets.
+//
+// NOTE: These tests are currently expected to FAIL on the tablet-count
+// assertions because the actual reverse-scan execution is not yet implemented.
+// They serve as a TDD specification and will pass once the scan direction is
+// reversed in the executor.
+
+TEST_F(TQueryEvaluateTest, ReverseScanOrderByDescTablets)
+{
+    // 5 tablets, each containing 4 rows.
+    // Tablet i holds rows with k in [i*4, i*4+3].
+    auto split = MakeSplit({
+        TColumnSchema("k", EValueType::Int64, ESortOrder::Ascending),
+        TColumnSchema("v", EValueType::Int64),
+    });
+
+    constexpr int TabletCount = 5;
+    constexpr int RowsPerTablet = 4;
+
+    std::vector<std::vector<TSource>> tabletsData;
+    for (int t = 0; t < TabletCount; ++t) {
+        TSource tablet;
+        for (int i = 0; i < RowsPerTablet; ++i) {
+            int k = t * RowsPerTablet + i;
+            tablet.push_back(Format("k=%v;v=%v", k, k));
+        }
+        tabletsData.push_back({std::move(tablet)});
+    }
+
+    auto query = Prepare(
+        "* from [//t] order by k desc limit 3",
+        TSplitMap{{"//t", split}},
+        {},
+        TPreparePlanFragmentOptions{
+            .BuilderVersion = DefaultExpressionBuilderVersion,
+            .AllowReverseScanForOrderBy = true,
+        });
+
+    EXPECT_TRUE(query->IsReverseScan);
+    EXPECT_EQ(query->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ false), EScanOrder::Reversed);
+
+    auto result = RunOnCoordinator(query, tabletsData, EExecutionBackend::Native);
+
+    // The last 3 rows in key order are k=17, k=18, k=19 (tablet 4).
+    // With reverse scan only the last tablet should be read.
+    auto expectedRows = YsonToRows(
+        {"k=19;v=19", "k=18;v=18", "k=17;v=17"},
+        split);
+    ResultMatcher(expectedRows)(result.Rows, *query->GetTableSchema());
+
+    // With reverse scan only the last tablet should be read to satisfy LIMIT 3.
+    EXPECT_EQ(result.TabletsScanned, 1);
+}
+
+TEST_F(TQueryEvaluateTest, ReverseScanOrderByDescTwoKeyTablets)
+{
+    // 5 tablets with a two-column primary key (a, b).
+    auto split = MakeSplit({
+        TColumnSchema("a", EValueType::Int64, ESortOrder::Ascending),
+        TColumnSchema("b", EValueType::Int64, ESortOrder::Ascending),
+        TColumnSchema("v", EValueType::Int64),
+    });
+
+    constexpr int TabletCount = 5;
+    constexpr int RowsPerTablet = 4;
+
+    std::vector<std::vector<TSource>> tabletsData;
+    for (int t = 0; t < TabletCount; ++t) {
+        TSource tablet;
+        for (int i = 0; i < RowsPerTablet; ++i) {
+            tablet.push_back(Format("a=%v;b=%v;v=%v", t, i, t * RowsPerTablet + i));
+        }
+        tabletsData.push_back({std::move(tablet)});
+    }
+
+    auto query = Prepare(
+        "* from [//t] order by a desc, b desc limit 3",
+        TSplitMap{{"//t", split}},
+        {},
+        TPreparePlanFragmentOptions{
+            .BuilderVersion = DefaultExpressionBuilderVersion,
+            .AllowReverseScanForOrderBy = true,
+        });
+
+    EXPECT_TRUE(query->IsReverseScan);
+    EXPECT_EQ(query->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ false), EScanOrder::Reversed);
+
+    auto result = RunOnCoordinator(query, tabletsData, EExecutionBackend::Native);
+
+    // Top 3 rows by (a DESC, b DESC): a=4,b=3 / a=4,b=2 / a=4,b=1.
+    auto expectedRows = YsonToRows(
+        {"a=4;b=3;v=19", "a=4;b=2;v=18", "a=4;b=1;v=17"},
+        split);
+    ResultMatcher(expectedRows)(result.Rows, *query->GetTableSchema());
+
+    // With reverse scan only the last tablet should be read to satisfy LIMIT 3.
+    EXPECT_EQ(result.TabletsScanned, 1);
+}
+
+TEST_F(TQueryEvaluateTest, ReverseScanOrderByDescSpansTwoTablets)
+{
+    // 5 tablets with 4 rows each. LIMIT 5 requires rows from the last 2 tablets.
+    auto split = MakeSplit({
+        TColumnSchema("k", EValueType::Int64, ESortOrder::Ascending),
+        TColumnSchema("v", EValueType::Int64),
+    });
+
+    constexpr int TabletCount = 5;
+    constexpr int RowsPerTablet = 4;
+
+    std::vector<std::vector<TSource>> tabletsData;
+    for (int t = 0; t < TabletCount; ++t) {
+        TSource tablet;
+        for (int i = 0; i < RowsPerTablet; ++i) {
+            int k = t * RowsPerTablet + i;
+            tablet.push_back(Format("k=%v;v=%v", k, k));
+        }
+        tabletsData.push_back({std::move(tablet)});
+    }
+
+    auto query = Prepare(
+        "* from [//t] order by k desc limit 5",
+        TSplitMap{{"//t", split}},
+        {},
+        TPreparePlanFragmentOptions{
+            .BuilderVersion = DefaultExpressionBuilderVersion,
+            .AllowReverseScanForOrderBy = true,
+        });
+
+    EXPECT_TRUE(query->IsReverseScan);
+
+    auto result = RunOnCoordinator(query, tabletsData, EExecutionBackend::Native);
+
+    // Top 5 rows: k=19..15 (tablets 4 and 3).
+    auto expectedRows = YsonToRows(
+        {"k=19;v=19", "k=18;v=18", "k=17;v=17", "k=16;v=16", "k=15;v=15"},
+        split);
+    ResultMatcher(expectedRows)(result.Rows, *query->GetTableSchema());
+
+    // Two tablets are needed to satisfy LIMIT 5 (4 rows/tablet).
+    EXPECT_EQ(result.TabletsScanned, 2);
+}
+
+TEST_F(TQueryEvaluateTest, ReverseScanDisabledWhenFlagOff)
+{
+    // Same setup, but AllowReverseScanForOrderBy = false.
+    // IsReverseScan must stay false and all tablets must be scanned.
+    auto split = MakeSplit({
+        TColumnSchema("k", EValueType::Int64, ESortOrder::Ascending),
+        TColumnSchema("v", EValueType::Int64),
+    });
+
+    constexpr int TabletCount = 5;
+    constexpr int RowsPerTablet = 4;
+
+    std::vector<std::vector<TSource>> tabletsData;
+    for (int t = 0; t < TabletCount; ++t) {
+        TSource tablet;
+        for (int i = 0; i < RowsPerTablet; ++i) {
+            int k = t * RowsPerTablet + i;
+            tablet.push_back(Format("k=%v;v=%v", k, k));
+        }
+        tabletsData.push_back({std::move(tablet)});
+    }
+
+    auto query = Prepare(
+        "* from [//t] order by k desc limit 3",
+        TSplitMap{{"//t", split}},
+        {},
+        TPreparePlanFragmentOptions{.BuilderVersion = DefaultExpressionBuilderVersion});
+
+    EXPECT_FALSE(query->IsReverseScan);
+    EXPECT_EQ(query->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ false), EScanOrder::Unordered);
+
+    auto result = RunOnCoordinator(query, tabletsData, EExecutionBackend::Native);
+
+    // All tablets must be scanned when reverse scan is not enabled.
+    EXPECT_EQ(result.TabletsScanned, TabletCount);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 

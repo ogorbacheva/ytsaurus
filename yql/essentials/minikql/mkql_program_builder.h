@@ -93,20 +93,21 @@ inline bool HasSpillingFlag(const TCallable& callable) {
     return TStringBuf(callable.GetType()->GetName()).EndsWith("WithSpilling"_sb);
 }
 
+// CustomPython should be after CustomPython2 & CustomPython3
 // clang-format off
-#define MKQL_SCRIPT_TYPES(xx)                                                                                                 \
+#define MKQL_SCRIPT_TYPES(xx)                         \
     xx(Unknown, 0, unknown, false)                    \
     xx(Python, 1, python, false)                      \
     xx(Lua, 2, lua, false)                            \
     xx(ArcPython, 3, arcpython, false)                \
-    xx(CustomPython, 4, custompython, true)           \
-    xx(Javascript, 5, javascript, false)              \
-    xx(Python2, 6, python2, false)                    \
-    xx(ArcPython2, 7, arcpython2, false)              \
-    xx(CustomPython2, 8, custompython2, true)         \
-    xx(Python3, 9, python3, false)                    \
-    xx(ArcPython3, 10, arcpython3, false)             \
-    xx(CustomPython3, 11, custompython3, true)        \
+    xx(Javascript, 4, javascript, false)              \
+    xx(Python2, 5, python2, false)                    \
+    xx(ArcPython2, 6, arcpython2, false)              \
+    xx(CustomPython2, 7, custompython2, true)         \
+    xx(Python3, 8, python3, false)                    \
+    xx(ArcPython3, 9, arcpython3, false)              \
+    xx(CustomPython3, 10, custompython3, true)        \
+    xx(CustomPython, 11, custompython, true)          \
     xx(SystemPython2, 12, systempython2, false)       \
     xx(SystemPython3, 13, systempython3, false)       \
     xx(SystemPython3_8, 14, systempython3_8, false)   \
@@ -114,7 +115,8 @@ inline bool HasSpillingFlag(const TCallable& callable) {
     xx(SystemPython3_10, 16, systempython3_10, false) \
     xx(SystemPython3_11, 17, systempython3_11, false) \
     xx(SystemPython3_12, 18, systempython3_12, false) \
-    xx(SystemPython3_13, 19, systempython3_13, false)
+    xx(SystemPython3_13, 19, systempython3_13, false) \
+    xx(SystemPython3_14, 20, systempython3_14, false)
 // clang-format on
 
 enum class EScriptType {
@@ -145,7 +147,7 @@ std::vector<TType*> ValidateBlockFlowType(const TType* flowType, bool unwrap = t
 class TProgramBuilder: public TTypeBuilder {
 public:
     TProgramBuilder(const TTypeEnvironment& env, const IFunctionRegistry& functionRegistry, bool voidWithEffects = false,
-                    NYql::TLangVersion langver = NYql::UnknownLangVersion);
+                    NYql::TLangVersion langver = NYql::UnknownLangVersion, NYql::TRuntimeSettings::TConstPtr runtimeSettings = NYql::MakeRuntimeSettings());
 
     const TTypeEnvironment& GetTypeEnvironment() const;
     const IFunctionRegistry& GetFunctionRegistry() const;
@@ -246,6 +248,8 @@ public:
     TRuntimeNode RandomUuid(const TArrayRef<const TRuntimeNode>& dependentNodes);
 
     TRuntimeNode Now(const TArrayRef<const TRuntimeNode>& dependentNodes);
+    TRuntimeNode HostRuntimeSetting(TRuntimeNode featureName);
+    TRuntimeNode UdfRuntimeSetting(TRuntimeNode module, TRuntimeNode featureName);
     TRuntimeNode CurrentUtcDate(const TArrayRef<const TRuntimeNode>& dependentNodes);
     TRuntimeNode CurrentUtcDatetime(const TArrayRef<const TRuntimeNode>& dependentNodes);
     TRuntimeNode CurrentUtcTimestamp(const TArrayRef<const TRuntimeNode>& dependentNodes);
@@ -256,7 +260,8 @@ public:
     TRuntimeNode Ascending(TRuntimeNode data);
     TRuntimeNode Descending(TRuntimeNode data);
 
-    TRuntimeNode ToFlow(TRuntimeNode stream);
+    // FIXME: Drop the default argument value, when all the callers are adjusted.
+    TRuntimeNode ToFlow(TRuntimeNode stream, const TArrayRef<const TRuntimeNode>& dependentNodes = {});
     TRuntimeNode FromFlow(TRuntimeNode flow);
     TRuntimeNode Steal(TRuntimeNode input);
 
@@ -482,8 +487,16 @@ public:
                                 const TArrayRef<const ui32>& leftColumns, const TArrayRef<const ui32>& rightColumns,
                                 const TArrayRef<const ui32>& requiredColumns, const TArrayRef<const ui32>& keyColumns,
                                 ui64 memLimit, std::optional<ui32> sortedTableOrder,
-                                EAnyJoinSettings anyJoinSettings, const ui32 tableIndexField,
+                                EAnyJoinSettings anyJoinSettings, ui32 tableIndexField,
                                 TType* returnType);
+
+    using TColumnsMap = TArrayRef<const std::pair<const ui32, const ui32>>;
+    TRuntimeNode ListJoinCore(TRuntimeNode stream,
+                              TType* keyType, const TColumnsMap& keyColumns,
+                              const TColumnsMap& leftColumns, const TColumnsMap& rightColumns,
+                              TType* leftArgType, const TUnaryLambda& leftArgmapLambda,
+                              TType* rightArgType, const TUnaryLambda& rightArgmapLambda,
+                              TType* returnType, const TTernaryLambda& joinLambda);
     TRuntimeNode GraceJoinCommon(const TStringBuf& funcName, TRuntimeNode flowLeft, TRuntimeNode flowRight, EJoinKind joinKind,
                                  const TArrayRef<const ui32>& leftKeyColumns, const TArrayRef<const ui32>& rightKeyColumns,
                                  const TArrayRef<const ui32>& leftRenames, const TArrayRef<const ui32>& rightRenames, TType* returnType, EAnyJoinSettings anyJoinSettings = EAnyJoinSettings::None);
@@ -692,7 +705,7 @@ public:
                           TRuntimeNode handle,
                           TRuntimeNode isIncremental,
                           TRuntimeNode isRange,
-                          TRuntimeNode isSignleElement,
+                          TRuntimeNode isSingleElement,
                           const TArrayRef<const TRuntimeNode>& dependentNodes,
                           TType* returnType);
 
@@ -889,6 +902,8 @@ private:
     template <bool Asc, bool Equal>
     TRuntimeNode BuildSqlCompare(const std::string_view& callableName, TRuntimeNode data1, TRuntimeNode data2);
 
+    TRuntimeNode BuildColumnList(const TColumnsMap& columnsMap);
+
     TType* ChooseCommonType(TType* type1, TType* type2);
     TType* BuildArithmeticCommonType(TType* type1, TType* type2);
     TType* BuildWideBlockType(const TArrayRef<TType* const>& wideComponents);
@@ -900,6 +915,7 @@ protected:
     const IFunctionRegistry& FunctionRegistry_;
     const bool VoidWithEffects_;
     const NYql::TLangVersion LangVer_;
+    const NYql::TRuntimeSettings::TConstPtr RuntimeSettings_;
     NUdf::ITypeInfoHelper::TPtr TypeInfoHelper_;
 };
 

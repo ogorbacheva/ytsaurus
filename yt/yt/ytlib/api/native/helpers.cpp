@@ -254,11 +254,11 @@ void CheckWritePermission(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-THashSet<TString> DeduceActualAttributes(
-    const std::optional<THashSet<TString>>& originalAttributes,
-    const THashSet<TString>& requiredAttributes,
-    const THashSet<TString>& defaultAttributes,
-    const THashSet<TString>& ignoredAttributes)
+THashSet<std::string> DeduceActualAttributes(
+    const std::optional<THashSet<std::string>>& originalAttributes,
+    const THashSet<std::string>& requiredAttributes,
+    const THashSet<std::string>& defaultAttributes,
+    const THashSet<std::string>& ignoredAttributes)
 {
     auto attributes = originalAttributes.value_or(defaultAttributes);
     attributes.insert(requiredAttributes.begin(), requiredAttributes.end());
@@ -280,6 +280,48 @@ TSelectRowsOptions GetDefaultSelectRowsOptions(
     selectRowsOptions.InputRowLimit = std::numeric_limits<i64>::max();
     selectRowsOptions.MemoryLimitPerNode = 100_MB;
     return selectRowsOptions;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TDuration InvalidateMountCacheAndGetRetryDelay(
+    const IConnectionPtr& connection,
+    const TDetailedProfilingInfoPtr& profilingInfo,
+    const TLogger& Logger,
+    const TError& error,
+    int* retryCount)
+{
+    const auto& config = connection->GetStaticConfig();
+    const auto& tableMountCache = connection->GetTableMountCache();
+
+    auto invalidationResult = tableMountCache->InvalidateOnError(
+        error,
+        /*forceRetry*/ false);
+
+    TDuration timeToWait;
+    if (invalidationResult.Retryable && ++(*retryCount) <= config->TableMountCache->OnErrorRetryCount) {
+        YT_LOG_DEBUG(error, "Got error, will retry (attempt %v of %v)",
+            *retryCount,
+            config->TableMountCache->OnErrorRetryCount);
+
+        if (!invalidationResult.TableInfoUpdatedFromError) {
+            auto now = Now();
+            const auto& tabletInfo = invalidationResult.TabletInfo;
+            auto retryTime = (tabletInfo ? tabletInfo->UpdateTime : now) +
+                config->TableMountCache->OnErrorSlackPeriod;
+            if (retryTime > now) {
+                timeToWait = retryTime - now;
+            }
+        }
+
+        if (profilingInfo) {
+            profilingInfo->RetryReasons.push_back(invalidationResult.ErrorCode);
+        }
+
+        return timeToWait;
+    }
+
+    THROW_ERROR error;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

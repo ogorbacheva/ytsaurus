@@ -2,6 +2,7 @@
 
 #include "automaton.h"
 #include "config.h"
+#include "serialize.h"
 #include "store_manager.h"
 #include "tablet.h"
 
@@ -380,7 +381,7 @@ public:
         validateProto(NProto::TAddStoreDescriptor::GetDescriptor(),         6, 0);
         validateProto(NProto::TAddHunkChunkDescriptor::GetDescriptor(),     2, 0);
         validateProto(NProto::TTableReplicaDescriptor::GetDescriptor(),     8, 0);
-        validateProto(NProto::TTableSettings::GetDescriptor(),             10, 0);
+        validateProto(NProto::TTableSettings::GetDescriptor(),             11, 0);
         validateProto(NProto::TReqWriteRows::GetDescriptor(),              20, 0);
         validateProto(NProto::TReqWriteDelayedRows::GetDescriptor(),       11, 0);
         validateProto(NProto::TReqAlterTableReplica::GetDescriptor(),       6, 0);
@@ -479,6 +480,7 @@ private:
         movementData.SetStage(ESmoothMovementStage::TargetAllocated);
         movementData.SetLastStageChangeTime(TInstant::Now());
         movementData.SetSiblingMountRevision(targetMountRevision);
+        movementData.SetReign(GetCurrentMutationEffectiveReign());
 
         auto& runtimeData = tablet->RuntimeData()->SmoothMovementData;
         runtimeData.Role = ESmoothMovementRole::Source;
@@ -496,7 +498,16 @@ private:
             tablet->PushDynamicStoreIdToPool(
                 FromProto<TStoreId>(request->dynamic_store_id()),
                 reason);
-            YT_VERIFY(tablet->ReservedDynamicStoreIdCount()[reason] == 1);
+
+            if (auto reservedCount = tablet->ReservedDynamicStoreIdCount()[reason]; reservedCount > 1) {
+                YT_LOG_ALERT("Too many reserved dynamic stores on smooth movement start "
+                    "(%v, Count: %v)",
+                    tablet->GetLoggingTag(),
+                    reservedCount);
+                while (reservedCount-- > 1) {
+                    tablet->ReleaseReservedDynamicStoreId(EDynamicStoreIdReservationReason::SmoothMovement);
+                }
+            }
         }
 
         YT_LOG_DEBUG("Smooth tablet movement started (%v, TargetCellId: %v)",
@@ -537,12 +548,17 @@ private:
         }
 
         auto error = FromProto<TError>(request->error());
-
         DoAbortSmoothMovement(tablet, error);
 
         if (IsHiveMutation()) {
-            YT_LOG_DEBUG("Smooth tablet movement aborted by master request (%v)",
-                tablet->GetLoggingTag());
+            auto initiator = GetHiveMutationSenderId() == movementData.GetSiblingAvenueEndpointId()
+                ? "sibling servant"
+                : "master";
+
+            YT_LOG_DEBUG("Smooth tablet movement aborted by direct request "
+                "(%v, Initiator: %v)",
+                tablet->GetLoggingTag(),
+                initiator);
         } else {
             YT_LOG_DEBUG(error, "Smooth tablet movement aborted (%v)",
                 tablet->GetLoggingTag());
@@ -633,6 +649,22 @@ private:
             masterEndpointId,
             mailboxCookie.FirstOutcomingMessageId,
             inFlightTime);
+
+        {
+            // NB: This is a possible situation. It may be nice to have explicit logs
+            // in the unfortunate case of debugging any compat issues.
+            auto mutationReign = GetCurrentMutationEffectiveReign();
+            auto currentReign = static_cast<ETabletReign>(GetCurrentReign());
+            auto reignAtStart = tablet->SmoothMovementData().GetReign();
+            if (mutationReign != currentReign || reignAtStart != currentReign) {
+                YT_LOG_DEBUG("Servant switch request came from the servant with different reign "
+                    "(%v, TargetReignAtStart: %v, CurrentReign: %v, MutationReign: %v)",
+                    tablet->GetLoggingTag(),
+                    reignAtStart,
+                    currentReign,
+                    mutationReign);
+            }
+        }
 
         // NB: There are no backing stores on the target servant. To ensure that no conflicts are lost, sync the transient timestamp.
         tablet->ResetTransientConflictHorizonTimestamp();
@@ -784,7 +816,7 @@ private:
                 validateNoUnfinishedTransactions();
 
                 int availableDynamicStoreCount = tablet->GetUnreservedDynamicStoreIdCount();
-                availableDynamicStoreCount += ReleaseReservedDynamicStore(tablet);
+                availableDynamicStoreCount += MaybeReleaseReservedDynamicStore(tablet);
 
                 if (ShouldRotateStoreOnTargetActivation(tablet)) {
                     if (const auto& store = tablet->GetActiveStore();
@@ -885,8 +917,6 @@ private:
 
                 tablet->SetSnapshotEvictionTimeout(GetDynamicConfig()->SourceTabletSnapshotEvictionTimeout);
 
-                // TODO(ifsmirnov): maybe should unregister sibling avenue here.
-
                 break;
             }
 
@@ -950,21 +980,54 @@ private:
         }
     }
 
-    void RejectMovement(TTablet* tablet, const TError& error)
+    void RejectMovement(TTablet* tablet, const TError& error) override
     {
-        if (tablet->SmoothMovementData().GetRole() == ESmoothMovementRole::None) {
+        YT_VERIFY(HasHydraContext());
+
+        const auto& movementData = tablet->SmoothMovementData();
+
+        if (movementData.GetRole() == ESmoothMovementRole::None) {
             return;
         }
 
-        if (!tablet->IsActiveServant()) {
-            // At this point tablet has already been successfully moved.
-            return;
+        if (movementData.GetRole() == ESmoothMovementRole::Source) {
+            if (!tablet->IsActiveServant()) {
+                // At this point tablet has already been successfully moved.
+                return;
+            }
+
+            YT_LOG_DEBUG(error, "Smooth movement rejected (%v, Role: %v, Stage: %v)",
+                tablet->GetLoggingTag(),
+                movementData.GetRole(),
+                movementData.GetStage());
+
+            DoAbortSmoothMovement(tablet, error);
+        } else {
+            switch (movementData.GetStage()) {
+                case ESmoothMovementStage::TargetAllocated:
+                case ESmoothMovementStage::TargetActivated: {
+                    YT_LOG_DEBUG(error, "Smooth movement rejected, sending abort message to source "
+                        "(%v, Role: %v, Stage: %v)",
+                        tablet->GetLoggingTag(),
+                        movementData.GetRole(),
+                        movementData.GetStage());
+
+                    TReqAbortSmoothMovement request;
+                    ToProto(request.mutable_tablet_id(), tablet->GetId());
+                    ToProto(request.mutable_error(), error);
+                    Host_->PostAvenueMessage(movementData.GetSiblingAvenueEndpointId(), request);
+                    break;
+                }
+
+                default:
+                    YT_LOG_DEBUG("Cannot reject smooth movement: too late "
+                        "(%v, Role: %v, Stage: %v)",
+                        tablet->GetLoggingTag(),
+                        movementData.GetRole(),
+                        movementData.GetStage());
+                    break;
+            }
         }
-
-        DoAbortSmoothMovement(tablet, error);
-
-        YT_LOG_DEBUG(error, "Smooth movement rejected (%v)",
-            tablet->GetLoggingTag());
     }
 
     void SendReplicateTabletContentRequest(TTablet* tablet)
@@ -990,8 +1053,11 @@ private:
     {
         auto& movementData = tablet->SmoothMovementData();
 
+        MaybeReleaseReservedDynamicStore(tablet);
+
         Host_->UnregisterSiblingTabletAvenue(
-            movementData.GetSiblingAvenueEndpointId());
+            movementData.GetSiblingAvenueEndpointId(),
+            /*allowDestructionInMessageToSelf*/ true);
 
         movementData = {};
         tablet->RuntimeData()->SmoothMovementData.Reset();
@@ -1002,18 +1068,25 @@ private:
         Host_->PostMasterMessage(tablet, rsp);
     }
 
-    int ReleaseReservedDynamicStore(TTablet* tablet)
+    int MaybeReleaseReservedDynamicStore(TTablet* tablet)
     {
         auto reason = EDynamicStoreIdReservationReason::SmoothMovement;
 
         int reservedCount = tablet->ReservedDynamicStoreIdCount()[reason];
-        YT_VERIFY(reservedCount <= 1);
+        if (reservedCount > 1) {
+            YT_LOG_ALERT("Too many reserved dynamic stores for smooth movement "
+                "on releasement attempt (%v, Count: %v)",
+                tablet->GetLoggingTag(),
+                reservedCount);
 
-        if (reservedCount == 1) {
-            tablet->ReleaseReservedDynamicStoreId(reason);
         }
 
-        return reservedCount;
+        if (reservedCount >= 1) {
+            tablet->ReleaseReservedDynamicStoreId(reason);
+            return 1;
+        } else {
+            return 0;
+        }
     }
 
     bool ApplyTestingDelayBeforeStageChange(TTablet* tablet)

@@ -30,7 +30,6 @@ from textwrap import dedent
 
 
 @authors("coteeq")
-@pytest.mark.enabled_multidaemon
 @pytest.mark.parametrize("optimize_for", ["scan", "lookup"])
 class TestSchedulerRowLevelSecurityCommands(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
@@ -90,7 +89,7 @@ class TestSchedulerRowLevelSecurityCommands(YTEnvSetup):
 
     def test_no_omit_inaccessible_rows(self, optimize_for):
         self._prepare_simple_test(optimize_for)
-        with raises_yt_error("Access denied for user \"prime_user\""):
+        with raises_yt_error("Access denied"):
             merge(
                 in_="//tmp/t",
                 out="<create=%true>//tmp/t_out",

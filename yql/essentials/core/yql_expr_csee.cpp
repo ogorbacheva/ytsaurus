@@ -11,7 +11,7 @@
 namespace NYql {
 
 namespace {
-    static constexpr bool UseDeterminsticHash = false;
+    constexpr bool UseDeterminsticHash = false;
 
     struct TLambdaFrame {
         TLambdaFrame(const TExprNode* lambda, const TLambdaFrame* prev)
@@ -297,7 +297,8 @@ namespace {
                         || EqualNodes(left.Head(), currLeftFrame, right.Tail(), currRightFrame, visited, coStore)
                         && EqualNodes(left.Tail(), currLeftFrame, right.Head(), currRightFrame, visited, coStore);
                 } else {
-                    TSmallVec<const TExprNode*> lNodes, rNodes;
+                    TSmallVec<const TExprNode*> lNodes;
+                    TSmallVec<const TExprNode*> rNodes;
                     lNodes.reserve(left.ChildrenSize());
                     rNodes.reserve(right.ChildrenSize());
 

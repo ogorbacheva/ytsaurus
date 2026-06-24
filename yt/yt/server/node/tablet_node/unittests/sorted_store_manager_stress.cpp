@@ -239,7 +239,7 @@ public:
             auto row = Owner_->LookupRow(
                 key,
                 Request_.Timestamp,
-                std::move(columnFilter),
+                columnFilter,
                 TabletSnapshot_);
             if (!row) {
                 Result_.Set(TLookupResult{
@@ -951,10 +951,9 @@ public:
 
 TEST_P(TSortedStoreManagerStressTest, Test)
 {
-    BIND(&TSortedStoreManagerStressTest::RunTest, Unretained(this))
+    WaitFor(BIND(&TSortedStoreManagerStressTest::RunTest, Unretained(this))
         .AsyncVia(TestQueue_->GetInvoker())
-        .Run()
-        .BlockingGet()
+        .Run())
         .ThrowOnError();
 }
 

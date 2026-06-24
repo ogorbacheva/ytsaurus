@@ -4,9 +4,9 @@
 #include "job_size_adjuster.h"
 #include "new_job_manager.h"
 
-#include <yt/yt/server/lib/controller_agent/job_size_constraints.h>
-
 #include <yt/yt/server/lib/chunk_pools/config.h>
+
+#include <yt/yt/server/lib/controller_agent/job_size_constraints.h>
 
 #include <yt/yt/ytlib/chunk_client/helpers.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk.h>
@@ -262,7 +262,7 @@ public:
             GetDataWeightCounter()->GetPending() / GetJobCounter()->GetPending());
         stat.RowCount = std::max(
             static_cast<i64>(1),
-            GetDataWeightCounter()->GetTotal() / GetJobCounter()->GetTotal());
+            GetRowCounter()->GetTotal() / GetJobCounter()->GetTotal());
         stat.MaxBlockSize = MaxBlockSize_;
 
         TChunkStripeStatisticsVector result;
@@ -472,7 +472,7 @@ private:
         }
 
         if (Sampler_.Sample()) {
-            ChunkTeleported_.Fire(chunk, /*tag=*/std::any{});
+            ChunkTeleported_.Fire(chunk, /*tag*/ std::any{});
         } else {
             // Drop this teleport chunk.
         }

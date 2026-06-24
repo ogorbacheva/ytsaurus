@@ -227,14 +227,14 @@ public:
         TConcreteConstructor concreteConstructor);
 
     template <TFieldTag::TUnderlying TagValue, auto Member>
-    auto Field(TString name)
+    auto Field(std::string name)
     {
         return DoField<TagValue>(std::move(name));
     }
 
     template <TFieldTag::TUnderlying TagValue>
     auto VirtualField(
-        TString name,
+        std::string name,
         auto&& /*loadHandler*/)
     {
         return DoField<TagValue>(std::move(name));
@@ -242,7 +242,7 @@ public:
 
     template <TFieldTag::TUnderlying TagValue>
     auto VirtualField(
-        TString name,
+        std::string name,
         auto&& loadHandler,
         auto&& /*saveHandler*/)
     {
@@ -261,7 +261,7 @@ private:
     std::unique_ptr<TTypeDescriptor> TypeDescriptor_ = std::make_unique<TTypeDescriptor>();
 
     template <TFieldTag::TUnderlying TagValue>
-    auto DoField(TString name)
+    auto DoField(std::string name)
     {
         auto fieldDescriptor = std::make_unique<TFieldDescriptor>();
         fieldDescriptor->Name_ = std::move(name);
@@ -581,7 +581,10 @@ public:
         } else if (MissingHandler_) {
             MissingHandler_(This_, Context_);
         } else {
-            This_->*Member = {};
+            // NB(coteeq): Don't default initialize fields that cannot be default-initialized.
+            if constexpr (requires { This_->*Member = {}; }) {
+                This_->*Member = {};
+            }
         }
     }
 
@@ -912,7 +915,10 @@ public:
     {
         auto* descriptor = AddField<TagValue>();
         descriptor->MissingHandler = [] (TThis* this_, TContext& /*context*/) {
-            this_->*Member = {};
+            // NB(coteeq): Don't default initialize fields that cannot be default-initialized.
+            if constexpr (requires { this_->*Member = {}; }) {
+                this_->*Member = {};
+            }
         };
         return TRuntimeFieldDescriptorBuilderRegistar<Member, TThis, TContext, TDefaultSerializer>(descriptor);
     }

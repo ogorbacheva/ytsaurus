@@ -1,8 +1,7 @@
 #pragma once
 
-#include "private.h"
-
 #include "data_flow_graph.h"
+#include "private.h"
 
 #include <yt/yt/ytlib/chunk_client/helpers.h>
 
@@ -85,15 +84,15 @@ void SafeUpdateAggregatedJobStatistics(
 
 struct TDockerImageSpec
 {
-    TString Registry;
-    TString Image;
-    TString Tag;
-    TString Digest;
+    std::string Registry;
+    std::string Image;
+    std::string Tag;
+    std::string Digest;
 
     bool IsInternal = false;
 
-    TDockerImageSpec(const TString& dockerImage, const TDockerRegistryConfigPtr& config);
-    TString GetDockerImage() const;
+    TDockerImageSpec(const std::string& dockerImage, const TDockerRegistryConfigPtr& config);
+    std::string GetDockerImage() const;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

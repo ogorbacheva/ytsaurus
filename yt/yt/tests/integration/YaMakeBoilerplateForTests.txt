@@ -16,7 +16,7 @@ ENV(YT_DEBUG_TAKEN_PORT=1)
 SET(NO_STRIP yes)
 
 IF (NOT OPENSOURCE)
-    YT_SPEC(yt/yt/tests/integration/spec.yson)
+    INCLUDE(${ARCADIA_ROOT}/yt/yt/tests/integration/yt_spec.inc)
 ELSE()
     YT_SPEC(yt/yt/tests/integration/spec_os.yson)
 ENDIF()
@@ -70,7 +70,7 @@ IF (NOT OPENSOURCE)
     # Containers images for porto tests.
     DATA(
         sbr://7033278227 # Layers.
-        sbr://7834385089 # Rootfs.
+        sbr://12330328300 # Rootfs.
     )
 ENDIF()
 

@@ -121,7 +121,7 @@ private:
     std::vector<std::string> SnapshotDumpScopeFilter_;
     bool ValidateSnapshotFlag_ = false;
     bool ExportSnapshotFlag_ = false;
-    TString LoadSnapshotPath_;
+    std::string LoadSnapshotPath_;
     bool ExportConfigFlag_ = false;
     TString ExportConfigPath_;
     bool ReplayChangelogsFlag_ = false;
@@ -180,7 +180,7 @@ private:
         }
 
         if ((IsDumpSnapshotMode() || IsExportSnapshotMode()) && IsReplayChangelogsMode()) {
-            THROW_ERROR_EXCEPTION("Option 'replay-changelogs' can not be used with 'dump-snapshot', 'export-snapshot'");
+            THROW_ERROR_EXCEPTION("Option 'replay-changelogs' cannot be used with 'dump-snapshot', 'export-snapshot'");
         }
 
         if (IsBuildSnapshotMode() && !IsReplayChangelogsMode() && !IsValidateSnapshotMode()) {
@@ -233,7 +233,7 @@ private:
         DoNotOptimizeAway(bootstrap);
 
         if (IsDryRunMode()) {
-            NBus::TTcpDispatcher::Get()->DisableNetworking();
+            NBus::NTcp::TDispatcher::Get()->DisableNetworking();
 
             bootstrap->Initialize();
 

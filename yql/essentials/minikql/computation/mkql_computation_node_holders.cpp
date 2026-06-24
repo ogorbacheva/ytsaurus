@@ -2190,7 +2190,7 @@ public:
         : TComputationValue<THashedSingleFixedCompactMapHolder>(memInfo)
         , Pool_(std::move(pool))
         , Map_(std::move(map))
-        , NullPayload_(std::move(nullPayload))
+        , NullPayload_(nullPayload)
         , PayloadPacker_(false, payloadType)
         , Ctx_(ctx)
     {
@@ -2940,12 +2940,12 @@ private:
                 TDefaultListRepresentation emptyList;
                 auto newList = HolderFactory_.CreateDirectListHolder(
                     emptyList.Append(std::move(value.second)));
-                map.emplace(std::move(key), std::move(newList));
+                map.emplace(std::move(key), newList);
             } else {
                 auto prevList = GetDefaultListRepresentation(it->second);
                 auto newList = HolderFactory_.CreateDirectListHolder(
                     prevList->Append(std::move(value.second)));
-                it->second = std::move(newList);
+                it->second = newList;
             }
         }
     }
@@ -2993,14 +2993,14 @@ private:
                     currentList = currentList.Append(std::move(it->second));
                 } else {
                     auto payload = HolderFactory_.CreateDirectListHolder(std::move(currentList));
-                    groups.emplace_back(std::move(lastKey), std::move(payload));
+                    groups.emplace_back(std::move(lastKey), payload);
                     currentList = TDefaultListRepresentation(std::move(it->second));
                     lastKey = std::move(it->first);
                 }
             }
 
             auto payload = HolderFactory_.CreateDirectListHolder(std::move(currentList));
-            groups.emplace_back(std::move(lastKey), std::move(payload));
+            groups.emplace_back(std::move(lastKey), payload);
         }
 
         values.swap(groups);
@@ -3120,7 +3120,8 @@ NUdf::TUnboxedValuePod THolderFactory::CreateDirectArrayHolder(ui64 size, NUdf::
     return res;
 }
 
-NUdf::TUnboxedValuePod THolderFactory::CreateArrowBlock(arrow::Datum&& datum) const {
+NUdf::TUnboxedValuePod THolderFactory::CreateArrowBlock(arrow::Datum&& datum, NYql::EDatumValidationMode validationMode) const {
+    ValidateDatum(datum, Nothing(), nullptr, validationMode);
     return Create<TArrowBlock>(std::move(datum));
 }
 
@@ -3319,7 +3320,7 @@ NUdf::TUnboxedValuePod THolderFactory::Append(NUdf::TUnboxedValuePod list, NUdf:
     TDefaultListRepresentation resList;
     if (const auto leftRepr = reinterpret_cast<const TDefaultListRepresentation*>(
             NUdf::TBoxedValueAccessor::GetListRepresentation(*boxed))) {
-        resList = std::move(*leftRepr);
+        resList = *leftRepr;
     } else {
         TThresher<false>::DoForEachItem(list,
                                         [&resList](NUdf::TUnboxedValue&& item) {
@@ -3327,7 +3328,7 @@ NUdf::TUnboxedValuePod THolderFactory::Append(NUdf::TUnboxedValuePod list, NUdf:
                                         });
     }
 
-    resList = resList.Append(std::move(last));
+    resList = resList.Append(last);
     return CreateDirectListHolder(std::move(resList));
 }
 
@@ -3344,7 +3345,7 @@ NUdf::TUnboxedValuePod THolderFactory::Prepend(NUdf::TUnboxedValuePod first, NUd
                                         });
     }
 
-    resList = resList.Prepend(std::move(first));
+    resList = resList.Prepend(first);
     return CreateDirectListHolder(std::move(resList));
 }
 
@@ -3440,11 +3441,11 @@ NUdf::TUnboxedValuePod THolderFactory::CreateVariantHolder(NUdf::TUnboxedValuePo
         return item;
     }
 
-    return CreateBoxedVariantHolder(std::move(item), index);
+    return CreateBoxedVariantHolder(item, index);
 }
 
 NUdf::TUnboxedValuePod THolderFactory::CreateBoxedVariantHolder(NUdf::TUnboxedValuePod item, ui32 index) const {
-    return NUdf::TUnboxedValuePod(AllocateOn<TVariantHolder>(CurrentAllocState_, &MemInfo_, std::move(item), index));
+    return NUdf::TUnboxedValuePod(AllocateOn<TVariantHolder>(CurrentAllocState_, &MemInfo_, item, index));
 }
 
 NUdf::TUnboxedValuePod THolderFactory::CreateIteratorOverList(NUdf::TUnboxedValuePod list) const {

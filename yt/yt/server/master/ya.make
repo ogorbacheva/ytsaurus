@@ -49,6 +49,7 @@ SRCS(
     cell_server/cell_proxy_base.cpp
     cell_server/cell_tracker_impl.cpp
     cell_server/cell_tracker_service.cpp
+    cell_server/leader_smoothing.cpp
     cell_server/cell_tracker.cpp
     cell_server/cell_type_handler_base.cpp
     cell_server/cellar_node_tracker_service.cpp
@@ -129,7 +130,6 @@ SRCS(
     chunk_server/dynamic_store_proxy.cpp
     chunk_server/dynamic_store_type_handler.cpp
     chunk_server/dynamic_store.cpp
-    chunk_server/global_sequoia_chunk_refresher.cpp
     chunk_server/helpers.cpp
     chunk_server/job_controller.cpp
     chunk_server/job_registry.cpp
@@ -152,6 +152,7 @@ SRCS(
     chunk_server/s3_medium_proxy.cpp
     chunk_server/s3_medium_type_handler.cpp
     chunk_server/s3_medium.cpp
+    chunk_server/sequoia_chunk_refresher.cpp
     chunk_server/sequoia_replicas_modifier.cpp
     chunk_server/stored_chunk_replica.cpp
 
@@ -202,7 +203,6 @@ SRCS(
     cypress_server/scion_node.cpp
     cypress_server/scion_proxy.cpp
     cypress_server/scion_type_handler.cpp
-    cypress_server/sequoia_actions_executor.cpp
     cypress_server/serialize.cpp
     cypress_server/shard_map_type_handler.cpp
     cypress_server/shard_proxy.cpp
@@ -429,6 +429,7 @@ SRCS(
     transaction_server/config.cpp
     transaction_server/cypress_integration.cpp
     transaction_server/cypress_transaction_service.cpp
+    transaction_server/helpers.cpp
     transaction_server/sequoia_integration.cpp
     transaction_server/transaction_finisher.cpp
     transaction_server/transaction_manager.cpp
@@ -443,6 +444,16 @@ SRCS(
     transaction_server/proto/transaction_manager.proto
 )
 
+IF (YT_ENABLE_SEQUOIA)
+    SRCS(
+        cypress_server/sequoia_actions_executor.cpp
+    )
+ELSE()
+    SRCS(
+        cypress_server/sequoia_actions_executor_dummy.cpp
+    )
+ENDIF()
+
 PEERDIR(
     library/cpp/containers/absl_flat_hash
     library/cpp/getopt
@@ -451,6 +462,7 @@ PEERDIR(
     yt/yt/library/orchid
     yt/yt/library/server_program
     yt/yt/library/monitoring
+    yt/yt/library/tracing/jaeger
 
     yt/yt/ytlib/distributed_throttler
 
@@ -458,20 +470,21 @@ PEERDIR(
     yt/yt/server/lib/cell_server
     yt/yt/server/lib/cellar_agent
     yt/yt/server/lib/chunk_server
+    yt/yt/server/lib/cypress_proxy
     yt/yt/server/lib/discovery_server
     yt/yt/server/lib/hive
-    yt/yt/server/lib/hydra/dry_run
     yt/yt/server/lib/hydra
+    yt/yt/server/lib/hydra/dry_run
     yt/yt/server/lib/incumbent_client
     yt/yt/server/lib/node_tracker_server
     yt/yt/server/lib/object_server
     yt/yt/server/lib/security_server
+    yt/yt/server/lib/sequoia
     yt/yt/server/lib/table_server
     yt/yt/server/lib/tablet_balancer
     yt/yt/server/lib/tablet_server
     yt/yt/server/lib/timestamp_server
     yt/yt/server/lib/transaction_supervisor
-    yt/yt/server/lib/sequoia
 
     # TODO(max42): eliminate.
     yt/yt/server/lib/scheduler

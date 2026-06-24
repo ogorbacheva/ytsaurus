@@ -156,18 +156,18 @@ class TestChunkMerger(YTEnvSetup):
         set("//tmp/t/@chunk_merger_mode", "auto")
         assert get("//tmp/t/@chunk_merger_mode") == "auto"
 
-        with raises_yt_error("Error parsing EChunkMergerMode"):
+        with raises_yt_error("Error parsing .* value"):
             set("//tmp/t/@chunk_merger_mode", "sdjkfhdskj")
 
         create_account("a")
 
         set("//sys/accounts/a/@merge_job_rate_limit", 7)
-        with raises_yt_error("cannot be negative"):
+        with raises_yt_error(".* cannot be negative"):
             set("//sys/accounts/a/@merge_job_rate_limit", -1)
         assert get("//sys/accounts/a/@merge_job_rate_limit") == 7
 
         set("//sys/accounts/a/@chunk_merger_node_traversal_concurrency", 12)
-        with raises_yt_error("cannot be negative"):
+        with raises_yt_error(".* cannot be negative"):
             set("//sys/accounts/a/@chunk_merger_node_traversal_concurrency", -1)
         assert get("//sys/accounts/a/@chunk_merger_node_traversal_concurrency") == 12
 
@@ -177,7 +177,7 @@ class TestChunkMerger(YTEnvSetup):
         set("//sys/accounts/d/@chunk_merger_criteria", data)
         assert get("//sys/accounts/d/@chunk_merger_criteria") == data
 
-        with raises_yt_error("must be positive"):
+        with raises_yt_error(".* must be positive"):
             set("//sys/accounts/d/@chunk_merger_criteria/max_row_count", -1)
         set("//sys/accounts/d/@chunk_merger_criteria/max_row_count", 2)
         assert get("//sys/accounts/d/@chunk_merger_criteria/max_row_count") == 2
@@ -1607,7 +1607,6 @@ class TestChunkMergerPortal(TestChunkMergerMulticell):
         _wait_for_merge("//home/t2", None)
 
 
-@pytest.mark.enabled_multidaemon
 class TestChunkMergerSequoia(TestChunkMergerMulticell):
     ENABLE_MULTIDAEMON = True
     USE_SEQUOIA = True
@@ -1622,7 +1621,6 @@ class TestChunkMergerSequoia(TestChunkMergerMulticell):
     }
 
 
-@pytest.mark.enabled_multidaemon
 class TestTableDataStatisticsConsistency(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_SECONDARY_MASTER_CELLS = 1

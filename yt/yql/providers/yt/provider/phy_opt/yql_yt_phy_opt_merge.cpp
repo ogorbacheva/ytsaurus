@@ -190,7 +190,9 @@ TMaybeNode<TExprBase> TYtPhysicalOptProposalTransformer::BypassMerge(TExprBase n
                         auto builder = Build<TYtPath>(ctx, mergePath.Pos()).InitFrom(mergePath);
 
                         if (columns) {
-                            builder.Columns(columns.Cast());
+                            TYtColumnsInfo innerColumns(mergePath.Columns());
+                            innerColumns.Apply(TYtColumnsInfo(columns.Cast()));
+                            builder.Columns(innerColumns.ToExprNode(ctx, columns.Cast().Pos()));
                         }
                         if (!path.Ranges().Maybe<TCoVoid>()) {
                             builder.Ranges(path.Ranges());
@@ -400,6 +402,16 @@ TMaybeNode<TExprBase> TYtPhysicalOptProposalTransformer::MapToMerge(TExprBase no
             // Don't convert YtMap, which produces sorted output from unsorted input
             return node;
         }
+
+        for (auto path: map.Input().Item(0).Paths()) {
+            auto inputRowSpec = TYtPathInfo(path).Table->RowSpec;
+            if (outRowSpec.SortedBy.size() > inputRowSpec->SortedBy.size() ||
+                !std::equal(outRowSpec.SortedBy.begin(), outRowSpec.SortedBy.end(), inputRowSpec->SortedBy.begin())) {
+                    // In this case merge will be sorted, but sorted merge with different in\out sorts is not supported by yt.
+                    return node;
+            }
+        }
+
         if (auto maxTablesForSortedMerge = State_->Configuration->MaxInputTablesForSortedMerge.Get()) {
             if (map.Input().Item(0).Paths().Size() > *maxTablesForSortedMerge) {
                 return node;
@@ -642,4 +654,4 @@ TMaybeNode<TExprBase> TYtPhysicalOptProposalTransformer::ConvertRLSTablesToStati
     return ConvertSpecificTablesToStatic<TYtReadTable>(node, ctx, [](const TYtTableMetaInfo::TPtr& meta) { return meta->HasRLS; });
 }
 
-}  // namespace NYql
+} // namespace NYql

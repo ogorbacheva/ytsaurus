@@ -89,9 +89,6 @@ void TDynamicCypressManagerConfig::Register(TRegistrar registrar)
         .Alias("portal_synchronization_period")
         .Default(TDuration::Minutes(1));
 
-    registrar.Parameter("allow_cross_shard_dynamic_table_copying", &TThis::AllowCrossShardDynamicTableCopying)
-        .Default(true);
-
     registrar.Parameter("scion_removal_period", &TThis::ScionRemovalPeriod)
         .Default(TDuration::Seconds(30));
 
@@ -135,6 +132,10 @@ void TDynamicCypressManagerConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("default_dynamic_table_optimize_for", &TThis::DefaultDynamicTableOptimizeFor)
         .Default(NTableClient::EOptimizeFor::Scan);
+
+    registrar.Parameter("ignore_rootstock_absence_on_scion_removal", &TThis::IgnoreRootstockAbsenceOnScionRemoval)
+        .Default(false)
+        .DontSerializeDefault();
 
     registrar.Postprocessor([] (TThis* config) {
         NJournalClient::ValidateJournalAttributes(

@@ -34,6 +34,8 @@ protected:
 private:
     void SetUp() override
     {
+        ForbidContextSwitchInFutureHandler();
+
         // The following environment variables are expected for the test to work.
         auto endpointUrl = GetEnv("AWS_ENDPOINT_URL");
         auto region = GetEnv("AWS_REGION");
@@ -87,7 +89,7 @@ private:
             }))
                 .ValueOrThrow();
 
-            std::vector<TString> objectKeys;
+            std::vector<std::string> objectKeys;
             for (const auto& object: listObjectsResponse.Objects) {
                 objectKeys.push_back(object.Key);
             }

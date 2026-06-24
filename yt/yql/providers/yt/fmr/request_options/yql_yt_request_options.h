@@ -39,7 +39,10 @@ enum EOperationType {
     Map = 4,
     SortedUpload = 5,
     SortedMerge = 6,
-    Sort = 7
+    Sort = 7,
+    Reduce = 8,
+    Pull = 9,
+    Fill = 10
 };
 
 enum class ETaskType {
@@ -50,7 +53,10 @@ enum class ETaskType {
     Map = 4,
     SortedUpload = 5,
     SortedMerge = 6,
-    LocalSort = 7
+    LocalSort = 7,
+    Reduce = 8,
+    Pull = 9,
+    Fill = 10
 };
 
 enum class EFmrComponent {
@@ -66,7 +72,8 @@ enum class EFmrErrorReason {
     RestartOperation,
     RestartQuery,
     FallbackOperation,
-    UdfTerminate
+    UdfTerminate,
+    WorkerOOM
 };
 
 struct TFmrError {
@@ -201,6 +208,7 @@ struct TFmrTableInputRef {
     TString SerializedColumnGroups = TString();
 
     TMaybe<bool> IsFirstRowInclusive;
+    TMaybe<bool> IsLastRowInclusive;
     TMaybe<TString> FirstRowKeys; // Binary YSON MAP
     TMaybe<TString> LastRowKeys;  // Binary YSON MAP
 
@@ -290,12 +298,19 @@ struct TTaskMergeResult {};
 
 struct TTaskMapResult {};
 
+struct TTaskFillResult {};
+
+
 struct TTaskSortedUploadResult {
     TString FragmentResultYson;
     ui64 FragmentOrder;
 };
 
-using TTaskResult = std::variant<TTaskUploadResult, TTaskDownloadResult, TTaskMergeResult, TTaskMapResult, TTaskSortedUploadResult>;
+struct TTaskPullResult {
+    TString Data; // YSON rows concatenated
+};
+
+using TTaskResult = std::variant<TTaskUploadResult, TTaskDownloadResult, TTaskMergeResult, TTaskMapResult, TTaskSortedUploadResult, TTaskPullResult, TTaskFillResult>;
 
 struct TStatistics {
     std::unordered_map<TFmrTableOutputRef, TTableChunkStats> OutputTables;
@@ -328,6 +343,23 @@ struct TYtWriterSettings {
 struct TStartDistributedWriteOptions {
     TDuration Timeout = TDuration::Minutes(5);
     TDuration PingInterval = TDuration::Seconds(1);
+    ui64 RetriesBeforeThrow = 5;
+    static TStartDistributedWriteOptions FromSpec(const TMaybe<NYT::TNode>& fmrOperationSpec) {
+        TStartDistributedWriteOptions options;
+        if (fmrOperationSpec.Defined() && fmrOperationSpec->IsMap() && fmrOperationSpec->HasKey("distributed_write_session")) {
+            auto& node = (*fmrOperationSpec)["distributed_write_session"];
+            if (node.HasKey("timeout_sec")) {
+                options.Timeout = TDuration::Seconds(node["timeout_sec"].AsInt64());
+            }
+            if (node.HasKey("ping_interval_sec")) {
+                options.PingInterval = TDuration::Seconds(node["ping_interval_sec"].AsInt64());
+            }
+            if (node.HasKey("retries_before_throw")) {
+                options.RetriesBeforeThrow = node["retries_before_throw"].AsInt64();
+            }
+        }
+        return options;
+    }
 };
 
 struct TUploadOperationParams {
@@ -356,6 +388,7 @@ struct TSortedUploadTaskParams {
     TYtTableRef Output;
     TString CookieYson;
     ui64 Order;
+    TSortingColumns SortingColumns;
 };
 
 struct TDownloadOperationParams {
@@ -397,18 +430,35 @@ struct TSortedMergeTaskParams {
     TFmrTableOutputRef Output;
 };
 
+enum class EFmrJobType {
+    Map,
+    OrderedMap,
+    Reduce
+};
+
 struct TMapOperationParams {
     std::vector<TOperationTableRef> Input;
     std::vector<TFmrTableRef> Output;
     TString SerializedMapJobState;
-    bool IsOrdered = false;
+    EFmrJobType MapJobType;
+    bool ForceSingleTask = false;
 };
 
 struct TMapTaskParams {
     TTaskTableInputRef Input;
     std::vector<TFmrTableOutputRef> Output;
     TString SerializedMapJobState;
-    bool IsOrdered;
+    EFmrJobType MapJobType;
+};
+
+struct TFillOperationParams {
+    std::vector<TFmrTableRef> Output;
+    TString SerializedFillJobState;
+};
+
+struct TFillTaskParams {
+    std::vector<TFmrTableOutputRef> Output;
+    TString SerializedFillJobState;
 };
 
 struct TSortOperationParams {
@@ -421,10 +471,46 @@ struct TLocalSortTaskParams {
     TFmrTableOutputRef Output;
 };
 
+enum EReduceType {
+    SortedReduce,
+    JoinReduce
+};
 
-using TOperationParams = std::variant<TUploadOperationParams, TDownloadOperationParams, TMergeOperationParams, TSortedMergeOperationParams, TMapOperationParams, TSortedUploadOperationParams, TSortOperationParams>;
+struct TReduceOperationSpec {
+    TSortingColumns ReduceBy;
+    TSortingColumns SortBy;
+    EReduceType ReduceType;
 
-using TTaskParams = std::variant<TUploadTaskParams, TDownloadTaskParams, TMergeTaskParams, TSortedMergeTaskParams, TMapTaskParams, TSortedUploadTaskParams, TLocalSortTaskParams>;
+    void Save(IOutputStream* buffer) const;
+    void Load(IInputStream* buffer);
+};
+
+struct TReduceOperationParams {
+    std::vector<TOperationTableRef> Input;
+    std::vector<TFmrTableRef> Output;
+    TString SerializedReduceJobState;
+    TReduceOperationSpec ReduceOperationSpec;
+};
+
+struct TPullOperationParams {
+    std::vector<TOperationTableRef> Input;
+};
+
+struct TPullTaskParams {
+    TTaskTableInputRef Input;
+};
+
+struct TReduceTaskParams {
+    //std::vector<TFmrTableInputRef> Input; // all reduce inputs should be in fmr.
+    TTaskTableInputRef Input;
+    std::vector<TFmrTableOutputRef> Output;
+    TString SerializedReduceJobState;
+    TReduceOperationSpec ReduceOperationSpec;
+};
+
+using TOperationParams = std::variant<TUploadOperationParams, TDownloadOperationParams, TMergeOperationParams, TSortedMergeOperationParams, TMapOperationParams, TSortedUploadOperationParams, TSortOperationParams, TReduceOperationParams, TPullOperationParams, TFillOperationParams>;
+
+using TTaskParams = std::variant<TUploadTaskParams, TDownloadTaskParams, TMergeTaskParams, TSortedMergeTaskParams, TMapTaskParams, TSortedUploadTaskParams, TLocalSortTaskParams, TReduceTaskParams, TPullTaskParams, TFillTaskParams>;
 
 struct TFileInfo {
     TString LocalPath; // Path to local file, filled in worker.

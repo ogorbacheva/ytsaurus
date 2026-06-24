@@ -86,7 +86,7 @@ public:
         }
 
         DB::StorageInMemoryMetadata storage_metadata;
-        storage_metadata.setColumns(DB::ColumnsDescription(ToNamesAndTypesList(*SubquerySpec_.ReadSchema, SubquerySpec_.QuerySettings->Composite)));
+        storage_metadata.setColumns(DB::ColumnsDescription(ToNamesAndTypesList(*SubquerySpec_.ReadSchema, SubquerySpec_.QuerySettings->Conversion)));
         setInMemoryMetadata(storage_metadata);
 
         QueryContext_->MoveToPhase(EQueryPhase::Preparation);
@@ -196,7 +196,7 @@ public:
         if (StorageContext_->Settings->Execution->EnableMinMaxFiltering) {
             granuleMinMaxFilter = CreateGranuleMinMaxFilter(
                 queryInfo,
-                StorageContext_->Settings->Composite,
+                StorageContext_->Settings->Conversion,
                 SubquerySpec_.ReadSchema,
                 context,
                 realColumnNames);
@@ -219,8 +219,8 @@ public:
         } else {
             readPlan = BuildSimpleReadPlan(std::move(columnSchemas));
         }
-        SubquerySpec_.QuerySettings->Execution->EnableOptimizeDistinctRead &= SuitableForDistinctReadOptimization(readPlan, SubquerySpec_.QuerySettings->Composite);
-        QueryContext_->SetRuntimeVariable("use_distinct_read_optimization", SubquerySpec_.QuerySettings->Execution->EnableOptimizeDistinctRead);
+        SubquerySpec_.SubqueryOptions.UseDistinctReadOptimization &= SuitableForDistinctReadOptimization(readPlan, SubquerySpec_.QuerySettings->Conversion);
+        QueryContext_->SetRuntimeVariable("use_distinct_read_optimization", SubquerySpec_.SubqueryOptions.UseDistinctReadOptimization);
 
         if (SubquerySpec_.InputSpecsTruncated) {
             // As part of the native clickhouse protocol, tcp handler hooks a callback to the context,
@@ -230,7 +230,7 @@ public:
             perThreadDataSliceDescriptors.clear();
         }
 
-        if (SubquerySpec_.QuerySettings->Execution->EnableMinMaxOptimization && SubquerySpec_.TableStatistics.has_value()) {
+        if (SubquerySpec_.SubqueryOptions.UseMinMaxOptimization && SubquerySpec_.TableStatistics.has_value()) {
             YT_VERIFY(readPlan->Steps.size() == 1);
             TUnversionedRowsBuilder rowsBuilder;
             auto addValues = [&rowsBuilder, &readPlan](const std::vector<TUnversionedOwningValue>& values) {

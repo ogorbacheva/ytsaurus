@@ -1,3 +1,12 @@
+/*
+ * roaring64.h
+ *
+ * This file declares the 64-bit Roaring bitmap API. A roaring64 bitmap stores
+ * sets of 64-bit unsigned integers by partitioning the value space by high
+ * bits and using Roaring containers for the lower bits inside each partition.
+ * This keeps the structure compact while preserving fast membership tests,
+ * insertions, iteration, and set operations over large sparse integer sets.
+ */
 #ifndef ROARING64_H
 #define ROARING64_H
 
@@ -49,6 +58,18 @@ void roaring64_bitmap_free(roaring64_bitmap_t *r);
  * The returned pointer may be NULL in case of errors.
  */
 roaring64_bitmap_t *roaring64_bitmap_copy(const roaring64_bitmap_t *r);
+
+/**
+ * Copies a bitmap from src to dest. It is assumed that the pointer dest
+ * is to an already allocated bitmap. The content of the dest bitmap is
+ * freed/deleted.
+ *
+ * It might be preferable and simpler to call roaring64_bitmap_copy except
+ * that roaring64_bitmap_overwrite can save on memory allocations.
+ *
+ */
+void roaring64_bitmap_overwrite(roaring64_bitmap_t *dest,
+                                const roaring64_bitmap_t *src);
 
 /**
  * Creates a new bitmap of a pointer to N 64-bit integers.
@@ -311,6 +332,12 @@ uint64_t roaring64_bitmap_minimum(const roaring64_bitmap_t *r);
 uint64_t roaring64_bitmap_maximum(const roaring64_bitmap_t *r);
 
 /**
+ * Remove run-length encoding even when it is more space efficient.
+ * Return whether a change was applied.
+ */
+bool roaring64_bitmap_remove_run_compression(roaring64_bitmap_t *r);
+
+/**
  * Returns true if the result has at least one run container.
  */
 bool roaring64_bitmap_run_optimize(roaring64_bitmap_t *r);
@@ -506,6 +533,38 @@ void roaring64_bitmap_flip_inplace(roaring64_bitmap_t *r, uint64_t min,
  */
 void roaring64_bitmap_flip_closed_inplace(roaring64_bitmap_t *r, uint64_t min,
                                           uint64_t max);
+/**
+ * Return a copy of the bitmap with all values shifted by offset.
+ *
+ * If `positive` is true, the shift is added, otherwise subtracted. Values that
+ * overflow or underflow uint64_t are dropped. The caller is responsible for
+ * freeing the returned bitmap.
+ */
+roaring64_bitmap_t *roaring64_bitmap_add_offset_signed(
+    const roaring64_bitmap_t *r, bool positive, uint64_t offset);
+
+/**
+ * Return a copy of the bitmap with all values shifted up by offset.
+ *
+ * Values that overflow or underflow uint64_t are dropped. The caller is
+ * responsible for freeing the returned bitmap.
+ */
+static inline roaring64_bitmap_t *roaring64_bitmap_add_offset(
+    const roaring64_bitmap_t *r, uint64_t offset) {
+    return roaring64_bitmap_add_offset_signed(r, true, offset);
+}
+
+/**
+ * Return a copy of the bitmap with all values shifted down by offset.
+ *
+ * Values that overflow or underflow uint64_t are dropped. The caller is
+ * responsible for freeing the returned bitmap.
+ */
+static inline roaring64_bitmap_t *roaring64_bitmap_sub_offset(
+    const roaring64_bitmap_t *r, uint64_t offset) {
+    return roaring64_bitmap_add_offset_signed(r, false, offset);
+}
+
 /**
  * How many bytes are required to serialize this bitmap.
  *
@@ -753,6 +812,75 @@ bool roaring64_iterator_move_equalorlarger(roaring64_iterator_t *it,
  */
 uint64_t roaring64_iterator_read(roaring64_iterator_t *it, uint64_t *buf,
                                  uint64_t count);
+
+/**
+ * Reads previous ${count} values from iterator into user-supplied ${buf}.
+ * Returns the number of read elements.
+ * This number can be smaller than ${count}, which means that iterator is
+ * drained.
+ *
+ * Values are written in descending order: buf[0] is the highest (current)
+ * value, buf[ret-1] is the lowest value read.
+ *
+ * This function satisfies semantics of reverse iteration and can be used
+ * together with other iterator functions.
+ *  - first value is copied from the current iterator value
+ *  - after function returns, iterator is positioned at the previous element
+ */
+uint64_t roaring64_iterator_read_backward(roaring64_iterator_t *it,
+                                          uint64_t *buf, uint64_t count);
+
+typedef struct roaring64_range_closed_s {
+    uint64_t min;
+    uint64_t max;
+} roaring64_range_closed_t;
+
+/**
+ * Reads next ${count} ranges from iterator into user-supplied ${buf}.
+ * A range is defined as a maximal interval of consecutive values.
+ * For example, the set {1,2,3,5,6} contains two ranges: [1..3] and [5..6].
+ * Each range is represented as a struct {min,max}, both endpoints included.
+ * Consecutive values that span internal container boundaries are merged into
+ * a single range.
+ *
+ * Returns the number of read ranges.
+ * This number can be smaller than ${count}, which means that the iterator is
+ * drained.
+ *
+ * This function can be used together with other iterator functions.
+ *  - first range will start with the current iterator value
+ *  - after the function returns, the iterator is positioned at the next element
+ *    after the end of the last returned range, or has_value is false if
+ *    the bitmap is exhausted.
+ */
+size_t roaring64_iterator_read_ranges(roaring64_iterator_t *it,
+                                      roaring64_range_closed_t *buf,
+                                      size_t count);
+
+/**
+ * Reads previous ${count} ranges from iterator into user-supplied ${buf}.
+ * A range is defined as a maximal interval of consecutive values.
+ * For example, the set {1,2,3,5,6} contains two ranges: [1..3] and [5..6].
+ * Each range is represented as a struct {min,max}, both endpoints included.
+ * Consecutive values that span internal container boundaries are merged into
+ * a single range.
+ *
+ * Returns the number of read ranges.
+ * This number can be smaller than ${count}, which means that the iterator is
+ * drained.
+ *
+ * Ranges are returned in reverse order, e.g. the first range returned is the
+ * highest range (ending at the current value).
+ *
+ * This function can be used together with other iterator functions.
+ *  - first range will end with the current iterator value
+ *  - after the function returns, the iterator is positioned at the element
+ *    before the beginning of the last returned range, or has_value is false if
+ *    the bitmap is exhausted.
+ */
+size_t roaring64_iterator_read_prev_ranges(roaring64_iterator_t *it,
+                                           roaring64_range_closed_t *buf,
+                                           size_t count);
 
 #ifdef __cplusplus
 }  // extern "C"

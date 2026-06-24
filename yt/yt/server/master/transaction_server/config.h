@@ -63,8 +63,10 @@ struct TDynamicTransactionManagerTestingConfig
     : public NYTree::TYsonStruct
 {
     bool ThrowOnLeaseRevocation;
+
+    std::optional<TDuration> PreparedTransactionsBarrierDelay;
+
     THashSet<TTransactionId> PrerequisiteCheckFailureDuringCommitOfTransactions;
-    std::optional<TDuration> SequoiaTransactionBarrierDelay;
 
     REGISTER_YSON_STRUCT(TDynamicTransactionManagerTestingConfig);
 
@@ -95,6 +97,8 @@ struct TDynamicTransactionManagerConfig
     bool CheckTransactionIsCompatibleWithMethod;
     bool AlertTransactionIsNotCompatibleWithMethod;
 
+    bool EnableWaitUntilPreparedTransactionsFinished;
+
     // NB: If type is not present in this map, then all methods are allowed.
     THashMap<NObjectClient::EObjectType, THashSet<std::string>> TransactionTypeToMethodWhitelist;
 
@@ -109,12 +113,6 @@ struct TDynamicTransactionManagerConfig
 
     // COMPAT(shakurov)
     bool EnableStartForeignTransactionFixes;
-
-    // COMPAT(cherepashka)
-    bool EnableCypressMirroredToSequoiaPrerequisiteTransactionValidationViaLeases;
-
-    // COMPAT(aleksandra-zh)
-    int RecomputeStronglyOrderedTransactionRefs;
 
     REGISTER_YSON_STRUCT(TDynamicTransactionManagerConfig);
 

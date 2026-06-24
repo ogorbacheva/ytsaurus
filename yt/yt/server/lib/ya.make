@@ -38,7 +38,6 @@ RECURSE(
     chunk_pools
     chunk_server
     controller_agent
-    cypress_election
     cypress_registrar
     discovery_server
     distributed_chunk_session_server
@@ -59,6 +58,7 @@ RECURSE(
     node_tracker_server
     object_server
     rpc_proxy
+    s3
     scheduler
     security_server
     shell

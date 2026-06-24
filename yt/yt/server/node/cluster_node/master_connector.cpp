@@ -102,6 +102,7 @@ public:
         : TMasterHeartbeatReporterBase(
             bootstrap,
             /*reportHeartbeatsToAllSecondaryMasters*/ false,
+            ENodeHeartbeatType::Cluster,
             ClusterNodeLogger().WithTag("HeartbeatType: %v", ENodeHeartbeatType::Cluster))
         , Bootstrap_(bootstrap)
         , Config_(Bootstrap_->GetConfig()->MasterConnector)
@@ -126,7 +127,7 @@ public:
         MasterCellTags_.insert(secondaryMasterCellTags.begin(), secondaryMasterCellTags.end());
 
         const auto& dynamicConfigManager = Bootstrap_->GetDynamicConfigManager();
-        dynamicConfigManager->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TMasterConnector::OnDynamicConfigChanged, MakeWeak(this)));
+        dynamicConfigManager->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TMasterConnector::OnDynamicConfigChanged, MakeWeak(this)));
         Bootstrap_->SubscribeSecondaryMasterCellListChanged(
             BIND_NO_PROPAGATE(&TMasterConnector::OnSecondaryMasterCellListChanged, MakeWeak(this)));
 
@@ -317,6 +318,16 @@ public:
         return MasterCellTags_;
     }
 
+    virtual TFuture<std::vector<TError>> GetExecutedEvents(const THashSet<NObjectClient::TCellTag>& masterCellTags) override
+    {
+        return TMasterHeartbeatReporterBase::GetExecutedEvents(masterCellTags);
+    }
+
+    void ScheduleMasterHeartbeats(const THashSet<NObjectClient::TCellTag>& masterCellTags) override
+    {
+        return TMasterHeartbeatReporterBase::ScheduleOutOfBandMasterHeartbeats(masterCellTags);
+    }
+
 protected:
     TFuture<void> DoReportHeartbeat(TCellTag cellTag) override
     {
@@ -424,13 +435,13 @@ private:
 
         const auto& masterCellDirectory = Bootstrap_->GetConnection()->GetMasterCellDirectory();
         auto oldSecondaryMastersConnectionConfigs = masterCellDirectory->GetSecondaryMasterConnectionConfigs();
-        if (!ClusterMasterCompositionChanged(masterCellDirectory->GetSecondaryMasterConnectionConfigs(), newSecondaryMastersConnectionConfigs)) {
+        if (!ClusterMasterCompositionChanged(oldSecondaryMastersConnectionConfigs, newSecondaryMastersConnectionConfigs)) {
             return;
         }
 
         YT_LOG_INFO("Master cell membership configuration has changed, starting reconfiguration "
             "(SecondaryMasterCellTags: %v, ReceivedSecondaryMasterCellTags: %v)",
-            GetMasterCellTags(),
+            NCellMasterClient::GetMasterCellTags(oldSecondaryMastersConnectionConfigs),
             NCellMasterClient::GetMasterCellTags(newSecondaryMastersConnectionConfigs));
 
         masterCellDirectory->ReconfigureMasterCellDirectory(newSecondaryMastersConnectionConfigs);

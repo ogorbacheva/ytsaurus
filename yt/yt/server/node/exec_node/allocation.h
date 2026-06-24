@@ -1,8 +1,8 @@
 #pragma once
 
+#include "helpers.h"
 #include "job.h"
 #include "job_fs_secretary.h"
-#include "helpers.h"
 
 #include <yt/yt/server/node/job_agent/job_resource_manager.h>
 
@@ -24,6 +24,7 @@ DEFINE_ENUM(EAllocationFinishReason,
     (AgentDisconnected)
     (JobFinishedUnsuccessfully)
     (UserSlotDisabled)
+    (JobsDisabledOnNode)
 );
 
 class TAllocation
@@ -159,7 +160,9 @@ private:
         TJobId jobId,
         NControllerAgent::NProto::TJobSpec&& jobSpec);
 
-    void OnAllocationFinished(EAllocationFinishReason finishReason);
+    void OnAllocationFinished(
+        EAllocationFinishReason finishReason,
+        TJobPtr lastJob);
 
     void OnJobPrepared(TJobPtr job);
     void OnJobFinished(TJobPtr job);

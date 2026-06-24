@@ -4,7 +4,6 @@
 #include <yql/essentials/providers/common/schema/expr/yql_expr_schema.h>
 #include <yql/essentials/core/yql_expr_type_annotation.h>
 #include <yql/essentials/core/expr_nodes/yql_expr_nodes.h>
-#include <yql/essentials/core/yql_expr_type_annotation.h>
 #include <yql/essentials/core/yql_match_recognize.h>
 #include <yql/essentials/core/type_ann/type_ann_dict.h>
 
@@ -42,7 +41,7 @@ TRuntimeNode WideTopImpl(const TExprNode& node, TMkqlBuildContext& ctx,
     std::vector<std::pair<ui32, TRuntimeNode>> directions;
     directions.reserve(node.Tail().ChildrenSize());
     node.Tail().ForEachChild([&](const TExprNode& dir) {
-        directions.emplace_back(std::make_pair(::FromString<ui32>(dir.Head().Content()), MkqlBuildExpr(dir.Tail(), ctx)));
+        directions.emplace_back(::FromString<ui32>(dir.Head().Content()), MkqlBuildExpr(dir.Tail(), ctx));
     });
 
     return (ctx.ProgramBuilder.*func)(flow, count, directions);
@@ -55,7 +54,7 @@ TRuntimeNode WideSortImpl(const TExprNode& node, TMkqlBuildContext& ctx,
     std::vector<std::pair<ui32, TRuntimeNode>> directions;
     directions.reserve(node.Tail().ChildrenSize());
     node.Tail().ForEachChild([&](const TExprNode& dir) {
-        directions.emplace_back(std::make_pair(::FromString<ui32>(dir.Head().Content()), MkqlBuildExpr(dir.Tail(), ctx)));
+        directions.emplace_back(::FromString<ui32>(dir.Head().Content()), MkqlBuildExpr(dir.Tail(), ctx));
     });
 
     return (ctx.ProgramBuilder.*func)(flow, directions);
@@ -426,7 +425,6 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         {"Last", &TProgramBuilder::Last},
 
         {"ToList", &TProgramBuilder::ToList},
-        {"ToFlow", &TProgramBuilder::ToFlow},
         {"FromFlow", &TProgramBuilder::FromFlow},
 
         {"WideToBlocks", &TProgramBuilder::WideToBlocks},
@@ -606,6 +604,17 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         {"CurrentUtcDate", &TProgramBuilder::CurrentUtcDate},
         {"CurrentUtcDatetime", &TProgramBuilder::CurrentUtcDatetime},
         {"CurrentUtcTimestamp", &TProgramBuilder::CurrentUtcTimestamp},
+    });
+
+    AddCallable("HostRuntimeSetting", [](const TExprNode& node, TMkqlBuildContext& ctx) {
+        const auto featureName = MkqlBuildExpr(node.Head(), ctx);
+        return ctx.ProgramBuilder.HostRuntimeSetting(featureName);
+    });
+
+    AddCallable("UdfRuntimeSetting", [](const TExprNode& node, TMkqlBuildContext& ctx) {
+        const auto module = MkqlBuildExpr(*node.Child(0), ctx);
+        const auto featureName = MkqlBuildExpr(*node.Child(1), ctx);
+        return ctx.ProgramBuilder.UdfRuntimeSetting(module, featureName);
     });
 
     AddSimpleCallables({
@@ -1488,6 +1497,12 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         }, memoryLimitBytes, returnType);
     });
 
+    AddCallable("ToFlow", [](const TExprNode& node, TMkqlBuildContext& ctx) {
+        const auto arg = MkqlBuildExpr(node.Head(), ctx);
+        const auto& args = GetArgumentsFrom<1U>(node, ctx);
+        return ctx.ProgramBuilder.ToFlow(arg, args);
+    });
+
     AddCallable("ToStream", [](const TExprNode& node, TMkqlBuildContext& ctx) {
         const auto arg = MkqlBuildExpr(node.Head(), ctx);
         const auto& args = GetArgumentsFrom<1U>(node, ctx);
@@ -1563,7 +1578,9 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
             rightItemType = rightItemType->Cast<TListExprType>()->GetItemType();
         }
 
-        std::vector<ui32> leftKeyColumns, leftRenames, rightRenames;
+        std::vector<ui32> leftKeyColumns;
+        std::vector<ui32> leftRenames;
+        std::vector<ui32> rightRenames;
         switch (const auto& inputItemType = GetSeqItemType(*node.Head().GetTypeAnn()); inputItemType.GetKind()) {
             case ETypeAnnotationKind::Struct: {
                 const auto inputStructType = inputItemType.Cast<TStructExprType>();
@@ -1668,7 +1685,10 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
 
         const auto joinKind = GetJoinKind(node, node.Child(3)->Content());
 
-        std::vector<ui32> leftKeyColumns, leftKeyDrops, rightKeyColumns, rightKeyDrops;
+        std::vector<ui32> leftKeyColumns;
+        std::vector<ui32> leftKeyDrops;
+        std::vector<ui32> rightKeyColumns;
+        std::vector<ui32> rightKeyDrops;
         node.Child(4)->ForEachChild([&](const TExprNode& child) { leftKeyColumns.emplace_back(*GetWideBlockFieldPosition(*leftItemType, child.Content())); });
         node.Child(5)->ForEachChild([&](const TExprNode& child) { leftKeyDrops.emplace_back(*GetWideBlockFieldPosition(*leftItemType, child.Content())); });
         node.Child(6)->ForEachChild([&](const TExprNode& child) { rightKeyColumns.emplace_back(*GetFieldPosition(*rightItemType, child.Content())); });
@@ -1688,7 +1708,10 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
 
         const auto& outputItemType = GetSeqItemType(*node.GetTypeAnn());
 
-        std::vector<ui32> leftKeyColumns, rightKeyColumns, leftRenames, rightRenames;
+        std::vector<ui32> leftKeyColumns;
+        std::vector<ui32> rightKeyColumns;
+        std::vector<ui32> leftRenames;
+        std::vector<ui32> rightRenames;
         const auto& leftItemType = GetSeqItemType(*node.Child(0)->GetTypeAnn());
         const auto& rightItemType = GetSeqItemType(*node.Child(shift)->GetTypeAnn());
 
@@ -1734,7 +1757,10 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         const auto list = MkqlBuildExpr(node.Head(), ctx);
         const auto joinKind = GetJoinKind(node, node.Child(1)->Content());
 
-        std::vector<ui32> leftColumns, rightColumns, requiredColumns, keyColumns;
+        std::vector<ui32> leftColumns;
+        std::vector<ui32> rightColumns;
+        std::vector<ui32> requiredColumns;
+        std::vector<ui32> keyColumns;
         ui32 tableIndexFieldPos;
         switch (const auto& inputItemType = GetSeqItemType(*node.Head().GetTypeAnn()); inputItemType.GetKind()) {
             case ETypeAnnotationKind::Struct: {
@@ -1810,6 +1836,44 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         const auto returnType = ctx.BuildType(node, *node.GetTypeAnn());
         return ctx.ProgramBuilder.CommonJoinCore(list, joinKind, leftColumns, rightColumns,
                                                  requiredColumns, keyColumns, memLimit, sortedTableOrder, anyJoinSettings, tableIndexFieldPos, returnType);
+    });
+
+    AddCallable("ListJoinCore", [](const TExprNode& node, TMkqlBuildContext& ctx) {
+        const auto stream = MkqlBuildExpr(node.Head(), ctx);
+        const auto inputStructType = GetSeqItemType(*node.Head().GetTypeAnn()).Cast<TStructExprType>();
+
+        const auto& keyTypeNode = *node.Child(1);
+        const auto& leftLambda = *node.Child(2);
+        const auto& leftTypeNode = *node.Child(3);
+        const auto& rightLambda = *node.Child(4);
+        const auto& rightTypeNode = *node.Child(5);
+        const auto& joinLambda = *node.Child(6);
+
+        auto buildColumnMap = [&](const TExprNode& structTypeNode, const TStringBuf prefix) {
+            const auto& items = structTypeNode.GetTypeAnn()->Cast<TTypeExprType>()->GetType()->Cast<TStructExprType>()->GetItems();
+            using TColumnsVec = TVector<std::pair<const ui32, const ui32>>;
+            TColumnsVec cols(Reserve(items.size()));
+            for (ui32 outIdx = 0U; outIdx < items.size(); outIdx++) {
+                const auto inIdx = *GetFieldPosition(*inputStructType, TString::Join(prefix, items[outIdx]->GetName()));
+                cols.emplace_back(inIdx, outIdx);
+            }
+            return cols;
+        };
+
+        const auto keyType = ctx.BuildType(keyTypeNode, *keyTypeNode.GetTypeAnn());
+        const auto leftArgType = ctx.BuildType(leftTypeNode, *leftTypeNode.GetTypeAnn());
+        const auto rightArgType = ctx.BuildType(rightTypeNode, *rightTypeNode.GetTypeAnn());
+
+        const auto keyColumns = buildColumnMap(keyTypeNode, "_yql_ljc_key_");
+        const auto leftColumns = buildColumnMap(leftTypeNode, "_yql_ljc_left_input_");
+        const auto rightColumns = buildColumnMap(rightTypeNode, "_yql_ljc_right_input_");
+
+        const auto returnType = ctx.BuildType(node, *node.GetTypeAnn());
+
+        return ctx.ProgramBuilder.ListJoinCore(stream, keyType, keyColumns, leftColumns, rightColumns,
+                                               leftArgType, [&](TRuntimeNode item) { return MkqlBuildLambda(leftLambda, ctx, {item}); },
+                                               rightArgType, [&](TRuntimeNode item) { return MkqlBuildLambda(rightLambda, ctx, {item}); },
+                                               returnType, [&](TRuntimeNode key, TRuntimeNode leftList, TRuntimeNode rightList) { return MkqlBuildLambda(joinLambda, ctx, {key, leftList, rightList}); });
     });
 
     AddCallable("CombineCore", [](const TExprNode& node, TMkqlBuildContext& ctx) {
@@ -2537,7 +2601,8 @@ TMkqlCommonCallableCompiler::TShared::TShared() {
         const auto dict2 = MkqlBuildExpr(*node.Child(1), ctx);
         const auto joinKind = GetJoinKind(node, node.Child(2)->Content());
 
-        bool multi1 = true, multi2 = true;
+        bool multi1 = true;
+        bool multi2 = true;
         if (node.ChildrenSize() > 3) {
             node.Tail().ForEachChild([&](const TExprNode& flag) {
                 if (const auto& content = flag.Content(); content == "LeftUnique") {

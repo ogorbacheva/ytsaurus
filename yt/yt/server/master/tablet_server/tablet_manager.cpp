@@ -288,11 +288,6 @@ public:
         cellManager->SubscribeCellBundleDestroyed(BIND_NO_PROPAGATE(&TTabletManager::OnTabletCellBundleDestroyed, MakeWeak(this)));
         cellManager->SubscribeCellDecommissionStarted(BIND_NO_PROPAGATE(&TTabletManager::OnTabletCellDecommissionStarted, MakeWeak(this)));
 
-        if (Bootstrap_->IsPrimaryMaster()) {
-            Bootstrap_->GetAlertManager()->RegisterAlertSource(
-                BIND_NO_PROPAGATE(&TTabletManager::GetAlerts, MakeStrong(this)));
-        }
-
         TabletService_->Initialize();
         TabletActionManager_->Initialize();
     }
@@ -593,7 +588,7 @@ public:
         table->ValidateNotBackup("Cannot alter replica of a backup table");
 
         if (table->GetAggregatedTabletBackupState() != ETabletBackupState::None) {
-            THROW_ERROR_EXCEPTION("Canont alter replica since its table is being backed up")
+            THROW_ERROR_EXCEPTION("Cannot alter replica since its table is being backed up")
                 << TErrorAttribute("table_id", table->GetId())
                 << TErrorAttribute("tablet_backup_state", table->GetAggregatedTabletBackupState());
         }
@@ -1339,6 +1334,29 @@ public:
             }
         }
 
+        if (IsTableType(table->GetType())) {
+            i64 maxReshardComplexity = GetDynamicConfig()->MaxReshardComplexity;
+
+            i64 chunkCount = 0;
+            for (int index = firstTabletIndex; index <= lastTabletIndex; ++index) {
+                auto* tablet = table->Tablets()[index]->As<TTablet>();
+
+                chunkCount += tablet->GetChunkList()->Statistics().ChunkCount;
+            }
+
+            i64 keyColumnCount = table->As<TTableNode>()->GetSchema()->AsCompactTableSchema()->GetKeyColumnCount();
+
+            i64 complexity = keyColumnCount * chunkCount;
+
+            if (complexity >= maxReshardComplexity) {
+                THROW_ERROR_EXCEPTION("Reshard complexity exceeds maximum allowed complexity, reshard table gradually")
+                    << TErrorAttribute("chunk_count", chunkCount)
+                    << TErrorAttribute("key_column_count", keyColumnCount)
+                    << TErrorAttribute("reshard_complexity", complexity)
+                    << TErrorAttribute("max_reshard_complexity", maxReshardComplexity);
+            }
+        }
+
         // Do after all validations.
         if (IsTableType(table->GetType())) {
             TabletActionManager_->TouchAffectedTabletActions(table, firstTabletIndex, lastTabletIndex, "reshard_table");
@@ -1615,9 +1633,7 @@ public:
                 continue;
             }
 
-            auto newMemorySize = tablet->GetTabletStaticMemorySize();
-
-            totalMemorySizeDelta += newMemorySize;
+            totalMemorySizeDelta += tablet->GetTabletStaticMemorySize();
 
             if (updateMode == EUpdateMode::Overwrite) {
                 tablet->SetStoresUpdatePreparedTransaction(nullptr);
@@ -1664,9 +1680,8 @@ public:
         // originating node with the ones of branched node. Since dynamic stores are already
         // attached, we have to account them this way.
         branchedNode->SnapshotStatistics() = {};
-        for (auto contentType : TEnumTraits<EChunkListContentType>::GetDomainValues()) {
-            branchedNode->SnapshotStatistics() += originatingNode->GetChunkList(contentType)->Statistics().ToDataStatistics();
-        }
+        branchedNode->SnapshotStatistics() += originatingNode->GetChunkList()->Statistics().ToDataStatistics();
+        branchedNode->SnapshotStatistics() += originatingNode->GetHunkChunkList()->HunkStatistics().ToDataStatistics();
 
         auto resourceUsageDelta = TTabletResources()
             .SetTabletStaticMemory(totalMemorySizeDelta);
@@ -2641,13 +2656,14 @@ public:
     void OnHunkJournalChunkSealed(TChunk* chunk) override
     {
         YT_VERIFY(chunk->IsSealed());
+        YT_VERIFY(IsHunkChunkFormat(chunk->GetChunkFormat()));
 
         auto owningNodes = GetOwningNodes(chunk);
         std::vector<TTableNode*> tableNodes;
 
         for (auto* node : owningNodes) {
             // NB: We skip hunk storage here, because there shall not be any shared chunk lists,
-            // also tablet (both regular and cumulatve) statistics does not make sence anyway, because
+            // also tablet (both regular and cumulative) statistics does not make sense anyway, because
             // sealed journal hunk chunks get removed from corresponding chunk lists almost immediately.
             if (!IsTableType(node->GetType())) {
                 continue;
@@ -2671,86 +2687,35 @@ public:
 
         for (auto* table : tableNodes) {
             for (auto tablet : table->Tablets()) {
-                auto tabletStatistics = tablet->GetTabletStatistics();
-                table->DiscountTabletStatistics(tabletStatistics);
+                table->DiscountTabletStatistics(tablet->GetTabletStatistics());
             }
         }
 
         // NB: We accumulate statistics to ancestors before copying shared chunk lists, because otherwise
-        // statistics are copied incorrectly as chunk manager is anaware of which chunk has just been sealed.
-        // NB: Here we omit updating cumulative statistics, because they do not make sence for hunk-related chunk lists,
-        // as each hunk chunk can be attached to multiple tablet-level chunk lists.
-        // TODO(akozhikhov): Completely drop cumulative statistics from hunk related chunk lists.
-        auto statistics = chunk->GetStatistics();
-        ++statistics.Rank;
-
-        auto hunkRootStatistics = statistics;
-        ++hunkRootStatistics.Rank;
-
-        THashSet<TChunkListId> hunkRootChunkListIds;
-        TChunkListId hunkStorageRootChunkListId;
-        THashSet<TChunkListId> parentChunkListIds;
-        for (const auto& [chunkParent, _] : chunk->Parents()) {
-            parentChunkListIds.insert(chunkParent->GetId());
-
-            const auto& hunkChunkList = chunkParent->AsChunkList();
-            if (hunkChunkList->GetKind() != EChunkListKind::Hunk &&
-                hunkChunkList->GetKind() != EChunkListKind::HunkTablet)
-            {
-                YT_LOG_ALERT("Parent chunk list of enexpected kind was encountered upon sealing of hunk journal chunk "
-                    "(ChunkId: %v, ParentId: %v, ParentChunkListKind: %v)",
-                    chunk->GetId(),
-                    chunkParent->GetId(),
-                    hunkChunkList->GetKind());
-                continue;
-            }
-
-            hunkChunkList->Statistics().Accumulate(statistics);
-
-            for (const auto& hunkChunkListParent : hunkChunkList->Parents()) {
-                const auto& hunkRootChunkList = hunkChunkListParent->AsChunkList();
-                if (hunkRootChunkList->GetKind() != EChunkListKind::HunkRoot &&
-                    hunkRootChunkList->GetKind() != EChunkListKind::HunkStorageRoot)
-                {
-                    YT_LOG_ALERT("Grandparent chunk list of enexpected kind was encountered upon sealing of hunk journal chunk "
-                        "(ChunkId: %v, ParentId: %v, ParentChunkListKind: %v)",
-                        chunk->GetId(),
-                        hunkChunkListParent->GetId(),
-                        hunkRootChunkList->GetKind());
-                    continue;
-                }
-
-                if (hunkRootChunkList->GetKind() == EChunkListKind::HunkStorageRoot) {
-                    YT_LOG_ALERT_IF(hunkStorageRootChunkListId,
-                        "Multiple ancestor hunk storage roots were encountered upon sealing of hunk journal chunk "
-                        "(ChunkId: %v, FirstParentId: %v, SecondParentId: %v)",
-                        chunk->GetId(),
-                        hunkStorageRootChunkListId,
-                        hunkRootChunkList->GetId());
-
-                    hunkStorageRootChunkListId = hunkRootChunkList->GetId();
-                    hunkRootChunkList->Statistics().Accumulate(hunkRootStatistics);
-                } else if (hunkRootChunkListIds.emplace(hunkRootChunkList->GetId()).second) {
-                    hunkRootChunkList->Statistics().Accumulate(hunkRootStatistics);
-                }
-            }
-        }
+        // statistics are copied incorrectly as chunk manager is unaware of which chunk has just been sealed.
+        VisitAllAncestorsInHunkTree(chunk, [&] (TChunkList* chunkList, bool /*firstOccurrence*/) {
+            chunkList->AccumulateHunkStatistics(chunk);
+        });
 
         for (auto* table : tableNodes) {
             RecomputeTableSnapshotStatistics(table);
 
             for (auto tablet : table->Tablets()) {
-                if (parentChunkListIds.contains(tablet->GetHunkChunkList()->GetId())) {
-                    TabletChunkManager_->CopyChunkListIfShared(
-                        table,
-                        EChunkListContentType::Hunk,
-                        tablet->GetIndex(),
-                        tablet->GetIndex());
-                }
-
-                auto tabletStatistics = tablet->GetTabletStatistics();
-                table->AccountTabletStatistics(tabletStatistics);
+                table->AccountTabletStatistics(tablet->GetTabletStatistics());
             }
+        }
+
+        const auto& tableManager = Bootstrap_->GetTableManager();
+        for (auto* table : tableNodes) {
+            tableManager->ScheduleStatisticsUpdate(
+                table,
+                TStatisticsUpdateRequest{
+                    .UpdateDataStatistics = true,
+                    .UpdateTabletResourceUsage = false,
+                    .UpdateModificationTime = true,
+                    .UpdateAccessTime = false,
+                    .UseNativeContentRevisionCas = false,
+                });
         }
     }
 
@@ -2771,8 +2736,13 @@ public:
         const auto& tableManager = Bootstrap_->GetTableManager();
         tableManager->ScheduleStatisticsUpdate(
             table,
-            /*updateDataStatistics*/ true,
-            /*updateTabletStatistics*/ false);
+            TStatisticsUpdateRequest{
+                .UpdateDataStatistics = true,
+                .UpdateTabletResourceUsage = false,
+                .UpdateModificationTime = true,
+                .UpdateAccessTime = true,
+                .UseNativeContentRevisionCas = false,
+            });
 
         TTabletStatistics statisticsDelta;
         statisticsDelta.ChunkCount = 1;
@@ -2867,9 +2837,6 @@ private:
 
     // COMPAT(ifsmirnov)
     int NonAvenueTabletCount_ = 0;
-
-    // COMPAT(babenko)
-    bool WeakRefTableReplicas_ = false;
 
     DECLARE_THREAD_AFFINITY_SLOT(AutomatonThread);
 
@@ -3186,8 +3153,10 @@ private:
             table->AccountTabletStatistics(tablet->GetTabletStatistics());
 
             const auto* context = GetCurrentMutationContext();
-            tablet->Servant().SetMountRevision(context->GetVersion().ToRevision());
-            tablet->SetSettingsRevision(context->GetVersion().ToRevision());
+            auto revision = context->GetVersion().ToRevision();
+            tablet->Servant().SetMountRevision(revision);
+            tablet->Servant().SetLogicalMountRevision(revision);
+            tablet->SetSettingsRevision(revision);
             tablet->SetWasForcefullyUnmounted(false);
             tablet->Servant().SetMountTime(context->GetTimestamp());
 
@@ -3332,6 +3301,8 @@ private:
                 reqReplicatable.set_custom_runtime_data(ToProto(customRuntimeData));
             }
 
+            ToProto(reqReplicatable.mutable_originator_tablets(), tablet->OriginatorTablets());
+
             req.set_mount_revision(ToProto(tablet->Servant().GetMountRevision()));
             req.set_freeze(freeze);
             req.set_use_retained_preloaded_chunks(useRetainedPreloadedChunks);
@@ -3369,15 +3340,16 @@ private:
             // COMPAT(ifsmirnov)
             reqReplicatable.set_has_replicas_and_replication_progress(true);
 
-            auto* chunkList = tablet->GetChunkList();
-            const auto& chunkListStatistics = chunkList->Statistics();
+            const auto& chunkListStatistics = tablet->GetChunkList()->Statistics();
             i64 startingRowIndex = chunkListStatistics.LogicalRowCount - chunkListStatistics.RowCount;
 
             std::vector<TChunkTreeRawPtr> chunksOrViews;
-            for (auto contentType : TEnumTraits<EChunkListContentType>::GetDomainValues()) {
-                auto* chunkList = tablet->GetChunkList(contentType);
-                EnumerateStoresInChunkTree(chunkList, &chunksOrViews);
+            EnumerateStoresInChunkTree(tablet->GetChunkList(), &chunksOrViews);
+            if (table->GetInMemoryMode() != EInMemoryMode::None) {
+                preloadPendingStoreCount = chunksOrViews.size();
             }
+            EnumerateStoresInChunkTree(tablet->GetHunkChunkList(), &chunksOrViews);
+
             for (auto chunkOrView : chunksOrViews) {
                 if (IsHunkChunk(tablet, chunkOrView)) {
                     FillHunkChunkDescriptor(chunkOrView->AsChunk(), reqReplicatable.add_hunk_chunks());
@@ -3396,23 +3368,16 @@ private:
                 CreateAndAttachDynamicStores(tablet, &req);
             }
 
-            if (table->GetInMemoryMode() != EInMemoryMode::None) {
-                preloadPendingStoreCount = chunksOrViews.size();
-            }
-
             auto* mountHint = req.mutable_mount_hint();
             ToProto(mountHint->mutable_eden_store_ids(), tablet->EdenStoreIds());
 
-            // TODO(gritukan): Does it make sense for hunk chunk lists?
-            i64 cumulativeDataWeight = 0;
-            for (auto contentType : TEnumTraits<EChunkListContentType>::GetDomainValues()) {
-                cumulativeDataWeight += tablet->GetChunkList(contentType)->Statistics().LogicalDataWeight;
-            }
+            // TODO(akozhikhov): Fix cumulative data weight for hunk chunk tree.
+            i64 cumulativeDataWeight = tablet->GetChunkList()->Statistics().LogicalDataWeight;
             reqReplicatable.set_cumulative_data_weight(cumulativeDataWeight);
 
             YT_LOG_DEBUG("Mounting tablet (TableId: %v, TabletId: %v, CellId: %v, ChunkCount: %v, "
                 "Atomicity: %v, CommitOrdering: %v, Freeze: %v, UpstreamReplicaId: %v, "
-                "NodeEndpointId: %v)",
+                "NodeEndpointId: %v, ConflictHorizonTimestamp: %v)",
                 table->GetId(),
                 tablet->GetId(),
                 cell->GetId(),
@@ -3421,7 +3386,8 @@ private:
                 table->GetCommitOrdering(),
                 freeze,
                 table->GetUpstreamReplicaId(),
-                tablet->GetNodeEndpointId());
+                tablet->GetNodeEndpointId(),
+                tablet->GetConflictHorizonTimestamp());
 
             if (!tablet->IsMountedWithAvenue()) {
                 ++NonAvenueTabletCount_;
@@ -3555,6 +3521,7 @@ private:
         auxiliaryServant.SetCell(cell);
         auxiliaryServant.SetState(ETabletState::Mounting);
         auxiliaryServant.SetMountRevision(revision);
+        auxiliaryServant.SetLogicalMountRevision(tablet->Servant().GetLogicalMountRevision());
         auxiliaryServant.SetMountTime(GetCurrentMutationContext()->GetTimestamp());
 
         auxiliaryServant.SetMovementRole(NTabletNode::ESmoothMovementRole::Target);
@@ -4237,9 +4204,8 @@ private:
     void RecomputeTableSnapshotStatistics(TTableNode* table)
     {
         table->SnapshotStatistics() = {};
-        for (auto contentType : TEnumTraits<EChunkListContentType>::GetDomainValues()) {
-            table->SnapshotStatistics() += table->GetChunkList(contentType)->Statistics().ToDataStatistics();
-        }
+        table->SnapshotStatistics() += table->GetChunkList()->Statistics().ToDataStatistics();
+        table->SnapshotStatistics() += table->GetHunkChunkList()->HunkStatistics().ToDataStatistics();
     }
 
     void SetSyncTabletActionsKeepalive(const std::vector<TTabletActionId>& actionIds)
@@ -4308,11 +4274,6 @@ private:
 
         TabletMap_.LoadKeys(context);
         TableReplicaMap_.LoadKeys(context);
-
-        // COMPAT(ifsmirnov)
-        if (context.GetVersion() < EMasterReign::TabletActionManager) {
-            TabletActionManager_->MutableTabletActionMapCompat().LoadKeys(context);
-        }
     }
 
     void LoadValues(NCellMaster::TLoadContext& context)
@@ -4321,29 +4282,6 @@ private:
 
         TabletMap_.LoadValues(context);
         TableReplicaMap_.LoadValues(context);
-
-        // COMPAT(ifsmirnov)
-        if (context.GetVersion() < EMasterReign::TabletActionManager) {
-            TabletActionManager_->MutableTabletActionMapCompat().LoadValues(context);
-        }
-
-        // COMPAT(ifsmirnov)
-        if (context.GetVersion() < EMasterReign::DropOldMountConfigKeyLists) {
-            // MountConfigKeysFromNodes_
-            Load<THashSet<std::string>>(context);
-            // LocalMountConfigKeys_
-            Load<THashSet<std::string>>(context);
-        }
-
-        // COMPAT(babenko)
-        WeakRefTableReplicas_ = context.GetVersion() < EMasterReign::WeakPtrInTableReplicas;
-    }
-
-    void OnBeforeSnapshotLoaded() override
-    {
-        TMasterAutomatonPart::OnBeforeSnapshotLoaded();
-
-        WeakRefTableReplicas_ = false;
     }
 
     void OnAfterSnapshotLoaded() override
@@ -4359,23 +4297,6 @@ private:
                 avenueDirectory->UpdateEndpoint(
                     tabletBase->GetNodeEndpointId(),
                     tabletBase->Servant().GetCell()->GetId());
-            }
-
-            if (WeakRefTableReplicas_ && tabletBase->GetType() == EObjectType::Tablet) {
-                auto* tablet = tabletBase->As<TTablet>();
-                auto replicas = std::exchange(tablet->Replicas(), {});
-                for (auto& [replica, replicaInfo] : replicas) {
-                    if (replica->GetObjectRefCounter() == 0) {
-                        YT_LOG_ALERT("Skipped dead table replica (TabletId: %v, ReplicaId: %v)",
-                            tablet->GetId(),
-                            replica->GetId());
-                        // NB: Prevent TWeakObjectPtr::~TWeakObjectPtr from weak-unreferencing this zombie.
-                        Y_UNUSED(const_cast<TWeakObjectPtr<TTableReplica>&>(replica).Release());
-                        continue;
-                    }
-                    Bootstrap_->GetObjectManager()->WeakRefObject(replica.Get());
-                    tablet->Replicas().emplace(replica.Get(), std::move(replicaInfo));
-                }
             }
         }
 
@@ -4643,9 +4564,13 @@ private:
                     tablet->NodeStatistics().last_commit_timestamp()));
 
                 if (tablet->NodeStatistics().has_modification_time()) {
-                    table->SetModificationTime(std::max(
-                        table->GetModificationTime(),
-                        FromProto<TInstant>(tablet->NodeStatistics().modification_time())));
+                    auto modificationTime = FromProto<TInstant>(tablet->NodeStatistics().modification_time());
+                    if (modificationTime > table->GetModificationTime()) {
+                        table->SetModificationTime(modificationTime);
+                        if (GetDynamicConfig()->UpdateTableContentRevisionOnHeartbeat) {
+                            Bootstrap_->GetCypressManager()->SetModified(table, EModificationType::Content);
+                        }
+                    }
                 }
 
                 if (tablet->NodeStatistics().has_access_time()) {
@@ -4655,7 +4580,15 @@ private:
                 }
 
                 if (EnableUpdateStatisticsOnHeartbeat_) {
-                    tableManager->ScheduleStatisticsUpdate(table, true, false);
+                    tableManager->ScheduleStatisticsUpdate(
+                        table,
+                        TStatisticsUpdateRequest{
+                            .UpdateDataStatistics = true,
+                            .UpdateTabletResourceUsage = false,
+                            .UpdateModificationTime = true,
+                            .UpdateAccessTime = true,
+                            .UseNativeContentRevisionCas = false,
+                        });
                 }
             }
 
@@ -4776,6 +4709,7 @@ private:
             ToProto(request.add_new_tablet_ids(), tablet->GetId());
             ToProto(request.add_new_tablet_pivot_keys(), tablet->As<TTablet>()->GetPivotKey());
         }
+
         request.set_new_tablets_mount_revision(ToProto(GetCurrentMutationContext()->GetVersion().ToRevision()));
 
         const auto& hiveManager = Bootstrap_->GetHiveManager();
@@ -5658,8 +5592,13 @@ private:
         const auto& tableManager = Bootstrap_->GetTableManager();
         tableManager->ScheduleStatisticsUpdate(
             table,
-            /*updateDataStatistics*/ true,
-            /*updateTabletStatistics*/ false);
+            TStatisticsUpdateRequest{
+                .UpdateDataStatistics = true,
+                .UpdateTabletResourceUsage = false,
+                .UpdateModificationTime = true,
+                .UpdateAccessTime = true,
+                .UseNativeContentRevisionCas = false,
+            });
 
         TTabletStatistics statisticsDelta;
         statisticsDelta.ChunkCount = -ssize(dynamicStores);
@@ -5800,8 +5739,7 @@ private:
 
     void DoTabletUnmounted(TTablet* tablet, bool force)
     {
-        auto tabletStatistics = tablet->GetTabletStatistics();
-        tablet->GetOwner()->DiscountTabletStatistics(tabletStatistics);
+        tablet->GetOwner()->DiscountTabletStatistics(tablet->GetTabletStatistics());
 
         // Remember unflushed timestamp for unmounted tablets so we could get a better estimate
         // when they are mounted back with a tablet action.
@@ -6421,7 +6359,15 @@ private:
         bundle->UpdateResourceUsage(delta);
 
         const auto& tableManager = Bootstrap_->GetTableManager();
-        tableManager->ScheduleStatisticsUpdate(table, scheduleTableDataStatisticsUpdate);
+        tableManager->ScheduleStatisticsUpdate(
+            table,
+            TStatisticsUpdateRequest{
+                .UpdateDataStatistics = scheduleTableDataStatisticsUpdate,
+                .UpdateTabletResourceUsage = true,
+                .UpdateModificationTime = true,
+                .UpdateAccessTime = true,
+                .UseNativeContentRevisionCas = false,
+            });
     }
 
     void OnProfiling()
@@ -6842,38 +6788,6 @@ private:
                 cypressManager->GetNodePath(trunkNode->GetTrunkNode(), trunkNode->GetTransaction()))
                 << ex;
         }
-    }
-
-    std::vector<TError> GetAlerts()
-    {
-        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
-
-        std::vector<TError> result;
-
-        // COMPAT(ifsmirnov): EMasterReign::ResourceQuotaAttributeForBundles
-        {
-            std::vector<std::string> badBundles;
-
-            const auto& cellManager = Bootstrap_->GetTamedCellManager();
-            for (auto* bundleBase : cellManager->CellBundles(ECellarType::Tablet)) {
-                YT_VERIFY(bundleBase->GetType() == EObjectType::TabletCellBundle);
-                auto* bundle = bundleBase->As<TTabletCellBundle>();
-
-                if (bundle->FindAttribute("resource_quota_backup_after_failed_migration")) {
-                    badBundles.push_back(bundle->GetName());
-                }
-            }
-
-            if (!badBundles.empty()) {
-                result.push_back(TError(
-                    "Failed to internalize \"resource_quota\" attribute for tablet cell bundles %v, "
-                    "see the old value in the \"resource_quota_backup_after_failed_migration\" "
-                    "attribute, fix the issue manually and remove it",
-                    badBundles));
-            }
-        }
-
-        return result;
     }
 
     TTableSettings GetTableSettings(TTableNode* table) const override

@@ -140,6 +140,12 @@ class TestListJobsBase(YTEnvSetup):
                 "min_repeat_delay": 10,
                 "max_repeat_delay": 10,
             },
+            "operation_events_reporter": {
+                "enabled": True,
+                "reporting_period": 10,
+                "min_repeat_delay": 10,
+                "max_repeat_delay": 10,
+            },
         },
     }
 
@@ -781,7 +787,7 @@ class TestListJobs(TestListJobsCommon):
         }
 
         op = vanilla(spec=spec, track=False)
-        with pytest.raises(YtError):
+        with raises_yt_error("Failed jobs limit exceeded"):
             op.track()
 
         clean_operations()
@@ -867,7 +873,7 @@ class TestListJobs(TestListJobsCommon):
         with Restarter(self.Env, CONTROLLER_AGENTS_SERVICE):
             pass
 
-        with raises_yt_error(yt_error_codes.UncertainOperationControllerState):
+        with raises_yt_error(code=yt_error_codes.UncertainOperationControllerState):
             checked_list_jobs(op.id)
 
         res = retry(lambda: checked_list_jobs(op.id))

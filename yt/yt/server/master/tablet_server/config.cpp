@@ -25,7 +25,7 @@ void TTabletBalancerMasterConfig::Register(TRegistrar registrar)
 
     registrar.Postprocessor([] (TThis* config) {
         if (config->TabletBalancerSchedule.IsEmpty()) {
-            THROW_ERROR_EXCEPTION("tablet_balancer_schedule cannot be empty in master config");
+            THROW_ERROR_EXCEPTION("\"tablet_balancer_schedule\" cannot be empty in master config");
         }
     });
 }
@@ -91,6 +91,9 @@ void TDynamicTabletCellBalancerMasterConfig::Register(TRegistrar registrar)
         .Default(false);
     registrar.Parameter("rebalance_wait_time", &TThis::RebalanceWaitTime)
         .Default(TDuration::Minutes(1));
+    registrar.Parameter("enable_leader_smoothing", &TThis::EnableLeaderSmoothing)
+        .Default(false)
+        .DontSerializeDefault();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -281,6 +284,13 @@ void TDynamicTabletManagerConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("testing", &TThis::Testing)
         .DefaultNew();
+
+    registrar.Parameter("max_reshard_complexity", &TThis::MaxReshardComplexity)
+        .Default(5'000'000);
+
+    registrar.Parameter("update_table_content_revision_on_heartbeat", &TThis::UpdateTableContentRevisionOnHeartbeat)
+        .Default(false)
+        .DontSerializeDefault();
 
     registrar.Preprocessor([] (TThis* config) {
         config->MaxSnapshotCountToKeep = 2;

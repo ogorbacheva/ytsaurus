@@ -13,10 +13,8 @@ A C++ header for Roaring Bitmaps.
 #include <string>
 
 #if !defined(ROARING_EXCEPTIONS)
-// __cpp_exceptions is required by C++98 and we require C++11 or better.
-#ifndef __cpp_exceptions
-#error "__cpp_exceptions should be defined"
-#endif
+// We assume that if __cpp_exceptions is given a positive integer
+// value, then exceptions are enabled.
 #if __cpp_exceptions
 #define ROARING_EXCEPTIONS 1
 #else
@@ -687,6 +685,15 @@ class Roaring {
     }
 
     /**
+     * Compute how many bytes would be read by readSafe.  Returns 0 if the
+     * serialized data is invalid.
+     * This is meant to be compatible with the Java and Go versions.
+     */
+    static size_t serializedSizeInBytesSafe(const char *buf, size_t maxbytes) {
+        return api::roaring_bitmap_portable_deserialize_size(buf, maxbytes);
+    }
+
+    /**
      * How many bytes are required to serialize this bitmap (meant to be
      * compatible with Java and Go versions)
      *
@@ -706,7 +713,7 @@ class Roaring {
      * For advanced users.
      * This function may throw std::runtime_error.
      */
-    static const Roaring frozenView(const char *buf, size_t length) {
+    static Roaring frozenView(const char *buf, size_t length) {
         const roaring_bitmap_t *s =
             api::roaring_bitmap_frozen_view(buf, length);
         if (s == NULL) {
@@ -721,7 +728,7 @@ class Roaring {
      * For advanced users; see roaring_bitmap_portable_deserialize_frozen.
      * This function may throw std::runtime_error.
      */
-    static const Roaring portableDeserializeFrozen(const char *buf) {
+    static Roaring portableDeserializeFrozen(const char *buf) {
         const roaring_bitmap_t *s =
             api::roaring_bitmap_portable_deserialize_frozen(buf);
         if (s == NULL) {
@@ -991,6 +998,24 @@ class RoaringSetBitBiDirectionalIterator final {
     /** DEPRECATED, use `move_equalorlarger`.*/
     CROARING_DEPRECATED void equalorlarger(uint32_t val) {
         api::roaring_uint32_iterator_move_equalorlarger(&i, val);
+    }
+
+    /**
+     * Reads up to ${count} ranges into ${buf}. Returns the number of ranges
+     * read. See roaring_uint32_iterator_read_ranges for full semantics.
+     */
+    size_t read_ranges(api::roaring_uint32_range_closed_t *buf, size_t count) {
+        return api::roaring_uint32_iterator_read_ranges(&i, buf, count);
+    }
+
+    /**
+     * Reads up to ${count} ranges in reverse into ${buf}. Returns the number
+     * of ranges read. See roaring_uint32_iterator_read_prev_ranges for full
+     * semantics.
+     */
+    size_t read_prev_ranges(api::roaring_uint32_range_closed_t *buf,
+                            size_t count) {
+        return api::roaring_uint32_iterator_read_prev_ranges(&i, buf, count);
     }
 
     type_of_iterator &operator--() {  // prefix --

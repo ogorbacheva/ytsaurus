@@ -119,11 +119,9 @@ public:
     TFuture<void> Close(
         const IChunkWriter::TWriteBlocksOptions& options,
         const TWorkloadDescriptor& /*workloadDescriptor*/,
-        const TDeferredChunkMetaPtr& chunkMeta,
-        std::optional<int> truncateBlockCount) override
+        const TDeferredChunkMetaPtr& chunkMeta) override
     {
         YT_VERIFY(Opened_ && !Closed_);
-        YT_VERIFY(!truncateBlockCount.has_value());
 
         return BIND(&TStripedErasureWriter::DoClose, MakeStrong(this), options, chunkMeta)
             .AsyncVia(WriterInvoker_)
@@ -356,6 +354,7 @@ private:
                     }
                 }
                 FlushSegment(options, std::move(segment));
+                segment.clear();
                 segmentSize = 0;
             }
         }
@@ -425,7 +424,7 @@ private:
         auto partSize = dataSize / dataPartCount;
 
         struct TErasureWriterTag { };
-        auto data = TSharedMutableRef::Allocate<TErasureWriterTag>(dataSize);
+        auto data = TSharedMutableRef::Allocate<TErasureWriterTag>(dataSize, {.InitializeStorage = false});
 
         i64 dataOffset = 0;
         for (const auto& block : segment) {

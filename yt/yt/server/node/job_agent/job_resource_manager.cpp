@@ -850,7 +850,8 @@ public:
             Bootstrap_
                 ->GetExecNodeBootstrap()
                 ->GetGpuManager()
-                ->VerifyCudaToolkitDriverVersion(allocationAttributes.CudaToolkitVersion.value());
+                // TODO(babenko): migrate to std::string
+                ->VerifyCudaToolkitDriverVersion(TString(allocationAttributes.CudaToolkitVersion.value()));
         }
 
         auto [success, acquiredResources, resourceAcquisitionFailedGuard] = TryAcquirePhysicalResources(resourceHolder, neededResources);
@@ -1066,7 +1067,7 @@ public:
 
         auto resourceLimits = GetResourceLimits(/*considerUserJobFreeMemoryWatermark*/ false);
 
-        if (GetDynamicConfig()->CheckUserJobsCategoryLimitOnResourcesUpdating) {
+        if (GetDynamicConfig()->CheckUserJobsCategoryLimitOnResourceUpdate) {
             auto error = CheckResourceOverdraft(
                 acquiredResources + releasingResources,
                 resourceLimits);

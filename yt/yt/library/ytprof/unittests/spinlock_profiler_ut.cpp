@@ -43,7 +43,7 @@ void RunUnderProfiler(const std::string& name, std::function<void()> work, bool 
         ASSERT_NE(0, profile.sample_size());
     }
 
-    Symbolize(&profile, true);
+    Symbolize(&profile, { .SymbolizeExistingFunctions = false });
     AddBuildInfo(&profile, TBuildInfo::GetDefault());
     SymbolizeByExternalPProf(&profile, TSymbolizationOptions{
         .TmpDir = GetOutputPath().GetPath(),
@@ -140,7 +140,7 @@ TEST_F(TSpinlockProfilerTest, YTLocks)
     RunUnderProfiler<TBlockingProfiler>("ytlock.pb.gz", [] {
         std::atomic<bool> Stop = false;
 
-        NThreading::TSpinLock lock;
+        YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, lock);
         std::thread slow([&] {
             while (!Stop) {
                 lock.Acquire();

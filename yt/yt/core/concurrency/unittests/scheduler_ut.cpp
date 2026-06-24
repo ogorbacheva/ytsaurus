@@ -30,6 +30,8 @@
 #include <yt/yt/core/ytree/attributes.h>
 #include <yt/yt/core/ytree/helpers.h>
 
+#include <library/cpp/yt/system/thread_id.h>
+
 #include <library/cpp/yt/threading/count_down_latch.h>
 
 #include <util/system/compiler.h>
@@ -151,14 +153,14 @@ TEST_W(TSchedulerTest, SwitchToInvoker1)
 {
     auto invoker = Queue1->GetInvoker();
 
-    auto id0 = GetCurrentThreadId();
+    auto id0 = GetSystemThreadId();
     auto id1 = invoker->GetThreadId();
 
     EXPECT_NE(id0, id1);
 
     for (int i = 0; i < 10; ++i) {
         SwitchTo(invoker);
-        EXPECT_EQ(GetCurrentThreadId(), id1);
+        EXPECT_EQ(GetSystemThreadId(), id1);
     }
 }
 
@@ -167,7 +169,7 @@ TEST_W(TSchedulerTest, SwitchToInvoker2)
     auto invoker1 = Queue1->GetInvoker();
     auto invoker2 = Queue2->GetInvoker();
 
-    auto id0 = GetCurrentThreadId();
+    auto id0 = GetSystemThreadId();
     auto id1 = invoker1->GetThreadId();
     auto id2 = invoker2->GetThreadId();
 
@@ -177,10 +179,10 @@ TEST_W(TSchedulerTest, SwitchToInvoker2)
 
     for (int i = 0; i < 10; ++i) {
         SwitchTo(invoker1);
-        EXPECT_EQ(GetCurrentThreadId(), id1);
+        EXPECT_EQ(GetSystemThreadId(), id1);
 
         SwitchTo(invoker2);
-        EXPECT_EQ(GetCurrentThreadId(), id2);
+        EXPECT_EQ(GetSystemThreadId(), id2);
     }
 }
 
@@ -378,11 +380,11 @@ TEST_F(TSchedulerTest, CurrentInvokerSync)
 TEST_F(TSchedulerTest, CurrentInvokerInActionQueue)
 {
     auto invoker = Queue1->GetInvoker();
-    BIND([=] {
+    WaitFor(BIND([=] {
         EXPECT_EQ(invoker, GetCurrentInvoker());
     })
-    .AsyncVia(invoker).Run()
-    .BlockingGet();
+    .AsyncVia(invoker).Run())
+        .ThrowOnError();
 }
 
 TEST_F(TSchedulerTest, Intercept)
@@ -390,7 +392,7 @@ TEST_F(TSchedulerTest, Intercept)
     auto invoker = Queue1->GetInvoker();
     int counter1 = 0;
     int counter2 = 0;
-    BIND([&] {
+    WaitFor(BIND([&] {
         TContextSwitchGuard guard(
             [&] {
                 EXPECT_EQ(counter1, 0);
@@ -404,8 +406,8 @@ TEST_F(TSchedulerTest, Intercept)
             });
         TDelayedExecutor::WaitForDuration(SleepQuantum);
     })
-    .AsyncVia(invoker).Run()
-    .BlockingGet();
+    .AsyncVia(invoker).Run())
+        .ThrowOnError();
     EXPECT_EQ(counter1, 1);
     EXPECT_EQ(counter2, 1);
 }
@@ -417,7 +419,7 @@ TEST_F(TSchedulerTest, InterceptEnclosed)
     int counter2 = 0;
     int counter3 = 0;
     int counter4 = 0;
-    BIND([&] {
+    WaitFor(BIND([&] {
         {
             TContextSwitchGuard guard(
                 [&] { ++counter1; },
@@ -433,8 +435,8 @@ TEST_F(TSchedulerTest, InterceptEnclosed)
         }
         TDelayedExecutor::WaitForDuration(SleepQuantum);
     })
-    .AsyncVia(invoker).Run()
-    .BlockingGet();
+    .AsyncVia(invoker).Run())
+        .ThrowOnError();
     EXPECT_EQ(counter1, 3);
     EXPECT_EQ(counter2, 3);
     EXPECT_EQ(counter3, 1);
@@ -703,13 +705,12 @@ TEST_F(TSchedulerTest, SerializedDoubleWaitFor)
 
     WaitUntilSet(promise.ToFuture());
 
-    auto result = BIND([&] () -> bool {
+    auto result = WaitFor(BIND([&] () -> bool {
         return flag;
     })
     .AsyncVia(serializedInvoker)
-    .Run()
-    .BlockingGet()
-    .ValueOrThrow();
+    .Run())
+        .ValueOrThrow();
 
     EXPECT_TRUE(result);
 }
@@ -942,8 +943,7 @@ TEST_W(TSchedulerTest, FutureUpdatedRaceInWaitFor_YT_18899)
             .AsyncVia(serializedInvoker)
             .Run());
 
-        ASSERT_NO_THROW(testResultFuture
-            .BlockingGet()
+        ASSERT_NO_THROW(WaitFor(testResultFuture)
             .ThrowOnError());
     }
 }

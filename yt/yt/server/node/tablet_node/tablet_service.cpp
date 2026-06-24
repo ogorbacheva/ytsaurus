@@ -104,7 +104,7 @@ public:
         DeclareServerFeature(ETabletServiceFeatures::SharedWriteLocks);
     }
 
-    void Initialize()
+    void InitializeRefCounted()
     {
         SubscribeLoadAdjusted();
     }
@@ -388,22 +388,27 @@ private:
         auto transactionId = FromProto<TTransactionId>(request->transaction_id());
         auto transactionStartTimestamp = request->transaction_start_timestamp();
         auto transactionTimeout = FromProto<TDuration>(request->transaction_timeout());
-        auto signature = request->signature();
+        auto prepareSignature = request->prepare_signature();
+        auto commitSignature = request->has_commit_signature()
+            ? request->commit_signature()
+            : prepareSignature;
 
         context->SetRequestInfo("TransactionId: %v, TransactionStartTimestamp: %v, TransactionTimeout: %v, "
-            "ActionCount: %v, Signature: %x",
+            "ActionCount: %v, PrepareSignature: %x, CommitSignature: %x",
             transactionId,
             transactionStartTimestamp,
             transactionTimeout,
             request->actions_size(),
-            signature);
+            prepareSignature,
+            commitSignature);
 
         const auto& transactionManager = Slot_->GetTransactionManager();
         auto future = transactionManager->RegisterTransactionActions(
             transactionId,
             transactionStartTimestamp,
             transactionTimeout,
-            signature,
+            prepareSignature,
+            commitSignature,
             std::move(*request->mutable_actions()));
 
         context->ReplyFrom(std::move(future));
@@ -511,9 +516,7 @@ private:
 
 IServicePtr CreateTabletService(ITabletSlotPtr slot, IBootstrap* bootstrap)
 {
-    auto service = New<TTabletService>(std::move(slot), bootstrap);
-    service->Initialize();
-    return service;
+    return New<TTabletService>(std::move(slot), bootstrap);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

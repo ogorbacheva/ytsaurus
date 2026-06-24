@@ -4,8 +4,6 @@
 
 #include <yt/yt/server/lib/hydra/config.h>
 
-#include <yt/yt/server/lib/distributed_chunk_session_server/config.h>
-
 #include <yt/yt/server/lib/misc/config.h>
 
 #include <yt/yt/server/lib/node/config.h>
@@ -63,8 +61,8 @@ struct TP2PConfig
     TSlruCacheDynamicConfigPtr RequestCacheOverride;
 
     TDuration ChunkCooldownTimeout;
-    int MaxDistributedBytes;
-    int MaxBlockSize;
+    i64 MaxDistributedBytes;
+    i64 MaxBlockSize;
     int BlockCounterResetTicks;
     int HotBlockThreshold;
     int SecondHotBlockThreshold;
@@ -522,6 +520,10 @@ struct TDataNodeTestingOptions
     //! it still tries to read at least one block).
     double BlockReadTimeoutFraction;
 
+    //! Artificial delay injected before issuing underlying blob chunk read.
+    //! Used to deterministically exceed ReadBlocksDeadline in unit/integration tests.
+    std::optional<TDuration> DelayBeforeBlobChunkRead;
+
     //! Fraction of the GetColumnarStatistics RPC timeout, after which early exit is performed and currently uncompleted
     //! chunk fetches are failed with a timeout error.
     //! The enable_early_exit field has to be set to true in the request options for this option to have any effect.
@@ -971,6 +973,12 @@ struct TDataNodeConfig
     //! If |true| then IO requests in one session are proccessed sequentially.
     bool EnableSequentialIORequests;
 
+    //! If |true| then if error occuried during chunk's blocks reading, already read blocks are returned.
+    bool ReturnBlocksIfSessionFails;
+
+    //! If |true| then read session will be failed if it is not completed before deadline.
+    bool FailSessionAtReadBlocksDeadline;
+
     //! Regular storage locations.
     std::vector<TStoreLocationConfigPtr> StoreLocations;
 
@@ -1040,9 +1048,6 @@ struct TDataNodeConfig
 
     //! Config for the new P2P implementation.
     TP2PConfigPtr P2P;
-
-    //! Distributed chunk session service config.
-    NDistributedChunkSessionServer::TDistributedChunkSessionServiceConfigPtr DistributedChunkSessionService;
 
     //! Blocks trash scan for test purpose.
     //! Have to be static, because dynamic config loads after initialization.
@@ -1147,6 +1152,10 @@ struct TDataNodeDynamicConfig
     std::optional<bool> SkipWriteThrottlingLocations;
 
     std::optional<bool> EnableSequentialIORequests;
+
+    std::optional<bool> ReturnBlocksIfSessionFails;
+
+    std::optional<bool> FailSessionAtReadBlocksDeadline;
 
     std::optional<bool> EnableSendBlocksNetThrottling;
 

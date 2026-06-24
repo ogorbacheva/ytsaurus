@@ -7,6 +7,7 @@
 #include <yql/essentials/minikql/computation/mkql_computation_node_graph_saveload.h>
 #include <yql/essentials/minikql/invoke_builtins/mkql_builtins.h>
 #include <yql/essentials/minikql/comp_nodes/mkql_factories.h>
+#include <yql/essentials/minikql/comp_nodes/ut/mkql_program_builder_test_utils.h>
 
 #include <library/cpp/testing/unittest/registar.h>
 
@@ -115,7 +116,7 @@ Y_UNIT_TEST(TestSqueezeSaveLoad) {
     auto buildGraph = [&items](TSetup& setup, ui32 yieldPos, ui32 startIndex) -> THolder<IComputationGraph> {
         TProgramBuilder& pgmBuilder = *setup.PgmBuilder;
 
-        auto dataType = pgmBuilder.NewDataType(NUdf::TDataType<ui32>::Id);
+        auto dataType = NTest::ConvertToMinikqlType<ui32>(pgmBuilder);
         auto streamType = pgmBuilder.NewStreamType(dataType);
 
         TCallableBuilder inStream(pgmBuilder.GetTypeEnvironment(), "OneYieldStream", streamType);
@@ -123,7 +124,7 @@ Y_UNIT_TEST(TestSqueezeSaveLoad) {
 
         auto pgmReturn = pgmBuilder.Squeeze(
             TRuntimeNode(streamNode, false),
-            pgmBuilder.NewDataLiteral<ui32>(1),
+            NTest::ConvertValueToLiteralNode(pgmBuilder, ui32(1)),
             [&](TRuntimeNode item, TRuntimeNode state) {
                 return pgmBuilder.Add(item, state);
             },
@@ -136,12 +137,12 @@ Y_UNIT_TEST(TestSqueezeSaveLoad) {
 
         TUnboxedValueVector streamItems;
         for (auto item : items) {
-            streamItems.push_back(NUdf::TUnboxedValuePod(item));
+            streamItems.emplace_back(NUdf::TUnboxedValuePod(item));
         }
 
         auto graph = setup.BuildGraph(pgmReturn, {streamNode});
         auto streamValue = NUdf::TUnboxedValuePod(new TStreamWithYield(streamItems, yieldPos, startIndex));
-        graph->GetEntryPoint(0, true)->SetValue(graph->GetContext(), std::move(streamValue));
+        graph->GetEntryPoint(0, true)->SetValue(graph->GetContext(), streamValue);
         return graph;
     };
 
@@ -180,7 +181,7 @@ Y_UNIT_TEST(TestSqueeze1SaveLoad) {
     auto buildGraph = [&items](TSetup& setup, ui32 yieldPos, ui32 startIndex) -> THolder<IComputationGraph> {
         TProgramBuilder& pgmBuilder = *setup.PgmBuilder;
 
-        auto dataType = pgmBuilder.NewDataType(NUdf::TDataType<ui32>::Id);
+        auto dataType = NTest::ConvertToMinikqlType<ui32>(pgmBuilder);
         auto streamType = pgmBuilder.NewStreamType(dataType);
 
         TCallableBuilder inStream(pgmBuilder.GetTypeEnvironment(), "OneYieldStream", streamType);
@@ -203,12 +204,12 @@ Y_UNIT_TEST(TestSqueeze1SaveLoad) {
 
         TUnboxedValueVector streamItems;
         for (auto item : items) {
-            streamItems.push_back(NUdf::TUnboxedValuePod(item));
+            streamItems.emplace_back(NUdf::TUnboxedValuePod(item));
         }
 
         auto graph = setup.BuildGraph(pgmReturn, {streamNode});
         auto streamValue = NUdf::TUnboxedValuePod(new TStreamWithYield(streamItems, yieldPos, startIndex));
-        graph->GetEntryPoint(0, true)->SetValue(graph->GetContext(), std::move(streamValue));
+        graph->GetEntryPoint(0, true)->SetValue(graph->GetContext(), streamValue);
         return graph;
     };
 
@@ -274,7 +275,9 @@ Y_UNIT_TEST(TestHoppingSaveLoad) {
         TCallableBuilder inStream(pgmBuilder.GetTypeEnvironment(), "OneYieldStream", inStreamType);
         auto streamNode = inStream.Build();
 
-        ui64 hop = 10, interval = 30, delay = 20;
+        ui64 hop = 10;
+        ui64 interval = 30;
+        ui64 delay = 20;
 
         auto pgmReturn = pgmBuilder.HoppingCore(
             TRuntimeNode(streamNode, false),
@@ -329,11 +332,11 @@ Y_UNIT_TEST(TestHoppingSaveLoad) {
             auto structValues = graph->GetHolderFactory().CreateDirectArrayHolder(2, itemsPtr);
             itemsPtr[timeIndex] = NUdf::TUnboxedValuePod(item.first);
             itemsPtr[sumIndex] = NUdf::TUnboxedValuePod(item.second);
-            streamItems.push_back(std::move(structValues));
+            streamItems.emplace_back(structValues);
         }
 
         auto streamValue = NUdf::TUnboxedValuePod(new TStreamWithYield(streamItems, yieldPos, startIndex));
-        graph->GetEntryPoint(0, true)->SetValue(graph->GetContext(), std::move(streamValue));
+        graph->GetEntryPoint(0, true)->SetValue(graph->GetContext(), streamValue);
         return graph;
     };
 

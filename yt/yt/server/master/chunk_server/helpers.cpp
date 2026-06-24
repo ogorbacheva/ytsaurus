@@ -137,13 +137,16 @@ std::optional<i64> GetJournalChunkStartRowIndex(const TChunk* chunk)
     };
 
     auto parentCount = GetParentCount(chunk);
-    if (parentCount == 0) {
-        THROW_ERROR_EXCEPTION("Journal chunk %v has zero parents",
-            chunk->GetId());
-    }
 
     TChunkList* chunkList;
-    if (parentCount == 1) {
+    if (parentCount == 0) {
+        // Distributed chunk sessions do not have parents.
+        THROW_ERROR_EXCEPTION_IF(
+            chunk->GetChunkFormat() != EChunkFormat::JournalDistributed,
+            "Journal chunk %v has zero parents",
+            chunk->GetId());
+        chunkList = nullptr;
+    } else if (parentCount == 1) {
         chunkList = GetUniqueParent(chunk)->AsChunkList();
 
         if (isHunkChunkList(chunkList)) {
@@ -157,7 +160,8 @@ std::optional<i64> GetJournalChunkStartRowIndex(const TChunk* chunk)
 
             auto* parentChunkList = parent->AsChunkList();
             if (!isHunkChunkList(parentChunkList)) {
-                THROW_ERROR_EXCEPTION("Journal chunk %v with %v parents has a parent chunk list of unexpected (not-hunk) kind %Qlv",
+                THROW_ERROR_EXCEPTION(
+                    "Journal chunk %v with %v parents has a parent chunk list of unexpected (not-hunk) kind %Qlv",
                     chunk->GetId(),
                     parentCount,
                     parentChunkList->GetKind());
@@ -364,18 +368,30 @@ void AttachToChunkList(
         }
     }
 
-    // NB: Accumulate statistics from left to right to get Sealed flag correct.
-    TChunkTreeStatistics statisticsDelta;
-    for (auto child : children) {
-        AppendChunkTreeChild(chunkList, child, &statisticsDelta);
-        SetChunkTreeParent(chunkList, child);
+    if (IsHunkRelatedChunkList(chunkList)) {
+        for (auto child : children) {
+            AppendChunkTreeChild(chunkList, child, /*statisticsDelta*/ nullptr);
+            SetChunkTreeParent(chunkList, child);
+
+            AccumulateHunkStatisticsInUniqueAncestors(chunkList, child);
+        }
+
+        chunkList->IncrementVersion();
+    } else {
+        // NB: Accumulate statistics from left to right to get Sealed flag correct.
+        TChunkTreeStatistics statisticsDelta;
+        for (auto child : children) {
+            AppendChunkTreeChild(chunkList, child, &statisticsDelta);
+            SetChunkTreeParent(chunkList, child);
+        }
+
+        chunkList->IncrementVersion();
+
+        ++statisticsDelta.Rank;
+        chunkList->Statistics().Accumulate(statisticsDelta);
+
+        AccumulateUniqueAncestorsStatistics(chunkList, statisticsDelta);
     }
-
-    chunkList->IncrementVersion();
-
-    ++statisticsDelta.Rank;
-    chunkList->Statistics().Accumulate(statisticsDelta);
-    AccumulateUniqueAncestorsStatistics(chunkList, statisticsDelta);
 }
 
 void DetachFromChunkList(
@@ -390,10 +406,37 @@ void DetachFromChunkList(
 
     chunkList->IncrementVersion();
 
-    TChunkTreeStatistics statisticsDelta;
-    for (auto child : children) {
-        statisticsDelta.Accumulate(GetChunkTreeStatistics(child));
-        ResetChunkTreeParent(chunkList, child);
+    std::optional<TChunkTreeStatistics> statisticsDelta;
+    std::optional<TCumulativeStatisticsEntry> hunkCumulativeStatisticsDelta;
+
+    if (IsHunkRelatedChunkList(chunkList)) {
+        hunkCumulativeStatisticsDelta.emplace();
+
+        // NB: We do not call this method to detach chunk lists from hunk roots.
+        YT_VERIFY(!IsHunkRootChunkList(chunkList));
+
+        auto rootChunkList = GetUniqueParent(chunkList);
+        YT_VERIFY(rootChunkList &&
+            rootChunkList->Parents().empty() &&
+            IsHunkRootChunkList(rootChunkList));
+
+        for (auto child : children) {
+            YT_VERIFY(IsPhysicalChunkType(child->GetType()));
+
+            (*hunkCumulativeStatisticsDelta) += GetCumulativeStatisticsEntry(child);
+
+            chunkList->DeaccumulateHunkStatistics(child->AsChunk());
+            rootChunkList->DeaccumulateHunkStatistics(child->AsChunk());
+
+            ResetChunkTreeParent(chunkList, child);
+        }
+    } else {
+        statisticsDelta.emplace();
+
+        for (auto child : children) {
+            statisticsDelta->Accumulate(GetChunkTreeStatistics(child));
+            ResetChunkTreeParent(chunkList, child);
+        }
     }
 
     auto& existingChildren = chunkList->Children();
@@ -451,8 +494,8 @@ void DetachFromChunkList(
             }
 
             // NB: Do not change logical row count and data weight.
-            statisticsDelta.LogicalRowCount = 0;
-            statisticsDelta.LogicalDataWeight = 0;
+            statisticsDelta->LogicalRowCount = 0;
+            statisticsDelta->LogicalDataWeight = 0;
             break;
         }
 
@@ -488,15 +531,19 @@ void DetachFromChunkList(
                 // To remove child from the middle we swap it with the last one and update
                 // cumulative statistics accordingly.
                 if (index != std::ssize(existingChildren) - 1) {
-                    auto delta = TCumulativeStatisticsEntry(GetChunkTreeStatistics(existingChildren.back())) -
-                        TCumulativeStatisticsEntry(GetChunkTreeStatistics(existingChildren[index]));
-                    chunkList->CumulativeStatistics().Update(index, delta);
+                    if (chunkList->HasCumulativeStatistics()) {
+                        auto delta = GetCumulativeStatisticsEntry(existingChildren.back()) -
+                            GetCumulativeStatisticsEntry(existingChildren[index]);
+                        chunkList->CumulativeStatistics().Update(index, delta);
+                    }
 
                     existingChildren[index] = existingChildren.back();
                     childToIndex[existingChildren[index]] = index;
                 }
 
-                chunkList->CumulativeStatistics().PopBack();
+                if (chunkList->HasCumulativeStatistics()) {
+                    chunkList->CumulativeStatistics().PopBack();
+                }
                 childToIndex.erase(indexIt);
                 existingChildren.pop_back();
             }
@@ -511,12 +558,18 @@ void DetachFromChunkList(
     VisitUniqueAncestors(
         chunkList,
         [&] (TChunkList* current, TChunkTree* child) {
-            current->Statistics().Deaccumulate(statisticsDelta);
+            TCumulativeStatisticsEntry cumulativeStatisticsDelta;
+            if (IsHunkRelatedChunkList(chunkList)) {
+                cumulativeStatisticsDelta -= *hunkCumulativeStatisticsDelta;
+            } else {
+                current->Statistics().Deaccumulate(*statisticsDelta);
+                cumulativeStatisticsDelta -= TCumulativeStatisticsEntry(*statisticsDelta);
+            }
+
             if (child && current->HasModifiableCumulativeStatistics()) {
-                int index = GetChildIndex(current, child);
                 current->CumulativeStatistics().Update(
-                    index,
-                    TCumulativeStatisticsEntry{} - TCumulativeStatisticsEntry(statisticsDelta));
+                    GetChildIndex(current, child),
+                    cumulativeStatisticsDelta);
             }
         });
 }
@@ -550,16 +603,20 @@ void SetChunkTreeParent(TChunkTree* parent, TChunkTree* child)
         case EObjectType::ErasureJournalChunk:
             child->AsChunk()->AddParent(parent);
             break;
+
         case EObjectType::ChunkView:
             child->AsChunkView()->AddParent(parent->AsChunkList());
             break;
+
         case EObjectType::SortedDynamicTabletStore:
         case EObjectType::OrderedDynamicTabletStore:
             child->AsDynamicStore()->AddParent(parent);
             break;
+
         case EObjectType::ChunkList:
             child->AsChunkList()->AddParent(parent->AsChunkList());
             break;
+
         default:
             YT_ABORT();
     }
@@ -574,16 +631,20 @@ void ResetChunkTreeParent(TChunkTree* parent, TChunkTree* child)
         case EObjectType::ErasureJournalChunk:
             child->AsChunk()->RemoveParent(parent);
             break;
+
         case EObjectType::ChunkView:
             child->AsChunkView()->RemoveParent(parent->AsChunkList());
             break;
+
         case EObjectType::SortedDynamicTabletStore:
         case EObjectType::OrderedDynamicTabletStore:
             child->AsDynamicStore()->RemoveParent(parent);
             break;
+
         case EObjectType::ChunkList:
             child->AsChunkList()->RemoveParent(parent->AsChunkList());
             break;
+
         default:
             YT_ABORT();
     }
@@ -600,13 +661,90 @@ TChunkTreeStatistics GetChunkTreeStatistics(TChunkTree* chunkTree)
         case EObjectType::JournalChunk:
         case EObjectType::ErasureJournalChunk:
             return chunkTree->AsChunk()->GetStatistics();
+
         case EObjectType::ChunkView:
             return chunkTree->AsChunkView()->GetStatistics();
+
         case EObjectType::SortedDynamicTabletStore:
         case EObjectType::OrderedDynamicTabletStore:
             return chunkTree->AsDynamicStore()->GetStatistics();
+
         case EObjectType::ChunkList:
             return chunkTree->AsChunkList()->Statistics();
+
+        default:
+            YT_ABORT();
+    }
+}
+
+THunkChunkTreeStatistics GetHunkChunkTreeStatistics(TChunkTree* chunkTree)
+{
+    if (!chunkTree) {
+        return THunkChunkTreeStatistics{};
+    }
+
+    switch (chunkTree->GetType()) {
+        case EObjectType::Chunk:
+        case EObjectType::ErasureChunk:
+        case EObjectType::JournalChunk:
+        case EObjectType::ErasureJournalChunk:
+            return chunkTree->AsChunk()->GetHunkStatistics();
+
+        case EObjectType::ChunkView:
+            return chunkTree->AsChunkView()->GetHunkStatistics();
+
+        case EObjectType::SortedDynamicTabletStore:
+        case EObjectType::OrderedDynamicTabletStore:
+            return THunkChunkTreeStatistics{};
+
+        case EObjectType::ChunkList:
+            return chunkTree->AsChunkList()->HunkStatistics();
+
+        default:
+            YT_ABORT();
+    }
+}
+
+TCumulativeStatisticsEntry GetCumulativeStatisticsEntry(TChunkTree* chunkTree)
+{
+    if (!chunkTree) {
+        return TCumulativeStatisticsEntry{};
+    }
+
+    switch (chunkTree->GetType()) {
+        case EObjectType::Chunk:
+        case EObjectType::ErasureChunk:
+        case EObjectType::JournalChunk:
+        case EObjectType::ErasureJournalChunk: {
+            auto* chunk = chunkTree->AsChunk();
+            return IsHunkChunkFormat(chunk->GetChunkFormat())
+                // NB: In hunk tree unsealed chunks will also be included into cumulative statistics.
+                ? TCumulativeStatisticsEntry(/*rowCount*/ 0, /*chunkCount*/ 1, /*dataSize*/ 0)
+                : TCumulativeStatisticsEntry(chunk->GetStatistics());
+        }
+
+        case EObjectType::ChunkView:
+            // NB: Only present in the main tree.
+            return TCumulativeStatisticsEntry(chunkTree->AsChunkView()->GetStatistics());
+
+        case EObjectType::SortedDynamicTabletStore:
+        case EObjectType::OrderedDynamicTabletStore:
+            // NB: Only present in the main tree.
+            return TCumulativeStatisticsEntry(chunkTree->AsDynamicStore()->GetStatistics());
+
+        case EObjectType::ChunkList: {
+            auto* chunkList = chunkTree->AsChunkList();
+            if (!IsHunkRelatedChunkList(chunkList)) {
+                return TCumulativeStatisticsEntry(chunkList->Statistics());
+            }
+
+            // NB: In hunk tree we cannot infer cumulative statistics from statistics because
+            // regular statistics are unique by chunk and cumulative are not.
+            return chunkList->CumulativeStatistics().Empty()
+                ? TCumulativeStatisticsEntry{}
+                : TCumulativeStatisticsEntry(chunkList->CumulativeStatistics().Back());
+        }
+
         default:
             YT_ABORT();
     }
@@ -618,9 +756,11 @@ void AppendChunkTreeChild(
     TChunkTreeStatistics* statistics)
 {
     if (chunkList->HasCumulativeStatistics()) {
-        chunkList->CumulativeStatistics().PushBack(TCumulativeStatisticsEntry{
-            GetChunkTreeStatistics(child)
-        });
+        chunkList->CumulativeStatistics().PushBack(GetCumulativeStatisticsEntry(child));
+    }
+
+    if (statistics) {
+        statistics->Accumulate(GetChunkTreeStatistics(child));
     }
 
     if (child && chunkList->HasChildToIndexMapping()) {
@@ -628,7 +768,6 @@ void AppendChunkTreeChild(
         YT_VERIFY(chunkList->ChildToIndex().emplace(child, index).second);
     }
 
-    statistics->Accumulate(GetChunkTreeStatistics(child));
     chunkList->Children().push_back(child);
 }
 
@@ -660,12 +799,71 @@ void AccumulateUniqueAncestorsStatistics(
         child);
 }
 
+void AccumulateHunkStatisticsInUniqueAncestors(
+    TChunkList* parent,
+    TChunkTree* child)
+{
+    YT_VERIFY(parent);
+    YT_VERIFY(child);
+
+    switch (child->GetType()) {
+        case EObjectType::Chunk:
+        case EObjectType::ErasureChunk:
+        case EObjectType::JournalChunk:
+        case EObjectType::ErasureJournalChunk: {
+            YT_VERIFY(IsHunkRelatedChunkList(parent) && !IsHunkRootChunkList(parent));
+
+            parent->AccumulateHunkStatistics(child->AsChunk());
+
+            auto* grandparent = GetUniqueParent(parent);
+            if (!grandparent) {
+                return;
+            }
+
+            YT_VERIFY(IsHunkRootChunkList(grandparent));
+            YT_VERIFY(grandparent->Parents().empty());
+
+            // NB: Direct parent's cumulative statistics are updated via AppendChunkTreeChild.
+            grandparent->AccumulateHunkStatistics(child->AsChunk());
+            if (grandparent->HasCumulativeStatistics()) {
+                grandparent->CumulativeStatistics().Update(
+                    GetChildIndex(grandparent, parent),
+                    GetCumulativeStatisticsEntry(child));
+            }
+
+            break;
+        }
+
+        case EObjectType::ChunkList: {
+            YT_VERIFY(IsHunkRootChunkList(parent));
+            YT_VERIFY(parent->Parents().empty());
+
+            auto* childChunkList = child->AsChunkList();
+            YT_VERIFY(IsHunkRelatedChunkList(childChunkList) && !IsHunkRootChunkList(childChunkList));
+
+            for (auto childChunk : childChunkList->Children()) {
+                YT_VERIFY(IsPhysicalChunkType(childChunk->GetType()));
+                parent->AccumulateHunkStatistics(childChunk->AsChunk());
+            }
+
+            break;
+        }
+
+        default:
+            YT_ABORT();
+    }
+}
+
 void ResetChunkListStatistics(TChunkList* chunkList)
 {
     chunkList->CumulativeStatistics().Clear();
-    chunkList->Statistics() = TChunkTreeStatistics();
-    chunkList->Statistics().ChunkListCount = 1;
-    chunkList->Statistics().Rank = 1;
+    if (IsHunkRelatedChunkList(chunkList)) {
+        chunkList->ResetHunkStatistics();
+    } else {
+        chunkList->Statistics() = TChunkTreeStatistics();
+        chunkList->Statistics().ChunkListCount = 1;
+        chunkList->Statistics().Rank = 1;
+    }
 }
 
 void RecomputeChunkListStatistics(TChunkList* chunkList)
@@ -680,9 +878,22 @@ void RecomputeChunkListStatistics(TChunkList* chunkList)
         chunkList->CumulativeStatistics().DeclareTrimmable();
     }
 
+    if (IsHunkRelatedChunkList(chunkList)) {
+        if (!chunkList->Children().empty()) {
+            YT_LOG_ALERT("Recomputing statistics of non-empty hunk-related chunk list is forbidden; skipping that "
+                "(ChunkListId: %v, ChunkListKind: %v, ChildrenCount: %v)",
+                chunkList->GetId(),
+                chunkList->GetKind(),
+                chunkList->Children().size());
+        }
+
+        return;
+    }
+
+    chunkList->ChildToIndex().clear();
+
     std::vector<TChunkTreeRawPtr> children;
     children.swap(chunkList->Children());
-    chunkList->ChildToIndex().clear();
 
     TChunkTreeStatistics statistics;
     for (auto child : children) {
@@ -892,11 +1103,18 @@ void SerializeNodePath(
 
 bool IsEmpty(const TChunkList* chunkList)
 {
-    // NB: Dynamic stores have zero row count. Trimmed ordered tablets
-    // have zero chunk count.
-    return !chunkList || (
-        chunkList->Statistics().LogicalRowCount == 0 &&
-        chunkList->Statistics().ChunkCount == 0);
+    if (!chunkList) {
+        return true;
+    }
+
+    if (IsHunkRelatedChunkList(chunkList)) {
+        return chunkList->HunkStatistics().ChunkCount == 0;
+    } else {
+        // NB: Dynamic stores have zero row count. Trimmed ordered tablets
+        // have zero chunk count.
+        return chunkList->Statistics().LogicalRowCount == 0 &&
+            chunkList->Statistics().ChunkCount == 0;
+    }
 }
 
 bool IsEmpty(const TChunkTree* chunkTree)
@@ -1225,20 +1443,34 @@ std::vector<TChunkViewMergeResult> MergeAdjacentChunkViewRanges(std::vector<TChu
     return mergedChunkViews;
 }
 
-std::vector<TChunkReplicaDescriptor> GetChunkReplicaDescriptors(const TChunk* chunk)
+std::vector<TChunkReplicaDescriptor> GetChunkReplicaDescriptors(
+    const TChunk* chunk,
+    TRange<TAugmentedStoredChunkReplicaPtr> chunkReplicas)
 {
     if (!chunk->IsJournal()) {
         YT_LOG_ALERT("Getting chunk replica descriptors for non-journal chunk");
     }
 
     std::vector<TChunkReplicaDescriptor> replicas;
-    for (auto replica : chunk->GetStoredReplicaList(/*includeOffline*/ false)) {
+    for (auto replica : chunkReplicas) {
         auto* locationReplica = replica.As<EStoredReplicaType::ChunkLocation>();
         if (!locationReplica) {
             continue;
         }
+        auto* location = locationReplica->AsChunkLocationPtr();
+        if (!IsObjectAlive(location)) {
+            YT_LOG_ALERT("Replica from non alive location is passed to GetChunkReplicaDescriptors (ChunkId: %v)",
+                chunk->GetId());
+            continue;
+        }
+        auto node = location->GetNode();
+        if (!IsObjectAlive(node)) {
+            YT_LOG_ALERT("Replica from non alive node is passed to GetChunkReplicaDescriptors (ChunkId: %v)",
+                chunk->GetId());
+            continue;
+        }
         replicas.push_back({
-            locationReplica->AsChunkLocationPtr()->GetNode()->GetDescriptor(),
+            node->GetDescriptor(),
             replica.GetReplicaIndex(),
             replica.GetEffectiveMediumIndex(),
         });
@@ -1295,9 +1527,18 @@ void SerializeLocationIndexes(
     }
 }
 
-int GetChunkShardIndex(TChunkId chunkId)
+i8 GetChunkShardIndex(TChunkId chunkId)
 {
     return GetShardIndex<ChunkShardCount>(chunkId);
+}
+
+NRecords::TChunkReplicasKey BuildChunkReplicasRecordKey(TChunkId chunkId)
+{
+    return NRecords::TChunkReplicasKey{
+        .CellTag = CellTagFromId(chunkId),
+        .ShardIndex = GetChunkShardIndex(chunkId),
+        .ChunkId = chunkId,
+    };
 }
 
 std::vector<TInstant> GenerateChunkCreationTimeHistogramBucketBounds(TInstant now)
@@ -1396,6 +1637,114 @@ void ValidateChunkMetaOnConfirmation(const NChunkClient::NProto::TChunkMeta& chu
     ValidateFromProto(chunkMeta);
 }
 
+EChunkReplicaState GetAddedChunkReplicaState(
+    TChunkId chunkId,
+    const NChunkClient::NProto::TChunkAddInfo& chunkAddInfo)
+{
+    if (IsJournalChunkId(chunkId)) {
+        if (chunkAddInfo.active()) {
+            return EChunkReplicaState::Active;
+        } else if (chunkAddInfo.sealed()) {
+            return EChunkReplicaState::Sealed;
+        } else {
+            return EChunkReplicaState::Unsealed;
+        }
+    } else {
+        return EChunkReplicaState::Generic;
+    }
+}
+
+bool IsHunkRelatedChunkList(const TChunkList* chunkList)
+{
+    auto kind = chunkList->GetKind();
+    return
+        kind == EChunkListKind::HunkRoot ||
+        kind == EChunkListKind::HunkStorageRoot ||
+        kind == EChunkListKind::Hunk ||
+        kind == EChunkListKind::HunkTablet;
+}
+
+bool IsHunkRootChunkList(const TChunkList* chunkList)
+{
+    auto kind = chunkList->GetKind();
+    return
+        kind == EChunkListKind::HunkRoot ||
+        kind == EChunkListKind::HunkStorageRoot;
+}
+
+bool IsHunkChunkFormat(EChunkFormat chunkFormat)
+{
+    return
+        chunkFormat == EChunkFormat::HunkDefault ||
+        chunkFormat == EChunkFormat::HunkJournal;
+}
+
+i64 ComputeDiskSpaceFromDataSize(i64 dataSize, NErasure::ECodec erasureCodec)
+{
+    if (erasureCodec == NErasure::ECodec::None) {
+        return dataSize;
+    }
+
+    auto* codec = NErasure::GetCodec(erasureCodec);
+    auto dataPartCount = codec->GetDataPartCount();
+    auto totalPartCount = codec->GetTotalPartCount();
+
+    return dataSize * totalPartCount / dataPartCount;
+}
+
+void AccumulateNewlyReferencedHunkStatistics(TChunk* hunkChunk, i64 dataWeightDelta, i64 dataSizeDelta)
+{
+    hunkChunk->AccumulateNewlyReferencedHunkStatistics(dataWeightDelta, dataSizeDelta);
+    VisitAllAncestorsInHunkTree(hunkChunk, [&] (TChunkList* chunkList, bool firstOccurrence) {
+        if (firstOccurrence) {
+            chunkList->AccumulateNewlyReferencedHunkDataSize(hunkChunk, dataSizeDelta);
+        }
+    });
+}
+
 ////////////////////////////////////////////////////////////////////////////////
+
+const TDynamicSequoiaChunkReplicasStoreConfigPtr& GetChunkSequoiaStoreConfig(
+    TChunkId chunk,
+    const TDynamicSequoiaChunkReplicasConfigPtr& config)
+{
+    if (IsJournalChunkId(chunk)) {
+        return config->JournalReplicasStoreConfig;
+    } else {
+        return config->BlobReplicasStoreConfig;
+    }
+}
+
+TChunkSequoiaConfig GetChunkSequoiaConfig(TChunkId chunkId, const TDynamicSequoiaChunkReplicasConfigPtr& config)
+{
+    TChunkSequoiaConfig result;
+    if (!config->Enable) {
+        return result;
+    }
+
+    const auto& storeConfig = GetChunkSequoiaStoreConfig(chunkId, config);
+    if (!storeConfig->StoreInSequoia) {
+        return result;
+    }
+
+    auto chunkPercentage = static_cast<int>(EntropyFromId(chunkId) % 100);
+    if (chunkPercentage >= storeConfig->ReplicasPercentage) {
+        return result;
+    }
+
+    result.StoreInSequoia = true;
+    result.FetchReplicasFromSequoia |= storeConfig->FetchReplicasFromSequoia;
+
+    if (storeConfig->StoreSequoiaReplicasOnMaster && chunkPercentage < storeConfig->StoreSequoiaReplicasOnMasterPercentage) {
+        result.StoreSequoiaReplicasOnMaster = true;
+        result.ProcessRemovedSequoiaReplicasOnMaster = true;
+        result.ValidateSequoiaReplicasFetch = storeConfig->ValidateSequoiaReplicasFetch;
+        result.AllowExtraMasterReplicasDuringValidation = storeConfig->AllowExtraMasterReplicasDuringValidation;
+    } else {
+        result.ProcessRemovedSequoiaReplicasOnMaster = storeConfig->ProcessRemovedSequoiaReplicasOnMaster;
+    }
+
+    return result;
+}
 
 } // namespace NYT::NChunkServer

@@ -143,9 +143,9 @@ public:
 
         // Cycles are fine for bootstrap.
         GetBundleDynamicConfigManager()
-            ->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnBundleDynamicConfigChanged, MakeStrong(this)));
+            ->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnBundleDynamicConfigChanged, MakeStrong(this)));
         GetDynamicConfigManager()
-            ->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, MakeStrong(this)));
+            ->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, MakeStrong(this)));
 
         TransactionLeaseTrackerThreadPool_ = CreateTransactionLeaseTrackerThreadPool(
             "TxTracker",
@@ -245,7 +245,7 @@ public:
     }
 
     void LoadSnapshot(
-        const TString& fileName,
+        const std::string& fileName,
         NHydra::NProto::TSnapshotMeta meta,
         ESerializationDumpMode dumpMode,
         bool checkInvariants) override
@@ -334,7 +334,7 @@ private:
     }
 
     void DoLoadSnapshot(
-        const TString& fileName,
+        const std::string& fileName,
         const NHydra::NProto::TSnapshotMeta& meta,
         ESerializationDumpMode dumpMode,
         bool checkInvariants)

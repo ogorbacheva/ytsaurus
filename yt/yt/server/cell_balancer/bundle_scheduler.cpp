@@ -10,6 +10,8 @@
 #include "node_tag_manager.h"
 #include "system_accounts.h"
 
+#include <yt/yt/core/logging/log_manager.h>
+
 #include <library/cpp/yt/yson_string/public.h>
 
 #include <util/string/subst.h>
@@ -198,6 +200,18 @@ void CalculateResourceUsage(TSchedulerInputState& input)
     input.BundleResourceTarget = targetResources;
 }
 
+TDuration GetEffectiveOfflineInstanceGracePeriod(const TSchedulerInputState& input)
+{
+    // There is no reason to distinguish between own and spare nodes,
+    // so we let offline instance to be deallocated immediately.
+    if (!input.Config->HasInstanceAllocatorService) {
+        return TDuration::Zero();
+    }
+
+    return input.DynamicConfig->OfflineInstanceGracePeriod.value_or(
+        input.Config->OfflineInstanceGracePeriod);
+}
+
 THashMap<std::string, THashSet<std::string>> GetAliveNodes(
     const std::string& bundleName,
     const TDataCenterToInstanceMap& bundleNodes,
@@ -217,15 +231,13 @@ THashMap<std::string, THashSet<std::string>> GetAliveNodes(
                 continue;
             }
 
-            bool internallyDecommissioned = bundleState &&
-                (bundleState->BundleNodeAssignments.contains(nodeName) ||
-                bundleState->BundleNodeReleasements.contains(nodeName));
+            bool internallyDecommissioned = false;
             // May be null in tests.
             if (bundleState) {
-                for (const auto& [_, deallocation] : bundleState->NodeDeallocations) {
-                    if (deallocation->InstanceName == nodeName) {
-                        internallyDecommissioned = true;
-                    }
+                if (bundleState->BundleNodeAssignments.contains(nodeName) ||
+                    bundleState->BundleNodeReleasements.contains(nodeName))
+                {
+                    internallyDecommissioned = true;
                 }
             }
 
@@ -243,9 +255,9 @@ THashMap<std::string, THashSet<std::string>> GetAliveNodes(
                 continue;
             }
 
-            if (nodeInfo->State != InstanceStateOnline) {
+            if (!nodeInfo->IsOnline()) {
                 if (gracePeriodBehaviour == EGracePeriodBehaviour::Immediately ||
-                    now - nodeInfo->LastSeenTime > input.Config->OfflineInstanceGracePeriod)
+                    now - nodeInfo->LastSeenTime > GetEffectiveOfflineInstanceGracePeriod(input))
                 {
                     continue;
                 }
@@ -275,7 +287,7 @@ THashMap<std::string, THashSet<std::string>> GetAliveProxies(
 
             if (!proxyInfo->Alive) {
                 if (gracePeriodBehaviour == EGracePeriodBehaviour::Immediately ||
-                    now - proxyInfo->ModificationTime > input.Config->OfflineInstanceGracePeriod)
+                    now - proxyInfo->ModificationTime > GetEffectiveOfflineInstanceGracePeriod(input))
                 {
                     continue;
                 }
@@ -528,7 +540,7 @@ THashMap<TSchedulerInputState::TQualifiedDCName, TDataCenterDisruptedState> GetD
         for (const auto& [dataCenterName, dataCenterNodes] : zoneNodes.PerDataCenter) {
             for (const auto& nodeName : dataCenterNodes) {
                 const auto& nodeInfo = GetOrCrash(input.TabletNodes, nodeName);
-                if (nodeInfo->State == InstanceStateOnline) {
+                if (nodeInfo->IsOnline()) {
                     continue;
                 }
 
@@ -597,19 +609,20 @@ THashMap<TSchedulerInputState::TQualifiedDCName, TDataCenterDisruptedState> GetD
 
 bool IsOnline(const TTabletNodeInfoPtr& node)
 {
-    return node->State == InstanceStateOnline;
+    return node->IsOnline();
 }
 
 bool IsOnline(const TRpcProxyInfoPtr& proxy)
 {
-    return !!proxy->Alive;
+    return static_cast<bool>(proxy->Alive);
 }
 
 template <class TInstanceMap>
 THashSet<std::string> ScanForObsoleteCypressNodes(const TSchedulerInputState& input, const TInstanceMap& instanceMap)
 {
     THashSet<std::string> result;
-    auto obsoleteThreshold = input.Config->RemoveInstanceCypressNodeAfter;
+    auto obsoleteThreshold = input.DynamicConfig->RemoveInstanceCypressNodeAfter.value_or(
+        input.Config->RemoveInstanceCypressNodeAfter);
     auto now = TInstant::Now();
 
     for (const auto& [instanceName, instanceInfo] : instanceMap) {
@@ -668,6 +681,23 @@ void ManageInstances(
     ISpareInstanceAllocatorPtr spareProxiesAllocator,
     TSchedulerMutations* mutations)
 {
+    if (!input.Config->HasInstanceAllocatorService) {
+        // Temporary adapters used only for AnnotateNewInstances; they don't need real bundle state.
+        auto dummyState = New<TBundleControllerState>();
+        TDataCenterToInstanceMap emptyMap;
+        THashMap<std::string, THashSet<std::string>> emptyAlive;
+
+        if (input.DynamicConfig->AnnotateNewNodes.value_or(input.Config->AnnotateNewNodes)) {
+            auto nodeAdapter = CreateTabletNodeAllocatorAdapter(dummyState, emptyMap, emptyAlive);
+            AnnotateNewInstances(input, nodeAdapter.Get(), mutations);
+        }
+
+        if (input.DynamicConfig->AnnotateNewProxies.value_or(input.Config->AnnotateNewProxies)) {
+            auto proxyAdapter = CreateRpcProxyAllocatorAdapter(dummyState, emptyMap, emptyAlive);
+            AnnotateNewInstances(input, proxyAdapter.Get(), mutations);
+        }
+    }
+
     for (const auto& [bundleName, bundleInfo] : input.Bundles) {
         auto guard = mutations->MakeBundleNameGuard(bundleName);
 
@@ -745,8 +775,8 @@ TCpuLimitsPtr GetBundleEffectiveCpuLimits(
         return currentCpuLimits;
     }
 
-    auto previousConfigIt = input.DynamicConfig.find(bundleInfo->NodeTagFilter);
-    if (previousConfigIt == input.DynamicConfig.end()) {
+    auto previousConfigIt = input.BundlesDynamicConfig.find(bundleInfo->NodeTagFilter);
+    if (previousConfigIt == input.BundlesDynamicConfig.end()) {
         return currentCpuLimits;
     }
 
@@ -813,14 +843,14 @@ void ManageBundlesDynamicConfig(TSchedulerInputState& input, TSchedulerMutations
         freshConfig[bundleInfo->NodeTagFilter] = bundleConfig;
     }
 
-    if (AreNodesEqual(ConvertTo<NYTree::IMapNodePtr>(freshConfig), ConvertTo<NYTree::IMapNodePtr>(input.DynamicConfig))) {
+    if (AreNodesEqual(ConvertTo<NYTree::IMapNodePtr>(freshConfig), ConvertTo<NYTree::IMapNodePtr>(input.BundlesDynamicConfig))) {
         return;
     }
 
     YT_LOG_INFO("Bundles dynamic config has changed (Config: %v)",
         ConvertToYsonString(freshConfig, EYsonFormat::Text));
 
-    mutations->DynamicConfig = freshConfig;
+    mutations->BundlesDynamicConfig = freshConfig;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1221,7 +1251,7 @@ void MiscBundleChecks(const TSchedulerInputState& input, TSchedulerMutations* mu
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void ScheduleBundles(TSchedulerInputState& input, TSchedulerMutations* mutations)
+void ScheduleBundles(TSchedulerInputState& input, TSchedulerMutations* mutations, const INodeTrackerPtr& nodeTracker)
 {
     InitializeRelations(&input, mutations->MakeOnAlertCallback());
 
@@ -1247,7 +1277,7 @@ void ScheduleBundles(TSchedulerInputState& input, TSchedulerMutations* mutations
     ManageSystemAccountLimit(input, mutations);
     ManageResourceLimits(input, mutations);
 
-    ManageNodeTags(input, *spareNodesState, mutations);
+    ManageNodeTags(input, *spareNodesState, mutations, nodeTracker);
     ManageRpcProxyRoles(input, *spareProxiesState, mutations);
     ManageBundleShortName(input, mutations);
     ManageDrillsMode(input, mutations);
@@ -1257,6 +1287,10 @@ void ScheduleBundles(TSchedulerInputState& input, TSchedulerMutations* mutations
 
     YT_LOG_DEBUG("Logging scheduled mutations");
     mutations->Log(Logger());
+
+    if (input.DynamicConfig->FlushLogAfterMutations) {
+        NLogging::TLogManager::Get()->Synchronize();
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -4,7 +4,6 @@
 #include "dq_compute_actor_channels.h"
 #include "dq_compute_actor_checkpoints.h"
 #include "dq_compute_actor_metrics.h"
-#include "dq_compute_actor_watermarks.h"
 #include "dq_compute_actor.h"
 #include "dq_compute_issues_buffer.h"
 #include "dq_compute_memory_quota.h"
@@ -24,10 +23,12 @@
 #include <yql/essentials/public/issue/yql_issue_message.h>
 #include <contrib/ydb/library/yql/dq/actors/dq.h>
 #include <contrib/ydb/library/yql/dq/actors/compute/dq_request_context.h>
+#include <contrib/ydb/library/yql/dq/runtime/streaming/dq_compute_actor_watermarks.h>
 
 #include <contrib/ydb/library/actors/core/interconnect.h>
 #include <contrib/ydb/library/actors/wilson/wilson_span.h>
 
+#include <library/cpp/html/escape/escape.h>
 #include <util/generic/size_literals.h>
 #include <util/string/join.h>
 #include <util/system/hostname.h>
@@ -198,7 +199,6 @@ protected:
         , Task(task, std::move(arena))
         , RuntimeSettings(settings)
         , MemoryLimits(memoryLimits)
-        , CanAllocateExtraMemory(RuntimeSettings.ExtraMemoryAllocationPool != 0)
         , AsyncIoFactory(std::move(asyncIoFactory))
         , FunctionRegistry(functionRegistry)
         , CheckpointingMode(GetTaskCheckpointingMode(Task))
@@ -348,7 +348,6 @@ protected:
             TxId,
             Task.GetId(),
             RuntimeSettings.CollectFull(),
-            CanAllocateExtraMemory,
             NActors::TActivationContext::ActorSystem());
     }
 
@@ -391,8 +390,7 @@ protected:
         TString memoryConsumptionDetails = MemoryLimits.MemoryQuotaManager->MemoryConsumptionDetails();
         TStringBuilder failureReason = TStringBuilder()
             << "Mkql memory limit exceeded, allocated by task " << Task.GetId() << ": " << GetMkqlMemoryLimit()
-            << ", host: " << HostName()
-            << ", canAllocateExtraMemory: " << CanAllocateExtraMemory;
+            << ", host: " << HostName();
 
         if (!memoryConsumptionDetails.empty()) {
             failureReason << ", memory manager details for current node: " << memoryConsumptionDetails;
@@ -439,6 +437,10 @@ protected:
                         outputChannel.Finished = true;
                     } else {
                         ProcessOutputsState.HasDataToSend = true;
+                        CA_LOG_T("Wait for finish of channelId: " << channelId
+                            << ", Push/Pop=" << outputChannel.Channel->GetPushStats().Bytes << '/' << outputChannel.Channel->GetPopStats().Bytes
+                            << ", EarlyFinish=" << outputChannel.EarlyFinish
+                        );
                     }
                 }
             } else {
@@ -823,6 +825,8 @@ protected: //TDqComputeActorCheckpoints::ICallbacks
 
             sourceInfo.ResumeByWatermark(watermark);
         }
+        // sources or input channels was unpaused, trigger new poll
+        ResumeExecution(EResumeSource::CAResumeByWatermark);
     }
 
     void ResumeInputsByCheckpoint() override final {
@@ -831,6 +835,8 @@ protected: //TDqComputeActorCheckpoints::ICallbacks
                 channelInfo.ResumeByCheckpoint();
             }
         }
+        // sources or input channels was unpaused, trigger new poll
+        ResumeExecution(EResumeSource::CAResumeByCheckpoint);
     }
 
 protected:
@@ -1248,7 +1254,9 @@ protected:
         if (!Checkpoints) {
             Checkpoints = new TDqComputeActorCheckpoints(this->SelfId(), TxId, Task, this);
             Checkpoints->Init(this->SelfId(), this->RegisterWithSameMailbox(Checkpoints));
-            Channels->SetCheckpointsSupport();
+            if (Channels) {
+                Channels->SetCheckpointsSupport();
+            }
         }
         TAutoPtr<NActors::IEventHandle> handle = new NActors::IEventHandle(Checkpoints->SelfId(), ev->Sender, ev->Release().Release());
         Checkpoints->Receive(handle);
@@ -1397,9 +1405,11 @@ protected:
             DUMP(info, FreeSpace);
             html << "IsPaused: " << info.IsPaused() << "<br />";
 
-            if (const auto* channelStats = Channels->GetInputChannelStats(id)) {
-                DUMP_PREFIXED("InputChannelStats.", (*channelStats), PollRequests);
-                DUMP_PREFIXED("InputChannelStats.", (*channelStats), ResentMessages);
+            if (Channels) {
+                if (const auto* channelStats = Channels->GetInputChannelStats(id)) {
+                    DUMP_PREFIXED("InputChannelStats.", (*channelStats), PollRequests);
+                    DUMP_PREFIXED("InputChannelStats.", (*channelStats), ResentMessages);
+                }
             }
 
             auto channel = info.Channel;
@@ -1596,21 +1606,20 @@ protected:
 #undef DUMP_PREFIXED
     }
 
-    virtual void TaskRunnerMonitoringInfo(TStringStream& str) {
+    virtual void ExtraMonitoringInfo(TStringStream& str, const TCgiParameters& cgi) {
         Y_UNUSED(str);
+        Y_UNUSED(cgi);
     }
 
-    void DefaultMonitoringPage(TStringStream& str, TCgiParameters cgi) {
+    void DefaultMonitoringPage(TStringStream& str, const TCgiParameters& cgi) {
         HTML(str) {
             PRE() {
                 str << "TDqComputeActorBase, SelfId=" << this->SelfId() << ' ';
-                cgi.ReplaceUnescaped("view", "dump");
-                HREF(TStringBuilder() << "?" << cgi.Print()) {
+                HREF(NActors::NMon::BuildActorsLink("", cgi, {{"view", "dump"}})) {
                     str << "Dump";
                 }
                 str << ' ';
-                cgi.ReplaceUnescaped("view", "run");
-                HREF(TStringBuilder() << "?" << cgi.Print()) {
+                HREF(NActors::NMon::BuildActorsLink("", cgi, {{"view", "run"}})) {
                     str << "Run";
                 }
                 str << Endl;
@@ -1618,7 +1627,7 @@ protected:
                 str << "  StageId: " << Task.GetStageId() << Endl;
                 str << "  State: " << NDqProto::EComputeState_Name(State) << Endl;
                 str << "  ExecuterId: ";
-                HREF(TStringBuilder() << "/node/" << ExecuterId.NodeId() << "/actors/kqp_node?ex=" << ExecuterId)  {
+                HREF(NActors::NMon::BuildActorsLink("kqp_node", cgi, {{"ex", ToString(ExecuterId)}, {"ca", ""}, {"sf", ""}, {"view", ""}}))  {
                     str << ExecuterId;
                 }
                 str << Endl;
@@ -1633,8 +1642,12 @@ protected:
                         str << stats->CurrentWaitOutputStartTime;
                     }
                     str << Endl;
+                    str << "  InputWaitCount: " << stats->InputWaitCount << Endl;
+                    str << "  OutputWaitCount: " << stats->OutputWaitCount << Endl;
+                    str << "  TotalInputsConsumed: " << stats->TotalInputsConsumed << Endl;
+                    str << "  TotalOutputsProduced: " << stats->TotalOutputsProduced << Endl;
                 }
-                TaskRunnerMonitoringInfo(str);
+                ExtraMonitoringInfo(str, cgi);
 
                 COLLAPSED_BUTTON_CONTENT("ProcessOutputsState", TStringBuilder() << "ProcessOutputsState: " << ProcessOutputsState.LastRunTime << ' ' << ProcessOutputsState.LastRunStatus) {
                     str << "  Inflight: " << ProcessOutputsState.Inflight << Endl;
@@ -1647,9 +1660,20 @@ protected:
                     str << "  LastPopReturnedNoData: " << ProcessOutputsState.LastPopReturnedNoData << Endl;
                 }
 
+                if (auto stats = GetTaskRunnerStats(); stats && !stats->ComputationLogBuffer.empty()) {
+                    str << Endl << Endl;
+                    COLLAPSED_BUTTON_CONTENT("ComputationLog", TStringBuilder() << "Compute graph log: " << stats->ComputationLogBuffer.size() << " entries") {
+                        str << Endl;
+                        for (const auto& line : stats->ComputationLogBuffer) {
+                            str << "  " << line.first << " " << NHtml::EscapeText(line.second);
+                        }
+                    }
+                    str << Endl;
+                }
+
                 str << Endl;
                 if (Task.GetDqChannelVersion() >= 2u) {
-                    HREF(TStringBuilder() << "/node/" << this->SelfId().NodeId() << "/actors/kqp_channels") {
+                    HREF("kqp_channels") {
                         str << "Input Channels:" << Endl;
                     }
                 } else {
@@ -1680,7 +1704,7 @@ protected:
                                 TABLED() {str << info.InputIndex;}
                                 TABLED() {
                                     if (info.HasPeer) {
-                                        HREF(TStringBuilder() << "/node/" << info.PeerId.NodeId() << "/actors/kqp_node?ca=" << info.PeerId)  {
+                                        HREF(NActors::NMon::BuildActorsLink("kqp_node", cgi, {{"ca", ToString(info.PeerId)}, {"view", ""}}))  {
                                             str << info.PeerId;
                                         }
                                     } else {
@@ -1730,7 +1754,7 @@ protected:
 
                 str << Endl;
                 if (Task.GetDqChannelVersion() >= 2u) {
-                    HREF(TStringBuilder() << "/node/" << this->SelfId().NodeId() << "/actors/kqp_channels") {
+                    HREF("kqp_channels") {
                         str << "Output Channels:" << Endl;
                     }
                 } else {
@@ -1759,7 +1783,7 @@ protected:
                                 TABLED() {str << info.DstStageId;}
                                 TABLED() {
                                     if (info.HasPeer) {
-                                        HREF(TStringBuilder() << "/node/" << info.PeerId.NodeId() << "/actors/kqp_node?ca=" << info.PeerId)  {
+                                        HREF(NActors::NMon::BuildActorsLink("kqp_node", cgi, {{"ca", ToString(info.PeerId)}, {"view", ""}}))  {
                                             str << info.PeerId;
                                         }
                                     } else {
@@ -2383,6 +2407,7 @@ public:
 
         ui64 computeActorElapsedUs = NHPTimer::GetSeconds(ComputeActorElapsedTicks) * 1'000'000ull;
         dst->SetCpuTimeUs(computeActorElapsedUs + SourceCpuTime.MicroSeconds() + InputTransformCpuTime.MicroSeconds());
+        dst->SetMemoryUsage(MemoryLimits.MemoryQuotaManager->GetCurrentQuota());
         dst->SetMaxMemoryUsage(MemoryLimits.MemoryQuotaManager->GetMaxMemorySize());
 
         if (auto memProfileStats = GetMemoryProfileStats(); memProfileStats) {
@@ -2675,7 +2700,6 @@ protected:
     TString LogPrefix;
     const TComputeRuntimeSettings RuntimeSettings;
     TComputeMemoryLimits MemoryLimits;
-    const bool CanAllocateExtraMemory = false;
     const IDqAsyncIoFactory::TPtr AsyncIoFactory;
     const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry = nullptr;
     const NDqProto::ECheckpointingMode CheckpointingMode;

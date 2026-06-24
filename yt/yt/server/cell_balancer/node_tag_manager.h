@@ -11,11 +11,16 @@ namespace NYT::NCellBalancer {
 class TNodeTagManager
 {
 public:
+    DEFINE_BYVAL_RO_PROPERTY(int, NodeReleasementBudget);
+
+public:
     TNodeTagManager(
         std::string bundleName,
         const TSchedulerInputState& input,
         TSpareInstanceAllocator<TSpareNodesInfo>* spareNodeAllocator,
-        TSchedulerMutations* mutations);
+        TSchedulerMutations* mutations,
+        INodeTrackerPtr nodeTracker,
+        int nodeReleasementBudget);
 
     // * Collects alive bundle nodes (with immediate grace period).
     // * Picks data centers to populate.
@@ -31,8 +36,21 @@ private:
     const TSchedulerInputState& Input_;
     TSpareInstanceAllocator<TSpareNodesInfo>* const SpareNodeAllocator_;
     TSchedulerMutations* const Mutations_;
+    const INodeTrackerPtr NodeTracker_;
 
     NLogging::TLogger Logger;
+
+    struct TDataCenterStatus
+    {
+        // Data center does not have enough alive bundle nodes (even with spare ones).
+        bool Unfeasible = false;
+
+        // Data center has enough alive bundle nodes with needed node tag and not decomissioned.
+        bool HaveEnoughAssignedNodes = false;
+
+        // Whether the data center is not considered redundant.
+        bool Active = false;
+    };
 
     // Handles node assignment pipeline. Performs the following actions
     // with the node in order:
@@ -52,6 +70,8 @@ private:
     bool ProcessNodeReleasement(
         const std::string& nodeAddress,
         bool leaveDecommissioned);
+
+    void RemoveTagsFromNodes(const THashSet<std::string>& offlineNodes);
 
     // For each node from nodeAssignments:
     //  * creates an alert if assignment is stuck
@@ -114,7 +134,7 @@ private:
         const THashMap<std::string, THashSet<std::string>>& aliveBundleNodes,
         const TIndexedEntries<TTabletNodeInfo>& tabletNodes);
 
-    THashSet<std::string> GetDataCentersToPopulate(
+    THashMap<std::string, TDataCenterStatus> GetDataCentersToPopulate(
         const std::string& nodeTagFilter,
         const THashMap<std::string, THashSet<std::string>>& perDataCenterAliveNodes,
         const TPerDataCenterSpareNodesInfo& spareNodesInfo);
@@ -127,7 +147,8 @@ void InitializeZoneToSpareNodes(TSchedulerInputState& input, TSchedulerMutations
 void ManageNodeTags(
     TSchedulerInputState& input,
     TSpareInstanceAllocator<TSpareNodesInfo>& spareNodesAllocator,
-    TSchedulerMutations* mutations);
+    TSchedulerMutations* mutations,
+    const INodeTrackerPtr& nodeTracker);
 
 ////////////////////////////////////////////////////////////////////////////////
 

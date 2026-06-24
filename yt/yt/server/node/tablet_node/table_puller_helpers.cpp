@@ -86,11 +86,11 @@ const T& ChooseReplica(const std::vector<T>& candidates, const TReplicaInfo& sel
 
 TQueueReplicaSelector::TQueueReplicaSelector(
     NLogging::TLogger logger,
-    const TBannedReplicaTracker& bannedReplicaTracker,
-    bool stronglyPreferLocalQueue)
-    : Logger(std::move(logger))
-    , BannedReplicaTracker_(bannedReplicaTracker)
-    , StronglyPreferLocalQueue_(stronglyPreferLocalQueue)
+    std::optional<int> replicaBanDuration,
+    bool forceSameClusterQueue)
+    : Logger(logger)
+    , ForceSameClusterQueue_(forceSameClusterQueue)
+    , BannedReplicaTracker_(std::move(logger), replicaBanDuration)
     , LastPulledFromReplicaId_(NullObjectId)
     , NextPermittedTimeForProgressBehindAlert_(Now())
 { }
@@ -112,18 +112,18 @@ TQueueReplicaSelector::TReplicaOrError TQueueReplicaSelector::PickQueueReplica(
     }
 
     if (!IsReplicationProgressGreaterOrEqual(replicationProgress, selfReplica->ReplicationProgress)) {
-        constexpr auto message = "Will not pull rows since actual replication progress is behind replication card replica progress";
-
         // TODO(ponasenko-rs): Remove alerts after testing period.
         if (now >= NextPermittedTimeForProgressBehindAlert_) {
-            YT_LOG_ALERT("%s (ReplicationProgress: %v, ReplicaInfo: %v)",
-                message,
+            YT_LOG_ALERT(
+                "Will not pull rows since actual replication progress is behind replication card replica progress "
+                "(ReplicationProgress: %v, ReplicaInfo: %v)",
                 replicationProgress,
                 *selfReplica);
             NextPermittedTimeForProgressBehindAlert_ = now + TDuration::Days(1);
         }
 
-        return TError(message)
+        return TError(
+            "Will not pull rows since actual replication progress is behind replication card replica progress")
             << TErrorAttribute("replication_progress", replicationProgress)
             << TErrorAttribute("replica_info", *selfReplica);
     }
@@ -154,6 +154,7 @@ TQueueReplicaSelector::TReplicaOrError TQueueReplicaSelector::PickQueueReplica(
         std::vector<std::tuple<NChaosClient::TReplicaId, NChaosClient::TReplicaInfo*>> candidates;
         std::optional<std::tuple<NChaosClient::TReplicaId, NChaosClient::TReplicaInfo*>> lastFetchedCandidate;
 
+        bool isSelfReplicaInLastEra = oldestTimestamp >= selfReplica->History.back().Timestamp;
         for (auto& [replicaId, replicaInfo] : replicationCard->Replicas) {
             if (BannedReplicaTracker_.IsReplicaBanned(replicaId)) {
                 continue;
@@ -167,8 +168,8 @@ TQueueReplicaSelector::TReplicaOrError TQueueReplicaSelector::PickQueueReplica(
             }
 
             if (selfReplica->ContentType == ETableReplicaContentType::Data) {
-                if (StronglyPreferLocalQueue_) {
-                    if (!IsTargetReplicaModeSync(selfReplica->Mode) &&
+                if (ForceSameClusterQueue_) {
+                    if (isSelfReplicaInLastEra &&
                         selfReplica->ClusterName == replicaInfo.ClusterName)
                     {
                         return {replicaId, &replicaInfo};
@@ -283,6 +284,40 @@ void TQueueReplicaSelector::ResetLastPulledFromReplicaId()
 {
     LastPulledFromReplicaId_ = NullObjectId;
 }
+
+TBannedReplicaTracker& TQueueReplicaSelector::GetBannedReplicaTracker()
+{
+    return BannedReplicaTracker_;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
-} // namspace NYT::NTabletNode
+TIterationTimeTracker::TIterationTimeTracker(int previousIterationWeight, int currentIterationWeight, TDuration initialDuration)
+    : PreviousIterationWeight_(previousIterationWeight)
+    , CurrentIterationWeight_(currentIterationWeight)
+    , SmoothedItetationDuration_(initialDuration)
+{
+    YT_VERIFY(PreviousIterationWeight_ >= 0);
+    YT_VERIFY(CurrentIterationWeight_ > 0);
+}
+
+TDuration TIterationTimeTracker::CalculateSmoothedIterationDuration(TInstant currentIterationInstant)
+{
+    if (LastIterationInstant_ != TInstant::Zero()) {
+        auto elapsedTime = currentIterationInstant - LastIterationInstant_;
+
+        int weightSum = PreviousIterationWeight_ + CurrentIterationWeight_;
+        auto weigthedElapsedTime = elapsedTime * CurrentIterationWeight_;
+        auto weigthedPreviousTime = SmoothedItetationDuration_ * CurrentIterationWeight_;
+
+        SmoothedItetationDuration_ = (weigthedElapsedTime + weigthedPreviousTime) / weightSum;
+    }
+
+    LastIterationInstant_ = currentIterationInstant;
+
+    return SmoothedItetationDuration_;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+} // namespace NYT::NTabletNode

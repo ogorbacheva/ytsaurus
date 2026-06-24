@@ -1237,10 +1237,17 @@ class TPartitionTableTest
     : public TClearTmpTestBase
 { };
 
+class TPartitionTableTestParam
+    : public TPartitionTableTest
+    , public ::testing::WithParamInterface<bool>
+{ };
+
 ////////////////////////////////////////////////////////////////////////////////
 
-TEST_F(TPartitionTableTest, PartitionTableTest)
+TEST_P(TPartitionTableTestParam, PartitionTableTest)
 {
+    const bool fetchCookieNodeDescriptors = GetParam();
+
     auto path = MakeRandomTmpPath();
     TCreateNodeOptions options;
     options.Attributes = NYTree::CreateEphemeralAttributes();
@@ -1274,6 +1281,7 @@ TEST_F(TPartitionTableTest, PartitionTableTest)
 
     TPartitionTablesOptions partitionTablesOptions;
     partitionTablesOptions.EnableCookies = true;
+    partitionTablesOptions.FetchCookieNodeDescriptors = fetchCookieNodeDescriptors;
     partitionTablesOptions.DataWeightPerPartition = 1_MB;
     auto partitions = WaitFor(Client_->PartitionTables({path}, partitionTablesOptions))
         .ValueOrThrow();
@@ -1299,6 +1307,11 @@ TEST_F(TPartitionTableTest, PartitionTableTest)
 
     EXPECT_EQ(expectedData, readRows);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    TPartitionTableTestWithFetchNodeDescriptors,
+    TPartitionTableTestParam,
+    ::testing::Bool());
 
 TEST_F(TPartitionTableTest, PartitionTableColumnFilterTest)
 {
@@ -1380,7 +1393,7 @@ TEST_F(TPartitionTableTest, GetColumnarStatisticsInvalidYPath)
     EXPECT_THROW_WITH_SUBSTRING(
         WaitFor(Client_->GetColumnarStatistics({TRichYPath(std::move(path))}))
             .ValueOrThrow(),
-        "Received ypath without column selectors");
+        "Received YPath without column selectors");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1493,6 +1506,33 @@ TEST_F(TFormatReaderTest, FormattedPartitionTableTest)
         auto row = dataList->GetChildOrThrow(i)->AsMap();
         EXPECT_EQ(row->GetChildValueOrThrow<i64>("value"), i);
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TMutationIdTest
+    : public TApiTestBase
+{ };
+
+TEST_F(TMutationIdTest, Commit)
+{
+    auto tx = WaitFor(Client_->StartTransaction(NTransactionClient::ETransactionType::Master))
+        .ValueOrThrow();
+
+    auto txId = tx->GetId();
+
+    auto mutationId = TGuid::Create();
+    auto commit = [&] (bool retry) {
+        TTransactionCommitOptions options;
+        options.MutationId = mutationId;
+        options.Retry = retry;
+        auto attached = Client_->AttachTransaction(txId);
+        WaitFor(attached->Commit(options))
+            .ThrowOnError();
+    };
+    EXPECT_NO_THROW(commit(false));
+    // Second commit with same mutationId doesn't throw
+    EXPECT_NO_THROW(commit(true));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -2,12 +2,7 @@ from yt.wrapper.common import MB, GB
 
 from yt.common import update_inplace
 
-from .default_config import get_dynamic_node_config
-
-try:
-    from yt.packages.six import iteritems, itervalues
-except ImportError:
-    from six import iteritems, itervalues
+from .default_config import get_dynamic_node_config, get_dynamic_rpc_proxy_config
 
 MASTER_CONFIG_PATCHES = [
     {
@@ -268,7 +263,7 @@ def _remove_none_fields(node):
         keys_to_remove = []
 
         if isinstance(node, dict):
-            for key, value in iteritems(node):
+            for key, value in node.items():
                 process(key, value, keys_to_remove)
         elif isinstance(node, list):
             for i, value in enumerate(node):
@@ -289,6 +284,16 @@ def get_patched_dynamic_node_config(yt_config):
             update_inplace(dyn_node_config["%true"], patch)
 
     return dyn_node_config
+
+
+def get_patched_dynamic_rpc_proxy_config(yt_config, cluster_configuration):
+    dyn_rpc_proxy_config = get_dynamic_rpc_proxy_config()
+    rpc_proxy_config = cluster_configuration["rpc_proxy"][0]
+    dyn_rpc_proxy_config["cluster_connection"] = rpc_proxy_config["cluster_connection"]
+    if "api_service" in rpc_proxy_config:
+        dyn_rpc_proxy_config["api"] = rpc_proxy_config["api_service"]
+
+    return dyn_rpc_proxy_config
 
 
 def get_patched_dynamic_master_config(yt_config):
@@ -316,7 +321,7 @@ def modify_cluster_configuration(yt_config, cluster_configuration):
             if not yt_config.enable_multidaemon:
                 _update_address_resolver(config)
 
-    for config in itervalues(cluster_configuration["driver"]):
+    for config in cluster_configuration["driver"].values():
         if yt_config.optimize_config:
             update_inplace(config, DRIVER_CONFIG_PATCH)
 

@@ -1011,10 +1011,6 @@ public:
     }
 
     TString GetClusterServer(const TString& cluster) const final {
-        if (QContext_.CanRead()) {
-            return "replay";
-        }
-
         return Inner_->GetClusterServer(cluster);
     }
 
@@ -1226,6 +1222,10 @@ private:
 
     NThreading::TFuture<TDownloadTableResult> DownloadTable(TDownloadTableOptions&& options) override {
         return Inner_->DownloadTable(std::move(options));
+    }
+
+    NThreading::TFuture<TUploadFilesToCacheResult> UploadFilesToCache(TUploadFilesToCacheOptions&& options) override {
+        return Inner_->UploadFilesToCache(std::move(options));
     }
 
     IYtTokenResolver::TPtr GetYtTokenResolver() const override {

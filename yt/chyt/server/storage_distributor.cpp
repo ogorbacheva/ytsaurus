@@ -37,9 +37,6 @@
 
 #include <Analyzer/Utils.h>
 #include <Analyzer/QueryNode.h>
-#include <Analyzer/ColumnNode.h>
-#include <Analyzer/FunctionNode.h>
-#include <Analyzer/IdentifierNode.h>
 #include <Analyzer/JoinNode.h>
 #include <Analyzer/Passes/QueryAnalysisPass.h>
 #include <Functions/FunctionFactory.h>
@@ -64,7 +61,6 @@
 #include <Parsers/ASTSampleRatio.h>
 #include <Parsers/ASTSelectQuery.h>
 #include <Processors/ConcatProcessor.h>
-#include <Processors/ResizeProcessor.h>
 #include <Processors/Sinks/NullSink.h>
 #include <Processors/Sources/RemoteSource.h>
 #include <Processors/QueryPlan/IQueryPlanStep.h>
@@ -74,7 +70,6 @@
 #include <Storages/MergeTree/MergeTreeData.h>
 #include <Parsers/ASTSelectWithUnionQuery.h>
 #include <QueryPipeline/QueryPipelineBuilder.h>
-#include <Analyzer/createUniqueAliasesIfNecessary.h>
 
 #include <library/cpp/iterator/functools.h>
 
@@ -126,51 +121,6 @@ using namespace NStatisticPath;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-DB::Settings PrepareLeafJobSettings(const DB::Settings& settings)
-{
-    auto newSettings = settings;
-
-    newSettings[DB::Setting::queue_max_wait_ms] = DB::Cluster::saturate(
-        newSettings[DB::Setting::queue_max_wait_ms],
-        settings[DB::Setting::max_execution_time]);
-
-    // Does not matter on remote servers, because queries are sent under different user.
-    newSettings[DB::Setting::max_concurrent_queries_for_user] = 0;
-    // Same as above.
-    newSettings[DB::Setting::max_memory_usage_for_user] = 0;
-
-    // Result limits should not be processed in secondary queries
-    // because its results are not final.
-    // Otherwise, queries like 'insert into ...' will loose rows (CHYT-621).
-    newSettings[DB::Setting::max_result_bytes] = 0;
-    // Same as above.
-    newSettings[DB::Setting::max_result_rows] = 0;
-
-    // TODO(dakovalkov): Remove it after CHYT-670.
-    // Disable query size limit for secondary queries manually
-    // because serialized 'ytSubquery(...)' can be large.
-    newSettings[DB::Setting::max_query_size] = 0;
-
-    // All secondary queries are the same and have the same query hash, but they
-    // process different data slices. Therefore, the query cache might only be used
-    // for initial queries.
-    newSettings[DB::Setting::use_query_cache] = false;
-
-    return newSettings;
-}
-
-DB::ThrottlerPtr CreateNetThrottler(const DB::Settings& settings)
-{
-    DB::ThrottlerPtr throttler;
-    if (settings[DB::Setting::max_network_bandwidth] || settings[DB::Setting::max_network_bytes]) {
-        throttler = std::make_shared<DB::Throttler>(
-            settings[DB::Setting::max_network_bandwidth],
-            settings[DB::Setting::max_network_bytes],
-            "Limit for bytes to send or receive over network exceeded.");
-    }
-    return throttler;
-}
-
 // TODO(dakovalkov): Restore local stream (local source?).
 // DB::BlockInputStreamPtr CreateLocalStream(
 //     const DB::ASTPtr& queryAst,
@@ -189,7 +139,8 @@ DB::ThrottlerPtr CreateNetThrottler(const DB::Settings& settings)
 void ValidateReadPermissions(
     const std::vector<std::string>& columnNames,
     const std::vector<TTablePtr>& tables,
-    TQueryContext* queryContext)
+    TQueryContext* queryContext,
+    const TStorageContext* storageContext)
 {
     std::vector<TRichYPath> tablePathsWithColumns;
     tablePathsWithColumns.reserve(tables.size());
@@ -203,12 +154,18 @@ void ValidateReadPermissions(
     auto rowLevelAclPerTable = queryContext->Host->ValidateTableReadPermissionsAndGetRowLevelAcl(tablePathsWithColumns, queryContext->User);
     for (const auto& [index, table] : SEnumerate(tables)) {
         auto rowLevelAcl = std::move(rowLevelAclPerTable[index]);
-        if (rowLevelAcl && table->Path.HasRowIndexInRanges()) {
-            THROW_ERROR_EXCEPTION("Cannot use ranges with \"row_index\" to read a table with row-level ACL")
-                << TErrorAttribute("path", table->Path);
-        }
-        table->RowLevelAcl = std::move(rowLevelAcl);
-        if (table->RowLevelAcl) {
+        if (rowLevelAcl) {
+            if (!storageContext->Settings->OmitInaccessibleRows) {
+                THROW_ERROR_EXCEPTION("Table has row-level ACL but \"omit_inaccessible_rows\" is set to false")
+                    << TErrorAttribute("path", table->Path)
+                    << TErrorAttribute("user", queryContext->User);
+            }
+            if (table->Path.HasRowIndexInRanges()) {
+                THROW_ERROR_EXCEPTION("Cannot use ranges with \"row_index\" to read a table with row-level ACL")
+                    << TErrorAttribute("path", table->Path);
+            }
+
+            table->RowLevelAcl = std::move(rowLevelAcl);
             // Force reset row count, so ClickHouse itself won't use this as a hint for count().
             // This will make it do a full scan, but that is exactly what we need in case of RLS.
             table->RowCount = std::nullopt;
@@ -282,25 +239,25 @@ TClusterNodes GetNodesToDistribute(TQueryContext* queryContext, size_t distribut
 ////////////////////////////////////////////////////////////////////////////////
 
 void SetLowCardinalityFromStatistics(
-    std::vector<bool>& lowCardinalityMask,
+    std::vector<bool>* lowCardinalityMask,
     ui64 lowCardinalityThreshold,
     const std::vector<NTableClient::TColumnarHyperLogLogDigest>& columnHyperLogLogDigests)
 {
-    YT_VERIFY(columnHyperLogLogDigests.size() == lowCardinalityMask.size());
-    for (int i = 0; i < std::ssize(lowCardinalityMask); ++i) {
-        lowCardinalityMask[i] = columnHyperLogLogDigests[i].EstimateCardinality() <= lowCardinalityThreshold;
+    YT_VERIFY(columnHyperLogLogDigests.size() == lowCardinalityMask->size());
+    for (int i = 0; i < std::ssize(*lowCardinalityMask); ++i) {
+        (*lowCardinalityMask)[i] = columnHyperLogLogDigests[i].EstimateCardinality() <= lowCardinalityThreshold;
     }
 }
 
 void SetStringOnlyLowCardinality(
-    std::vector<bool>& lowCardinalityMask,
+    std::vector<bool>* lowCardinalityMask,
     const std::vector<TColumnSchema>& columns)
 {
-    for (int i = 0; i < std::ssize(lowCardinalityMask); ++i) {
+    for (int i = 0; i < std::ssize(*lowCardinalityMask); ++i) {
         auto type = DenullifyLogicalType(columns[i].LogicalType());
         if (type->GetMetatype() == ELogicalMetatype::Simple) {
             auto element = type->AsSimpleTypeRef().GetElement();
-            lowCardinalityMask[i] =
+            (*lowCardinalityMask)[i] =
                 element == ESimpleLogicalValueType::String ||
                     element == ESimpleLogicalValueType::Utf8 ||
                     element == ESimpleLogicalValueType::Json;
@@ -309,25 +266,25 @@ void SetStringOnlyLowCardinality(
 }
 
 void SetLowCardinalityFromRegExp(
-    std::vector<bool>& lowCardinalityMask,
+    std::vector<bool>* lowCardinalityMask,
     const std::vector<TColumnSchema>& columns,
     NRe2::TRe2Ptr columnNameRegExp)
 {
-    for (int i = 0; i < std::ssize(lowCardinalityMask); ++i) {
+    for (int i = 0; i < std::ssize(*lowCardinalityMask); ++i) {
         if (columnNameRegExp && NRe2::TRe2::FullMatch(columns[i].Name(), *columnNameRegExp)) {
-            lowCardinalityMask[i] = true;
+            (*lowCardinalityMask)[i] = true;
         }
     }
 }
 
 TTableSchemaPtr BuildLowCardinalitySchema(TStorageContext* storageContext, TTableSchemaPtr schema, const std::vector<TTablePtr>& tables)
 {
-    auto settings = storageContext->Settings->Composite;
+    auto settings = storageContext->Settings->Conversion;
 
     const auto& columns = schema->Columns();
 
-    std::vector<bool> mask(columns.size(), settings->LowCardinalityMode == ELowCardinalityMode::All);
-    if (settings->LowCardinalityMode == ELowCardinalityMode::FromStatistics) {
+    std::vector<bool> mask(columns.size(), settings->LowCardinality->Mode == ELowCardinalityMode::All);
+    if (settings->LowCardinality->Mode == ELowCardinalityMode::FromStatistics) {
         std::vector<std::string> columnNames;
         columnNames.reserve(columns.size());
         for (const auto& column : columns) {
@@ -342,16 +299,16 @@ TTableSchemaPtr BuildLowCardinalitySchema(TStorageContext* storageContext, TTabl
             storageContext->QueryContext->ReadTransactionId);
         if (statistics.has_value() && statistics->HasLargeStatistics() && !statistics->LargeStatistics.ColumnHyperLogLogDigests.empty()) {
             SetLowCardinalityFromStatistics(
-                mask,
-                settings->LowCardinalityThreshold,
+                &mask,
+                settings->LowCardinality->Threshold,
                 statistics->LargeStatistics.ColumnHyperLogLogDigests);
         }
-    } else if (settings->LowCardinalityMode == ELowCardinalityMode::StringOnly) {
-        SetStringOnlyLowCardinality(mask, columns);
+    } else if (settings->LowCardinality->Mode == ELowCardinalityMode::StringOnly) {
+        SetStringOnlyLowCardinality(&mask, columns);
     }
 
-    if (settings->LowCardinalityRegExp) {
-        SetLowCardinalityFromRegExp(mask, columns, settings->LowCardinalityRegExp);
+    if (settings->LowCardinality->RegExp) {
+        SetLowCardinalityFromRegExp(&mask, columns, settings->LowCardinality->RegExp);
     }
 
     if (std::none_of(mask.begin(), mask.end(), [] (bool value) { return value; })) {
@@ -359,12 +316,18 @@ TTableSchemaPtr BuildLowCardinalitySchema(TStorageContext* storageContext, TTabl
     }
 
     std::vector<TColumnSchema> modifiedColumns = columns;
+    std::vector<std::string> lowCardinalityColumnNames;
     for (const auto& [columnIndex, isLowCardinality] : Enumerate(mask)) {
         if (isLowCardinality) {
             auto lcLogicalType = TaggedLogicalType(LowCardinalityTag, modifiedColumns[columnIndex].LogicalType());
             modifiedColumns[columnIndex].SetLogicalType(std::move(lcLogicalType));
+            lowCardinalityColumnNames.push_back(modifiedColumns[columnIndex].Name());
         }
     }
+
+    storageContext->QueryContext->SetRuntimeVariable(
+        "low_cardinality_columns",
+        std::move(lowCardinalityColumnNames));
 
     return New<TTableSchema>(
         std::move(modifiedColumns),
@@ -456,190 +419,37 @@ public:
         YT_LOG_INFO("Query distribution prepared");
     }
 
-    void ModifySecondaryQueries(std::function<void(DB::ASTPtr& secondaryQueryAst)> callback)
+    TDistributedQueryExecutor CreateExecutor()
     {
-        for (size_t index = 0; index < SecondaryQueries_.size(); ++index) {
-            auto& secondaryQuery = SecondaryQueries_[index];
-            callback(secondaryQuery.Query);
-            YT_LOG_TRACE(
-                "Modified subquery AST (SecondaryQueryIndex: %v, AST: %v)",
-                index,
-                secondaryQuery.Query);
-        }
-    }
+        auto processingStage = (ProcessingStage_ != DB::QueryProcessingStage::FetchColumns)
+            ? ProcessingStage_
+            : DB::QueryProcessingStage::Complete;
+        auto blockHeader = DB::InterpreterSelectQueryAnalyzer::getSampleBlock(
+            QueryAnalysisResult_->QueryTree,
+            Context_,
+            DB::SelectQueryOptions(processingStage).analyze());
 
-    void Fire()
-    {
-        QueryContext_->MoveToPhase(EQueryPhase::Execution);
-
-        const auto& settings = Context_->getSettingsRef();
-
-        YT_LOG_INFO("Starting distribution (RealColumnNames_: %v, NodeCount: %v, MaxThreads: %v, SubqueryCount: %v)",
-            RealColumnNames_,
-            CliqueNodes_.size(),
-            static_cast<ui64>(settings[DB::Setting::max_threads]),
-            ThreadSubqueries_.size());
-
-        // Wait for creation of query read transaction (if it's initialized asynchronously)
-        // and save its id/timestamp before distribution to be able to read
-        // locked tables on worker instances under the transaction.
-        // TODO(dakovalkov): When we make the whole execution plan on a coordinator,
-        // it doesn't make sense.
-        QueryContext_->SaveQueryReadTransaction();
-
-        auto newContext = DB::Context::createCopy(Context_);
-        newContext->setSettings(PrepareLeafJobSettings(settings));
-
-        // TODO(max42): do we need them?
-        auto throttler = CreateNetThrottler(settings);
-
-        DB::Block blockHeader;
-
-        YT_VERIFY(!SecondaryQueries_.empty());
-        bool isInsert = SecondaryQueries_[0].Query->as<DB::ASTInsertQuery>();
-
-        if (!isInsert) {
-            auto queryTree = QueryAnalyzer_->GetParsedQueryTree();
-            // NB: QueryTree may be some subquery of the initial query.
-            // After processing on the secondary instance, its auxiliary aliases may not match the current ones.
-            // Therefore, for the correct header output, we need to recreate the aliases.
-            DB::createUniqueAliasesIfNecessary(queryTree, Context_);
-            blockHeader = DB::InterpreterSelectQueryAnalyzer::getSampleBlock(
-                queryTree,
-                Context_,
-                DB::SelectQueryOptions(ProcessingStage_).analyze());
-        }
-
-        for (size_t index = 0; index < SecondaryQueries_.size(); ++index) {
-            // Multiple secondary queries can be executed on the same node.
-            const auto& cliqueNode = CliqueNodes_[index % CliqueNodes_.size()];
-            const auto& secondaryQuery = SecondaryQueries_[index];
-
-            YT_LOG_DEBUG(
-                "Firing subquery (SubqueryIndex: %v, Node: %v)",
-                index,
-                cliqueNode->GetName().ToString());
-
-            auto remoteQueryId = TQueryId::Create();
-
-            auto pipe = CreateRemoteSource(
-                cliqueNode,
-                secondaryQuery,
-                remoteQueryId,
-                newContext,
-                throttler,
-                Context_->getExternalTables(),
-                ProcessingStage_,
-                blockHeader,
-                Logger,
-                TaskIterator_);
-
-            // In the case of processing up to the FetchColumns stage,
-            // PlannerJoinTree expects that pipe outputs header will have unqualified column names.
-            // This means that we need to explicitly rename all outputs to prevent any aliases and identifiers
-            // that can occur after query processing distribution.
-            if (!isInsert && ProcessingStage_ == DB::QueryProcessingStage::FetchColumns) {
-                auto& tableExpressionData = QueryInfo_.planner_context->getTableExpressionDataOrThrow(QueryInfo_.table_expression);
-                const auto& columnNames = tableExpressionData.getSelectedColumnsNames();
-                YT_VERIFY(columnNames.size() == blockHeader.getColumnsWithTypeAndName().size());
-
-                DB::ActionsDAG renameActionsDAG(blockHeader.getColumnsWithTypeAndName());
-                DB::ActionsDAG::NodeRawConstPtrs updatedActionsDAGOutputs;
-                for (const auto& [outputIndex, outputNode] : Enumerate(renameActionsDAG.getOutputs())) {
-                    const auto& columnName = columnNames[outputIndex];
-                    updatedActionsDAGOutputs.push_back(&renameActionsDAG.addAlias(*outputNode, columnName));
-                }
-                renameActionsDAG.getOutputs() = std::move(updatedActionsDAGOutputs);
-                auto renameExpression = std::make_shared<DB::ExpressionActions>(std::move(renameActionsDAG), DB::ExpressionActionsSettings(Context_));
-                pipe.addSimpleTransform([&] (const DB::Block& header) {
-                    return std::make_shared<DB::ExpressionTransform>(header, renameExpression);
-                });
-            }
-
-            QueryContext_->AddSecondaryQueryId(remoteQueryId);
-
-            Pipes_.emplace_back(std::move(pipe));
-        }
-
-        if (QueryAnalysisResult_->ReadInOrderMode == EReadInOrderMode::Backward) {
-            std::reverse(Pipes_.begin(), Pipes_.end());
-        }
-    }
-
-    DB::Pipes ExtractPipes()
-    {
-        return std::move(Pipes_);
-    }
-
-    std::vector<std::shared_ptr<IChytIndexStat>> ExtractIndexStats()
-    {
-        return std::move(QueryInput_.IndexStats);
+        TDistributedQueryInfo distributeInfo {
+            .ProcessingStage = ProcessingStage_,
+            .OutputHeader = std::move(blockHeader),
+            .SecondaryQueries = std::move(SecondaryQueries_),
+            .CliqueNodes = std::move(CliqueNodes_),
+            .TaskIterator = std::move(TaskIterator_)};
+        return TDistributedQueryExecutor(
+            Context_,
+            QueryContext_,
+            distributeInfo,
+            QueryInfo_,
+            Logger,
+            std::ssize(ThreadSubqueries_),
+            QueryAnalysisResult_,
+            std::move(QueryInput_.IndexStats));
     }
 
     bool ReadInOrder() const
     {
         YT_VERIFY(QueryAnalyzer_);
         return QueryAnalyzer_->GetReadInOrderMode() != EReadInOrderMode::None;
-    }
-
-    bool SuitableForPullInputSpecsMode() const
-    {
-        YT_VERIFY(QueryAnalyzer_);
-        // In the case of a right or full join, we need to filter the joined query by the sort key,
-        // which is not possible when pulling input specs.
-        return StorageContext_->Settings->Execution->EnableInputSpecsPulling && !QueryAnalyzer_->HasRightOrFullJoin();
-    }
-
-    DB::QueryPipelineBuilderPtr ExtractPipeline(std::function<void()> commitCallback)
-    {
-        // We need some sort of async signal indicating that all distributed
-        // queries have finished. This may be done by introducing out own sink
-        // storing callback which must be called upon all query completion.
-
-        struct TSink
-            : public DB::ISink
-        {
-            TSink(const TLogger& logger, const DB::Block& header, std::function<void()> commitCallback)
-                : DB::ISink(header)
-                , Logger(logger)
-                , CommitCallback_(std::move(commitCallback))
-            { }
-
-            void consume(DB::Chunk /*chunk*/) override
-            { }
-
-            void onFinish() override
-            {
-                YT_LOG_DEBUG("All subqueries finished, calling commit callback");
-                CommitCallback_();
-                YT_LOG_DEBUG("Commit callback succeeded");
-            }
-
-            std::string getName() const override
-            {
-                return "CommitSink";
-            }
-
-        private:
-            TLogger Logger;
-            std::function<void()> CommitCallback_;
-        };
-
-        std::vector<DB::QueryPipelineBuilderPtr> pipelines;
-        for (size_t index = 0; index < Pipes_.size(); ++index) {
-            auto& pipe = Pipes_[index];
-            auto& pipeline = pipelines.emplace_back(std::make_unique<DB::QueryPipelineBuilder>());
-            pipeline->init(std::move(pipe));
-        }
-        auto result = std::make_unique<DB::QueryPipelineBuilder>(
-            DB::QueryPipelineBuilder::unitePipelines(std::move(pipelines), {}));
-        result->addTransform(std::make_shared<DB::ResizeProcessor>(DB::Block(), Pipes_.size(), 1));
-        result->setSinks(
-            [=, this] (const DB::Block& header, DB::QueryPipelineBuilder::StreamType) mutable -> DB::ProcessorPtr {
-                return std::make_shared<TSink>(Logger, header, std::move(commitCallback));
-            });
-
-        return result;
     }
 
 private:
@@ -671,6 +481,14 @@ private:
 
     TSecondaryQueryReadTaskIteratorPtr TaskIterator_;
 
+    bool SuitableForPullInputSpecsMode() const
+    {
+        YT_VERIFY(QueryAnalyzer_);
+        // In the case of a right or full join, we need to filter the joined query by the sort key,
+        // which is not possible when pulling input specs.
+        return StorageContext_->Settings->Execution->EnableInputSpecsPulling && !QueryAnalyzer_->HasRightOrFullJoin();
+    }
+
     void PrepareInput()
     {
         QueryAnalyzer_.emplace(Context_, StorageContext_, QueryInfo_, Logger, false, !VirtualColumnNames_.empty());
@@ -698,8 +516,8 @@ private:
 
         SpecTemplate_.QuerySettings = StorageContext_->Settings;
         SpecTemplate_.QuerySettings->Execution->EnableInputSpecsPulling = SuitableForPullInputSpecsMode();
-        SpecTemplate_.QuerySettings->Execution->EnableOptimizeDistinctRead = QueryAnalyzer_->NeedOnlyDistinct();
-        SpecTemplate_.QuerySettings->Execution->EnableMinMaxOptimization =
+        SpecTemplate_.SubqueryOptions.UseDistinctReadOptimization = QueryAnalyzer_->NeedOnlyDistinct();
+        SpecTemplate_.SubqueryOptions.UseMinMaxOptimization =
             QueryAnalysisResult_->EnableMinMaxOptimization && SpecTemplate_.TableStatistics.has_value();
 
         auto& tableStatistics = SpecTemplate_.TableStatistics;
@@ -720,7 +538,7 @@ private:
                 return true;
             };
             if (!tableStatistics->HasValueStatistics() || !checkValues(tableStatistics->ColumnMinValues) || !checkValues(tableStatistics->ColumnMaxValues)) {
-                SpecTemplate_.QuerySettings->Execution->EnableMinMaxOptimization = false;
+                SpecTemplate_.SubqueryOptions.UseMinMaxOptimization = false;
                 tableStatistics = std::nullopt;
             }
         }
@@ -777,7 +595,9 @@ private:
             "query_processing_stage", DB::QueryProcessingStage::toString(ProcessingStage_));
 
         QueryContext_->SetRuntimeVariable(
-            "use_min_max_optimization", SpecTemplate_.QuerySettings->Execution->EnableMinMaxOptimization);
+            "use_input_specs_pulling", SpecTemplate_.QuerySettings->Execution->EnableInputSpecsPulling);
+        QueryContext_->SetRuntimeVariable(
+            "use_min_max_optimization", SpecTemplate_.SubqueryOptions.UseMinMaxOptimization);
         QueryContext_->SetRuntimeVariable(
             "try_optimize_distinct_read", SpecTemplate_.QuerySettings->Execution->EnableOptimizeDistinctRead);
         QueryContext_->SetRuntimeVariable(
@@ -843,7 +663,7 @@ private:
                 taskCount,
                 QueryContext_->SessionSettings->Execution->TaskCountIncreaseFactor);
         }
-        if (SpecTemplate_.QuerySettings->Execution->EnableMinMaxOptimization) {
+        if (SpecTemplate_.SubqueryOptions.UseMinMaxOptimization) {
             taskCount = 1;
         }
 
@@ -1034,13 +854,12 @@ public:
             columnNames.push_back(column.Name());
         }
 
-        auto settings = storageContext->Settings->Composite;
+        auto settings = storageContext->Settings->Conversion;
         if (context->hasInsertionTable() || QueryContext_->CreatedTablePath.has_value()) {
-            settings->LowCardinalityMode = ELowCardinalityMode::None;
-            settings->LowCardinalityRegExp = nullptr;
+            settings->LowCardinality = New<TLowCardinalitySettings>();
         }
 
-        if (settings->LowCardinalityMode != ELowCardinalityMode::None || settings->LowCardinalityRegExp) {
+        if (settings->LowCardinality->Mode != ELowCardinalityMode::None || settings->LowCardinality->RegExp) {
             Schema_ = BuildLowCardinalitySchema(storageContext, Schema_, Tables_);
         }
 
@@ -1234,24 +1053,15 @@ public:
 
         auto metadataSnapshot = storageSnapshot->metadata;
 
-        auto preparer = BuildPreparer(
+        auto executor = PrepareExecutor(
             columnNames,
             metadataSnapshot,
             queryInfo,
             context,
             processingStage);
-        preparer.Fire();
+        executor.Fire();
 
-        IndexStats_ = preparer.ExtractIndexStats();
-
-        auto pipes = preparer.ExtractPipes();
-        auto pipe = DB::Pipe::unitePipes(std::move(pipes));
-
-        if (preparer.ReadInOrder() && !pipe.empty() && pipe.numOutputPorts() > 1) {
-            pipe.addTransform(std::make_shared<DB::ConcatProcessor>(pipe.getHeader(), pipe.numOutputPorts()));
-        }
-
-        return pipe;
+        return executor.ExtractUnitedPipe();
     }
 
     // Same as IStorage::read(QueryPlan &, ...), but does not resize the output pipe.
@@ -1262,12 +1072,23 @@ public:
         const DB::StorageSnapshotPtr & storageSnapshot,
         DB::SelectQueryInfo & queryInfo,
         DB::ContextPtr context,
-        DB::QueryProcessingStage::Enum processedStage,
-        size_t maxBlockSize,
-        size_t numStreams) override
+        DB::QueryProcessingStage::Enum processingStage,
+        size_t /*maxBlockSize*/,
+        size_t /*numStreams*/) override
     {
-        auto pipe = read(columnNames, storageSnapshot, queryInfo, context, processedStage, maxBlockSize, numStreams);
-        auto readStep = std::make_unique<TReadFromYTStep>(std::move(pipe), queryInfo, IndexStats_, GetTables());
+        TCurrentTraceContextGuard traceContextGuard(QueryContext_->TraceContext);
+        auto timerGuard = QueryContext_->CreateStatisticsTimerGuard("/storage_distributor/read"_SP);
+
+        auto metadataSnapshot = storageSnapshot->metadata;
+
+        auto executor = PrepareExecutor(
+            columnNames,
+            metadataSnapshot,
+            queryInfo,
+            context,
+            processingStage);
+
+        auto readStep = std::make_unique<TReadFromYTStep>(queryInfo, std::move(executor), GetTables());
         queryPlan.addStep(std::move(readStep));
     }
 
@@ -1308,16 +1129,17 @@ public:
                 // Can't erase table like in distributedWrite because of INSERT INTO t FROM (SELECT * FROM t) case.
                 THROW_ERROR_EXCEPTION("Parallel overwriting is not supported, set max_insert_threads = 1");
             }
-            if (queryContext->QueryKind == EQueryKind::InitialQuery) {
-                queryContext->InitializeQueryWriteTransaction();
-            }
         }
 
         if (table->Dynamic && overwrite) {
             THROW_ERROR_EXCEPTION("Overriding dynamic tables is not supported");
         }
 
-        auto dataTypes = ToDataTypes(*Schema_, QueryContext_->SessionSettings->Composite, /*isReadConversions*/ false);
+        if (queryContext->QueryKind == EQueryKind::InitialQuery) {
+            queryContext->InitializeQueryWriteTransaction();
+        }
+
+        auto dataTypes = ToDataTypes(*Schema_, QueryContext_->SessionSettings->Conversion, /*isReadConversions*/ false);
         YT_LOG_DEBUG(
             "Inferred ClickHouse data types from YT schema (Schema: %v, DataTypes: %v)",
             Schema_,
@@ -1337,6 +1159,10 @@ public:
         auto finalCallback = [queryContext, path = path.GetPath()] () {
             if (queryContext->WriteSinkCount.fetch_sub(1) == 1) {
                 queryContext->CommitWriteTransaction();
+
+                if (queryContext->ParentTransactionId) {
+                    return;
+                }
 
                 auto invalidateMode = queryContext->SessionSettings->Caching->TableAttributesInvalidateMode;
                 if (queryContext->QueryKind == EQueryKind::SecondaryQuery) {
@@ -1368,7 +1194,7 @@ public:
                 Schema_,
                 dataTypes,
                 QueryContext_->SessionSettings->DynamicTable,
-                QueryContext_->SessionSettings->Composite,
+                QueryContext_->SessionSettings->Conversion,
                 QueryContext_->Client(),
                 std::move(finalCallback),
                 QueryContext_->Logger,
@@ -1381,7 +1207,7 @@ public:
                 Schema_,
                 dataTypes,
                 QueryContext_->SessionSettings->TableWriter,
-                QueryContext_->SessionSettings->Composite,
+                QueryContext_->SessionSettings->Conversion,
                 QueryContext_->Client(),
                 queryContext->WriteTransactionId,
                 std::move(finalCallback),
@@ -1446,6 +1272,8 @@ public:
 
         auto distributedStage = executionSettings->DistributedInsertStage;
 
+        YT_LOG_DEBUG("Distributed insert stage: %v", distributedStage);
+
         if (distributedStage == EDistributedInsertStage::None) {
             return std::nullopt;
         }
@@ -1477,13 +1305,14 @@ public:
         int distributedInsertStageRank = GetDistributedInsertStageRank(distributedStage);
         int queryProcessingStageRank = GetQueryProcessingStageRank(queryProcessingStage);
 
+        YT_LOG_DEBUG("Distributed insert stage rank: %v, query processing stage rank: %v", distributedInsertStageRank, queryProcessingStageRank);
         if (queryProcessingStageRank < distributedInsertStageRank) {
             return std::nullopt;
         }
 
         queryContext->InitializeQueryWriteTransaction();
 
-        auto preparer = sourceStorage->BuildPreparer(
+        auto executor = sourceStorage->PrepareExecutor(
             requiredColumns,
             /*metadataSnapshot*/ nullptr,
             selectQueryInfo,
@@ -1499,7 +1328,7 @@ public:
 
         // Prepend each SELECT query with proper INSERT INTO ...
 
-        preparer.ModifySecondaryQueries([&] (DB::ASTPtr& secondaryQueryAst) {
+        executor.ModifySecondaryQueries([&] (DB::ASTPtr& secondaryQueryAst) {
             auto queryClone = query.clone();
             queryClone->as<DB::ASTInsertQuery>()->table_id.table_name = ToString(table->Path);
             auto insertAst = queryClone->as<DB::ASTInsertQuery>();
@@ -1507,13 +1336,18 @@ public:
             secondaryQueryAst = queryClone;
         });
 
-        preparer.Fire();
+        executor.Fire();
 
         // Callback to commit write transaction and invalidate cached object attributes after the query is completed.
         auto finalCallback = [context, path = table->GetPath()] {
             auto* queryContext = GetQueryContext(context);
             queryContext->CommitWriteTransaction();
             auto refreshRevision = NHydra::NullRevision;
+
+            if (queryContext->ParentTransactionId) {
+                return;
+            }
+
             if (queryContext->CreatedTablePath.has_value()) {
                 YT_VERIFY(*queryContext->CreatedTablePath == path);
                 refreshRevision = GetRefreshRevision(queryContext->Client(), path);
@@ -1522,7 +1356,7 @@ public:
         };
 
         // Finally, build pipeline of all those pipes.
-        auto pipeline = preparer.ExtractPipeline(std::move(finalCallback));
+        auto pipeline = executor.ExtractPipeline(std::move(finalCallback));
 
         // TODO(dakovalkov): What is the difference between QueryPipeline and QueryPipelineBuilder?
         return DB::QueryPipelineBuilder::getPipeline(std::move(*pipeline));
@@ -1545,11 +1379,18 @@ public:
         THROW_ERROR_EXCEPTION_IF(table->Dynamic,
             "TRUNCATE is not supported for dynamic tables");
 
+        auto* queryContext = GetQueryContext(context);
+
+        queryContext->InitializeQueryWriteTransaction();
+
         EraseTable(context);
 
-        auto* queryContext = GetQueryContext(context);
-        auto refreshRevision = GetRefreshRevision(queryContext->Client(), table->GetPath());
-        InvalidateCache(queryContext, {{table->GetPath(), refreshRevision}});
+        queryContext->CommitWriteTransaction();
+
+        if (!queryContext->ParentTransactionId) {
+            auto refreshRevision = GetRefreshRevision(queryContext->Client(), table->GetPath());
+            InvalidateCache(queryContext, {{table->GetPath(), refreshRevision}});
+        }
     }
 
     std::unordered_map<std::string, DB::ColumnSize> getColumnSizes() const override
@@ -1685,10 +1526,9 @@ private:
     std::vector<TTablePtr> Tables_;
     TTableSchemaPtr Schema_;
     size_t DistributionSeed_;
-    std::vector<std::shared_ptr<IChytIndexStat>> IndexStats_;
     TLogger Logger;
 
-    TDistributedQueryPreparer BuildPreparer(
+    TDistributedQueryExecutor PrepareExecutor(
         const DB::Names& columnNames,
         DB::StorageMetadataPtr metadataSnapshot,
         DB::SelectQueryInfo& queryInfo,
@@ -1704,7 +1544,7 @@ private:
 
         auto [realColumnNames, virtualColumnNames] = DecoupleColumns(columnNames, metadataSnapshot);
 
-        ValidateReadPermissions(realColumnNames, Tables_, queryContext);
+        ValidateReadPermissions(realColumnNames, Tables_, queryContext, storageContext);
 
         auto& distributedProductMode = context->getSettingsRef()[DB::Setting::distributed_product_mode];
         if (distributedProductMode.changed && distributedProductMode == DB::DistributedProductMode::DENY) {
@@ -1720,10 +1560,9 @@ private:
             storageContext,
             processingStage,
             DistributionSeed_);
-
         preparer.PrepareSecondaryQueries();
 
-        return preparer;
+        return preparer.CreateExecutor();
     }
 
     //! Erase underlying table (assuming that we have single underlying static table)
@@ -1791,7 +1630,7 @@ DB::StoragePtr CreateDistributorFromCH(DB::StorageFactory::Arguments args)
 
     // Underscore indicates that the columns should be ignored, and that schema should be taken from the attributes.
     if (args.columns.getNamesOfPhysical() != std::vector<std::string>{"_"}) {
-        auto schema = ToTableSchema(args.columns, keyColumns, queryContext->SessionSettings->Composite);
+        auto schema = ToTableSchema(args.columns, keyColumns, queryContext->SessionSettings->Conversion);
         YT_LOG_DEBUG("Inferred table schema from columns (Schema: %v)", schema);
         attributes->Set("schema", schema);
     } else if (attributes->Contains("schema")) {
@@ -1851,15 +1690,11 @@ DB::StoragePtr CreateDistributorFromCH(DB::StorageFactory::Arguments args)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-DB::StoragePtr CreateStorageDistributor(
+DB::StoragePtr CreateStorageDistributorImpl(
     DB::ContextPtr context,
     std::vector<TTablePtr> tables,
     DB::StorageID storageId)
 {
-    if (tables.empty()) {
-        THROW_ERROR_EXCEPTION("No tables to read from");
-    }
-
     auto* queryContext = GetQueryContext(context);
 
     const auto& Logger = queryContext->Logger;
@@ -1881,6 +1716,29 @@ DB::StoragePtr CreateStorageDistributor(
     storage->startup();
 
     return storage;
+}
+
+DB::StoragePtr CreateStorageDistributor(
+    DB::ContextPtr context,
+    std::vector<TTablePtr> tables,
+    DB::StorageID storageId)
+{
+    if (tables.empty()) {
+        THROW_ERROR_EXCEPTION("No tables to read from");
+    }
+    return CreateStorageDistributorImpl(context, std::move(tables), std::move(storageId));
+}
+
+DB::StoragePtr CreateStorageDistributor(
+    DB::ContextPtr context,
+    std::vector<TTablePtr> tables)
+{
+    if (tables.empty()) {
+        THROW_ERROR_EXCEPTION("No tables to read from");
+    }
+
+    DB::StorageID storageId{"YT", BuildStorageName(tables)};
+    return CreateStorageDistributorImpl(context, std::move(tables), std::move(storageId));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

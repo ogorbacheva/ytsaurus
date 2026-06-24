@@ -72,7 +72,7 @@ void JoinToString(
     TStringBuf delimiter = DefaultJoinToStringDelimiter);
 
 template <std::forward_iterator TIterator, class TFormatter>
-TString JoinToString(
+std::string JoinToString(
     const TIterator& begin,
     const TIterator& end,
     const TFormatter& formatter,
@@ -80,7 +80,7 @@ TString JoinToString(
 
 //! A handy shortcut with default formatter.
 template <std::forward_iterator TIterator>
-TString JoinToString(
+std::string JoinToString(
     const TIterator& begin,
     const TIterator& end,
     TStringBuf delimiter = DefaultJoinToStringDelimiter);
@@ -92,24 +92,24 @@ TString JoinToString(
  *  \param delimiter A delimiter to be inserted between items; ", " by default.
  */
 template <std::ranges::range TCollection, class TFormatter>
-TString JoinToString(
+std::string JoinToString(
     TCollection&& collection,
     const TFormatter& formatter,
     TStringBuf delimiter = DefaultJoinToStringDelimiter);
 
 //! A handy shortcut with the default formatter.
 template <std::ranges::range TCollection>
-TString JoinToString(
+std::string JoinToString(
     TCollection&& collection,
     TStringBuf delimiter = DefaultJoinToStringDelimiter);
 
 //! Concatenates a bunch of TStringBuf-like instances into TString.
 template <class... Ts>
-TString ConcatToString(Ts... args);
+std::string ConcatToString(Ts... args);
 
 //! Converts a range of items into strings.
 template <std::forward_iterator TIter, class TFormatter>
-std::vector<TString> ConvertToStrings(
+std::vector<std::string> ConvertToStrings(
     const TIter& begin,
     const TIter& end,
     const TFormatter& formatter,
@@ -117,7 +117,7 @@ std::vector<TString> ConvertToStrings(
 
 //! A handy shortcut with the default formatter.
 template <std::forward_iterator TIter>
-std::vector<TString> ConvertToStrings(
+std::vector<std::string> ConvertToStrings(
     const TIter& begin,
     const TIter& end,
     size_t maxSize = std::numeric_limits<size_t>::max());
@@ -129,14 +129,14 @@ std::vector<TString> ConvertToStrings(
  *  \param maxSize Size limit for the resulting vector.
  */
 template <std::ranges::range TCollection, class TFormatter>
-std::vector<TString> ConvertToStrings(
+std::vector<std::string> ConvertToStrings(
     TCollection&& collection,
     const TFormatter& formatter,
     size_t maxSize = std::numeric_limits<size_t>::max());
 
 //! A handy shortcut with default formatter.
 template <std::ranges::range TCollection>
-std::vector<TString> ConvertToStrings(
+std::vector<std::string> ConvertToStrings(
     TCollection&& collection,
     size_t maxSize = std::numeric_limits<size_t>::max());
 
@@ -192,6 +192,19 @@ inline constexpr TStringBuf DefaultTruncatedMessage = "...<truncated>";
 
 void TruncateStringInplace(std::string* string, int lengthLimit, TStringBuf truncatedSuffix = DefaultTruncatedMessage);
 std::string TruncateString(std::string string, int lengthLimit, TStringBuf truncatedSuffix = DefaultTruncatedMessage);
+
+class TTruncatedStringView
+{
+public:
+    TTruncatedStringView(const std::string& value, int limit);
+    void WriteToBuilder(TStringBuilderBase* builder, TStringBuf spec) const;
+
+private:
+    const std::string& Value_;
+    const int Limit_;
+};
+
+void FormatValue(TStringBuilderBase* builder, TTruncatedStringView value, TStringBuf spec);
 
 ////////////////////////////////////////////////////////////////////////////////
 

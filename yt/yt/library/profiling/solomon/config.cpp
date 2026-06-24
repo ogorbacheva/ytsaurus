@@ -6,6 +6,32 @@ namespace NYT::NProfiling {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+TSolomonRegistryConfigPtr TSolomonRegistryConfig::ApplyDynamic(
+    const TSolomonRegistryDynamicConfigPtr& dynamicConfig) const
+{
+    auto result = New<TSolomonRegistryConfig>();
+    result->EnableRseq = EnableRseq;
+    NYTree::UpdateYsonStructField(result->EnableRseq, dynamicConfig->EnableRseq);
+    result->Postprocess();
+    return result;
+}
+
+void TSolomonRegistryConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enable_rseq", &TThis::EnableRseq)
+        .Default(false);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TSolomonRegistryDynamicConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enable_rseq", &TThis::EnableRseq)
+        .Default();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TShardConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("filter", &TThis::Filter)
@@ -145,7 +171,7 @@ void TSolomonExporterConfig::Register(TRegistrar registrar)
     });
 }
 
-TShardConfigPtr TSolomonExporterConfig::MatchShard(const std::string& sensorName)
+TShardConfigPtr TSolomonExporterConfig::MatchShard(TStringBuf sensorName)
 {
     TShardConfigPtr matchedShard;
     int matchSize = -1;

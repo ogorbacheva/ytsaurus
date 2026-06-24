@@ -386,6 +386,8 @@ struct TClusterNodeBootstrapConfig
     //! Bucket configuration for out network throttlers.
     THashMap<std::string, NConcurrency::TFairThrottlerBucketConfigPtr> OutThrottlers;
 
+    int AuxPollerThreadCount;
+
     std::optional<TString> Rack;
     std::optional<TString> DataCenter;
 
@@ -468,7 +470,7 @@ struct TClusterNodeDynamicConfig
     //! IO tracker config.
     NIO::TIOTrackerConfigPtr IOTracker;
 
-    NBus::TBusServerDynamicConfigPtr BusServer;
+    NBus::NTcp::TBusServerDynamicConfigPtr BusServer;
 
     NRpc::TServerDynamicConfigPtr RpcServer;
 
@@ -484,7 +486,7 @@ struct TClusterNodeDynamicConfig
     //! Chaos replication card cache config overrides.
     NChaosClient::TReplicationCardCacheDynamicConfigPtr ReplicationCardCache;
 
-    NCellMasterClient::TCellDirectorySynchronizerConfigPtr MasterCellDirectorySynchronizer;
+    NCellMasterClient::TCellDirectorySynchronizerOverrideDynamicConfigPtr MasterCellDirectorySynchronizer;
 
     //! Configuration for huge page manager.
     NIO::THugePageManagerDynamicConfigPtr HugePageManager;

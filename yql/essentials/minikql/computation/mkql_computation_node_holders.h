@@ -27,7 +27,7 @@ namespace NKikimr::NMiniKQL {
 
 class TMemoryUsageInfo;
 
-const ui32 CodegenArraysFallbackLimit = 1000u;
+const ui32 CodegenArraysFallbackLimit = 1000U;
 
 template <typename Type, EMemorySubPool MemoryPool = EMemorySubPool::Default>
 using TMKQLVector = std::vector<Type, TMKQLAllocator<Type, MemoryPool>>;
@@ -39,6 +39,7 @@ using TMKQLMap = std::map<Key, T, TComp, TMKQLAllocator<std::pair<const Key, T>,
 
 using TKeyTypes = std::vector<std::pair<NUdf::EDataSlot, bool>>;
 using TUnboxedValueVector = std::vector<NUdf::TUnboxedValue, TMKQLAllocator<NUdf::TUnboxedValue>>;
+using TUnboxedValueView = std::span<NUdf::TUnboxedValue>;
 using TTemporaryUnboxedValueVector = std::vector<NUdf::TUnboxedValue, TMKQLAllocator<NUdf::TUnboxedValue, EMemorySubPool::Temporary>>;
 using TUnboxedValueDeque = std::deque<NUdf::TUnboxedValue, TMKQLAllocator<NUdf::TUnboxedValue>>;
 using TKeyPayloadPair = std::pair<NUdf::TUnboxedValue, NUdf::TUnboxedValue>;
@@ -58,7 +59,7 @@ public:
     using value_type = NUdf::TUnboxedValue;
 
     explicit TUnboxedValueBatch(const TType* rowType = nullptr)
-        : Width_((rowType && rowType->IsMulti()) ? static_cast<const TMultiType*>(rowType)->GetElementsCount() : 1u)
+        : Width_((rowType && rowType->IsMulti()) ? static_cast<const TMultiType*>(rowType)->GetElementsCount() : 1U)
         , IsWide_(rowType && rowType->IsMulti())
         , PageSize_(GetPageSize(Width_))
     {
@@ -476,7 +477,7 @@ using TMyHash = std::conditional_t<std::is_floating_point<T>::value, TFloatHash<
 template <typename T>
 using TMyEquals = std::conditional_t<std::is_floating_point<T>::value, TFloatEquals<T>, std::equal_to<T>>;
 
-constexpr float COMPACT_HASH_MAX_LOAD_FACTOR = 1.2f;
+constexpr float COMPACT_HASH_MAX_LOAD_FACTOR = 1.2F;
 
 using TValuesDictHashMap = std::unordered_map<
     NUdf::TUnboxedValue, NUdf::TUnboxedValue,
@@ -599,7 +600,6 @@ public:
         : TComputationValue(memInfo)
         , Datum_(std::move(datum))
     {
-        VALIDATE_DATUM_ARROW_BLOCK_CONSTRUCTOR(Datum_);
     }
 
     inline static const TArrowBlock& From(const NUdf::TUnboxedValuePod& value) {
@@ -890,7 +890,7 @@ public:
 
     NUdf::TUnboxedValuePod CreateDirectArrayHolder(ui64 size, NUdf::TUnboxedValue*& itemsPtr) const;
 
-    NUdf::TUnboxedValuePod CreateArrowBlock(arrow::Datum&& datum) const;
+    NUdf::TUnboxedValuePod CreateArrowBlock(arrow::Datum&& datum, NYql::EDatumValidationMode validationMode = NYql::DefaultDatumValidationMode) const;
 
     NUdf::TUnboxedValuePod VectorAsArray(TUnboxedValueVector& values) const;
 
@@ -1005,10 +1005,10 @@ public:
         TMaybe<ui64> skip, TMaybe<ui64> take,
         TMaybe<ui64> knownLength) const;
 
-    NUdf::TUnboxedValuePod ReverseList(const NUdf::IValueBuilder* builder, const NUdf::TUnboxedValuePod list) const;
-    NUdf::TUnboxedValuePod SkipList(const NUdf::IValueBuilder* builder, const NUdf::TUnboxedValuePod list, ui64 count) const;
-    NUdf::TUnboxedValuePod TakeList(const NUdf::IValueBuilder* builder, const NUdf::TUnboxedValuePod list, ui64 count) const;
-    NUdf::TUnboxedValuePod ToIndexDict(const NUdf::IValueBuilder* builder, const NUdf::TUnboxedValuePod list) const;
+    NUdf::TUnboxedValuePod ReverseList(const NUdf::IValueBuilder* builder, NUdf::TUnboxedValuePod list) const;
+    NUdf::TUnboxedValuePod SkipList(const NUdf::IValueBuilder* builder, NUdf::TUnboxedValuePod list, ui64 count) const;
+    NUdf::TUnboxedValuePod TakeList(const NUdf::IValueBuilder* builder, NUdf::TUnboxedValuePod list, ui64 count) const;
+    NUdf::TUnboxedValuePod ToIndexDict(const NUdf::IValueBuilder* builder, NUdf::TUnboxedValuePod list) const;
 
     template <bool IsStream>
     NUdf::TUnboxedValuePod Collect(NUdf::TUnboxedValuePod list) const;
@@ -1023,7 +1023,7 @@ public:
     NUdf::TUnboxedValuePod CreateIteratorOverList(NUdf::TUnboxedValuePod list) const;
     NUdf::TUnboxedValuePod CreateForwardList(NUdf::TUnboxedValuePod stream) const;
 
-    NUdf::TUnboxedValuePod CloneArray(const NUdf::TUnboxedValuePod list, NUdf::TUnboxedValue*& itemsPtr) const;
+    NUdf::TUnboxedValuePod CloneArray(NUdf::TUnboxedValuePod list, NUdf::TUnboxedValue*& itemsPtr) const;
 
     TMemoryUsageInfo& GetMemInfo() const {
         return MemInfo_;

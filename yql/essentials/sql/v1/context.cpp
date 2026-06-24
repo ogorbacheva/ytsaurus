@@ -1,5 +1,8 @@
 #include "context.h"
 
+#include <yql/essentials/sql/v1/proto_parser/reflection.h>
+
+#include <yql/essentials/core/langver/feature.gen.h>
 #include <yql/essentials/providers/common/provider/yql_provider_names.h>
 #include <yql/essentials/utils/yql_panic.h>
 #include <yql/essentials/utils/yql_paths.h>
@@ -115,22 +118,25 @@ TContext::TContext(TLexers lexers, TParsers parsers,
     , AnsiQuotedIdentifiers(settings.AnsiLexer)
     , WarningPolicy(settings.IsReplay)
     , BlockEngineEnable(Settings.BlockDefaultAuto->Allow())
-    , StrictWarningAsError(Settings.Flags.contains("StrictWarningAsError"))
 {
-    if (settings.LangVer >= MakeLangVersion(2025, 2)) {
+    if (settings.LangVer >= NYql::NFeature::GroupByExprAfterWhere.MinLangVer) {
         GroupByExprAfterWhere = true;
     }
 
-    if (settings.LangVer >= MakeLangVersion(2025, 3)) {
+    if (settings.LangVer >= NYql::NFeature::PersistableFlattenAndAggrExprs.MinLangVer) {
         FlattenAndAggrExprsPersistence = EFlattenAndAggrExprsPersistence::Auto;
     }
 
-    if (settings.LangVer >= MakeLangVersion(2025, 4)) {
+    if (settings.LangVer > NYql::NFeature::LegacyNotNull.MaxLangVer) {
         DisableLegacyNotNull = true;
     }
 
+    SetYqlSelectMode(settings.YqlSelect);
     if (settings.Flags.contains("AutoYqlSelect")) {
-        SetYqlSelectMode(EYqlSelectMode::Auto);
+        SetYqlSelectMode(EYqlSelect::Auto);
+    }
+    if (settings.Flags.contains("ForceYqlSelect")) {
+        SetYqlSelectMode(EYqlSelect::Force);
     }
 
     for (auto lib : settings.Libraries) {
@@ -223,7 +229,7 @@ bool TContext::Warning(NYql::TPosition pos, NYql::TIssueCode code, std::function
     bool isError;
     IOutputStream& out = MakeIssue(TSeverityIds::S_WARNING, code, pos, forceError, isError);
     message(out);
-    return !StrictWarningAsError || !isError;
+    return !isError;
 }
 
 IOutputStream& TContext::Info(NYql::TPosition pos) {
@@ -240,6 +246,15 @@ void TContext::SetWarningPolicyFor(NYql::TIssueCode code, NYql::EWarningAction a
     auto parseResult = TWarningRule::ParseFrom(codePattern, actionString, rule, parseError);
     YQL_ENSURE(parseResult == TWarningRule::EParseResult::PARSE_OK);
     WarningPolicy.AddRule(rule);
+}
+
+bool TContext::IsAnyUnusedHintForToken(NYql::TPosition tokenPos, std::function<bool(NSQLTranslation::TSQLHint)> pred) {
+    const auto* hints = SqlHints_.FindPtr(tokenPos);
+    if (!hints) {
+        return false;
+    }
+
+    return AnyOf(*hints, pred);
 }
 
 TVector<NSQLTranslation::TSQLHint> TContext::PullHintForToken(NYql::TPosition tokenPos) {
@@ -588,24 +603,17 @@ TScopedStatePtr TContext::CreateScopedState() const {
     return state;
 }
 
-bool TContext::EnsureBackwardCompatibleFeatureAvailable(
-    TPosition position,
-    TStringBuf feature,
-    NYql::TLangVersion version)
-{
-    if (!IsBackwardCompatibleFeatureAvailable(version)) {
-        Error(position)
-            << feature << " is not available before language version "
-            << NYql::FormatLangVersion(version);
+bool TContext::IsAvailable(const NYql::TFeature& feature) const {
+    return NYql::IsAvailableOn(Settings.LangVer, Settings.BackportMode, feature);
+}
+
+bool TContext::EnsureAvailable(TPosition position, const NYql::TFeature& feature) {
+    if (auto r = NYql::EnsureIsAvailableOn(Settings.LangVer, Settings.BackportMode, feature); !r) {
+        Error(std::move(position)) << r.error();
         return false;
     }
 
     return true;
-}
-
-bool TContext::IsBackwardCompatibleFeatureAvailable(NYql::TLangVersion featureVer) const {
-    return NYql::IsBackwardCompatibleFeatureAvailable(
-        Settings.LangVer, featureVer, Settings.BackportMode);
 }
 
 TMaybe<EColumnRefState> GetFunctionArgColumnStatus(TContext& ctx, const TString& module, const TString& func, size_t argIndex) {
@@ -747,7 +755,7 @@ TString TTranslation::PushNamedAtom(TPosition namePos, const TString& name) {
 bool TTranslation::PopNamedNode(const TString& name) {
     auto mapIt = Ctx_.Scoped->NamedNodes.find(name);
     Y_DEBUG_ABORT_UNLESS(mapIt != Ctx_.Scoped->NamedNodes.end());
-    Y_DEBUG_ABORT_UNLESS(mapIt->second.size() > 0);
+    Y_DEBUG_ABORT_UNLESS(!mapIt->second.empty());
 
     Y_DEFER {
         mapIt->second.pop_front();
@@ -790,15 +798,6 @@ bool TTranslation::WarnUnusedNodes() const {
     }
 
     return true;
-}
-
-TString GetDescription(const google::protobuf::Message& node, const google::protobuf::FieldDescriptor* d) {
-    const auto& field = node.GetReflection()->GetMessage(node, d);
-    return field.GetReflection()->GetString(field, d->message_type()->FindFieldByName("Descr"));
-}
-
-TString TTranslation::AltDescription(const google::protobuf::Message& node, ui32 altCase, const google::protobuf::Descriptor* descr) const {
-    return GetDescription(node, descr->FindFieldByNumber(altCase));
 }
 
 void TTranslation::AltNotImplemented(const TString& ruleName, ui32 altCase, const google::protobuf::Message& node, const google::protobuf::Descriptor* descr) {

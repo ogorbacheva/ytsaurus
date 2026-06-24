@@ -39,6 +39,8 @@
 
 #include <yt/yt/core/concurrency/scheduler_api.h>
 
+#include <yt/yt/core/logging/log.h>
+
 #include <yt/yt/core/misc/random.h>
 
 #include <yt/yt/library/numeric/algorithm_helpers.h>
@@ -62,6 +64,10 @@ using NYT::FromProto;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+const NLogging::TLogger Logger("VersionedChunksTest");
+
+////////////////////////////////////////////////////////////////////////////////
+
 const std::string A("a");
 const std::optional<TStringBuf> AOpt = A;
 const std::string B("b");
@@ -78,26 +84,30 @@ struct TTestOptions
     // Cache based mode.
     bool CacheBased = false;
     bool SkipValueBlocksForMissingKeys = false;
+    bool CompressBlockLastKeys = false;
 };
 
 void FormatValue(TStringBuilderBase* builder, const TTestOptions& options, TStringBuf /*spec*/)
 {
     Format(
         builder,
-        "%v%v%v%v%v%v%v",
+        "%v%v%v%v%v%v%v%v",
         options.OptimizeFor,
         options.ChunkFormat ? ToString(*options.ChunkFormat) : "",
         options.UseNewReader ? "New" : "",
         options.UseIndexedReaderForLookup ? "IndexedReader" : "",
         (options.UseBlockCacheForIndexedReader && options.UseIndexedReaderForLookup) ? "WithBlockCache" : "",
         options.CacheBased ? "CacheBased" : "",
-        options.SkipValueBlocksForMissingKeys ? "SkipValueBlocksForMissingKeys" : "");
+        options.SkipValueBlocksForMissingKeys ? "SkipValueBlocksForMissingKeys" : "",
+        options.CompressBlockLastKeys ? "CompressBlockLastKeys" : "");
 }
 
 const auto TestOptionsValues = testing::Values(
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan},
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CacheBased = true},
+    TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CompressBlockLastKeys = true},
+    TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CacheBased = true, .CompressBlockLastKeys = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup, .CacheBased = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup, .ChunkFormat = EChunkFormat::TableVersionedIndexed},
@@ -370,12 +380,13 @@ protected:
     {
         WriteManyRows(testOptions);
 
-        auto chunkMeta = MemoryReader->GetMeta(/*options*/ {})
+        auto chunkMeta = WaitFor(MemoryReader->GetMeta(/*options*/ {})
             .Apply(BIND(
-                &TCachedVersionedChunkMeta::Create,
+                &(testOptions.CompressBlockLastKeys
+                    ? TCachedVersionedChunkMeta::CreateWithCompressedBlockLastKeys
+                    : TCachedVersionedChunkMeta::Create),
                 /*prepareColumnarMeta*/ false,
-                /*memoryTracker*/ nullptr))
-            .BlockingGet()
+                /*memoryTracker*/ nullptr)))
             .ValueOrThrow();
 
         {
@@ -519,6 +530,10 @@ protected:
             EXPECT_TRUE(WaitForFast(versionedReader->Open()).IsOK());
             EXPECT_TRUE(WaitForFast(versionedReader->GetReadyEvent()).IsOK());
 
+            YT_LOG_INFO("Checking versioned chunk lookup result (Options: %v, LookupKeys: %v)",
+                testOptions,
+                sharedKeys);
+
             CheckResult(std::move(expectedRows), versionedReader);
         }
     }
@@ -535,6 +550,8 @@ const auto LookupTestOptionsValues = testing::Values(
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan},
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CacheBased = true},
+    TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CompressBlockLastKeys = true},
+    TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CacheBased = true, .CompressBlockLastKeys = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup, .CacheBased = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup, .ChunkFormat = EChunkFormat::TableVersionedIndexed},
@@ -846,12 +863,13 @@ protected:
             GetTestOptions().UseNewReader,
             &memoryPool);
 
-        auto chunkMeta = memoryReader->GetMeta(/*options*/ {})
+        auto chunkMeta = WaitFor(memoryReader->GetMeta(/*options*/ {})
             .Apply(BIND(
-                &TCachedVersionedChunkMeta::Create,
+                &(GetTestOptions().CompressBlockLastKeys
+                    ? TCachedVersionedChunkMeta::CreateWithCompressedBlockLastKeys
+                    : TCachedVersionedChunkMeta::Create),
                 /*prepareColumnarMeta*/ false,
-                /*memoryTracker*/ nullptr))
-            .BlockingGet()
+                /*memoryTracker*/ nullptr)))
             .ValueOrThrow();
 
         auto chunkState = New<TChunkState>(TChunkState{
@@ -974,12 +992,13 @@ protected:
             GetTestOptions().UseNewReader,
             &memoryPool);
 
-        auto chunkMeta = memoryReader->GetMeta(/*options*/ {})
+        auto chunkMeta = WaitFor(memoryReader->GetMeta(/*options*/ {})
             .Apply(BIND(
-                &TCachedVersionedChunkMeta::Create,
+                &(GetTestOptions().CompressBlockLastKeys
+                    ? TCachedVersionedChunkMeta::CreateWithCompressedBlockLastKeys
+                    : TCachedVersionedChunkMeta::Create),
                 /*prepareColumnarMeta*/ false,
-                /*memoryTracker*/ nullptr))
-            .BlockingGet()
+                /*memoryTracker*/ nullptr)))
             .ValueOrThrow();
 
         auto chunkState = New<TChunkState>(TChunkState{
@@ -1106,12 +1125,11 @@ protected:
     {
         auto blockCache = GetPreloadedBlockCache(memoryReader);
 
-        auto chunkMeta = memoryReader->GetMeta(/*options*/ {})
+        auto chunkMeta = WaitFor(memoryReader->GetMeta(/*options*/ {})
             .Apply(BIND(
                 &TCachedVersionedChunkMeta::Create,
                 /*prepareColumnarMeta*/ false,
-                /*memoryTracker*/ nullptr))
-            .BlockingGet()
+                /*memoryTracker*/ nullptr)))
             .ValueOrThrow();
 
         return CreateChunkLookupHashTable(
@@ -2597,6 +2615,9 @@ const auto StressTestOptionsValues = testing::Values(
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CacheBased = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .SkipValueBlocksForMissingKeys = true},
+    TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CompressBlockLastKeys = true},
+    TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .CacheBased = true, .CompressBlockLastKeys = true},
+    TTestOptions{.OptimizeFor = EOptimizeFor::Scan, .UseNewReader = true, .SkipValueBlocksForMissingKeys = true, .CompressBlockLastKeys = true},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup},
     TTestOptions{.OptimizeFor = EOptimizeFor::Lookup, .CacheBased = true},
 #if !defined(_asan_enabled_) && !defined(_msan_enabled_)

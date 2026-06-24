@@ -9,6 +9,7 @@
 #include "mutation_forwarder.h"
 #include "mutation_forwarder_thunk.h"
 #include "private.h"
+#include "serialize.h"
 #include "smooth_movement_tracker.h"
 #include "tablet.h"
 #include "tablet_cell_write_manager.h"
@@ -68,6 +69,8 @@
 #include <yt/yt/core/concurrency/thread_affinity.h>
 
 #include <yt/yt/core/logging/log.h>
+
+#include <yt/yt/core/profiling/timing.h>
 
 #include <yt/yt/core/rpc/response_keeper.h>
 #include <yt/yt/core/rpc/overload_controller.h>
@@ -297,12 +300,13 @@ public:
     }
 
     void UnregisterSiblingTabletAvenue(
-        TAvenueEndpointId siblingEndpointId) override
+        TAvenueEndpointId siblingEndpointId,
+        bool allowDestructionInMessageToSelf = false) override
     {
         auto selfEndpointId = GetSiblingAvenueEndpointId(siblingEndpointId);
 
         GetAvenueDirectory()->UpdateEndpoint(siblingEndpointId, /*cellId*/ {});
-        GetHiveManager()->UnregisterAvenueEndpoint(selfEndpointId);
+        GetHiveManager()->UnregisterAvenueEndpoint(selfEndpointId, allowDestructionInMessageToSelf);
     }
 
     void CommitTabletMutation(const ::google::protobuf::MessageLite& message) override
@@ -428,6 +432,31 @@ public:
             .BundleName = GetTabletCellBundleName(),
             .Tablets = TabletManager_->GetMemoryStatistics()
         };
+    }
+
+    TFuture<TRowCacheControllerContext> GetRowCacheControllerContext() override
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        return BIND(&TTabletSlot::DoGetRowCacheControllerContext, MakeStrong(this))
+            .AsyncVia(GetAutomatonInvoker())
+            .Run();
+    }
+
+    TRowCacheControllerContext DoGetRowCacheControllerContext()
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        TDuration elapsedTime;
+        TRowCacheControllerContext context;
+        {
+            NProfiling::TValueIncrementingTimingGuard<NProfiling::TWallTimer> timingGuard(&elapsedTime);
+            context = TabletManager_->GetRowCacheControllerContext();
+        }
+
+        YT_LOG_DEBUG("Finished GetRowCacheControllerContext (TimeSpent: %v)", elapsedTime);
+
+        return context;
     }
 
     TTimestamp GetLatestTimestamp() override
@@ -579,9 +608,7 @@ public:
             ->AddChild("tablets", TabletManager_->GetTabletOrchidService())
             ->AddChild("per_cluster_tablet_replication_status", TabletManager_->GetTabletReplicationOrchidService())
             ->AddChild("hunk_tablets", HunkTabletManager_->GetOrchidService())
-            ->AddChild("reign", IYPathService::FromProducer(BIND([] (IYsonConsumer* consumer) {
-                consumer->OnInt64Scalar(GetCurrentReign());
-            })));
+            ->AddChild("reign", ConvertToNode(GetCurrentReign()));
     }
 
     const TRuntimeTabletCellDataPtr& GetRuntimeData() override

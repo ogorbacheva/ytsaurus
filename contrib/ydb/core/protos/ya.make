@@ -54,6 +54,7 @@ SRCS(
     counters_columnshard.proto
     counters_coordinator.proto
     counters_datashard.proto
+    counters_detailed_datashard.proto
     counters_hive.proto
     counters_info.proto
     counters_kesus.proto
@@ -105,11 +106,13 @@ SRCS(
     labeled_counters.proto
     load_test.proto
     local.proto
+    long_tx_service_config.proto
     long_tx_service.proto
     maintenance.proto
     memory_controller_config.proto
     memory_stats.proto
     metrics.proto
+    metrics_config.proto
     minikql_engine.proto
     mon.proto
     msgbus.proto
@@ -122,6 +125,9 @@ SRCS(
     node_whiteboard.proto
     pdiskfit.proto
     pqconfig.proto
+    pqdata_mlp.proto
+    pqdata_transaction.proto
+    pqevents_global.proto
     profiler.proto
     query_stats.proto
     recoveryshard_config.proto
@@ -155,6 +161,7 @@ SRCS(
     tenant_pool.proto
     tenant_slot_broker.proto
     test_shard.proto
+    test_shard_control.proto
     tracing.proto
     tx.proto
     tx_columnshard.proto
@@ -179,6 +186,7 @@ PEERDIR(
     contrib/ydb/core/config/protos
     contrib/ydb/core/nbs/cloud/blockstore/tools/testing/loadtest/lib/protos
     contrib/ydb/core/fq/libs/config/protos
+    contrib/ydb/core/nbs/cloud/blockstore/config/protos
     contrib/ydb/core/protos/nbs
     contrib/ydb/core/protos/schemeshard
     contrib/ydb/core/scheme/protos
@@ -196,7 +204,7 @@ PEERDIR(
     contrib/ydb/public/api/protos
     contrib/ydb/public/api/protos/annotations
     yql/essentials/core/file_storage/proto
-    yql/essentials/core/issue/protos
+    yql/essentials/public/issue/protos
     yql/essentials/providers/common/proto
     yql/essentials/public/issue/protos
     yql/essentials/public/types

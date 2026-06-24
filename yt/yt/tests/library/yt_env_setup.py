@@ -31,6 +31,7 @@ from yt.environment.helpers import (  # noqa
     RPC_PROXIES_SERVICE,
     HTTP_PROXIES_SERVICE,
     KAFKA_PROXIES_SERVICE,
+    OFFSHORE_DATA_GATEWAYS_SERVICE,
     CYPRESS_PROXIES_SERVICE,
 )
 
@@ -233,6 +234,10 @@ def is_msan_build():
     return get_sanitizer_type() == "memory"
 
 
+def is_tsan_build():
+    return get_sanitizer_type() == "thread"
+
+
 def is_sanitizer_build():
     return bool(get_sanitizer_type())
 
@@ -334,6 +339,7 @@ class YTEnvSetup(object):
     DRIVER_BACKEND = "native"
     NODE_PORT_SET_SIZE = None
     STORE_LOCATION_COUNT = 1
+    JOB_PROXY_LOG_LOCATION_COUNT = 1
     ARTIFACT_COMPONENTS = {}
     EXTRA_ARTIFACT_COMPONENTS = None
     FORCE_CREATE_ENVIRONMENT = False
@@ -344,6 +350,7 @@ class YTEnvSetup(object):
     NUM_TABLET_BALANCERS = 0
     NUM_CYPRESS_PROXIES = 1
     NUM_REPLICATED_TABLE_TRACKERS = 0
+    NUM_OFFSHORE_DATA_GATEWAYS = 0
     ENABLE_RESOURCE_TRACKING = False
     ENABLE_TVM_ONLY_PROXIES = False
     ENABLE_DYNAMIC_TABLE_COLUMN_RENAMES = True
@@ -391,6 +398,7 @@ class YTEnvSetup(object):
             "enable_large_columnar_statistics": True,
         },
     }
+    DELTA_DYNAMIC_RPC_PROXY_CONFIG = {}
     DELTA_CELL_BALANCER_CONFIG = {}
     DELTA_TABLET_BALANCER_CONFIG = {}
     DELTA_MASTER_CACHE_CONFIG = {}
@@ -470,6 +478,7 @@ class YTEnvSetup(object):
         return cls.NUM_SECONDARY_MASTER_CELLS
 
     # To be redefined in successors
+    # TODO(pavel-bash): add modify_offshore_data_gateway_config when needed.
     @classmethod
     def modify_master_config(cls, config, multidaemon_config, cell_index, cell_tag, peer_index, cluster_index):
         pass
@@ -628,6 +637,7 @@ class YTEnvSetup(object):
     def create_yt_cluster_instance(cls, index, path):
         modify_configs_func = functools.partial(cls.apply_config_patches, cluster_index=index, cluster_path=path)
         modify_dynamic_configs_func = functools.partial(cls.apply_node_dynamic_config_patches, cluster_index=index)
+        modify_rpc_proxy_dynamic_configs_func = functools.partial(cls.apply_rpc_proxy_dynamic_config_patches, cluster_index=index)
         modify_driver_logging_config_func = cls.modify_driver_logging_config
 
         yt.logger.info("Creating cluster instance")
@@ -754,6 +764,7 @@ class YTEnvSetup(object):
                 cls.get_param("NUM_RPC_PROXIES", index) if cls.get_param("ENABLE_RPC_PROXY", index) else 0),
             cypress_proxy_count=cypress_proxy_count,
             replicated_table_tracker_count=cls.get_param("NUM_REPLICATED_TABLE_TRACKERS", index),
+            offshore_data_gateway_count=cls.get_param("NUM_OFFSHORE_DATA_GATEWAYS", index),
             enable_master_cache=cls.get_param("USE_MASTER_CACHE", index),
             enable_permission_cache=cls.get_param("USE_PERMISSION_CACHE", index),
             primary_cell_tag=primary_cell_tag,
@@ -764,6 +775,7 @@ class YTEnvSetup(object):
             log_compression_method="zstd" if cls.ENABLE_LOG_COMPRESSION else None,
             node_port_set_size=cls.get_param("NODE_PORT_SET_SIZE", index),
             store_location_count=cls.get_param("STORE_LOCATION_COUNT", index),
+            job_proxy_log_location_count=cls.get_param("JOB_PROXY_LOG_LOCATION_COUNT", index),
             node_io_engine_type=cls.get_param("NODE_IO_ENGINE_TYPE", index),
             node_use_direct_io_for_reads=cls.get_param("NODE_USE_DIRECT_IO_FOR_READS", index),
             cluster_name=cls.get_cluster_name(index),
@@ -827,6 +839,7 @@ class YTEnvSetup(object):
             external_bin_path=cls.bin_path,
             modify_driver_logging_config_func=modify_driver_logging_config_func,
             modify_master_dynamic_configs_func=modify_master_dynamic_configs_func,
+            modify_rpc_proxy_dynamic_configs_func=modify_rpc_proxy_dynamic_configs_func,
         )
 
         instance._cluster_name = cls.get_cluster_name(index)
@@ -1149,9 +1162,7 @@ class YTEnvSetup(object):
             ground_index = cluster_index + cls.get_ground_index_offset()
             cls._restore_sequoia_bundles_options(ground_index)
             yt_commands.wait_for_cells(driver=ground_driver)
-            # TODO(danilalexeev): YT-25434. Make it a single call.
-            yt_sequoia.initialization.mount_tables(app, ground_reign, sync=False)
-            yt_sequoia.initialization.mount_tables(app, ground_reign, sync=True)
+            yt_sequoia.initialization.mount_tables(app, ground_reign)
 
     @classmethod
     def apply_node_dynamic_config_patches(cls, config, ytserver_version, cluster_index):
@@ -1191,6 +1202,11 @@ class YTEnvSetup(object):
         return config
 
     @classmethod
+    def apply_rpc_proxy_dynamic_config_patches(cls, config, ytserver_version, cluster_index):
+        cls._apply_effective_config_patch(config, "DELTA_DYNAMIC_RPC_PROXY_CONFIG", cluster_index)
+        return config
+
+    @classmethod
     def _validate_cell_descriptors(cls, cluster_index, cell_tags):
         if cluster_index >= cls.get_ground_index_offset():
             return
@@ -1198,6 +1214,7 @@ class YTEnvSetup(object):
         for cell_tag in cls.get_param("MASTER_CELL_DESCRIPTORS", cluster_index):
             assert cell_tag in cell_tags
 
+    # TODO(pavel-bash): use the modify_offshore_data_gateway_config when implemented.
     @classmethod
     def apply_config_patches(cls, configs, ytserver_version, cluster_index, cluster_path):
         multidaemon_config = configs["multi"]
@@ -1282,6 +1299,23 @@ class YTEnvSetup(object):
                         "set_committed_attribute_via_transaction_action": False,
                         "commit_operation_cypress_node_changes_via_system_transaction": True,
                     })
+            # COMPAT(pogorelov): controller-agent versions before 26.2 default to
+            # the legacy sorted pool; force the new one to match trunk behavior.
+            controller_agent_version = None
+            for version, components in cls.ARTIFACT_COMPONENTS.items():
+                if "controller-agent" in components:
+                    controller_agent_version = version
+            if (controller_agent_version or "26_2") < "26_2":
+                ca_config = config.setdefault("controller_agent", {})
+                for options_key in (
+                    "sorted_merge_operation_options",
+                    "reduce_operation_options",
+                    "join_reduce_operation_options",
+                    "map_reduce_operation_options",
+                    "sort_operation_options",
+                ):
+                    ca_config.setdefault(options_key, {}) \
+                        .setdefault("spec_template", {})["use_new_sorted_pool"] = True
             cls._apply_effective_config_patch(config, "DELTA_CONTROLLER_AGENT_CONFIG", cluster_index)
             cls.update_timestamp_provider_config(config, cluster_index)
             cls.modify_controller_agent_config(config, cluster_index)
@@ -1294,8 +1328,6 @@ class YTEnvSetup(object):
             cls._apply_effective_config_patch(config, "DELTA_NODE_CONFIG", cluster_index)
             if cls.USE_CUSTOM_ROOTFS:
                 update_inplace(config, get_custom_rootfs_delta_node_config())
-
-            config["ref_counted_tracker_dump_period"] = 5000
 
             # TODO(khlebnikov) move "breakpoints" out of "tmp" which shouldn't be shared.
             shared_dir = os.path.join(cluster_path, "tmp")
@@ -1363,6 +1395,10 @@ class YTEnvSetup(object):
 
     @classmethod
     def update_transaction_supervisor_config(cls, config, cluster_index):
+        # COMPAT(h0pless)
+        if "master" not in cls.ARTIFACT_COMPONENTS.get("25_4", []):
+            return
+
         if not cls.get_param("USE_SEQUOIA", cluster_index) or cls._is_ground_cluster(cluster_index):
             return
         config.setdefault("transaction_supervisor", {})
@@ -1389,7 +1425,7 @@ class YTEnvSetup(object):
             "sequoia_connection": {
                 "ground_cluster_name": ground_cluster_name,
                 "ground_cluster_connection_update_period": 500,
-                "enable_ground_reign_validation": False,
+                "enable_ground_reign_validation": True,
             },
         })
 
@@ -1479,6 +1515,7 @@ class YTEnvSetup(object):
 
             env.restore_default_node_dynamic_config()
             env.restore_default_bundle_dynamic_config()
+            env.restore_default_rpc_proxy_dynamic_config()
 
     @classmethod
     def _wait_for_sequoia_node_host_available(cls, driver):
@@ -1774,9 +1811,9 @@ class YTEnvSetup(object):
 
             if self._is_ground_cluster(cluster_index):
                 for table in yt_sequoia.DESCRIPTORS.get_group("transactions"):
-                    wait(lambda: yt_commands.select_rows(f"* from [{table.get_default_path()}]", driver=driver) == [])
+                    wait(lambda: yt_commands.select_rows(f"* from [{table.get_default_path()}]", driver=driver) == [], ignore_exceptions=True)
 
-                wait(lambda: yt_commands.select_rows(f"* from [{yt_sequoia.DESCRIPTORS.doomed_transactions.get_default_path()}]", driver=driver) == [])
+                wait(lambda: yt_commands.select_rows(f"* from [{yt_sequoia.DESCRIPTORS.doomed_transactions.get_default_path()}]", driver=driver) == [], ignore_exceptions=True)
 
                 paths_to_ignore = ["//sys/operations", "//sys/pools", "//sys/strawberry"]
 
@@ -1834,7 +1871,7 @@ class YTEnvSetup(object):
 
                     return True
 
-                wait(sequoia_tables_empty)
+                wait(sequoia_tables_empty, ignore_exceptions=True)
 
         # Ground cluster can't have rootstocks or portals.
         # Do not remove tmp if ENABLE_TMP_ROOTSTOCK, since it will be removed with scions.
@@ -2204,8 +2241,18 @@ class YTEnvSetup(object):
         if cls.Env.get_component_version("ytserver-master").abi < (24, 2):
             config["node_tracker"]["full_node_states_gossip_period"] = 6 * 60 * 60 * 1000
 
+        # COMPAT(kvk1920): async sequoia tx start lead to too long transient
+        # locks in tablet cells due to not accurate enough handling of entering
+        # in read-only mode.
+        if cls.Env.get_component_version("ytserver-master").abi < (26, 2):
+            config["sequoia_manager"]["enable_async_sequoia_transaction_start"] = False
+
         if not cls._is_ground_cluster(cluster_index) and cls.get_param("USE_SEQUOIA", cluster_index):
             config["sequoia_manager"]["enable"] = True
+            update_inplace(config["transaction_manager"], {
+                "enable_wait_until_prepared_transactions_finished": True,
+            })
+
             if cls.get_param("ENABLE_CYPRESS_TRANSACTIONS_IN_SEQUOIA", cluster_index):
                 config["sequoia_manager"]["enable_cypress_transactions_in_sequoia"] = True
                 update_inplace(config["transaction_manager"], {
@@ -2613,4 +2660,5 @@ def get_service_component_name(service):
         HTTP_PROXIES_SERVICE: "http-proxy",
         KAFKA_PROXIES_SERVICE: "kafka-proxy",
         CYPRESS_PROXIES_SERVICE: "cypress-proxy",
+        OFFSHORE_DATA_GATEWAYS_SERVICE: "offshore-data-gateway",
     }[service]

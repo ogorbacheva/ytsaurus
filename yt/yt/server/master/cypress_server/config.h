@@ -67,9 +67,6 @@ struct TDynamicCypressManagerConfig
     // COMPAT(h0pless): YT-26842. Remove in 25.4.
     bool UseBetterCheckWhenRewritingPath;
 
-    // COMPAT(shakurov)
-    bool AllowCrossShardDynamicTableCopying;
-
     TDuration ScionRemovalPeriod;
 
     int MaxLocksPerTransactionSubtree;
@@ -100,6 +97,8 @@ struct TDynamicCypressManagerConfig
 
     NTableClient::EOptimizeFor DefaultOptimizeFor;
     NTableClient::EOptimizeFor DefaultDynamicTableOptimizeFor;
+
+    bool IgnoreRootstockAbsenceOnScionRemoval;
 
     REGISTER_YSON_STRUCT(TDynamicCypressManagerConfig);
 

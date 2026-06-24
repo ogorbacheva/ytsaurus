@@ -2,6 +2,7 @@
 #include "private.h"
 
 #include <yt/yt/server/lib/tablet_balancer/config.h>
+#include <yt/yt/server/lib/tablet_balancer/parameterized_balancing_helpers.h>
 
 #include <yt/yt/ytlib/api/native/config.h>
 
@@ -10,8 +11,7 @@
 namespace NYT::NTabletBalancer {
 
 const TTimeFormula DefaultTabletBalancerSchedule = MakeTimeFormula("minutes % 5 == 0");
-const TString DefaultParameterizedMetricFormula = "double([/performance_counters/dynamic_row_write_data_weight_10m_rate])";
-const TString StatisticsTableDefaultPath = "//sys/tablet_balancer/performance_counters";
+const NYPath::TYPath StatisticsTableDefaultPath = "//sys/tablet_balancer/performance_counters";
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -251,6 +251,8 @@ void TTabletBalancerBootstrapConfig::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("dynamic_config_path", &TThis::DynamicConfigPath)
         .Default();
+    registrar.Parameter("dry_run", &TThis::DryRun)
+        .Default();
 
     registrar.Postprocessor([] (TThis* config) {
         if (auto& lockPath = config->ElectionManager->LockPath; lockPath.empty()) {
@@ -260,6 +262,23 @@ void TTabletBalancerBootstrapConfig::Register(TRegistrar registrar)
             dynamicConfigPath = config->RootPath + "/config";
         }
     });
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TDryRunConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("is_dry_run", &TThis::IsDryRun)
+        .Default(false);
+    registrar.Parameter("create_tablet_actions", &TThis::CreateTabletActions)
+        .Default(false);
+
+    registrar.Parameter("bundle", &TThis::Bundle)
+        .Default();
+    registrar.Parameter("groups", &TThis::Groups)
+        .Default();
+    registrar.Parameter("mode", &TThis::Mode)
+        .Default(NTabletBalancerClient::EBalancingRequestMode::Reshard);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

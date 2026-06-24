@@ -269,7 +269,6 @@ TRuntimeNode BuildTableContentCall(TStringBuf callName,
             case EYtSettingType::Unordered:
             case EYtSettingType::NonUnique:
             case EYtSettingType::SysColumns:
-            case EYtSettingType::QLFilter:
                 break;
             default:
                 YQL_LOG_CTX_THROW yexception() << "Unsupported table content setting " << TString{child->Child(0)->Content()}.Quote();
@@ -367,7 +366,7 @@ TRuntimeNode BuildDqYtInputCall(
             tablesNode.Add(refName);
             // TODO() Enable range indexes
             auto skiffNode = SingleTableSpecToInputSkiff(specNode, structColumns, !enableBlockReader, !enableBlockReader, false);
-            const auto tmpFolder = GetTablesTmpFolder(*state->Configuration, clusterName);
+            const auto tmpFolder = GetTablesTmpFolder(*state->Configuration, clusterName, state->UseSecureTmp, state->Types->OperationOptions);
             auto tableName = pathInfo.Table->Name;
             if (pathInfo.Table->IsAnonymous && !TYtTableInfo::HasSubstAnonymousLabel(pathInfo.Table->FromNode.Cast())) {
                 tableName = state->AnonymousLabels.Value(std::make_pair(clusterName, tableName), TString());

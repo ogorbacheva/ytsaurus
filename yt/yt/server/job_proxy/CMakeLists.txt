@@ -42,6 +42,7 @@ target_link_libraries(yt-server-job_proxy PUBLIC
   server-lib-user_job
   yt-server-tools
   core-rpc-http
+  yt-library-cgroup
   yt-library-containers
   library-containers-cri
   yt-library-orchid
@@ -63,6 +64,7 @@ target_sources(yt-server-job_proxy PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/server/job_proxy/core_watcher.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/job_proxy/cpu_monitor.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/job_proxy/environment.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/job_proxy/helpers.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/job_proxy/job_throttler.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/job_proxy/job_detail.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/job_proxy/job_prober_service.cpp

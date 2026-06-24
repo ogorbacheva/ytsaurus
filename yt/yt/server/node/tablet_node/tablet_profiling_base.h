@@ -33,6 +33,8 @@ class TTabletProfilerManager
 public:
     TTabletProfilerManager();
 
+    static TTabletProfilerManager* Get();
+
     TTableProfilerPtr CreateTableProfiler(
         EDynamicTableProfilingMode profilingMode,
         const std::string& tabletCellBundle,
@@ -49,7 +51,7 @@ public:
         NTabletClient::TTabletId tabletId);
 
 private:
-    NThreading::TSpinLock Lock_;
+    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
 
     THashSet<TString> AllTables_;
     NProfiling::TGauge ConsumedTableTags_;
@@ -60,8 +62,6 @@ private:
     using THunkTabletProfilerKey = std::tuple<std::string, NYPath::TYPath, TObjectId>;
     THashMap<THunkTabletProfilerKey, TWeakPtr<THunkTabletProfiler>> HunkTabletProfilers_;
 };
-
-TTabletProfilerManager* GetTabletProfilerManager();
 
 ////////////////////////////////////////////////////////////////////////////////
 

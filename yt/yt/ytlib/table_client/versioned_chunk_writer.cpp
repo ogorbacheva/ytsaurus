@@ -97,7 +97,7 @@ public:
         , SamplingThreshold_(static_cast<ui64>(MaxFloor<ui64>() * Config_->SampleRate))
         , SamplingRowMerger_(New<TRowBuffer>(TVersionedChunkWriterBaseTag()), Schema_)
         , ColumnarStatistics_(TColumnarStatistics::MakeEmpty(Schema_->GetColumnCount(), Options_->EnableColumnarValueStatistics, Config_->EnableLargeColumnarStatistics))
-        , RowDigestBuilder_(CreateVersionedRowDigestBuilder(Config_->CompactionHintWriter.RowDigest))
+        , RowDigestBuilder_(CreateVersionedRowDigestBuilder(Config_->CompactionHintWriter.RowDigest, Schema_))
         , MinHashDigestBuilder_(CreateMinHashDigestBuilder(Config_->CompactionHintWriter.MinHashDigest))
         , KeyFilterBuilder_(CreateXorFilterBuilder(Config_, Schema_->GetKeyColumnCount()))
         , TraceContext_(CreateTraceContextFromCurrent("ChunkWriter"))
@@ -1051,7 +1051,7 @@ IVersionedMultiChunkWriterPtr CreateVersionedMultiChunkWriter(
         TRange<TVersionedRow>
     >;
 
-    auto writer = New<TVersionedMultiChunkWriter>(
+    return New<TVersionedMultiChunkWriter>(
         std::move(config),
         std::move(options),
         std::move(client),
@@ -1064,8 +1064,6 @@ IVersionedMultiChunkWriterPtr CreateVersionedMultiChunkWriter(
         /*trafficMeter*/ nullptr,
         std::move(throttler),
         std::move(blockCache));
-    writer->Init();
-    return writer;
 }
 
 IVersionedMultiChunkWriterPtr CreateVersionedMultiChunkWriter(

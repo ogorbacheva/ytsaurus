@@ -369,6 +369,16 @@ TMultiTablePartitions TClientBase::GetTablePartitions(
         });
 }
 
+void TClient::CheckClusterLiveness(const TCheckClusterLivenessOptions& options)
+{
+    CheckShutdown();
+    RequestWithRetry<void>(
+        ClientRetryPolicy_->CreatePolicyForCheckClusterLiveness(),
+        [this, &options] (TMutationId /*mutationId*/) {
+            RawClient_->CheckClusterLiveness(options);
+        });
+}
+
 TMaybe<TYPath> TClientBase::GetFileFromCache(
     const TString& md5Signature,
     const TYPath& cachePath,
@@ -1694,7 +1704,7 @@ ITransactionPingerPtr TClient::GetTransactionPinger()
 {
     auto g = Guard(Lock_);
     if (!TransactionPinger_) {
-        TransactionPinger_ = CreateTransactionPinger(Context_.Config, Context_.UseTLS);
+        TransactionPinger_ = CreateTransactionPinger(Context_.Config, RawClient_);
     }
     return TransactionPinger_;
 }

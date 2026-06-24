@@ -2,10 +2,6 @@
 
 #include "public.h"
 
-#include <yt/yt/server/lib/job_proxy/config.h>
-
-#include <yt/yt/server/lib/misc/config.h>
-
 #include <yt/yt/ytlib/scheduler/helpers.h>
 
 #include <yt/yt/core/concurrency/config.h>
@@ -127,7 +123,7 @@ struct TJobResourceManagerDynamicConfig
 
     bool ConsiderUserJobFreeMemoryWatermarkInResourceAcquisition;
 
-    bool CheckUserJobsCategoryLimitOnResourcesUpdating;
+    bool CheckUserJobsCategoryLimitOnResourceUpdate;
 
     REGISTER_YSON_STRUCT(TJobResourceManagerDynamicConfig);
 

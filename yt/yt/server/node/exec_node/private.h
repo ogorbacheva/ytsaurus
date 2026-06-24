@@ -1,22 +1,24 @@
 #pragma once
 
+#include "artifact.h"
 #include "public.h"
 
 #include <yt/yt/server/lib/scheduler/public.h>
 
 #include <yt/yt/server/lib/job_proxy/public.h>
 
-#include <yt/yt/library/profiling/sensor.h>
-
 #include <yt/yt/library/containers/public.h>
 
 #include <yt/yt/core/logging/log.h>
+#include <yt/yt/core/misc/absolute_normalized_path.h>
+
+#include <yt/yt/library/profiling/sensor.h>
 
 namespace NYT::NExecNode {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-inline const TString ArtifactMetaSuffix(".artifact");
+inline const std::string ArtifactMetaSuffix(".artifact");
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -90,40 +92,30 @@ struct TNetworkAttributes
 
 struct TGpuCheckOptions
 {
-    TString BinaryPath;
-    std::vector<TString> BinaryArgs;
+    std::string BinaryPath;
+    std::vector<std::string> BinaryArgs;
     std::optional<TNetworkAttributes> NetworkAttributes;
-    THashMap<TString, TString> Environment;
+    THashMap<std::string, std::string> Environment;
     std::vector<NContainers::TDevice> Devices;
     std::vector<TShellCommandConfigPtr> SetupCommands;
-    std::optional<TString> InfinibandCluster;
+    std::optional<std::string> InfinibandCluster;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TTmpfsVolumeParams
+struct TVolumeMount
+    : public TRefCounted
 {
-    i64 Size = 0;
-    //! Slot user id.
-    int UserId = 0;
     std::string VolumeId;
+    TAbsoluteNormalizedPath MountPath;
+    bool ReadOnly;
 
-    // COMPAT(krasovav)
-    int Index = 0;
+    bool operator==(const TVolumeMount& rhs) const;
+    bool operator!=(const TVolumeMount& rhs) const;
 };
 
-////////////////////////////////////////////////////////////////////////////////
-
-struct TTmpfsVolumeResult
-{
-    //! Tmpfs volume.
-    IVolumePtr Volume;
-
-    std::string VolumeId;
-
-    // COMPAT(krasovav)
-    int Index = 0;
-};
+DEFINE_REFCOUNTED_TYPE(TVolumeMount)
+DECLARE_REFCOUNTED_STRUCT(TVolumeMount)
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -129,7 +129,7 @@ struct TSourceConfig
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void ExtractKeys(std::vector<TString>& keys, const std::vector<NS3::TObject>& objects)
+void ExtractKeys(std::vector<std::string>& keys, const std::vector<NS3::TObject>& objects)
 {
     for (const auto& value : objects) {
         keys.push_back(value.Key);
@@ -163,7 +163,7 @@ NS3::IClientPtr CreateS3Client(
     return client;
 }
 
-std::vector<TString> GetListFilesKeysFromS3(
+std::vector<std::string> GetListFilesKeysFromS3(
     const TS3Config& s3Config,
     TString accessKeyId,
     TString secretAccessKey,
@@ -174,7 +174,7 @@ std::vector<TString> GetListFilesKeysFromS3(
         std::move(accessKeyId),
         std::move(secretAccessKey));
 
-    std::vector<TString> keys;
+    std::vector<std::string> keys;
     NS3::TListObjectsResponse response({ .NextContinuationToken = std::nullopt });
     do {
         response = WaitFor(s3Client->ListObjects({
@@ -417,10 +417,10 @@ private:
     {
         metadataWeight = std::min(FileSize_, metadataWeight);
 
-        TString metadata;
+        std::string metadata;
         metadata.resize(metadataWeight);
 
-        ringBuffer.Read(std::max(static_cast<i64>(0), FileSize_ - metadataWeight), std::min(metadataWeight, FileSize_), metadata.begin());
+        ringBuffer.Read(std::max(static_cast<i64>(0), FileSize_ - metadataWeight), std::min(metadataWeight, FileSize_), metadata.data());
 
         i64 partIndex = 0;
         i64 currentSize = metadataWeight;
@@ -430,7 +430,7 @@ private:
             TNode outMetadataRow;
 
             outMetadataRow[FileIndexColumnName] = fileIndex;
-            outMetadataRow[MetadataColumnName] = metadata.substr(metadataOffset, partSize);
+            outMetadataRow[MetadataColumnName] = TString(metadata.substr(metadataOffset, partSize));
             outMetadataRow[StartMetadataOffsetColumnName] = FileSize_ - metadataWeight;
             outMetadataRow[PartIndexColumnName] = partIndex;
 
@@ -552,7 +552,7 @@ std::shared_ptr<arrow20::RecordBatchReader> MakeRecordBatchReaderAdapter(
 }
 
 TArrowRandomAccessFilePtr MakeFormatStreamAdapter(
-    const TString* metadata,
+    const std::string* metadata,
     i64 startMetadataOffset,
     const std::shared_ptr<IInputStream>& reader,
     EFileFormat fileFormat)
@@ -590,7 +590,7 @@ public:
         while (reader.IsValid()) {
             const auto& row = reader.GetRow();
             YT_VERIFY(reader.GetTableIndex() == 0);
-            TString metadata;
+            std::string metadata;
             auto startIndex = row[StartMetadataOffsetColumnName].AsInt64();
 
             while (reader.GetTableIndex() == 0) {
@@ -742,7 +742,7 @@ std::vector<TTempTable> CreateOutputParserTables(
 
     while (reader->IsValid()) {
         const auto& row = reader->GetRow();
-        TString metadata;
+        std::string metadata;
         auto currentFileIndex = row[FileIndexColumnName].AsInt64();
         auto metadataStartOffset = row[StartMetadataOffsetColumnName].AsInt64();
         i64 lastDataPartIndex = 0;
@@ -800,7 +800,7 @@ std::vector<TTempTable> CreateOutputParserTables(
 
 void ImportFilesFromSource(
     const TString& proxy,
-    const std::vector<TString>& fileIds,
+    const std::vector<std::string>& fileIds,
     const TString& resultTable,
     const std::optional<TString>& networkProject,
     const TSourceConfig& sourceConfig,
@@ -839,7 +839,7 @@ void ImportFilesFromSource(
         }
         if (re2::RE2::PartialMatch(fileName, *regex)) {
             // TODO(babenko): migrate to std::string
-            writer->AddRow(TNode()(TString(FileIdColumnName), fileName)(TString(FileIndexColumnName), fileIndex));
+            writer->AddRow(TNode()(TString(FileIdColumnName), TString(fileName))(TString(FileIndexColumnName), fileIndex));
             ++fileIndex;
         }
     }

@@ -1,13 +1,21 @@
-#include <algorithm>
-#include <thread>
-#include <library/cpp/resource/resource.h>
+#include "yql_yt_coordinator_impl.h"
+
 #include <yt/cpp/mapreduce/common/helpers.h>
+
 #include <yt/yql/providers/yt/fmr/utils/yql_yt_table_data_service_key.h>
+#include <yt/yql/providers/yt/fmr/coordinator/operation_manager/impl/yql_yt_default_stage_operation_manager.h>
+
 #include <yql/essentials/utils/log/log.h>
 #include <yql/essentials/utils/yql_panic.h>
 #include <yql/essentials/utils/failure_injector/failure_injector.h>
-#include <yt/yql/providers/yt/fmr/coordinator/operation_manager/impl/yql_yt_default_stage_operation_manager.h>
-#include "yql_yt_coordinator_impl.h"
+
+#include <library/cpp/resource/resource.h>
+
+#include <util/system/condvar.h>
+
+#include <algorithm>
+#include <queue>
+#include <thread>
 
 namespace NYql::NFmr {
 
@@ -16,18 +24,45 @@ TFmrCoordinatorSettings::TFmrCoordinatorSettings() {
     WorkersNum = 1;
     RandomProvider = CreateDefaultRandomProvider();
     TimeProvider = CreateDefaultTimeProvider();
-    IdempotencyKeyStoreTime = TDuration::Seconds(10);
-    TimeToSleepBetweenClearKeyRequests = TDuration::Seconds(1);
-    WorkerDeadlineLease = TDuration::Seconds(5);
-    TimeToSleepBetweenCheckWorkerStatusRequests = TDuration::Seconds(1);
-    SessionInactivityTimeout = TDuration::Minutes(5);
-    HealthCheckInterval = TDuration::Seconds(1);
+}
+
+TFmrCoordinatorSettings GetDefaultCoordinatorSettings(const TMaybe<NYT::TNode>& configOverride, const TMaybe<NYT::TNode>& operationSpecOverride) {
+    TFmrCoordinatorSettings settings;
+    const auto configNode = configOverride.Defined()
+        ? *configOverride
+        : NYT::NodeFromYsonString(NResource::Find("default_coordinator_settings.yson"));
+    YQL_ENSURE(configNode.IsMap());
+    if (configNode.HasKey("idempotency_key_store_time_sec")) {
+        settings.IdempotencyKeyStoreTime = TDuration::Seconds(configNode["idempotency_key_store_time_sec"].AsInt64());
+    }
+    if (configNode.HasKey("time_to_sleep_between_clear_key_requests_sec")) {
+        settings.TimeToSleepBetweenClearKeyRequests = TDuration::Seconds(configNode["time_to_sleep_between_clear_key_requests_sec"].AsInt64());
+    }
+    if (configNode.HasKey("worker_deadline_lease_sec")) {
+        settings.WorkerDeadlineLease = TDuration::Seconds(configNode["worker_deadline_lease_sec"].AsInt64());
+    }
+    if (configNode.HasKey("time_to_sleep_between_check_worker_status_requests_sec")) {
+        settings.TimeToSleepBetweenCheckWorkerStatusRequests = TDuration::Seconds(configNode["time_to_sleep_between_check_worker_status_requests_sec"].AsInt64());
+    }
+    if (configNode.HasKey("session_inactivity_timeout_sec")) {
+        settings.SessionInactivityTimeout = TDuration::Seconds(configNode["session_inactivity_timeout_sec"].AsInt64());
+    }
+    if (configNode.HasKey("health_check_interval_sec")) {
+        settings.HealthCheckInterval = TDuration::Seconds(configNode["health_check_interval_sec"].AsInt64());
+    }
+    if (operationSpecOverride.Defined()) {
+        settings.DefaultFmrOperationSpec = *operationSpecOverride;
+    }
+    return settings;
 }
 
 namespace {
 
 template <typename TResponse>
 NThreading::TFuture<TResponse> MakeFailedResponse(TResponse response, const TFmrError& error, TStringBuf logPrefix) {
+    if (error.Reason == EFmrErrorReason::FallbackOperation) {
+        YQL_CLOG(WARN, FastMapReduce) << "FMR fallback to YT: " << error.ErrorMessage;
+    }
     YQL_CLOG(ERROR, FastMapReduce) << logPrefix << error.ErrorMessage;
     response.ErrorMessages.emplace_back(error);
     return NThreading::MakeFuture(std::move(response));
@@ -47,6 +82,7 @@ public:
         SessionInactivityTimeout_(settings.SessionInactivityTimeout),
         HealthCheckInterval_(settings.HealthCheckInterval),
         DefaultFmrOperationSpec_(settings.DefaultFmrOperationSpec),
+        RequireFmrJob_(settings.RequireFmrJob),
         YtCoordinatorService_(ytCoordinatorService),
         GcService_(gcService)
     {
@@ -55,14 +91,24 @@ public:
         StartClearingIdempotencyKeys();
         CheckWorkersAliveStatus();
         CheckGatewaySessionsActivity();
+        StartGcThread();
+        StartWaitForOperationsThread();
+        StartWaitForTasksThread();
         GcService_->ClearAll();
     }
 
     ~TFmrCoordinator() {
         StopCoordinator_ = true;
+        OperationFinishedCondVar_.BroadCast();
+        TasksAvailableCondVar_.BroadCast();
+        MaintenanceCondVar_.BroadCast();
+        GcQueueCondVar_.BroadCast();
         ClearIdempotencyKeysThread_.join();
         CheckWorkersAliveStatusThread_.join();
         CheckGatewaySessionsActivityThread_.join();
+        GcThread_.join();
+        WaitForOperationsThread_.join();
+        WaitForTasksThread_.join();
     }
 
     NThreading::TFuture<TStartOperationResponse> StartOperation(const TStartOperationRequest& request) override {
@@ -77,6 +123,10 @@ public:
         }
         auto operationId = GenerateId();
         YQL_ENSURE(Sessions_.contains(request.SessionId), "Session " << request.SessionId << " must be opened before starting operations");
+        if (RequireFmrJob_ && !request.FmrJob) {
+            auto error = TFmrError{.Component = EFmrComponent::Coordinator, .Reason = EFmrErrorReason::Unknown, .ErrorMessage = "FmrJob must be set in StartOperation request"};
+            return MakeFailedResponse(TStartOperationResponse(EOperationStatus::Failed, ""), error, "StartOperation validation failed: ");
+        }
         auto& sessionInfo = Sessions_[request.SessionId];
         sessionInfo.OperationIds.emplace_back(operationId);
         if (IdempotencyKey) {
@@ -98,6 +148,7 @@ public:
             .YtResources = request.YtResources,
             .FmrResources = request.FmrResources,
             .FmrOperationSpec = fmrOperationSpec,
+            .FmrJob = request.FmrJob,
         };
 
         auto stageError = ExecuteCurrentStage(operationId);
@@ -111,8 +162,11 @@ public:
         }
 
         auto& operationInfo = Operations_[operationId];
-        const auto initialStatus = operationInfo.TaskIds.empty() ? EOperationStatus::Completed : EOperationStatus::Accepted;
-        operationInfo.OperationStatus = initialStatus;
+        operationInfo.OperationStatus = GetOperationStatus(operationId);
+
+        if (operationInfo.OperationStatus == EOperationStatus::Completed) {
+            HandleOperationCompleted(operationId);
+        }
 
         YQL_CLOG(DEBUG, FastMapReduce) << "Starting operation with id " << operationId;
         return NThreading::MakeFuture(TStartOperationResponse(EOperationStatus::Accepted, operationId));
@@ -165,12 +219,19 @@ public:
         for (auto& generatedTask: generateResult.Tasks) {
             TString taskId = GenerateId();
 
-            TTask::TPtr createdTask = MakeTask(generatedTask.TaskType, taskId, generatedTask.TaskParams, operationInfo.SessionId, clusterConnections, operationInfo.Files, operationInfo.YtResources, generateResult.FmrResourceTasks, fmrOperationSpec);
+            std::vector<TYtResourceInfo> taskYtResources = operationInfo.YtResources;
+            if (operationInfo.FmrJob) {
+                TYtResourceInfo fmrJobResource = *operationInfo.FmrJob;
+                fmrJobResource.RichPath.FileName(TString("fmrjob"));
+                taskYtResources.insert(taskYtResources.begin(), std::move(fmrJobResource));
+            }
+            TTask::TPtr createdTask = MakeTask(generatedTask.TaskType, taskId, generatedTask.TaskParams, operationInfo.SessionId, clusterConnections, operationInfo.Files, taskYtResources, generateResult.FmrResourceTasks, fmrOperationSpec);
             Tasks_[taskId] = TCoordinatorTaskInfo{.Task = createdTask, .TaskStatus = ETaskStatus::Accepted, .OperationId = operationId, .NumRetries = 0};
             TasksToRun_.emplace(createdTask, taskId);
             operationInfo.TaskIds.emplace(taskId);
             operationInfo.AllTaskIds.emplace(taskId);
         }
+        SignalTasksIfAvailable();
 
         return Nothing();
     }
@@ -190,13 +251,36 @@ public:
         std::vector<TTableStats> outputTablesStats;
         std::vector<TString> result;
         if (operationStatus == EOperationStatus::Completed) {
-            // Calculating output table stats only in case of successful completion of opereation
-            for (auto& tableId : operationInfo.OutputTableIds) {
-                outputTablesStats.emplace_back(CalculateTableStats(tableId));
+            // Calculating output table stats only in case of successful completion of operation
+            auto expectedOutputTableIds = operationInfo.StageManager->GetExpectedOutputTableIds(operationInfo.OperationParams);
+            for (auto& tableId : expectedOutputTableIds) {
+                if (operationInfo.OutputTableIds.contains(tableId)) {
+                    outputTablesStats.emplace_back(CalculateTableStats(tableId));
+                } else {
+                    outputTablesStats.emplace_back(TTableStats{});
+                }
             }
             result = operationInfo.StageManager->GetOperationResult();
         }
-        return NThreading::MakeFuture(TGetOperationResponse(operationStatus, errorMessages, outputTablesStats, result));
+        TJobCounters jobCounters;
+        jobCounters.Total = operationInfo.AllTaskIds.size();
+        jobCounters.Completed = operationInfo.CompletedJobsCount;
+        jobCounters.Lost = operationInfo.LostJobsCount;
+        for (const auto& taskId : operationInfo.AllTaskIds) {
+            if (!Tasks_.contains(taskId)) {
+                continue;
+            }
+            switch (Tasks_[taskId].TaskStatus) {
+                case ETaskStatus::Accepted:   ++jobCounters.Pending; break;
+                case ETaskStatus::InProgress: ++jobCounters.Running; break;
+                case ETaskStatus::Failed:     ++jobCounters.Failed;  break;
+                default: break;
+            }
+        }
+
+        TGetOperationResponse response(operationStatus, errorMessages, outputTablesStats, result);
+        response.JobCounters = jobCounters;
+        return NThreading::MakeFuture(std::move(response));
     }
 
     NThreading::TFuture<TDeleteOperationResponse> DeleteOperation(const TDeleteOperationRequest& request) override {
@@ -220,6 +304,9 @@ public:
                 ClearTask(taskId); // Task hasn't begun running, remove info
             }
         }
+
+        Operations_[operationId].OperationStatus = EOperationStatus::Aborted;
+        OperationFinishedCondVar_.BroadCast();
 
         return NThreading::MakeFuture(TDeleteOperationResponse(EOperationStatus::Aborted));
     }
@@ -278,11 +365,22 @@ public:
                 auto& workerInfo = Workers_[workerId];
                 workerInfo.LatestPing = TimeProvider_->Now();
                 if (request.VolatileId != Workers_[workerId].VolatileId) {
-                    // worker has restarted
-                    YQL_ENSURE(workerInfo.NeedsToRestart = true);
-                    YQL_ENSURE(request.TaskStates.empty());
-                    workerInfo.NeedsToRestart = false; // Assume worker is alive again and can handle new tasks.
+                    // Worker volatile ID changed — it has restarted.
+                    // Task states from before the restart are stale; skip them below.
+                    if (!request.TaskStates.empty()) {
+                        YQL_CLOG(WARN, FastMapReduce) << "Worker " << workerId
+                            << " sent new volatile id with " << request.TaskStates.size()
+                            << " non-empty task states; treating as stale and ignoring";
+                    }
+                    workerInfo.NeedsToRestart = false;
                     workerInfo.VolatileId = request.VolatileId;
+                    // Return immediately: stale task states must not be processed.
+                    // The worker will send a clean heartbeat on the next cycle.
+                    return NThreading::MakeFuture(THeartbeatResponse{
+                        .TasksToRun = {},
+                        .TaskToDeleteIds = TaskToDeleteIds_,
+                        .NeedToRestart = false,
+                    });
                 } else if (workerInfo.NeedsToRestart) {
                     // Worker has awoken after downtime, send signal to restart
                     return NThreading::MakeFuture(THeartbeatResponse{.NeedToRestart = true});
@@ -295,54 +393,45 @@ public:
             TString taskId;
             with_lock(Mutex_) {
                 taskId = requestTaskState->TaskId;
-                Workers_[request.WorkerId].TaskIds.emplace(taskId);
-                YQL_ENSURE(Tasks_.contains(taskId));
-                auto operationId = Tasks_[taskId].OperationId;
-                YQL_LOG_CTX_ROOT_SESSION_SCOPE(Operations_[operationId].SessionId);
-                auto taskStatus = requestTaskState->TaskStatus;
-                YQL_ENSURE(taskStatus != ETaskStatus::Accepted);
-                if (taskStatus != ETaskStatus::InProgress) {
-                    // TODO - refactor the whole function
-                    Workers_[request.WorkerId].TaskIds.erase(taskId);
-                    // Task finished in some status, removing info from worker
-                }
-                SetUnfinishedTaskStatus(taskId, taskStatus, requestTaskState->TaskErrorMessage);
-                isTaskToDelete = (TaskToDeleteIds_.contains(taskId) && Tasks_[taskId].TaskStatus != ETaskStatus::InProgress);
-                auto statistics = requestTaskState->Stats;
-                YQL_CLOG(TRACE, FastMapReduce) << " Task with id " << taskId << " has current status " << taskStatus << Endl;
-                bool isOperationCompleted = (GetOperationStatus(operationId) == EOperationStatus::Completed);
-                for (auto& [fmrTableId, tableStats]: statistics.OutputTables) {
-                    Operations_[operationId].OutputTableIds.emplace(fmrTableId.TableId);
-                    PartIdStats_[fmrTableId.PartId] = tableStats.PartIdChunkStats;
-                    if (isOperationCompleted) {
-                        YQL_CLOG(INFO, FastMapReduce) << "Operation with id " << operationId << " has finished successfully";
-                        CalculateTableStats(fmrTableId.TableId, true);
+                if (Tasks_.contains(taskId)) {
+                    Workers_[request.WorkerId].TaskIds.emplace(taskId);
+                    auto operationId = Tasks_[taskId].OperationId;
+                    YQL_LOG_CTX_ROOT_SESSION_SCOPE(Operations_[operationId].SessionId);
+                    auto taskStatus = requestTaskState->TaskStatus;
+                    YQL_ENSURE(taskStatus != ETaskStatus::Accepted);
+                    if (taskStatus != ETaskStatus::InProgress) {
+                        // TODO - refactor the whole function
+                        Workers_[request.WorkerId].TaskIds.erase(taskId);
+                        // Task finished in some status, removing info from worker
                     }
-                    // TODO - проверка на валидность возвращаемой воркером статистики?
-                }
-
-                if (taskStatus == ETaskStatus::Completed) {
-                    Operations_[operationId].StageManager->OnTaskCompleted(requestTaskState->Stats);
-                }
-
-                if (isOperationCompleted) {
-                    auto& opInfo = Operations_[operationId];
-                    if (opInfo.StageManager) {
-                        auto advanceResult = opInfo.StageManager->AdvanceToNextStage();
-                        if (advanceResult.Error) {
-                            opInfo.OperationStatus = EOperationStatus::Failed;
-                            opInfo.ErrorMessages.emplace_back(*advanceResult.Error);
-                        } else if (advanceResult.HasNextStage) {
-                            opInfo.TaskIds.clear();
-                            opInfo.OutputTableIds.clear();
-                            auto stageError = ExecuteCurrentStage(operationId);
-                            if (stageError) {
-                                opInfo.OperationStatus = EOperationStatus::Failed;
-                                opInfo.ErrorMessages.emplace_back(*stageError);
-                            } else {
-                                opInfo.OperationStatus = GetOperationStatus(operationId);
-                            }
+                    SetUnfinishedTaskStatus(taskId, taskStatus, requestTaskState->TaskErrorMessage);
+                    isTaskToDelete = (TaskToDeleteIds_.contains(taskId) && Tasks_[taskId].TaskStatus != ETaskStatus::InProgress);
+                    auto statistics = requestTaskState->Stats;
+                    YQL_CLOG(TRACE, FastMapReduce) << "Worker " << workerId << " task " << taskId << " status " << taskStatus;
+                    bool isOperationCompleted = (GetOperationStatus(operationId) == EOperationStatus::Completed);
+                    for (auto& [fmrTableId, tableStats]: statistics.OutputTables) {
+                        Operations_[operationId].OutputTableIds.emplace(fmrTableId.TableId);
+                        PartIdStats_[fmrTableId.PartId] = tableStats.PartIdChunkStats;
+                        if (isOperationCompleted) {
+                            YQL_CLOG(INFO, FastMapReduce) << "Operation with id " << operationId << " has finished successfully";
+                            CalculateTableStats(fmrTableId.TableId, true);
                         }
+                        // TODO - проверка на валидность возвращаемой воркером статистики?
+                    }
+
+                    if (taskStatus == ETaskStatus::Completed) {
+                        Operations_[operationId].StageManager->OnTaskCompleted(requestTaskState->Stats);
+                    }
+
+                    if (isOperationCompleted) {
+                        HandleOperationCompleted(operationId);
+                    }
+                } else {
+                    YQL_CLOG(DEBUG, FastMapReduce) << "Skipping heartbeat update for already cleared task " << taskId;
+                    if (requestTaskState->TaskStatus == ETaskStatus::InProgress) {
+                        TaskToDeleteIds_.insert(taskId);
+                    } else {
+                        TaskToDeleteIds_.erase(taskId);
                     }
                 }
             }
@@ -379,9 +468,15 @@ public:
                     YQL_CLOG(ERROR, FastMapReduce) << error->ErrorMessage << ", taskId: " << taskId;
                     SetUnfinishedTaskStatus(taskId, ETaskStatus::Failed, *error);
                     canRunTask = false;
+                } else {
+                    // Record ownership at dispatch time, not when the worker first reports the task back.
+                    // Otherwise a worker that dies in the gap between receiving a task and its next heartbeat
+                    // leaves the coordinator with no record of the task, so failover never reschedules it.
+                    Workers_[workerId].TaskIds.emplace(taskId);
                 }
             }
             if (canRunTask) {
+                YQL_CLOG(DEBUG, FastMapReduce) << "Dispatching task " << taskId << " to worker " << workerId;
                 currentTasksToRun.emplace_back(task);
                 ++filledSlots;
             }
@@ -505,6 +600,63 @@ public:
         return NThreading::MakeFuture(TPrepareOperationResponse{.PartitionId = partitionId, .TasksNum = OperationPartitions_[partitionId].TaskInputs.size()});
     }
 
+    NThreading::TFuture<TWaitForTasksResponse> WaitForTasks(const TWaitForTasksRequest& request) override {
+        YQL_ENSURE(request.AvailableSlots > 0, "WaitForTasks: AvailableSlots must be greater than 0");
+        auto promise = NThreading::NewPromise<TWaitForTasksResponse>();
+        auto future = promise.GetFuture();
+
+        bool resolveImmediately = false;
+        ui64 taskCount = 0;
+        with_lock(Mutex_) {
+            taskCount = TasksToRun_.size();
+            if (StopCoordinator_) {
+                resolveImmediately = true;
+            } else if (taskCount > 0 && WaitForTasksWaiters_.empty()) {
+                // No other waiters — resolve immediately without going through FIFO ordering.
+                resolveImmediately = true;
+            } else {
+                WaitForTasksWaiters_.push_back(TTaskWaiterInfo{
+                    .Deadline = TimeProvider_->Now() + request.Timeout,
+                    .AvailableSlots = request.AvailableSlots,
+                    .Promise = std::move(promise),
+                });
+                TasksAvailableCondVar_.Signal();
+            }
+        }
+
+        if (resolveImmediately) {
+            promise.SetValue(TWaitForTasksResponse{
+                .AvailableTasksCount = std::min(taskCount, request.AvailableSlots)});
+        }
+
+        return future;
+    }
+
+    NThreading::TFuture<TWaitForOperationsResponse> WaitForOperations(const TWaitForOperationsRequest& request) override {
+        auto promise = NThreading::NewPromise<TWaitForOperationsResponse>();
+        auto future = promise.GetFuture();
+
+        std::vector<TOperationIdWithStatus> finalized;
+        with_lock(Mutex_) {
+            auto watchedIds = std::unordered_set<TString>(request.OperationIds.begin(), request.OperationIds.end());
+            finalized = CollectFinalized(watchedIds);
+            if (finalized.empty()) {
+                WaitOperationsWaiters_.push_back(TWaiterInfo{
+                    .WatchedIds = std::move(watchedIds),
+                    .Deadline = TimeProvider_->Now() + request.Timeout,
+                    .Promise = std::move(promise),
+                });
+                OperationFinishedCondVar_.Signal();
+            }
+        }
+
+        if (!finalized.empty()) {
+            promise.SetValue(TWaitForOperationsResponse{.FinalizedOperations = std::move(finalized)});
+        }
+
+        return future;
+    }
+
 private:
     void StartClearingIdempotencyKeys() {
         auto ClearIdempotencyKeysFunc = [&] () {
@@ -520,8 +672,8 @@ private:
                             ++it;
                         }
                     }
+                    MaintenanceCondVar_.WaitD(Mutex_, TInstant::Now() + TimeToSleepBetweenClearKeyRequests_);
                 }
-                Sleep(TimeToSleepBetweenClearKeyRequests_);
             }
         };
         ClearIdempotencyKeysThread_ = std::thread(ClearIdempotencyKeysFunc);
@@ -541,16 +693,26 @@ private:
                             }
                             workerInfo.NeedsToRestart = true;
                             for (auto& taskId: workerInfo.TaskIds) {
+                                if (!Tasks_.contains(taskId)) {
+                                    // Task was already cleaned up (e.g., by session or operation cleanup)
+                                    continue;
+                                }
+                                auto& taskInfo = Tasks_[taskId];
+                                YQL_ENSURE(Operations_.contains(taskInfo.OperationId));
+                                ++Operations_[taskInfo.OperationId].LostJobsCount;
                                 // resetting task, TODO - add max retry
                                 SetUnfinishedTaskStatus(taskId, ETaskStatus::Accepted);
                                 YQL_ENSURE(Tasks_.contains(taskId));
                                 TasksToRun_.emplace(Tasks_[taskId].Task, taskId);
                             }
+                            SignalTasksIfAvailable();
                             workerInfo.TaskIds.clear();
                         }
                     }
                 }
-                Sleep(TimeToSleepBetweenCheckWorkerStatusRequests_);
+                with_lock(Mutex_) {
+                    MaintenanceCondVar_.WaitD(Mutex_, TInstant::Now() + TimeToSleepBetweenCheckWorkerStatusRequests_);
+                }
             }
         };
         CheckWorkersAliveStatusThread_ = std::thread(checkWorkersAliveStatusFunc);
@@ -578,10 +740,62 @@ private:
                     YQL_CLOG(INFO, FastMapReduce) << "Cleaning up inactive session " << sessionId;
                     ClearSessionImpl(sessionId);
                 }
-                Sleep(HealthCheckInterval_);
+                with_lock(Mutex_) {
+                    MaintenanceCondVar_.WaitD(Mutex_, TInstant::Now() + HealthCheckInterval_);
+                }
             }
         };
         CheckGatewaySessionsActivityThread_ = std::thread(checkFunc);
+    }
+
+    void StartGcThread() {
+        auto gcFunc = [this] {
+            while (!StopCoordinator_) {
+                TGcTask gcTask;
+                bool hasTask = false;
+                with_lock(GcQueueMutex_) {
+                    GcQueueCondVar_.WaitT(GcQueueMutex_, TDuration::MilliSeconds(100), [&] {
+                        return !GcQueue_.empty() || StopCoordinator_.load();
+                    });
+                    if (!GcQueue_.empty()) {
+                        gcTask = std::move(GcQueue_.front());
+                        GcQueue_.pop();
+                        hasTask = true;
+                    }
+                }
+                if (hasTask) {
+                    try {
+                        GcService_->ClearGarbage(gcTask.TableGroupsToClear).GetValueSync();
+                    } catch (...) {
+                        YQL_CLOG(ERROR, FastMapReduce) << "GC thread error during ClearGarbage: " << CurrentExceptionMessage();
+                    }
+                    with_lock(Mutex_) {
+                        for (const auto& group : gcTask.GroupsToClear) {
+                            if (gcTask.PartIdsToKeep.contains(GetTableDataServiceGroup(group.TableId, group.PartId))) {
+                                continue;
+                            }
+                            PartIdStats_.erase(group.PartId);
+                            auto tableIt = PartIdsForTables_.find(group.TableId);
+                            if (tableIt != PartIdsForTables_.end()) {
+                                auto& partIds = tableIt->second;
+                                auto partIdPosition = std::find(partIds.begin(), partIds.end(), group.PartId);
+                                if (partIdPosition != partIds.end()) {
+                                    partIds.erase(partIdPosition);
+                                }
+                                if (partIds.empty()) {
+                                    PartIdsForTables_.erase(tableIt);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    with_lock(GcQueueMutex_) {
+                        GcQueueCondVar_.WaitD(GcQueueMutex_, TInstant::Now() + TDuration::MilliSeconds(100));
+                    }
+                }
+            }
+        };
+        GcThread_ = std::thread(gcFunc);
     }
 
     void UpdateSessionActivity(const TString& sessionId) {
@@ -608,7 +822,9 @@ private:
             Sessions_.erase(sessionId);
         }
 
+        YQL_CLOG(INFO, FastMapReduce) << "ClearSessionImpl: clearing " << tasks.size() << " tasks for session " << sessionId;
         for (auto& taskId: tasks) {
+            YQL_CLOG(DEBUG, FastMapReduce) << "ClearSessionImpl: clearing taskId=" << taskId;
             ClearTaskAndPartIds(taskId);
         }
     }
@@ -635,10 +851,16 @@ private:
     void ClearTaskAndPartIds(const TString& taskId) {
         TTask::TPtr task;
         with_lock(Mutex_) {
+            if (!Tasks_.contains(taskId)) {
+                return;
+            }
             task = Tasks_[taskId].Task;
         }
         ClearPreviousPartIdsForTask(task);
         with_lock(Mutex_) {
+            if (!Tasks_.contains(taskId)) {
+                return;
+            }
             ClearTask(taskId);
         }
     }
@@ -652,10 +874,50 @@ private:
         }
         YQL_CLOG(TRACE, FastMapReduce) << "Setting task status for task id" << taskId << " from " << taskInfo.TaskStatus << " to new Task status " << newTaskStatus;
         taskInfo.TaskStatus = newTaskStatus;
+        if (newTaskStatus == ETaskStatus::Completed) {
+            ++operationInfo.CompletedJobsCount;
+        }
         operationInfo.OperationStatus = GetOperationStatus(taskInfo.OperationId);
         if (taskErrorMessage) {
             auto& errorMessages = operationInfo.ErrorMessages;
             errorMessages.emplace_back(*taskErrorMessage);
+        }
+        auto opStatus = operationInfo.OperationStatus;
+        if (opStatus == EOperationStatus::Completed || opStatus == EOperationStatus::Failed) {
+            OperationFinishedCondVar_.BroadCast();
+        }
+    }
+
+    void HandleOperationCompleted(const TString& operationId) {
+        auto& opInfo = Operations_[operationId];
+
+        auto expectedOutputTableIds = opInfo.StageManager->GetExpectedOutputTableIds(opInfo.OperationParams);
+        for (const auto& tableId : expectedOutputTableIds) {
+            if (!PartIdsForTables_.contains(tableId)) {
+                PartIdsForTables_[tableId] = {};
+            }
+        }
+
+        auto advanceResult = opInfo.StageManager->AdvanceToNextStage();
+        if (advanceResult.Error) {
+            if (advanceResult.Error->Reason == EFmrErrorReason::FallbackOperation) {
+                YQL_CLOG(WARN, FastMapReduce) << "FMR fallback to YT: " << advanceResult.Error->ErrorMessage;
+            }
+            opInfo.OperationStatus = EOperationStatus::Failed;
+            opInfo.ErrorMessages.emplace_back(*advanceResult.Error);
+        } else if (advanceResult.HasNextStage) {
+            opInfo.TaskIds.clear();
+            opInfo.OutputTableIds.clear();
+            auto stageError = ExecuteCurrentStage(operationId);
+            if (stageError) {
+                if (stageError->Reason == EFmrErrorReason::FallbackOperation) {
+                    YQL_CLOG(WARN, FastMapReduce) << "FMR fallback to YT: " << stageError->ErrorMessage;
+                }
+                opInfo.OperationStatus = EOperationStatus::Failed;
+                opInfo.ErrorMessages.emplace_back(*stageError);
+            } else {
+                opInfo.OperationStatus = GetOperationStatus(operationId);
+            }
         }
     }
 
@@ -720,13 +982,19 @@ private:
     }
 
     std::vector<TPartIdInfo> CollectPreviousPartIdsForTask(TTask::TPtr task) {
+        if (!Tasks_.contains(task->TaskId)) {
+            return {};
+        }
+        TString operationId = Tasks_[task->TaskId].OperationId;
+        auto opIt = Operations_.find(operationId);
+        if (opIt == Operations_.end() || !opIt->second.StageManager) {
+            return {};
+        }
         GetPartIdsForTaskContext context{
             .Task = task,
             .PartIdStats = PartIdStats_
         };
-        TString operationId = Tasks_[task->TaskId].OperationId;
-        const auto& stageManager = Operations_[operationId].StageManager;
-        return stageManager->GetPartIdsForTask(context);
+        return opIt->second.StageManager->GetPartIdsForTask(context);
     }
 
     std::vector<TString> GetTableGroupsToClear(const std::vector<TPartIdInfo>& groupsToClear) {
@@ -756,25 +1024,23 @@ private:
             tableGroupsToClear = GetTableGroupsToClear(groupsToClear);
         }
 
-        GcService_->ClearGarbage(tableGroupsToClear).GetValueSync();
+        if (tableGroupsToClear.empty() && groupsToClear.empty()) {
+            return;
+        }
 
-        with_lock(Mutex_) {
-            for (const auto& group : groupsToClear) {
-                if (partIdsToKeep.contains(GetTableDataServiceGroup(group.TableId, group.PartId))) {
-                    continue;
-                }
-                auto tableIt = PartIdsForTables_.find(group.TableId);
-                if (tableIt != PartIdsForTables_.end()) {
-                    auto& partIds = tableIt->second;
-                    auto partIdPosition = std::find(partIds.begin(), partIds.end(), group.PartId);
-                    if (partIdPosition != partIds.end()) {
-                        partIds.erase(partIdPosition);
-                    }
-                    if (partIds.empty()) {
-                        PartIdsForTables_.erase(tableIt);
-                    }
-                }
-            }
+        YQL_CLOG(INFO, FastMapReduce) << "ClearPreviousPartIdsForTask: taskId=" << task->TaskId
+            << " groupsToClear=" << tableGroupsToClear.size();
+        for (const auto& group : tableGroupsToClear) {
+            YQL_CLOG(DEBUG, FastMapReduce) << "ClearPreviousPartIdsForTask: clearing group=" << group;
+        }
+
+        with_lock(GcQueueMutex_) {
+            GcQueue_.push(TGcTask{
+                .TableGroupsToClear = std::move(tableGroupsToClear),
+                .GroupsToClear = std::move(groupsToClear),
+                .PartIdsToKeep = std::move(partIdsToKeep),
+            });
+            GcQueueCondVar_.Signal();
         }
     }
 
@@ -828,6 +1094,10 @@ private:
         std::vector<TYtResourceInfo> YtResources;
         std::vector<TFmrResourceOperationInfo> FmrResources;
         NYT::TNode FmrOperationSpec;
+        TMaybe<TYtResourceInfo> FmrJob;
+
+        ui64 CompletedJobsCount = 0;  // Number of tasks that transitioned to Completed
+        ui64 LostJobsCount = 0;       // Number of tasks lost due to worker failure and re-enqueued
     };
 
     struct TSessionInfo {
@@ -858,6 +1128,8 @@ private:
     std::unordered_map<ui64, TWorkerInfo> Workers_; // WorkerId -> Info About It
 
     TMutex Mutex_;
+    TCondVar OperationFinishedCondVar_;
+    TCondVar MaintenanceCondVar_; // woken on shutdown to unblock maintenance threads
     const ui32 WorkersNum_;
     std::unordered_map<ui32, TString> WorkerToVolatileId_; // worker id -> volatile id  // TODO - убрать это
     const TIntrusivePtr<IRandomProvider> RandomProvider_;
@@ -876,8 +1148,180 @@ private:
     std::unordered_map<TString, TTableStats> OperationTableStats_; // TableId -> Statistic for fmr table, filled when operation completes
 
     NYT::TNode DefaultFmrOperationSpec_;
+    const bool RequireFmrJob_;
     IYtCoordinatorService::TPtr YtCoordinatorService_; // Needed for partitioning of yt tables
     IFmrGcService::TPtr GcService_;
+
+    struct TGcTask {
+        std::vector<TString> TableGroupsToClear;
+        std::vector<TPartIdInfo> GroupsToClear;
+        std::unordered_set<TString> PartIdsToKeep;
+    };
+
+    TMutex GcQueueMutex_;
+    TCondVar GcQueueCondVar_;
+    std::queue<TGcTask> GcQueue_;
+    std::thread GcThread_;
+
+    struct TWaiterInfo {
+        std::unordered_set<TString> WatchedIds;
+        TInstant Deadline;
+        NThreading::TPromise<TWaitForOperationsResponse> Promise;
+        std::vector<TOperationIdWithStatus> Finalized;  // populated under Mutex_, consumed outside
+    };
+
+    // Must be called under Mutex_.
+    std::vector<TOperationIdWithStatus> CollectFinalized(const std::unordered_set<TString>& watchedIds) {
+        std::vector<TOperationIdWithStatus> finalized;
+        for (const auto& operationId : watchedIds) {
+            auto opIt = Operations_.find(operationId);
+            EOperationStatus status = (opIt != Operations_.end())
+                ? opIt->second.OperationStatus
+                : EOperationStatus::NotFound;
+            bool isTerminal = (status == EOperationStatus::Completed
+                || status == EOperationStatus::Failed
+                || status == EOperationStatus::Aborted
+                || status == EOperationStatus::NotFound);
+            if (isTerminal) {
+                std::vector<TFmrError> errors;
+                if (opIt != Operations_.end()) {
+                    errors = opIt->second.ErrorMessages;
+                }
+                finalized.push_back(TOperationIdWithStatus{
+                    .OperationId = operationId,
+                    .Status = status,
+                    .ErrorMessages = std::move(errors),
+                });
+            }
+        }
+        return finalized;
+    }
+
+    void StartWaitForOperationsThread() {
+        auto waitFunc = [this]() {
+            while (!StopCoordinator_) {
+                std::vector<TWaiterInfo> toResolve;
+                TInstant nextDeadline = TInstant::Max();
+
+                with_lock(Mutex_) {
+                    TInstant now = TimeProvider_->Now();
+                    for (auto it = WaitOperationsWaiters_.begin(); it != WaitOperationsWaiters_.end();) {
+                        auto finalized = CollectFinalized(it->WatchedIds);
+                        if (!finalized.empty() || now >= it->Deadline) {
+                            it->Finalized = std::move(finalized);
+                            toResolve.push_back(std::move(*it));
+                            it = WaitOperationsWaiters_.erase(it);
+                        } else {
+                            if (it->Deadline < nextDeadline) {
+                                nextDeadline = it->Deadline;
+                            }
+                            ++it;
+                        }
+                    }
+                }
+
+                for (auto& waiter : toResolve) {
+                    waiter.Promise.SetValue(TWaitForOperationsResponse{.FinalizedOperations = std::move(waiter.Finalized)});
+                }
+
+                with_lock(Mutex_) {
+                    if (WaitOperationsWaiters_.empty() && !StopCoordinator_) {
+                        OperationFinishedCondVar_.WaitI(Mutex_);
+                    } else if (nextDeadline != TInstant::Max()) {
+                        OperationFinishedCondVar_.WaitD(Mutex_, nextDeadline);
+                    }
+                }
+            }
+
+            // Drain remaining waiters on shutdown with empty responses — outside the lock.
+            std::vector<TWaiterInfo> remaining;
+            with_lock(Mutex_) {
+                remaining = std::move(WaitOperationsWaiters_);
+            }
+            for (auto& waiter : remaining) {
+                waiter.Promise.SetValue(TWaitForOperationsResponse{});
+            }
+        };
+        WaitForOperationsThread_ = std::thread(waitFunc);
+    }
+
+    std::vector<TWaiterInfo> WaitOperationsWaiters_;
+    std::thread WaitForOperationsThread_;
+
+    struct TTaskWaiterInfo {
+        TInstant Deadline;
+        ui64 AvailableSlots = 0;      // from request, worker's capacity
+        NThreading::TPromise<TWaitForTasksResponse> Promise;
+        ui64 AvailableTasksCount = 0; // populated under Mutex_, consumed outside
+    };
+
+    // Must be called under Mutex_.
+    void SignalTasksIfAvailable() {
+        if (!TasksToRun_.empty() && !WaitForTasksWaiters_.empty()) {
+            TasksAvailableCondVar_.Signal();
+        }
+    }
+
+    void StartWaitForTasksThread() {
+        auto waitFunc = [this]() {
+            while (!StopCoordinator_) {
+                std::vector<TTaskWaiterInfo> toResolve;
+                TInstant nextDeadline = TInstant::Max();
+
+                with_lock(Mutex_) {
+                    TInstant now = TimeProvider_->Now();
+                    ui64 remainingTasks = TasksToRun_.size();
+                    for (auto it = WaitForTasksWaiters_.begin(); it != WaitForTasksWaiters_.end();) {
+                        if (now >= it->Deadline) {
+                            // Timed out — resolve with 0 regardless of remaining tasks.
+                            it->AvailableTasksCount = 0;
+                            toResolve.push_back(std::move(*it));
+                            it = WaitForTasksWaiters_.erase(it);
+                        } else if (remainingTasks > 0) {
+                            // Assign up to this worker's capacity, then deduct from the pool.
+                            it->AvailableTasksCount = std::min(remainingTasks, it->AvailableSlots);
+                            remainingTasks -= it->AvailableTasksCount;
+                            toResolve.push_back(std::move(*it));
+                            it = WaitForTasksWaiters_.erase(it);
+                        } else {
+                            // Tasks fully distributed — keep remaining waiters sleeping,
+                            // but track their deadlines for the next WaitD.
+                            if (it->Deadline < nextDeadline) {
+                                nextDeadline = it->Deadline;
+                            }
+                            ++it;
+                        }
+                    }
+                }
+
+                for (auto& waiter : toResolve) {
+                    waiter.Promise.SetValue(TWaitForTasksResponse{.AvailableTasksCount = waiter.AvailableTasksCount});
+                }
+
+                with_lock(Mutex_) {
+                    if (WaitForTasksWaiters_.empty() && !StopCoordinator_) {
+                        TasksAvailableCondVar_.WaitI(Mutex_);
+                    } else if (nextDeadline != TInstant::Max()) {
+                        TasksAvailableCondVar_.WaitD(Mutex_, nextDeadline);
+                    }
+                }
+            }
+
+            // Drain remaining waiters on shutdown with AvailableTasksCount = 0.
+            std::vector<TTaskWaiterInfo> remaining;
+            with_lock(Mutex_) {
+                remaining = std::move(WaitForTasksWaiters_);
+            }
+            for (auto& waiter : remaining) {
+                waiter.Promise.SetValue(TWaitForTasksResponse{.AvailableTasksCount = 0});
+            }
+        };
+        WaitForTasksThread_ = std::thread(waitFunc);
+    }
+
+    TCondVar TasksAvailableCondVar_;
+    std::vector<TTaskWaiterInfo> WaitForTasksWaiters_;
+    std::thread WaitForTasksThread_;
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
 

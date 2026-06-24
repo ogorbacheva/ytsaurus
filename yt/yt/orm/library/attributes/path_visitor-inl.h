@@ -141,7 +141,7 @@ void TPathVisitor<TSelf>::VisitVector(
     EVisitReason reason)
 {
     if (Self()->PathComplete()) {
-        if (Self()->GetVisitEverythingAfterPath()) {
+        if (Self()->IsVisitEverythingAfterPath()) {
             Self()->VisitWholeVector(
                 std::forward<TVisitParam>(target),
                 EVisitReason::AfterPath);
@@ -310,7 +310,8 @@ void TPathVisitor<TSelf>::VisitMap(
     } else {
         Self()->Expect(NYPath::ETokenType::Literal);
 
-        TString key = Self()->GetLiteralValue();
+        // TODO(babenko): migrate to std::string
+        TString key(Self()->GetLiteralValue());
         Self()->AdvanceOver(key);
 
         typename std::remove_reference_t<TVisitParam>::key_type mapKey;

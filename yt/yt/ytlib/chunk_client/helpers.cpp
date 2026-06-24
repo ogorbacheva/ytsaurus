@@ -1186,7 +1186,7 @@ bool IsLargeEnoughChunkWeight(i64 chunkWeight, i64 chunkWeightThreshold)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TString FormatBlocks(int startBlockIndex, int endBlockIndex)
+std::string FormatBlocks(int startBlockIndex, int endBlockIndex)
 {
     TStringBuilder builder;
 
@@ -1197,6 +1197,20 @@ TString FormatBlocks(int startBlockIndex, int endBlockIndex)
     }
 
     return builder.Flush();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+bool IsJournalFormat(EChunkFormat format) noexcept
+{
+    switch (format) {
+        case EChunkFormat::JournalDefault:
+        case EChunkFormat::JournalDistributed:
+        case EChunkFormat::HunkJournal:
+            return true;
+        default:
+            return false;
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

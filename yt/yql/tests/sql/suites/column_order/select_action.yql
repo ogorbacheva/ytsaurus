@@ -1,0 +1,7 @@
+/* postgres can not */
+use plato;
+pragma OrderedColumns;
+
+evaluate for $i in ["1", "2", "3"] do begin
+    select * from Input where subkey = $i;
+end do;

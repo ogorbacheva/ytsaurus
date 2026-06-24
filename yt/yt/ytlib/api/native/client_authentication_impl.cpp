@@ -49,8 +49,8 @@ static std::string GenerateToken()
 
 void TClient::DoSetUserPassword(
     const std::string& user,
-    const TString& currentPasswordSha256,
-    const TString& newPasswordSha256,
+    const std::string& currentPasswordSha256,
+    const std::string& newPasswordSha256,
     const TSetUserPasswordOptions& options)
 {
     ValidateAuthenticationCommandPermissions(
@@ -90,7 +90,7 @@ void TClient::DoSetUserPassword(
 
 TIssueTokenResult TClient::DoIssueToken(
     const std::string& user,
-    const TString& passwordSha256,
+    const std::string& passwordSha256,
     const TIssueTokenOptions& options)
 {
     ValidateAuthenticationCommandPermissions(
@@ -246,8 +246,8 @@ void TClient::DoRefreshTemporaryToken(
 
 void TClient::DoRevokeToken(
     const std::string& user,
-    const TString& passwordSha256,
-    const TString& tokenSha256,
+    const std::string& passwordSha256,
+    const std::string& tokenSha256,
     const TRevokeTokenOptions& options)
 {
     auto rootClient = CreateRootClient();
@@ -292,7 +292,7 @@ void TClient::DoRevokeToken(
 
 TListUserTokensResult TClient::DoListUserTokens(
     const std::string& user,
-    const TString& passwordSha256,
+    const std::string& passwordSha256,
     const TListUserTokensOptions& options)
 {
     ValidateAuthenticationCommandPermissions(
@@ -336,8 +336,8 @@ TListUserTokensResult TClient::DoListUserTokens(
     }
     auto userId = ConvertTo<std::string>(userIdRspOrError.Value());
 
-    std::vector<TString> userTokens;
-    THashMap<TString, NYson::TYsonString> tokenMetadata;
+    std::vector<std::string> userTokens;
+    THashMap<std::string, NYson::TYsonString> tokenMetadata;
 
     auto tokens = ConvertTo<IListNodePtr>(rspOrError.Value());
     for (const auto& tokenNode : tokens->GetChildren()) {
@@ -354,7 +354,7 @@ TListUserTokensResult TClient::DoListUserTokens(
                         .Item("creation_time").Value(attributes.Find<std::string>("creation_time"))
                         .Item("effective_expiration").Value(attributes.GetYson("effective_expiration"))
                     .EndMap();
-                tokenMetadata[ConvertTo<TString>(tokenNode)] = ConvertToYsonString(metadata);
+                tokenMetadata[ConvertTo<std::string>(tokenNode)] = ConvertToYsonString(metadata);
             }
         }
     }
@@ -368,7 +368,7 @@ TListUserTokensResult TClient::DoListUserTokens(
 void TClient::ValidateAuthenticationCommandPermissions(
     TStringBuf action,
     const std::string& user,
-    const TString& passwordSha256,
+    const std::string& passwordSha256,
     const TTimeoutOptions& options)
 {
     static const std::string HashedPasswordAttribute = "hashed_password";
@@ -429,8 +429,8 @@ void TClient::ValidateAuthenticationCommandPermissions(
             auto rspNode = ConvertToNode(rsp);
             const auto& attributes = rspNode->Attributes();
 
-            auto hashedPassword = attributes.Get<TString>(HashedPasswordAttribute);
-            auto passwordSalt = attributes.Get<TString>(PasswordSaltAttribute);
+            auto hashedPassword = attributes.Get<std::string>(HashedPasswordAttribute);
+            auto passwordSalt = attributes.Get<std::string>(PasswordSaltAttribute);
             auto passwordRevision = attributes.Get<ui64>(PasswordRevisionAttribute);
 
             if (HashPasswordSha256(passwordSha256, passwordSalt) != hashedPassword) {

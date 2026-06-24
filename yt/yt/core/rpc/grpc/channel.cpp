@@ -43,11 +43,13 @@ public:
     void RecordAnnotation(y_absl::string_view /*annotation*/) override
     { }
 
+    // TODO(babenko): migrate to std::string
     TString TraceId() override
     {
         return {};
     }
 
+    // TODO(babenko): migrate to std::string
     TString SpanId() override
     {
         return {};
@@ -93,6 +95,7 @@ public:
         if (!grpc_error_get_int(error, grpc_core::StatusIntProperty::kRpcStatus, &statusCode)) {
             statusCode = GRPC_STATUS_UNKNOWN;
         }
+        // TODO(babenko): migrate to std::string
         TString statusDetail;
         if (!grpc_error_get_str(error, grpc_core::StatusStrProperty::kDescription, &statusDetail)) {
             statusDetail = "Unknown error";
@@ -224,7 +227,7 @@ public:
 
     int GetInflightRequestCount() override
     {
-        return ConcurrentCalls_.load(std::memory_order::relaxed);
+        return ConcurrentCallCount_.load(std::memory_order::relaxed);
     }
 
     const IMemoryUsageTrackerPtr& GetChannelMemoryTracker() override
@@ -250,7 +253,7 @@ private:
     TGrpcLibraryLockPtr LibraryLock_ = TDispatcher::Get()->GetLibraryLock();
     TGrpcChannelPtr Channel_;
     TGrpcChannelCredentialsPtr Credentials_;
-    std::atomic<int> ConcurrentCalls_;
+    std::atomic<int> ConcurrentCallCount_;
 
 
     class TCallHandler
@@ -270,12 +273,12 @@ private:
             , ResponseHandler_(std::move(responseHandler))
             , GuardedCompletionQueue_(TDispatcher::Get()->PickRandomGuardedCompletionQueue())
         {
-            Owner_->ConcurrentCalls_.fetch_add(1, std::memory_order::relaxed);
+            Owner_->ConcurrentCallCount_.fetch_add(1, std::memory_order::relaxed);
         }
 
         ~TCallHandler()
         {
-            Owner_->ConcurrentCalls_.fetch_sub(1, std::memory_order::relaxed);
+            Owner_->ConcurrentCallCount_.fetch_sub(1, std::memory_order::relaxed);
         }
 
         void Initialize()

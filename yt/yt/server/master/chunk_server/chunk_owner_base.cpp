@@ -105,9 +105,7 @@ void TChunkOwnerBase::Load(NCellMaster::TLoadContext& context)
     Load(context, UpdateMode_);
 
     // Initial migration is done in OnAfterSnapshotLoaded in CypressManager.
-    if (context.GetVersion() >= EMasterReign::FixSecurityTagsMessingWithChunkListStructure && context.GetVersion() < EMasterReign::Start_25_4 ||
-        context.GetVersion() >= EMasterReign::FixSecurityTagsMessingWithChunkListStructure_25_4)
-    {
+    if (context.GetVersion() >= EMasterReign::FixSecurityTagsMessingWithChunkListStructure_25_4) {
         Load(context, SecurityTagsUpdateMode_);
     }
 
@@ -213,6 +211,7 @@ const TChunkList* TChunkOwnerBase::GetSnapshotChunkList(EChunkListContentType ty
             return chunkList;
 
         case EUpdateMode::Append:
+            YT_VERIFY(type == EChunkListContentType::Main);
             if (GetType() == EObjectType::Journal) {
                 return chunkList;
             } else {
@@ -322,6 +321,9 @@ const TChunkReplication& TChunkOwnerBase::EffectiveHunkReplication() const
     }
 }
 
+void TChunkOwnerBase::ValidateBeginUpload(const TBeginUploadContext& /*context*/)
+{ }
+
 void TChunkOwnerBase::BeginUpload(const TBeginUploadContext& context)
 {
     UpdateMode_ = context.Mode;
@@ -413,10 +415,9 @@ TChunkOwnerDataStatistics TChunkOwnerBase::ComputeUpdateStatistics() const
             break;
 
         case EUpdateMode::Overwrite:
-            for (auto contentType : TEnumTraits<EChunkListContentType>::GetDomainValues()) {
-                if (auto* chunkList = GetSnapshotChunkList(contentType)) {
-                    updateStatistics += chunkList->Statistics().ToDataStatistics();
-                }
+            updateStatistics += GetSnapshotChunkList()->Statistics().ToDataStatistics();
+            if (auto* hunkChunkList = GetSnapshotHunkChunkList()) {
+                updateStatistics += hunkChunkList->HunkStatistics().ToDataStatistics();
             }
             break;
 

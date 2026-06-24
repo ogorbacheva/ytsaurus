@@ -120,7 +120,6 @@ public:
         , IsLegacyQueryHandler_(!bootstrap->IsChytApiServerAddress(req->GetRemoteAddress()) && req->GetUrl().Path.StartsWith("/query"))
         , AllowGetRequests_(!IsLegacyQueryHandler_) // In case of the non-legacy handler GET-requests are allowed by default.
         , Handler_(handler)
-        , ChannelFactory_(CreateTcpBusChannelFactory(Bootstrap_->GetConfig()->ClusterConnection->Dynamic->BusClient))
     {
         if (auto* traceParent = req->GetHeaders()->Find("traceparent")) {
             YT_LOG_INFO("Request contains traceparent header (Traceparent: %v)", traceParent);
@@ -192,7 +191,7 @@ public:
             .OptionalItem("yql_operation_id", FindHeader(Request_, "X-YQL-Operation-ID"));
     }
 
-    const TString& GetUser() const
+    const std::string& GetUser() const
     {
         return User_;
     }
@@ -216,7 +215,7 @@ private:
     TCgiParameters CgiParameters_;
 
     TOperationId OperationId_;
-    TString CliqueAlias_;
+    std::optional<std::string> CliqueAlias_;
 
     TYsonString OperationAcl_;
 
@@ -230,14 +229,13 @@ private:
 
     // Token is provided via header "Authorization" or via cgi parameter "password".
     // If empty, the authentication will be performed via Cookie.
-    TString Token_;
-    TString User_;
-    TString InstanceId_;
+    std::string Token_;
+    std::string User_;
+    std::string InstanceId_;
     std::string InstanceHost_;
-    TString InstanceHttpPort_;
+    std::string InstanceHttpPort_;
     TCachedDiscoveryPtr Discovery_;
     TClickHouseHandlerPtr Handler_;
-    NRpc::IChannelFactoryPtr ChannelFactory_;
 
     static const inline std::vector<std::string> DiscoveryAttributes_ = std::vector<std::string>{
         "host",
@@ -248,7 +246,7 @@ private:
     };
 
     // These fields define the proxied request issued to a randomly chosen instance.
-    TString ProxiedRequestUrl_;
+    std::string ProxiedRequestUrl_;
     TSharedRef ProxiedRequestBody_;
     THeadersPtr ProxiedRequestHeaders_;
 
@@ -258,12 +256,12 @@ private:
     std::vector<TError> RequestErrors_;
     TError ResponseError_;
 
-    using TInstanceMap = THashMap<TString, NYTree::IAttributeDictionaryPtr>;
+    using TInstanceMap = THashMap<std::string, NYTree::IAttributeDictionaryPtr>;
     TInstanceMap Instances_;
 
     // Fields for structured log only.
     int RetryCount_ = -1;
-    TString TokenHash_;
+    std::string TokenHash_;
 
     void ReplyWithError(EStatusCode statusCode, const TError& error)
     {
@@ -384,7 +382,7 @@ private:
             YT_VERIFY(traceContext);
             traceContext->AddTag("user", User_);
             traceContext->AddTag("clique_id", OperationId_);
-            traceContext->AddTag("clique_alias", CliqueAlias_);
+            traceContext->AddTag("clique_alias", *CliqueAlias_);
 
             if (isDatalens) {
                 if (auto tracingOverride = Config_->DatalensTracingOverride) {
@@ -559,15 +557,15 @@ private:
 
     struct TCliqueAliasAndJobCookie
     {
-        TString CliqueAlias;
+        std::string CliqueAlias;
         std::optional<size_t> JobCookie;
     };
 
-    TErrorOr<TCliqueAliasAndJobCookie> ParseCliqueAliasAndInstanceCookie(TString cliqueAliasAndInstanceCookie) const
+    TErrorOr<TCliqueAliasAndJobCookie> ParseCliqueAliasAndInstanceCookie(std::string cliqueAliasAndInstanceCookie) const
     {
         TCliqueAliasAndJobCookie result;
 
-        if (cliqueAliasAndInstanceCookie.Contains("@")) {
+        if (cliqueAliasAndInstanceCookie.contains("@")) {
             auto separatorIndex = cliqueAliasAndInstanceCookie.find_last_of("@");
 
             auto jobCookieString = cliqueAliasAndInstanceCookie.substr(
@@ -585,7 +583,7 @@ private:
             result = TCliqueAliasAndJobCookie{std::move(cliqueAliasAndInstanceCookie)};
         }
 
-        if (result.CliqueAlias.StartsWith("*")) {
+        if (result.CliqueAlias.starts_with("*")) {
             result.CliqueAlias.erase(0, 1);
         }
 
@@ -615,14 +613,14 @@ private:
             AllowGetRequests_ = !IsLegacyQueryHandler_ || !token.empty();
 
             // Get clique alias and job cookie.
-            TString cliqueAliasAndInstanceCookiePacked;
+            std::string cliqueAliasAndInstanceCookiePacked;
 
             if (CgiParameters_.Has("chyt.clique_alias")) { // first-priority header
                 cliqueAliasAndInstanceCookiePacked = CgiParameters_.Get("chyt.clique_alias");
             } else {
                 cliqueAliasAndInstanceCookiePacked = IsLegacyQueryHandler_
-                    ? TString(CgiParameters_.Get("database"))
-                    : TString(user);
+                    ? std::string(CgiParameters_.Get("database"))
+                    : user;
             }
 
             auto cliqueAliasAndInstanceCookie = ParseCliqueAliasAndInstanceCookie(std::move(cliqueAliasAndInstanceCookiePacked));
@@ -731,14 +729,14 @@ private:
             Logger);
     }
 
-    TString GetOperationAlias() const
+    std::string GetOperationAlias() const
     {
-        return "*" + CliqueAlias_;
+        return "*" + *CliqueAlias_;
     }
 
-    TString GetDiscoveryGroupId() const
+    std::string GetDiscoveryGroupId() const
     {
-        return "/chyt/" + CliqueAlias_;
+        return "/chyt/" + *CliqueAlias_;
     }
 
     IDiscoveryPtr CreateDiscoveryV2()
@@ -751,7 +749,7 @@ private:
         return NClickHouseServer::CreateDiscoveryV2(
             std::move(config),
             Bootstrap_->GetNativeConnection(),
-            ChannelFactory_,
+            Bootstrap_->GetNativeConnection()->GetChannelFactory(),
             ControlInvoker_,
             DiscoveryAttributes_,
             Logger);
@@ -887,7 +885,7 @@ private:
 
     bool TryGetOperation()
     {
-        auto operationId = Handler_->GetOperationId(CliqueAlias_);
+        auto operationId = Handler_->GetOperationId(*CliqueAlias_);
         if (operationId) {
             OperationId_ = operationId;
             YT_LOG_DEBUG("Operation resolved from strawberry nodes (OperationAlias: %v, OperationId: %v)",
@@ -949,7 +947,7 @@ private:
     {
         auto error = WaitFor(
             PermissionCache_->Get(TPermissionKey{
-                .Path = Format("//sys/access_control_object_namespaces/chyt/%v/principal", ToYPathLiteral(CliqueAlias_)),
+                .Path = Format("//sys/access_control_object_namespaces/chyt/%v/principal", ToYPathLiteral(*CliqueAlias_)),
                 .User = User_,
                 .Permission = EPermission::Use,
             }));
@@ -1049,7 +1047,7 @@ private:
         return instanceOrder[RandomNumber<size_t>(stickyGroupSize)];
     }
 
-    TInstanceMap::const_iterator PickInstanceBySessionId(const TString& sessionId) const
+    TInstanceMap::const_iterator PickInstanceBySessionId(const std::string& sessionId) const
     {
         YT_LOG_DEBUG("Pick instance by session id using sticky strategy (SessionId: %v)", sessionId);
         return PickInstanceSticky(ComputeHash(sessionId), 1);
@@ -1140,7 +1138,7 @@ private:
                 return false;
             }
 
-        } else if (const TString& sessionId = CgiParameters_.Get("session_id"); !sessionId.empty()) {
+        } else if (std::string sessionId = CgiParameters_.Get("session_id"); !sessionId.empty()) {
             pickedInstance = PickInstanceBySessionId(sessionId);
 
         } else if (queryStickyGroupSize.has_value()) {
@@ -1185,7 +1183,7 @@ private:
                 // Probably the instance had died and another service was started at the same host:port.
                 // We can safely retry such requests.
 
-                THashSet<TString> headers;
+                THashSet<std::string> headers;
                 for (const auto& [header, value] : response->GetHeaders()->Dump()) {
                     headers.emplace(header);
                 }
@@ -1223,10 +1221,10 @@ private:
             << RequestErrors_);
     }
 
-    void InitializeInstance(const TString& id, const NYTree::IAttributeDictionaryPtr& attributes)
+    void InitializeInstance(const std::string& id, const NYTree::IAttributeDictionaryPtr& attributes)
     {
         InstanceId_ = id;
-        InstanceHost_ = attributes->Get<TString>("host");
+        InstanceHost_ = attributes->Get<std::string>("host");
         auto port = attributes->Get<INodePtr>("http_port");
         InstanceHttpPort_ = (port->GetType() == ENodeType::String ? port->AsString()->GetValue() : ToString(port->GetValue<ui64>()));
 
@@ -1272,7 +1270,7 @@ TClickHouseHandler::TClickHouseHandler(TBootstrap* bootstrap)
 {
     OperationCache_ = New<TOperationCache>(
         Config_->OperationCache,
-        THashSet<TString>{"id", "runtime_parameters", "state", "suspended"},
+        THashSet<std::string>{"id", "runtime_parameters", "state", "suspended"},
         Client_,
         ClickHouseProxyProfiler().WithPrefix("/operation_cache"));
     PermissionCache_ = New<TPermissionCache>(
@@ -1363,7 +1361,7 @@ void TClickHouseHandler::AdjustQueryCount(const std::string& user, int delta)
 void TClickHouseHandler::UpdateOperationIds()
 {
     auto Logger = ClickHouseUnstructuredLogger();
-    THashMap<TString, TOperationId> aliasToOperationId;
+    THashMap<std::string, TOperationId> aliasToOperationId;
     try {
         TListNodeOptions options;
         options.ReadFrom = Bootstrap_->GetConfig()->ClickHouse->ReadOperationIdsFrom;
@@ -1399,7 +1397,7 @@ void TClickHouseHandler::UpdateOperationIds()
     AliasToOperationIdInitialized_ = true;
 }
 
-TOperationId TClickHouseHandler::GetOperationId(const TString& alias) const
+TOperationId TClickHouseHandler::GetOperationId(const std::string& alias) const
 {
     if (!AliasToOperationIdInitialized_) {
         auto future = OperationIdUpdateExecutor_->GetExecutedEvent();

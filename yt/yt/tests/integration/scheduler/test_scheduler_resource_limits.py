@@ -1,7 +1,7 @@
 from yt_env_setup import YTEnvSetup, is_asan_build, is_debug_build, Restarter, NODES_SERVICE
 
 from yt_commands import (
-    authors, print_debug, wait, wait_breakpoint, release_breakpoint, with_breakpoint, create,
+    authors, print_debug, raises_yt_error, wait, wait_breakpoint, release_breakpoint, with_breakpoint, create,
     ls, get, set, create_pool, write_file, read_table, write_table, map, vanilla, get_job,
     update_nodes_dynamic_config, update_controller_agent_config, remember_controller_agent_config,
     run_test_vanilla, sync_create_cells)
@@ -12,7 +12,7 @@ from yt_helpers import read_structured_log, write_log_barrier
 
 import yt.environment.init_operations_archive as init_operations_archive
 
-from yt.common import YtError, update
+from yt.common import update
 import pytest
 
 import string
@@ -49,7 +49,6 @@ def create_memory_script(memory, before_action=""):
 ###############################################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerMemoryLimits(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -76,7 +75,7 @@ class TestSchedulerMemoryLimits(YTEnvSetup):
         )
 
         # if all jobs failed then operation is also failed
-        with pytest.raises(YtError):
+        with raises_yt_error("Failed jobs limit exceeded"):
             op.track()
         # ToDo: check job error messages.
         import builtins
@@ -107,13 +106,11 @@ class TestSchedulerMemoryLimits(YTEnvSetup):
         )
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerMemoryLimitsPorto(TestSchedulerMemoryLimits):
     ENABLE_MULTIDAEMON = True
     USE_PORTO = True
 
 
-@pytest.mark.enabled_multidaemon
 class TestDisabledMemoryLimit(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -483,7 +480,6 @@ class TestMemoryReserveMultiplier(YTEnvSetup):
 
 @pytest.mark.skipif(is_asan_build(), reason="This test does not work under ASAN")
 @pytest.mark.skipif(is_debug_build(), reason="This test does not work under Debug build")
-@pytest.mark.enabled_multidaemon
 class TestResourceOverdraftAbort(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -910,7 +906,6 @@ class TestUpdateInstanceLimits(YTEnvSetup):
 ###############################################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerGpu(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -1048,7 +1043,6 @@ class TestSchedulerGpu(YTEnvSetup):
 ###############################################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestPorts(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_SCHEDULERS = 1
@@ -1099,7 +1093,7 @@ class TestPorts(YTEnvSetup):
         assert len(jobs) == 1
 
         # Not enough ports
-        with pytest.raises(YtError):
+        with raises_yt_error("\"fail_on_job_restart\" option is set in operation spec or user job spec"):
             map(
                 in_="//tmp/t_in",
                 out="//tmp/t_out_other",

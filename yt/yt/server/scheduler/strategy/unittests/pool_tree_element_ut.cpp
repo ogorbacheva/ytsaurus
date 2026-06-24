@@ -201,7 +201,7 @@ public:
         return nullptr;
     }
 
-    TString FormatResources(const TJobResourcesWithQuota& resources) const override
+    std::string FormatResources(const TJobResourcesWithQuota& resources) const override
     {
         YT_VERIFY(MediumDirectory_);
         return NScheduler::FormatResources(resources);
@@ -220,7 +220,7 @@ public:
     void LogResourceMetering(
         const TMeteringKey& /*key*/,
         const TMeteringStatistics& /*statistics*/,
-        const THashMap<TString, TString>& /*otherTags*/,
+        const THashMap<std::string, std::string>& /*otherTags*/,
         TInstant /*connectionTime*/,
         TInstant /*previousLogTime*/,
         TInstant /*currentTime*/) override
@@ -244,9 +244,9 @@ public:
         return OKFuture;
     }
 
-    const THashMap<std::string, TString>& GetUserDefaultParentPoolMap() const override
+    const THashMap<std::string, std::string>& GetUserDefaultParentPoolMap() const override
     {
-        static const THashMap<std::string, TString> stub;
+        static const THashMap<std::string, std::string> stub;
         return stub;
     }
 
@@ -279,7 +279,8 @@ public:
         const TDiskResources& diskResourceLimits,
         const std::string& treeId,
         const TString& poolPath,
-        std::optional<TDuration> waitingForResourcesOnNodeTimeout), (override));
+        std::optional<TDuration> waitingForResourcesOnNodeTimeout,
+        std::optional<std::string> allocationGroupName), (override));
 
     MOCK_METHOD(void, OnNonscheduledAllocationAborted, (TAllocationId, EAbortReason, TControllerEpoch), (override));
 
@@ -1288,7 +1289,7 @@ TEST_F(TPoolTreeElementTest, TestVolumeOverflowDistributionWithMinimalVolumeShar
         // 10% of cluster for 1 millisecond.
         auto overflowedVolume = TResourceVolume(GetOnePercentOfCluster() * 10., TDuration::MilliSeconds(1));
         auto expectedVolume = selfVolume + overflowedVolume;
-        auto actualVolume = acceptablePool->GetAccumulatedResourceVolume() ;
+        auto actualVolume = acceptablePool->GetAccumulatedResourceVolume();
 
         EXPECT_EQ(expectedVolume.GetCpu(), actualVolume.GetCpu());
         EXPECT_NEAR(expectedVolume.GetMemory(), actualVolume.GetMemory(), 1);

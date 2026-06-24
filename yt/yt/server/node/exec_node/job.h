@@ -5,26 +5,24 @@
 #include "gpu_manager.h"
 #include "helpers.h"
 #include "job_info.h"
-#include "public.h"
 #include "preparation_options.h"
 #include "private.h"
+#include "public.h"
 
 #include <yt/yt/server/node/job_agent/job_resource_manager.h>
 
-#include <yt/yt/server/lib/exec_node/public.h>
 #include <yt/yt/server/lib/exec_node/job_report.h>
 #include <yt/yt/server/lib/exec_node/proxying_data_node_service_helpers.h>
+#include <yt/yt/server/lib/exec_node/public.h>
 
-#include <yt/yt/server/lib/misc/job_report.h>
+#include <yt/yt/server/lib/controller_agent/network_project.h>
 
 #include <yt/yt/server/lib/job_agent/public.h>
 #include <yt/yt/server/lib/job_agent/structs.h>
 
+#include <yt/yt/server/lib/misc/job_report.h>
+
 #include <yt/yt/server/lib/scheduler/structs.h>
-
-#include <yt/yt/server/lib/controller_agent/network_project.h>
-
-#include <yt/yt/client/api/client.h>
 
 #include <yt/yt/ytlib/job_prober_client/public.h>
 
@@ -32,7 +30,10 @@
 
 #include <yt/yt/ytlib/scheduler/public.h>
 
+#include <yt/yt/client/api/client.h>
+
 #include <yt/yt/library/containers/public.h>
+
 #include <yt/yt/library/containers/cri/public.h>
 
 #include <yt/yt/core/logging/log.h>
@@ -195,6 +196,7 @@ public:
 
     void HandleJobReport(NExecNode::TNodeJobReport&& jobReport);
 
+    // NB(bystrovserg): Should be called only at the end of job as it clears input_node_directory.
     void ReportSpec();
 
     void ReportStderr();
@@ -209,6 +211,7 @@ public:
     NYson::TYsonString BuildArchiveFeatures() const;
 
     void SetHasJobTrace(bool value);
+    void SetHasGpuCheckStderr(bool value);
 
     void AbortJobAfterInterruptionCallFailed(TError internalError);
 
@@ -324,6 +327,7 @@ private:
     std::optional<TString> Stderr_;
     std::optional<TString> FailContext_;
     std::vector<NJobAgent::TJobProfile> Profiles_;
+    std::optional<NJobAgent::TJobProfile> JobProxyPeakMemoryProfile_;
     NControllerAgent::TCoreInfos CoreInfos_;
 
     bool InterruptionRequested_ = false;
@@ -353,23 +357,27 @@ private:
 
     std::optional<TInstant> PreparationStartTime_;
     std::optional<TInstant> NodeDirectoryPreparationStartTime_;
+    std::optional<TInstant> ArtifactsDownloadStartTime_;
     std::optional<TInstant> ArtifactsDownloadedTime_;
     std::optional<TInstant> StartTime_;
     std::optional<TInstant> ExecStartTime_;
     std::optional<TInstant> FinishTime_;
     std::optional<TInstant> ResultReceivedTime_;
 
+    std::optional<TInstant> PrepareLayersStartTime_;
+    std::optional<TInstant> PrepareLayersFinishTime_;
+
     std::optional<TInstant> PrepareRootVolumeStartTime_;
     std::optional<TInstant> PrepareRootVolumeFinishTime_;
 
-    std::optional<TInstant> PrepareTmpfsVolumesStartTime_;
-    std::optional<TInstant> PrepareTmpfsVolumesFinishTime_;
+    std::optional<TInstant> PrepareNonRootVolumesStartTime_;
+    std::optional<TInstant> PrepareNonRootVolumesFinishTime_;
 
     std::optional<TInstant> PrepareGpuCheckVolumeStartTime_;
     std::optional<TInstant> PrepareGpuCheckVolumeFinishTime_;
 
-    std::optional<TInstant> LinkTmpfsVolumesStartTime_;
-    std::optional<TInstant> LinkTmpfsVolumesFinishTime_;
+    std::optional<TInstant> LinkVolumesStartTime_;
+    std::optional<TInstant> LinkVolumesFinishTime_;
 
     std::optional<TInstant> ValidateRootFSStartTime_;
     std::optional<TInstant> ValidateRootFSFinishTime_;
@@ -393,7 +401,8 @@ private:
     bool IsGpuRequested_;
 
     EJobState JobState_ = EJobState::Waiting;
-    EJobPhase JobPhase_ = EJobPhase::Created;
+    // NB(pogorelov): We change job phase only from job thread.
+    std::atomic<EJobPhase> JobPhase_ = EJobPhase::Created;
 
     NServer::TJobEvents JobEvents_;
 
@@ -443,10 +452,12 @@ private:
     TJobFSSecretaryPtr FSSecretary_;
 
     bool HasJobTrace_ = false;
+    bool HasGpuCheckStderr_ = false;
 
     NYTree::IYPathServicePtr CreateStaticOrchidService();
     NYTree::IYPathServicePtr CreateJobProxyOrchidService();
     NYTree::IYPathServicePtr CreateDynamicOrchidService();
+    NYTree::IYPathServicePtr CreateTestingOrchidService();
 
     // Helpers.
 
@@ -479,6 +490,10 @@ private:
 
     void ValidateJobPhase(EJobPhase expectedPhase) const;
 
+    //! Remove heavy fields (e.g. input_node_directory) from the job spec.
+    //! Can be called only at the end of the job.
+    void TrimJobSpec();
+
     // Event handlers.
     void OnNodeDirectoryPrepared(TErrorOr<std::unique_ptr<NNodeTrackerClient::NProto::TNodeDirectory>>&& protoNodeDirectoryOrError);
 
@@ -501,7 +516,7 @@ private:
 
     TFuture<void> RunGpuCheckCommand(
         const TString& gpuCheckBinaryPath,
-        std::vector<TString> gpuCheckBinaryArgs,
+        std::vector<std::string> gpuCheckBinaryArgs,
         EGpuCheckType gpuCheckType);
 
     void OnGpuCheckCommandFinished(const TError& error);
@@ -578,6 +593,8 @@ private:
     TNodeJobReport MakeDefaultJobReport();
 
     void InitializeJobProbe();
+
+    void InitializeJobProxyLogging();
 
     void ResetJobProbe();
 

@@ -231,9 +231,9 @@ struct TFilteredSpecAttributes
 
 std::string GetFilterFactors(const TArchiveOperationRequest& request)
 {
-    auto getOriginalPath = [] (const INodePtr& node) -> std::optional<TString> {
+    auto getOriginalPath = [] (const INodePtr& node) -> std::optional<NYPath::TYPath> {
         try {
-            if (auto originalPath = node->Attributes().Find<TString>("original_path")) {
+            if (auto originalPath = node->Attributes().Find<NYPath::TYPath>("original_path")) {
                 return *originalPath;
             }
             return NYPath::TRichYPath::Parse(node->AsString()->GetValue()).GetPath();
@@ -262,7 +262,8 @@ std::string GetFilterFactors(const TArchiveOperationRequest& request)
 
     for (const auto& node : {filteredSpec.Pool, filteredSpec.Title}) {
         if (node && node->GetType() == ENodeType::String) {
-            parts.push_back(node->AsString()->GetValue());
+            // TODO(babenko): migrate to std::string
+            parts.push_back(TString(node->AsString()->GetValue()));
         }
     }
 
@@ -289,7 +290,7 @@ std::string GetFilterFactors(const TArchiveOperationRequest& request)
     parts.insert(parts.end(), pools.begin(), pools.end());
 
     auto result = JoinToString(parts.begin(), parts.end(), TStringBuf(" "));
-    return to_lower(result);
+    return to_lower(TString(result));
 }
 
 bool HasFailedJobs(const TYsonString& briefProgress)
@@ -737,8 +738,8 @@ public:
         TArchiveOperationRequest result;
 
         if (operation->GetRuntimeParameters() && operation->GetRuntimeParameters()->AcoName) {
-            auto acl = GetAclFromAcoName(Bootstrap_->GetClient(), *operation->GetRuntimeParameters()->AcoName);
-            operation->GetRuntimeParameters()->Acl = ConvertTo<NSecurityClient::TSerializableAccessControlList>(acl);
+            const auto& acoName = *operation->GetRuntimeParameters()->AcoName;
+            operation->GetRuntimeParameters()->Acl = GetAclFromAcoName(Bootstrap_->GetClient(), acoName);
         }
 
         result.Id = operation->GetId();
@@ -793,7 +794,7 @@ public:
         if (auto experimentAssignmentsYson = attributes.FindYson("experiment_assignments")) {
             result.ExperimentAssignments = experimentAssignmentsYson;
             auto experimentAssignments = ConvertTo<std::vector<TExperimentAssignmentPtr>>(experimentAssignmentsYson);
-            std::vector<TString> experimentAssignmentNames;
+            std::vector<std::string> experimentAssignmentNames;
             experimentAssignmentNames.reserve(experimentAssignments.size());
             for (const auto& experimentAssignment : experimentAssignments) {
                 experimentAssignmentNames.emplace_back(experimentAssignment->GetName());

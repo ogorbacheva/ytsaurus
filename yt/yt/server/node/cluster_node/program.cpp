@@ -15,6 +15,8 @@
 
 #include <yt/yt/library/server_program/server_program.h>
 
+#include <yt/yt/library/tracing/jaeger/tracer.h>
+
 #include <yt/yt/ytlib/api/native/config.h>
 
 #include <yt/yt/ytlib/auth/config.h>
@@ -169,7 +171,7 @@ private:
         }
 
         if (IsDumpSnapshotMode() && IsReplayChangelogsMode()) {
-            THROW_ERROR_EXCEPTION("Option 'replay-changelogs' can not be used with 'dump-snapshot'");
+            THROW_ERROR_EXCEPTION("Option 'replay-changelogs' cannot be used with 'dump-snapshot'");
         }
 
         if (IsBuildSnapshotMode() && !IsReplayChangelogsMode() && !IsValidateSnapshotMode()) {
@@ -210,6 +212,9 @@ private:
                 authManagerConfig->EnableValidation = false;
                 authManagerConfig->EnableSubmission = false;
                 authManagerConfig->TvmService = nullptr;
+
+                auto jaegerTracerConfig = config->GetSingletonConfig<NTracing::TJaegerTracerConfig>();
+                jaegerTracerConfig->TvmService = nullptr;
             }
 
             config->TabletNode->ResourceLimits->Slots = std::max(config->TabletNode->ResourceLimits->Slots, 1);
@@ -246,7 +251,7 @@ private:
         DoNotOptimizeAway(bootstrap);
 
         if (IsDryRunMode()) {
-            NBus::TTcpDispatcher::Get()->DisableNetworking();
+            NBus::NTcp::TDispatcher::Get()->DisableNetworking();
 
             bootstrap->Initialize();
 
@@ -291,7 +296,7 @@ private:
     bool ValidateSnapshotFlag_ = false;
     bool AbortOnAlert_ = false;
     bool CheckInvariants_ = true;
-    TString LoadSnapshotPath_;
+    std::string LoadSnapshotPath_;
     bool ReplayChangelogsFlag_ = false;
     std::vector<TString> ReplayChangelogsPaths_;
     bool CellIdFlag_ = false;
@@ -299,7 +304,7 @@ private:
     std::string TabletCellBundle_ = "fake-bundle";
     TCellTag::TUnderlying ClockClusterTag_ = InvalidCellTag.Underlying();
     bool BuildSnapshotFlag_ = false;
-    TString BuildSnapshotPath_;
+    std::string BuildSnapshotPath_;
     bool SnapshotMetaFlag_ = false;
     NYson::TYsonString SnapshotMeta_;
     bool SkipTvmServiceEnvValidationFlag_ = false;

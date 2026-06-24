@@ -323,6 +323,10 @@ struct TTabletSnapshot
 
     NYson::TYsonString CustomRuntimeData;
 
+    TTabletSizeMetrics TabletSizeMetrics;
+
+    std::vector<NTabletServer::TOriginatorTablet> OriginatorTablets;
+
     std::atomic<bool> Unregistered = false;
 
     //! Returns a range of partitions intersecting with the range |[lowerBound, upperBound)|.
@@ -352,7 +356,8 @@ struct TTabletSnapshot
 
     void ValidateCellId(NElection::TCellId cellId);
     void ValidateMountRevision(NHydra::TRevision mountRevision);
-    void ValidateServantIsActive(const NHiveClient::ICellDirectoryPtr& cellDirectory);
+    [[nodiscard]]
+    TError ValidateServantIsActive(const NHiveClient::ICellDirectoryPtr& cellDirectory);
     void MaybeReplyWithReshardRedirectionHint();
     void WaitOnLocks(TTimestamp timestamp) const;
 };
@@ -363,6 +368,7 @@ DEFINE_REFCOUNTED_TYPE(TTabletSnapshot)
 
 void ValidateTabletRetainedTimestamp(const TTabletSnapshotPtr& tabletSnapshot, TTimestamp timestamp);
 void ValidateTabletMounted(TTablet* tablet);
+void ValidateTrimmedRowCountPrecedesTimestamp(const TTablet* tablet, i64 trimmedRowCount, TTimestamp timestamp);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -395,6 +401,7 @@ struct ITabletContext
     virtual std::string GetLocalHostName() const = 0;
     virtual NNodeTrackerClient::TNodeDescriptor GetLocalDescriptor() const = 0;
     virtual INodeMemoryTrackerPtr GetNodeMemoryUsageTracker() const = 0;
+    virtual TRowCacheControllerPtr GetRowCacheController() const = 0;
     virtual NChunkClient::IChunkReplicaCachePtr GetChunkReplicaCache() const = 0;
     virtual IHedgingManagerRegistryPtr GetHedgingManagerRegistry() const = 0;
     virtual ITabletWriteManagerHostPtr GetTabletWriteManagerHost() const = 0;
@@ -551,6 +558,9 @@ public:
     DEFINE_BYVAL_RW_PROPERTY(TTabletCellId, SiblingCellId);
     DEFINE_BYVAL_RW_PROPERTY(NHydra::TRevision, SiblingMountRevision);
     DEFINE_BYVAL_RW_PROPERTY(NHiveServer::TAvenueEndpointId, SiblingAvenueEndpointId);
+    // Reign of the current servant at the moment when movement started.
+    // Movement should be aborted whenever reign of any participant changes.
+    DEFINE_BYVAL_RW_PROPERTY(ETabletReign, Reign);
     DEFINE_BYREF_RW_PROPERTY(THashSet<TStoreId>, CommonDynamicStoreIds);
 
     using TStoreRowCountMap = THashMap<TStoreId, i64>;
@@ -563,7 +573,7 @@ public:
     DEFINE_BYREF_RW_PROPERTY(TPromise<void>, TargetActivationPromise);
 
 public:
-    void ValidateWriteToTablet() const;
+    void ValidateWriteToTablet(TTabletId tabletId) const;
     bool IsTabletStoresUpdateAllowed(bool isCommonFlush) const;
     bool ShouldForwardMutation() const;
 
@@ -863,7 +873,9 @@ public:
     void UpdateUnflushedTimestamp() const;
 
     void AdvancePersistentConflictHorizonTimestamp(TTimestamp timestamp);
-    void AdvanceTransientConflictHorizonTimestamp(TTimestamp timestamp);
+    void AdvanceTransientConflictHorizonTimestamp(
+        TTimestamp timestamp,
+        std::optional<NHydra::TRevision> expectedMountRevision);
     // Advances the transient timestamp up to the persistent one.
     void ResetTransientConflictHorizonTimestamp();
 
@@ -930,7 +942,7 @@ public:
 
     void UpdateUnmergedRowCount();
 
-    TTimestamp GetOrderedChaosReplicationMinTimestamp();
+    TTimestamp GetOrderedChaosReplicationMinTimestamp() const;
 
     const IHunkLockManagerPtr& GetHunkLockManager() const;
 
@@ -980,18 +992,6 @@ public:
     TSimpleLruCache<NChunkClient::TChunkId, TMinHashDigestPtr>* GetMinHashDigestCache() const;
 
 private:
-    struct TTabletSizeMetrics
-    {
-        i64 DataWeight = 0;
-        i64 UncompressedDataSize = 0;
-        i64 CompressedDataSize = 0;
-        i64 RowCount = 0;
-        i64 ChunkCount = 0;
-        i64 HunkCount = 0;
-        i64 TotalHunkLength = 0;
-        i64 HunkChunkCount = 0;
-    };
-
     class TTabletSizeProfiler
     {
     public:

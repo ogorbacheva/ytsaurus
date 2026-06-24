@@ -81,6 +81,11 @@ struct THunkPayloadHeader
     TChecksum Checksum;
 };
 
+//! NB: Hunk data size statistics on master rely on this via ComputeHunkDataSize function.
+static_assert(sizeof(THunkPayloadHeader) == 8, "sizeof(THunkPayloadHeader) == 8");
+
+i64 ComputeHunkDataSize(const NProto::THunkChunkRef& ref);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 TSharedRef GetAndValidateHunkPayload(
@@ -357,7 +362,6 @@ TFuture<TSharedRange<TMutableUnversionedRow>> DecodeHunksInSchemafulUnversionedR
     IDictionaryCompressionFactoryPtr dictionaryCompressionFactory,
     NChunkClient::TClientChunkReadOptions options,
     TTabletPerformanceCountersPtr performanceCounters,
-    NTableClient::EPerformanceCountedRequestType requestType,
     TSharedRange<TMutableUnversionedRow> rows);
 
 //! A versioned counterpart of #ReadAndDecodeHunksInSchemafulRows.
@@ -366,7 +370,6 @@ TFuture<TSharedRange<TMutableVersionedRow>> DecodeHunksInVersionedRows(
     IDictionaryCompressionFactoryPtr dictionaryCompressionFactory,
     NChunkClient::TClientChunkReadOptions options,
     TTabletPerformanceCountersPtr performanceCounters,
-    NTableClient::EPerformanceCountedRequestType requestType,
     TSharedRange<TMutableVersionedRow> rows);
 
 //! Constructs a writer performing hunk encoding.

@@ -48,6 +48,7 @@ struct IBootstrap
     virtual const IInvokerPtr& GetTabletLookupPoolInvoker() const = 0;
     virtual const IInvokerPtr& GetTabletFetchPoolInvoker() const = 0;
     virtual const IInvokerPtr& GetTableRowFetchPoolInvoker() const = 0;
+    virtual const IInvokerPtr& GetTabletStatisticsInvoker() const = 0;
 
     virtual IInvokerPtr GetQueryPoolInvoker(
         const std::string& poolName,
@@ -86,6 +87,8 @@ struct IBootstrap
     const NDataNode::IChunkRegistryPtr& GetChunkRegistry() const override = 0;
 
     virtual const NRpc::IOverloadControllerPtr& GetOverloadController() const = 0;
+
+    virtual const TRowCacheControllerPtr& GetRowCacheController() const = 0;
 
     virtual const ICompressionDictionaryManagerPtr& GetCompressionDictionaryManager() const = 0;
     virtual const IAlienClusterClientCachePtr& GetReplicatorClientCache() const = 0;

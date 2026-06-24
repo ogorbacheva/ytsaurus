@@ -107,12 +107,7 @@ void TChunkLocationConfig::ApplyDynamicInplace(const TChunkLocationDynamicConfig
     UpdateYsonStructField(CoalescedReadMaxGapSize, dynamicConfig.CoalescedReadMaxGapSize);
 
     for (auto category : TEnumTraits<EWorkloadCategory>::GetDomainValues()) {
-        auto priority = dynamicConfig.FairShareWorkloadCategoryWeights[category];
-        if (priority) {
-            FairShareWorkloadCategoryWeights[category] = *priority;
-        } else {
-            FairShareWorkloadCategoryWeights[category] = DefaultFairShareWorkloadCategoryWeights[category];
-        }
+        UpdateYsonStructField(FairShareWorkloadCategoryWeights[category], dynamicConfig.FairShareWorkloadCategoryWeights[category]);
     }
 
     UpdateYsonStructField(MemoryLimitFractionForStartingNewSessions, dynamicConfig.MemoryLimitFractionForStartingNewSessions);
@@ -129,7 +124,7 @@ void TChunkLocationConfig::Register(TRegistrar registrar)
     registrar.Parameter("uncategorized_throttler", &TThis::UncategorizedThrottler)
         .DefaultNew();
 
-    registrar.Parameter("fair_share_workload_category_priorities", &TThis::FairShareWorkloadCategoryWeights)
+    registrar.Parameter("fair_share_workload_category_weights", &TThis::FairShareWorkloadCategoryWeights)
         .Default();
 
     registrar.Parameter("memory_limit_fraction_for_starting_new_sessions", &TThis::MemoryLimitFractionForStartingNewSessions)
@@ -179,6 +174,9 @@ void TChunkLocationDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("coalesced_read_max_gap_size", &TThis::CoalescedReadMaxGapSize)
         .GreaterThanOrEqual(0)
         .Optional();
+
+    registrar.Parameter("fair_share_workload_category_weights", &TThis::FairShareWorkloadCategoryWeights)
+        .Default();
 
     registrar.Parameter("memory_limit_fraction_for_starting_new_sessions", &TThis::MemoryLimitFractionForStartingNewSessions)
         .GreaterThanOrEqual(0.0)
@@ -536,6 +534,9 @@ void TDataNodeTestingOptions::Register(TRegistrar registrar)
     registrar.Parameter("block_read_timeout_fraction", &TThis::BlockReadTimeoutFraction)
         .Default(0.75);
 
+    registrar.Parameter("delay_before_blob_chunk_read", &TThis::DelayBeforeBlobChunkRead)
+        .Default();
+
     registrar.Parameter("delay_before_blob_session_block_free", &TThis::DelayBeforeBlobSessionBlockFree)
         .Default();
 
@@ -873,29 +874,29 @@ void TDataNodeConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("chunk_meta_cache", &TThis::ChunkMetaCache)
         .DefaultCtor([] {
-            return TSlruCacheConfig::CreateWithCapacity(5_GB);
+            return TSlruCacheConfig::CreateWithCapacity(5_GB, 16);
         });
     registrar.Parameter("blocks_ext_cache", &TThis::BlocksExtCache)
         .DefaultCtor([] {
-            return TSlruCacheConfig::CreateWithCapacity(3_GB);
+            return TSlruCacheConfig::CreateWithCapacity(3_GB, 16);
         });
     registrar.Parameter("block_meta_cache", &TThis::BlockMetaCache)
         .DefaultCtor([] {
-            return TSlruCacheConfig::CreateWithCapacity(1_GB);
+            return TSlruCacheConfig::CreateWithCapacity(1_GB, 16);
         });
     registrar.Parameter("block_cache", &TThis::BlockCache)
         .DefaultCtor([] {
             auto blockCache = New<NChunkClient::TBlockCacheConfig>();
-            blockCache->CompressedData = TSlruCacheConfig::CreateWithCapacity(6_GB);
+            blockCache->CompressedData = TSlruCacheConfig::CreateWithCapacity(6_GB, 16);
             return blockCache;
         });
     registrar.Parameter("blob_reader_cache", &TThis::BlobReaderCache)
         .DefaultCtor([] {
-            return TSlruCacheConfig::CreateWithCapacity(1_MB);
+            return TSlruCacheConfig::CreateWithCapacity(1_MB, 16);
         });
     registrar.Parameter("changelog_reader_cache", &TThis::ChangelogReaderCache)
         .DefaultCtor([] {
-            return TSlruCacheConfig::CreateWithCapacity(256);
+            return TSlruCacheConfig::CreateWithCapacity(256, 16);
         });
     registrar.Parameter("table_schema_cache", &TThis::TableSchemaCache)
         .DefaultNew();
@@ -930,6 +931,12 @@ void TDataNodeConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("enable_sequential_io_requests", &TThis::EnableSequentialIORequests)
         .Default(true);
+
+    registrar.Parameter("return_blocks_if_session_fails", &TThis::ReturnBlocksIfSessionFails)
+        .Default(false);
+
+    registrar.Parameter("fail_session_at_read_blocks_deadline", &TThis::FailSessionAtReadBlocksDeadline)
+        .Default(false);
 
     registrar.Parameter("store_locations", &TThis::StoreLocations)
         .Default();
@@ -1011,9 +1018,6 @@ void TDataNodeConfig::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Parameter("p2p", &TThis::P2P)
-        .DefaultNew();
-
-    registrar.Parameter("distributed_chunk_session_service", &TThis::DistributedChunkSessionService)
         .DefaultNew();
 
     registrar.Parameter("enable_trash_scanning_barrier", &TThis::EnableTrashScanningBarrier)
@@ -1209,6 +1213,12 @@ void TDataNodeDynamicConfig::Register(TRegistrar registrar)
         .Default();
 
     registrar.Parameter("enable_sequential_io_requests", &TThis::EnableSequentialIORequests)
+        .Optional();
+
+    registrar.Parameter("return_blocks_if_session_fails", &TThis::ReturnBlocksIfSessionFails)
+        .Optional();
+
+    registrar.Parameter("fail_session_at_read_blocks_deadline", &TThis::FailSessionAtReadBlocksDeadline)
         .Optional();
 
     registrar.Parameter("testing_options", &TThis::TestingOptions)

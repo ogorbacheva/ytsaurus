@@ -117,7 +117,7 @@ private:
 
     TNodePtr BinOperList(const TString& opName, TVector<TNodePtr>::const_iterator begin, TVector<TNodePtr>::const_iterator end) const;
 
-    TNodePtr RowPatternVarAccess(TString var, const TRule_unary_subexpr_suffix_TBlock1_TBlock1_TAlt3_TBlock2 block);
+    TNodePtr RowPatternVarAccess(TString var, TRule_unary_subexpr_suffix_TBlock1_TBlock1_TAlt3_TBlock2 block);
 
     struct TCaseBranch {
         TNodePtr Pred;
@@ -135,7 +135,7 @@ private:
         Ctx_.Error(tail.Pos) << "Unexpected token '?' at the end of expression";
     }
 
-    bool IsTopLevelGroupBy() const;
+    [[nodiscard]] bool IsTopLevelGroupBy() const;
     bool EnsureSubSelectAvailable(const ISource& source);
     TSourcePtr LangVersionedSubSelect(TSourcePtr source);
     TNodePtr ToSubSelectNode(TSourcePtr source);

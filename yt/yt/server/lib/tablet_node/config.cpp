@@ -137,6 +137,20 @@ void TGradualCompactionConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TOverloadReactiveBalancingConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enable", &TThis::Enable)
+        .Default(false);
+
+    registrar.Parameter("metric", &TThis::Metric)
+        .Optional();
+    registrar.Parameter("limit", &TThis::Limit)
+        .GreaterThanOrEqual(0)
+        .Optional();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TBuiltinTableMountConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("tablet_cell_bundle", &TThis::TabletCellBundle)
@@ -212,6 +226,9 @@ void TTestingTableMountConfig::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("compaction_delay", &TThis::CompactionDelay)
         .Default();
+
+    registrar.Parameter("reject_replicated_content_receiving", &TThis::RejectReplicatedContentReceiving)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -462,6 +479,9 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
     registrar.Parameter("skip_value_blocks_for_missing_keys", &TThis::SkipValueBlocksForMissingKeys)
         .Default(false);
 
+    registrar.Parameter("compress_block_last_keys", &TThis::CompressBlockLastKeys)
+        .Default(false);
+
     registrar.Parameter("enable_hunk_columnar_profiling", &TThis::EnableHunkColumnarProfiling)
         .Default(false);
 
@@ -523,6 +543,9 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_eden_data_size_for_splitting", &TThis::MaxEdenDataSizeForSplitting)
         .Default(500_MB);
 
+    registrar.Parameter("overload_reactive_balancing", &TThis::OverloadReactiveBalancing)
+        .Default();
+
     registrar.Parameter("validate_row_index_in_chaos_replication", &TThis::ValidateRowIndexInChaosReplication)
         .Default(false);
 
@@ -532,7 +555,7 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
     registrar.Parameter("testing", &TThis::Testing)
         .Default();
 
-    registrar.Parameter("table_puller_strongly_prefer_local_queue", &TThis::TablePullerStronglyPreferLocalQueue)
+    registrar.Parameter("table_puller_force_same_cluster_queue", &TThis::TablePullerForceSameClusterQueue)
         .Default(false);
 
     registrar.Postprocessor([&] (TCustomTableMountConfig* config) {

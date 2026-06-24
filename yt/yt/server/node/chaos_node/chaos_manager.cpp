@@ -7,6 +7,7 @@
 #include "chaos_lease_manager.h"
 #include "chaos_slot.h"
 #include "foreign_migrated_replication_card_remover.h"
+#include "helpers.h"
 #include "migrated_replication_card_remover.h"
 #include "replication_card.h"
 #include "replication_card_batcher.h"
@@ -139,15 +140,30 @@ public:
 
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraGenerateReplicationCardId, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraCreateReplicationCard, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveReplicationCard, Unretained(this)));
+        RegisterMethod(
+            BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveReplicationCard, Unretained(this)),
+            /*aliases*/ {},
+            /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraAlterReplicationCard, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraChaosNodeRemoveReplicationCard, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateCoordinatorCells, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraCreateTableReplica, Unretained(this)));
+        RegisterMethod(
+            BIND_NO_PROPAGATE(&TChaosManager::HydraCreateTableReplica, Unretained(this)),
+            /*alases*/ {},
+            /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveTableReplica, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraAlterTableReplica, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateTableReplicaProgress, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateTableProgress, Unretained(this)));
+        RegisterMethod(
+            BIND_NO_PROPAGATE(&TChaosManager::HydraAlterTableReplica, Unretained(this)),
+            /*alases*/ {},
+            /*exceptionsAreNormal*/ true);
+        RegisterMethod(
+            BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateTableReplicaProgress, Unretained(this)),
+            /*alases*/ {},
+            /*exceptionsAreNormal*/ true);
+        RegisterMethod(
+            BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateTableProgress, Unretained(this)),
+            /*alases*/ {},
+            /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateMultipleTableProgresses, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraCommenceNewReplicationEra, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraPropagateCurrentTimestamps, Unretained(this)));
@@ -156,13 +172,22 @@ public:
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraSuspendCoordinator, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraResumeCoordinator, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveExpiredReplicaHistory, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraMigrateReplicationCards, Unretained(this)));
+        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraMigrateReplicationCards, Unretained(this)),
+            /*alases*/ {},
+            /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraResumeChaosCell, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraChaosNodeMigrateReplicationCards, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraChaosNodeConfirmReplicationCardMigration, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraCreateReplicationCardCollocation, Unretained(this)));
+        RegisterMethod(
+            BIND_NO_PROPAGATE(&TChaosManager::HydraCreateReplicationCardCollocation, Unretained(this)),
+            /*alases*/ {},
+            /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraChaosNodeRemoveMigratedReplicationCards, Unretained(this)));
-        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraForsakeCoordinator, Unretained(this)));
+        RegisterMethod(
+            BIND_NO_PROPAGATE(&TChaosManager::HydraForsakeCoordinator, Unretained(this)),
+            /*alases*/ {},
+            /*exceptionsAreNormal*/ true);
+        RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveCellMailbox, Unretained(this)));
     }
 
     void Initialize() override
@@ -333,6 +358,16 @@ public:
             HydraManager_,
             context,
             &TChaosManager::HydraForsakeCoordinator,
+            this);
+        YT_UNUSED_FUTURE(mutation->CommitAndReply(context));
+    }
+
+    void RemoveCellMailbox(const TCtxRemoveCellMailboxPtr& context) override
+    {
+        auto mutation = CreateMutation(
+            HydraManager_,
+            context,
+            &TChaosManager::HydraRemoveCellMailbox,
             this);
         YT_UNUSED_FUTURE(mutation->CommitAndReply(context));
     }
@@ -1054,7 +1089,7 @@ private:
             NChaosNode::NProto::TReqRemoveReplicationCard req;
             ToProto(req.mutable_replication_card_id(), replicationCard->GetId());
 
-            auto mailbox = hiveManager->GetMailbox(replicationCard->Migration().OriginCellId);
+            auto mailbox = hiveManager->GetOrCreateCellMailbox(replicationCard->Migration().OriginCellId);
             hiveManager->PostMessage(mailbox, req);
 
             YT_LOG_DEBUG("Removing migrated replication card at origin cell (ReplicationCardId: %v, OriginCellId: %v)",
@@ -1673,7 +1708,7 @@ private:
         const auto& hiveManager = Slot_->GetHiveManager();
 
         for (const auto& [coordinatorCellId, request] : revokeShortcutsRequests) {
-            auto mailbox = hiveManager->GetMailbox(coordinatorCellId);
+            auto mailbox = hiveManager->GetOrCreateCellMailbox(coordinatorCellId);
             hiveManager->PostMessage(mailbox, request);
         }
 
@@ -1807,6 +1842,18 @@ private:
                     TypeFromId(chaosObject->GetId()));
             }
         }
+    }
+
+    void HydraRemoveCellMailbox(
+        const TCtxRemoveCellMailboxPtr& /*context*/,
+        NChaosClient::NProto::TReqRemoveCellMailbox* request,
+        NChaosClient::NProto::TRspRemoveCellMailbox* response)
+    {
+        auto destinationCellId = FromProto<TCellId>(request->destination_cell_id());
+        const auto& hiveManager = Slot_->GetHiveManager();
+        bool success = hiveManager->TryRemoveCellMailbox(destinationCellId);
+
+        response->set_success(success);
     }
 
     void HydraMigrateReplicationCards(
@@ -2508,7 +2555,7 @@ private:
         }
 
         const auto& hiveManager = Slot_->GetHiveManager();
-        auto mailbox = hiveManager->GetMailbox(coordinatorCellId);
+        auto mailbox = hiveManager->GetOrCreateCellMailbox(coordinatorCellId);
         hiveManager->PostMessage(mailbox, req);
     }
 
@@ -2548,7 +2595,7 @@ private:
         }
 
         const auto& hiveManager = Slot_->GetHiveManager();
-        auto mailbox = hiveManager->GetMailbox(coordinatorCellId);
+        auto mailbox = hiveManager->GetOrCreateCellMailbox(coordinatorCellId);
         hiveManager->PostMessage(mailbox, req);
     }
 
@@ -3079,12 +3126,15 @@ private:
         auto replicationCardStateCounts = CountReplicationCardStates();
         auto collocationStateCounts = CountReplicationCardCollocationStates();
 
+        bool completelySuspended = Suspended_
+            && replicationCardStateCounts[EReplicationCardState::Migrated] == ReplicationCardMap_.GetSize()
+            && transactionManager->Transactions().empty()
+            && CollocationMap_.empty();
+
         BuildYsonFluently(consumer)
             .BeginMap()
-                .Item("suspended").Value(Suspended_
-                    && replicationCardStateCounts[EReplicationCardState::Migrated] == ReplicationCardMap_.GetSize()
-                    && transactionManager->Transactions().empty()
-                    && CollocationMap_.empty())
+                .Item("suspended").Value(completelySuspended)
+                .Item("suspension_status").Value(GetSuspensionStatus(Suspended_, completelySuspended))
                 .Item("replication_card_states").DoMapFor(
                     TEnumTraits<EReplicationCardState>::GetDomainValues(),
                     [&] (TFluentMap fluent, const auto& state) {
@@ -3268,7 +3318,7 @@ private:
 
             auto cardTimestamp = std::max(timestamp, replicationCard->GetCurrentTimestamp());
             auto clientReplicationCard = replicationCard->ConvertToClientCard(MinimalFetchOptions);
-            ReplicationCardWatcher_->OnReplcationCardUpdated(replicationCardId, clientReplicationCard, cardTimestamp);
+            ReplicationCardWatcher_->OnReplicationCardUpdated(replicationCardId, clientReplicationCard, cardTimestamp);
         }
     }
 

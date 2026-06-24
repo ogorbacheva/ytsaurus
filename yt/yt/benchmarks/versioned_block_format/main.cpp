@@ -11,6 +11,7 @@
 #include <yt/yt/ytlib/table_chunk_format/slim_versioned_block_reader.h>
 #include <yt/yt/ytlib/table_chunk_format/slim_versioned_block_writer.h>
 
+#include <yt/yt/ytlib/table_client/chunk_column_mapping.h>
 #include <yt/yt/ytlib/table_client/versioned_block_reader.h>
 #include <yt/yt/ytlib/table_client/versioned_block_writer.h>
 
@@ -453,7 +454,7 @@ protected:
         std::vector<TColumnIdMapping> schemaIdMapping;
         schemaIdMapping.reserve(schema->GetColumnCount() - schema->GetKeyColumnCount());
         for (int i = schema->GetKeyColumnCount(); i < schema->GetColumnCount(); ++i) {
-            schemaIdMapping.push_back({i, i});
+            schemaIdMapping.push_back({ .ChunkSchemaIndex = i, .ReaderSchemaIndex = i, });
         }
 
         typename TBlockFormatAdapter::TBlockReader blockReader(
@@ -650,8 +651,8 @@ REGISTER_BLOCK_READER_BENCHMARKS()
 
 ////////////////////////////////////////////////////////////////////////////////
 
-}  // namespace
-}  // namespace NYT
+} // namespace
+} // namespace NYT
 
 ////////////////////////////////////////////////////////////////////////////////
 

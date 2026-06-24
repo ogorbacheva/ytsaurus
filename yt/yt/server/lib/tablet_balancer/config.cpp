@@ -10,7 +10,9 @@ void TFeatureFlagConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("enable_smooth_movement", &TThis::EnableSmoothMovement)
         .Default();
-    registrar.Parameter("enable_inplace_reshard", &TThis::EnableInplaceReshard)
+    registrar.Parameter("enable_inplace_split", &TThis::EnableInplaceSplit)
+        .Default();
+    registrar.Parameter("enable_inplace_merge", &TThis::EnableInplaceMerge)
         .Default();
 }
 
@@ -338,6 +340,9 @@ void TTableTabletBalancerConfig::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("group", &TThis::Group)
         .Default();
+    registrar.Parameter("desired_tablet_metric", &TThis::DesiredTabletMetric)
+        .Default()
+        .GreaterThan(0);
     registrar.Parameter("replica_path_overrides", &TThis::ReplicaPathOverrides)
         .Default();
 

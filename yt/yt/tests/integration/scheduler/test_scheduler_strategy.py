@@ -52,7 +52,6 @@ def get_from_tree_orchid(tree, path, **kwargs):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestResourceUsage(YTEnvSetup, PrepareTables):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -780,7 +779,6 @@ class TestResourceUsage(YTEnvSetup, PrepareTables):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestStrategyWithSlowController(YTEnvSetup, PrepareTables):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -842,7 +840,6 @@ class TestStrategyWithSlowController(YTEnvSetup, PrepareTables):
         assert abs(op1.get_job_count("running") - op2.get_job_count("running")) <= self.CONCURRENT_HEARTBEAT_LIMIT
 
 
-@pytest.mark.enabled_multidaemon
 class TestUnavailableChunkStrategies(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -883,7 +880,7 @@ class TestUnavailableChunkStrategies(YTEnvSetup):
         set_node_banned(node, True)
 
         print_debug("Fail strategy")
-        with pytest.raises(YtError):
+        with raises_yt_error("Materialization failed"):
             map(
                 in_="//tmp/t_in{key2}",
                 out="//tmp/t_out",
@@ -956,7 +953,7 @@ class TestUnavailableChunkStrategies(YTEnvSetup):
         set_all_nodes_banned(True)
 
         print_debug("Fail strategy")
-        with pytest.raises(YtError):
+        with raises_yt_error("Materialization failed"):
             sort(
                 in_="//tmp/t_in",
                 out="//tmp/t_out",
@@ -1009,7 +1006,7 @@ class TestUnavailableChunkStrategies(YTEnvSetup):
         set_all_nodes_banned(True)
 
         print_debug("Fail strategy")
-        with pytest.raises(YtError):
+        with raises_yt_error("Materialization failed"):
             merge(
                 mode="sorted",
                 in_=["//tmp/t1", "//tmp/t2"],
@@ -1268,7 +1265,7 @@ class TestSchedulerOperationLimits(YTEnvSetup):
                 )
 
             if should_raise:
-                with pytest.raises(YtError):
+                with raises_yt_error("Limit for the number of concurrent operations .* for pool"):
                     execute(track=True)
             else:
                 op = execute(track=False)
@@ -1374,7 +1371,7 @@ class TestSchedulerOperationLimits(YTEnvSetup):
         _run_op()
         set("//sys/pools{0}/@acl/0/action".format(acl_path), "deny")
         check_permission("u", "use", "//sys/pools" + acl_path)
-        with pytest.raises(YtError):
+        with raises_yt_error("User .* has been denied access to pool .* in pool tree .*"):
             _run_op()
 
     @authors("ignat")
@@ -1404,7 +1401,7 @@ class TestSchedulerOperationLimits(YTEnvSetup):
         create_pool("p2", parent_name="p1")
         create_pool("default_pool", attributes={"forbid_immediate_operations": True})
 
-        with pytest.raises(YtError):
+        with raises_yt_error("Starting operations immediately in pool"):
             map(
                 command="cat",
                 in_="//tmp/t_in",
@@ -1477,7 +1474,6 @@ class TestSchedulerOperationLimits(YTEnvSetup):
         time.sleep(1)
 
 
-@pytest.mark.enabled_multidaemon
 class TestLightweightOperations(YTEnvSetup, PrepareTables):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -1547,7 +1543,7 @@ class TestLightweightOperations(YTEnvSetup, PrepareTables):
         for op in ops:
             self._wait_for_operation(op)
 
-        with pytest.raises(YtError):
+        with raises_yt_error("Limit for the number of concurrent operations .* for pool"):
             run_sleeping_vanilla(spec={"pool": "lightweight_pool"})
 
         self._check_operation_counts(1, 1, 0, 4, 0, 4)
@@ -1576,7 +1572,7 @@ class TestLightweightOperations(YTEnvSetup, PrepareTables):
 
         self._check_operation_counts(2, 2, 0, 1, 0, 1)
 
-        with pytest.raises(YtError):
+        with raises_yt_error("Max running operation count in pool"):
             update_op_parameters(ops[2].id, parameters={"pool": "pool"})
 
         for op in ops:
@@ -1814,7 +1810,6 @@ class TestLightweightOperations(YTEnvSetup, PrepareTables):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestInferWeightFromGuarantees(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -1944,7 +1939,6 @@ class TestInferWeightFromGuarantees(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerStuckOperations(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -2178,7 +2172,6 @@ class TestSchedulerStuckOperations(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestEphemeralPools(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -2400,7 +2393,7 @@ class TestEphemeralPools(YTEnvSetup):
         op = run_sleeping_vanilla(spec={"pool": "custom_pool"})
         wait(lambda: len(list(op.get_running_jobs())) == 1)
 
-        with pytest.raises(YtError):
+        with raises_yt_error("Limit for the number of concurrent operations .* for pool"):
             run_test_vanilla(command="", spec={"pool": "custom_pool"}, track=True)
 
     @authors("renadeen")
@@ -2533,7 +2526,7 @@ class TestEphemeralPools(YTEnvSetup):
             get(scheduling_info_per_pool_tree + "/default/user_to_ephemeral_pools/root")
         )
 
-        with pytest.raises(YtError):
+        with raises_yt_error("Cannot create new ephemeral pool .* as limit for number of ephemeral pools .* for user .* in tree .* has been reached"):
             map(
                 track=False,
                 command="cat",
@@ -2590,11 +2583,11 @@ class TestEphemeralPools(YTEnvSetup):
     @authors("renadeen")
     def test_fifo_pool_cannot_create_ephemeral_subpools(self):
         create_pool("fifo_pool", attributes={"mode": "fifo"})
-        with pytest.raises(YtError):
+        with raises_yt_error("FIFO pool cannot create ephemeral subpools"):
             set("//sys/pools/fifo_pool/@create_ephemeral_subpools", True)
 
         create_pool("ephemeral_hub", attributes={"create_ephemeral_subpools": True})
-        with pytest.raises(YtError):
+        with raises_yt_error("FIFO pool cannot create ephemeral subpools"):
             set("//sys/pools/ephemeral_hub/@mode", "fifo")
 
     @authors("renadeen")
@@ -2660,7 +2653,7 @@ class TestEphemeralPools(YTEnvSetup):
 
     @authors("renadeen")
     def test_require_specified_pools_existence_flag(self):
-        with raises_yt_error(yt_error_codes.Scheduler.OperationLaunchedInNonexistentPool):
+        with raises_yt_error(code=yt_error_codes.Scheduler.OperationLaunchedInNonexistentPool):
             run_sleeping_vanilla(spec={"pool": "ephemeral", "require_specified_pools_existence": True})
 
         # It's OK to launch operation in unspecified ephemeral pool.
@@ -2673,7 +2666,7 @@ class TestEphemeralPools(YTEnvSetup):
     @authors("renadeen")
     def test_require_specified_pools_existence_global_flag(self):
         update_scheduler_config("require_specified_operation_pools_existence", True)
-        with raises_yt_error(yt_error_codes.Scheduler.OperationLaunchedInNonexistentPool):
+        with raises_yt_error(code=yt_error_codes.Scheduler.OperationLaunchedInNonexistentPool):
             run_sleeping_vanilla(spec={"pool": "ephemeral"})
 
         # It's OK to launch operation in unspecified ephemeral pool.
@@ -2685,7 +2678,7 @@ class TestEphemeralPools(YTEnvSetup):
 
     @authors("renadeen")
     def test_ephemeral_pool_name_regex(self):
-        with raises_yt_error("must match regular expression"):
+        with raises_yt_error("Pool name .* must match regular expression .*"):
             run_test_vanilla(":", track=True, spec={"pool": "a+b"})
         run_test_vanilla(":", track=True, spec={"pool": "a-_.b"})
 
@@ -2737,7 +2730,6 @@ class TestEphemeralPools(YTEnvSetup):
             time.sleep(1.0)
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerPoolsCommon(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -2863,15 +2855,14 @@ class TestSchedulerPoolsCommon(YTEnvSetup):
 
     @authors("renadeen")
     def test_ephemeral_pool_name_validation(self):
-        with pytest.raises(YtError):
+        with raises_yt_error("Pool name .* must match regular expression .*"):
             run_sleeping_vanilla(spec={"pool": "invalid$name"})
 
         op = run_sleeping_vanilla(spec={"pool": "valid_name"})
-        with pytest.raises(YtError):
+        with raises_yt_error("Pool name .* must match regular expression .*"):
             update_op_parameters(op.id, parameters={"pool": "invalid|name"})
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerPoolsReconfiguration(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -2971,7 +2962,6 @@ class TestSchedulerPoolsReconfiguration(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerSuspiciousJobs(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -3184,7 +3174,6 @@ class TestSchedulerSuspiciousJobs(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestMinNeededResources(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -3288,7 +3277,6 @@ class TestMinNeededResources(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSchedulerInferChildrenWeightsFromHistoricUsage(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_CPUS_PER_NODE = 10
@@ -3995,7 +3983,6 @@ class TestIntegralGuarantees(YTEnvSetup):
 
 
 @authors("renadeen")
-@pytest.mark.enabled_multidaemon
 class TestCrashDuringDistributingFreeVolumeAfterRemovingAllResourceFlow(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     # Scenario:
@@ -4069,7 +4056,6 @@ class TestCrashDuringDistributingFreeVolumeAfterRemovingAllResourceFlow(YTEnvSet
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSatisfactionRatio(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -4468,7 +4454,6 @@ class TestVectorStrongGuarantees(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestPriorityStrongGuaranteeAdjustment(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -4739,7 +4724,6 @@ class TestPriorityStrongGuaranteeAdjustment(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestFifoPools(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -4829,7 +4813,7 @@ class TestFifoPools(YTEnvSetup):
 
         run_sleeping_vanilla(spec={"is_gang": True, "pool": "fifo"})
 
-        with raises_yt_error(yt_error_codes.Scheduler.GangOperationsAllowedOnlyInFifoPools):
+        with raises_yt_error(code=yt_error_codes.Scheduler.GangOperationsAllowedOnlyInFifoPools):
             run_sleeping_vanilla(spec={"is_gang": True, "pool": "fair_share"})
 
         set("//sys/pools/fair_share/@always_allow_gang_operations", True)
@@ -4845,7 +4829,7 @@ class TestFifoPools(YTEnvSetup):
 
         wait(lambda: not get(scheduler_orchid_pool_path("ephemeral_root") + "/gang_operations_allowed"))
 
-        with raises_yt_error(yt_error_codes.Scheduler.GangOperationsAllowedOnlyInFifoPools):
+        with raises_yt_error(code=yt_error_codes.Scheduler.GangOperationsAllowedOnlyInFifoPools):
             run_sleeping_vanilla(spec={"is_gang": True, "pool": "ephemeral_root"})
 
         set("//sys/pools/ephemeral_root/@ephemeral_subpool_config", {"mode": "fifo"})
@@ -4861,7 +4845,6 @@ class TestFifoPools(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestRaceBetweenOperationUnregistrationAndFairShareUpdate(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -4916,7 +4899,6 @@ class TestRaceBetweenOperationUnregistrationAndFairShareUpdate(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestGuaranteePriorityScheduling(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -4977,7 +4959,6 @@ class TestGuaranteePriorityScheduling(YTEnvSetup):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestMinSpareResources(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
@@ -5052,3 +5033,139 @@ class TestMinSpareResources(YTEnvSetup):
         assert data["default"]["disk_space"] == 1000
         assert data["other"]["cpu"] == 2.0
         assert data["other"]["disk_space"] == 2000
+
+
+##################################################################
+
+
+class TestPreemptionPrecommitRace(YTEnvSetup):
+    ENABLE_MULTIDAEMON = True
+    NUM_MASTERS = 1
+    NUM_NODES = 2
+    NUM_SCHEDULERS = 1
+
+    DELTA_SCHEDULER_CONFIG = {
+        "scheduler": {
+            "fair_share_update_period": 100,
+            "fair_share_profiling_period": 100,
+            "alerts_update_period": 100,
+        }
+    }
+
+    DELTA_NODE_CONFIG = {
+        "job_resource_manager": {"resource_limits": {"user_slots": 2, "cpu": 2.0}},
+    }
+
+    DELTA_DYNAMIC_NODE_CONFIG = {
+        "%true": {
+            "exec_node": {
+                "job_controller": {
+                    "allocation": {
+                        "enable_multiple_jobs": True,
+                    },
+                },
+                "scheduler_connector": {
+                    "heartbeat_executor": {
+                        "period": 100,
+                    },
+                },
+                "controller_agent_connector": {
+                    "heartbeat_executor": {
+                        "period": 100,
+                    }
+                }
+            },
+        }
+    }
+
+    def setup_method(self, method):
+        super(TestPreemptionPrecommitRace, self).setup_method(method)
+        update_pool_tree_config("default", {
+            "preemptive_scheduling_backoff": 0,
+            "non_preemptible_resource_usage_threshold": {"user_slots": 0},
+            "fair_share_starvation_timeout": 500,
+            "preemption_satisfaction_threshold": 0.99,
+        })
+
+    @authors("eshcherbin", "yaishenka")
+    def test_race_between_allocation_update_and_preempted_resource_usage_commit(self):
+        # This test reproduces a race between applying preempted resource usage precommit and an allocation update
+        # caused by a preemptible progress reset. In short, this allocation update introduces an inconsistency
+        # between allocation's resource usage as stored in an TAllocation object vs in the operation's shared state.
+        # This leads to commiting an amount of resources different to which has been precommited earlier.
+
+        update_scheduler_config("node_shard_submit_allocations_to_strategy_period", 6000000)
+        update_scheduler_config("running_allocations_update_period", 6000000)
+
+        update_pool_tree_config("default", {
+            "allocation_preemption_timeout": 6000000,
+            "use_precommit_for_preemption": True,
+        })
+
+        nodes = ls("//sys/cluster_nodes")
+
+        create_pool(
+            "root",
+            attributes={
+                "strong_guarantee_resources": {"cpu": 4.0},
+            },
+        )
+        run_sleeping_vanilla(
+            spec={
+                "pool": "root",
+                "scheduling_tag_filter": nodes[0],
+            },
+        )
+
+        create_pool(
+            "limited",
+            parent_name="root",
+            attributes={
+                "resource_limits": {"cpu": 2.0},
+                "strong_guarantee_resources": {"cpu": 2.0},
+            },
+        )
+        create_pool(
+            "poolStarving",
+            parent_name="limited",
+            attributes={"strong_guarantee_resources": {"cpu": 2.0}},
+        )
+        create_pool("poolVictim", parent_name="limited")
+
+        op_victim = run_test_vanilla(
+            command="(trap \"sleep 10\" SIGINT; sleep 2)",
+            job_count=100,
+            spec={
+                "pool": "poolVictim",
+                "enable_multiple_jobs_in_allocation": True,
+                "scheduling_tag_filter": nodes[0],
+                "testing": {"delay_before_allocation_preemption": {"duration": 3000, "type": "async"}},
+            },
+            task_patch={
+                "interruption_signal": "SIGINT",
+            },
+        )
+
+        wait(lambda: len(op_victim.get_running_jobs()) == 1)
+
+        op_starving = run_sleeping_vanilla(
+            job_count=2,
+            spec={
+                "pool": "poolStarving",
+                "scheduling_tag_filter": nodes[1],
+            },
+        )
+
+        wait(lambda: are_almost_equal(get(scheduler_orchid_operation_path(op_victim.id) + "/fair_resources/cpu", default=None), 0.0))
+        wait(lambda: are_almost_equal(get(scheduler_orchid_operation_path(op_starving.id) + "/fair_resources/cpu", default=None), 2.0))
+
+        wait(lambda: get(scheduler_orchid_operation_path(op_starving.id) + "/resource_usage/cpu", default=None) == 1.0)
+
+        time.sleep(0.3)
+
+        wait(lambda: get(scheduler_orchid_operation_path(op_starving.id) + "/resource_usage/cpu", default=None) == 1.0)
+
+        set("//sys/pool_trees/default/root/limited/@resource_limits_overcommit_tolerance", {"cpu": 1.0})
+
+        wait(lambda: get(scheduler_orchid_operation_path(op_starving.id) + "/resource_usage/cpu", default=None) == 2.0)
+        wait(lambda: len(ls(f"//sys/cluster_nodes/{nodes[0]}/orchid/exec_node/job_controller/allocations")) == 1)

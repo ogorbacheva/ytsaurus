@@ -3,6 +3,7 @@
 #include "config.h"
 #include "in_memory_manager.h"
 #include "private.h"
+#include "serialize.h"
 #include "sorted_chunk_store.h"
 #include "sorted_dynamic_store.h"
 #include "store_flusher.h"
@@ -1102,6 +1103,7 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
                             .ChunkId = storeWriter->GetChunkId(),
                             .TableSchemaKeyColumnCount = tabletSnapshot->PhysicalSchema->GetKeyColumnCount(),
                             .PreparedColumnarMeta = true,
+                            .CompressedBlockLastKeys = tabletSnapshot->Settings.MountConfig->CompressBlockLastKeys,
                         },
                         New<TRefCountedChunkMeta>(*finalizedMeta));
                 }
@@ -1191,9 +1193,11 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
         auto rowsInStore = 0;
         TUpdateCacheStatistics cacheUpdateStatistics;
 
+        // TODO(akozhikhov): Add hunk statistics too?
         auto updateWriterStatistics = [&] {
             auto guard = Guard(task->RuntimeData.SpinLock);
-            task->RuntimeData.ProcessedWriterStatistics = TBackgroundActivityTaskInfoBase::TWriterStatistics(storeWriter->GetDataStatistics());
+            task->RuntimeData.ProcessedWriterStatistics =
+                TBackgroundActivityTaskInfoBase::TWriterStatistics(storeWriter->GetDataStatistics());
         };
 
         THazardPtrReclaimOnContextSwitchGuard reclaimGuard;
@@ -1853,7 +1857,9 @@ void TSortedStoreManager::AddUnleashedBackingStore(TSortedDynamicStorePtr unleas
         CriticalUnleashedStoreCount);
 }
 
-void TSortedStoreManager::ReleaseUnleashedBackingStore(TDynamicStoreId unleashedBackingStoreId)
+void TSortedStoreManager::ReleaseUnleashedBackingStore(
+    TDynamicStoreId unleashedBackingStoreId,
+    TRevision expectedMountRevision)
 {
     auto it = UnleashedBackingStores_.find(unleashedBackingStoreId);
 
@@ -1869,7 +1875,7 @@ void TSortedStoreManager::ReleaseUnleashedBackingStore(TDynamicStoreId unleashed
         return;
     }
 
-    Tablet_->AdvanceTransientConflictHorizonTimestamp(it->second->GetMaxTimestamp());
+    Tablet_->AdvanceTransientConflictHorizonTimestamp(it->second->GetMaxTimestamp(), expectedMountRevision);
 
     UnleashedBackingStores_.erase(it);
 

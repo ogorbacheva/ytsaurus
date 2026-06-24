@@ -199,6 +199,15 @@ TTableSettings GetTableSettings(
             << ex;
     }
 
+    // Set table tablet balancer config.
+    try {
+        result.Provided.TabletBalancerConfig = ConvertTo<IMapNodePtr>(
+            table->TabletBalancerConfig());
+    } catch (const std::exception& ex) {
+        THROW_ERROR_EXCEPTION("Error preparing table tablet balancer config")
+            << ex;
+    }
+
     // Set global patch and experiments.
     result.GlobalPatch = CloneYsonStruct(
         ConvertTo<TTableConfigPatchPtr>(dynamicConfig));
@@ -222,6 +231,9 @@ TSerializedTableSettings SerializeTableSettings(const TTableSettings& tableSetti
         .HunkWriterOptions = ConvertToYsonString(tableSettings.Provided.HunkWriterOptions),
         .GlobalPatch = ConvertToYsonString(tableSettings.GlobalPatch),
         .Experiments = ConvertToYsonString(tableSettings.Experiments),
+        .TabletBalancerConfig = tableSettings.Provided.TabletBalancerConfig
+            ? ConvertToYsonString(tableSettings.Provided.TabletBalancerConfig)
+            : TYsonString{},
     };
 }
 
@@ -345,6 +357,10 @@ void ValidateTableMountConfig(
         if (mountConfig->MinDataVersions > mountConfig->MaxDataVersions) {
             THROW_ERROR_EXCEPTION("\"min_data_versions\" must be not greater than \"max_data_versions\"");
         }
+    }
+
+    if (mountConfig->EnableHashChunkIndexForLookup && table->GetErasureCodec() != NErasure::ECodec::None) {
+        THROW_ERROR_EXCEPTION("\"enable_hash_chunk_index_for_lookup\" can be \"true\" only for tables with null \"erasure_codec\"");
     }
 }
 

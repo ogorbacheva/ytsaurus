@@ -1,8 +1,8 @@
 #pragma once
 
-#include "public.h"
 #include "artifact.h"
 #include "porto_volume.h"
+#include "public.h"
 #include "tmpfs_layer_cache.h"
 #include "volume.h"
 #include "volume_artifact.h"
@@ -14,12 +14,12 @@
 
 #include <yt/yt/server/lib/nbd/public.h>
 
-#include <yt/yt/library/containers/public.h>
-
 #include <yt/yt/ytlib/chunk_client/public.h>
 #include <yt/yt/ytlib/chunk_client/session_id.h>
 
 #include <yt/yt/ytlib/misc/public.h>
+
+#include <yt/yt/library/containers/public.h>
 
 #include <yt/yt/core/actions/public.h>
 
@@ -29,22 +29,19 @@
 
 #include <yt/yt/core/ytree/fluent.h>
 
-#include <yt/yt/library/profiling/sensor.h>
-
 #include <yt/yt/core/rpc/public.h>
+
+#include <yt/yt/library/profiling/sensor.h>
 
 namespace NYT::NExecNode {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TLayerLocationPtr DoPickLocation(
+TLayerLocationPtr PickLocation(
     const std::vector<TLayerLocationPtr>& locations,
     std::function<bool(const TLayerLocationPtr&, const TLayerLocationPtr&)> isBetter);
 
 ////////////////////////////////////////////////////////////////////////////////
-
-template <class TKey, class TValue>
-using TAsyncMapValueBase = TAsyncCacheValueBase<TKey, TValue>;
 
 // NB(pogorelov): It is pretty dirty map.
 // The cache shard capacity is calculated to be 1,
@@ -56,7 +53,7 @@ class TAsyncMapBase
 {
     using TBase = TAsyncSlruCacheBase<TKey, TValue>;
 public:
-    TAsyncMapBase(const NProfiling::TProfiler& profiler = {});
+    explicit TAsyncMapBase(const NProfiling::TProfiler& profiler = {});
 
 private:
     i64 GetWeight(const typename TBase::TValuePtr& /*value*/) const override;
@@ -137,21 +134,6 @@ class TNbdVolumeFactory
 public:
     using TVolume = TCachedVolume<TString>;
     using TVolumePtr = TIntrusivePtr<TVolume>;
-
-    TNbdVolumeFactory(
-        IBootstrap* const bootstrap,
-        NClusterNode::TClusterNodeDynamicConfigManagerPtr dynamicConfigManager,
-        std::vector<TLayerLocationPtr> layerLocations);
-
-    TFuture<IVolumePtr> GetOrCreateVolume(
-        TGuid tag,
-        TPrepareRONbdVolumeOptions options);
-
-    TFuture<IVolumePtr> CreateVolume(
-        TGuid tag,
-        TPrepareRWNbdVolumeOptions options);
-
-private:
     using TVolumeFactory = TExtendedCallback<IVolumePtr(
         NProfiling::TTagSet tagSet,
         TVolumeMeta volumeMeta,
@@ -159,31 +141,27 @@ private:
         TString nbdDeviceId,
         NNbd::INbdServerPtr nbdServer)>;
 
+    TNbdVolumeFactory(
+        IBootstrap* const bootstrap,
+        NClusterNode::TClusterNodeDynamicConfigManagerPtr dynamicConfigManager,
+        std::vector<TLayerLocationPtr> layerLocations);
+
+    //! Create or get from cache RO NBD volume.
+    TFuture<IVolumePtr> GetOrCreateVolume(
+        TGuid tag,
+        TPrepareRONbdVolumeOptions options);
+
+    //! Create RW NBD volume.
+    TFuture<IVolumePtr> CreateVolume(
+        TGuid tag,
+        TPrepareRWNbdVolumeOptions options);
+
+private:
     const NClusterNode::TClusterNodeDynamicConfigManagerPtr DynamicConfigManager_;
     YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, InsertLock_);
 
     static void ValidatePrepareRONbdVolumeOptions(const TPrepareRONbdVolumeOptions& options);
     static void ValidatePrepareRWNbdVolumeOptions(const TPrepareRWNbdVolumeOptions& options);
-
-    template <typename TNbdVolume>
-    static TVolumeFactory MakeVolumeFactory()
-    {
-        return BIND(
-            [] (
-                NProfiling::TTagSet tagSet,
-                TVolumeMeta volumeMeta,
-                TLayerLocationPtr layerLocation,
-                TString nbdDeviceId,
-                NNbd::INbdServerPtr nbdServer) -> IVolumePtr {
-
-            return New<TNbdVolume>(
-                std::move(tagSet),
-                std::move(volumeMeta),
-                std::move(layerLocation),
-                std::move(nbdDeviceId),
-                std::move(nbdServer));
-        });
-    }
 
     TInsertCookie GetInsertCookie(const TString& deviceId, const NNbd::INbdServerPtr& nbdServer);
 
@@ -293,6 +271,9 @@ public:
     //! Pick best location for new layer operations.
     TLayerLocationPtr PickLayerLocation() const;
 
+    //! Pick random location.
+    TLayerLocationPtr PickRandomLocation() const;
+
     void PopulateAlerts(std::vector<TError>* alerts);
 
     TFuture<void> Disable(const TError& reason);
@@ -349,6 +330,8 @@ private:
 
     void OnProfiling();
 };
+
+DEFINE_REFCOUNTED_TYPE(TLayerCache)
 
 ////////////////////////////////////////////////////////////////////////////////
 

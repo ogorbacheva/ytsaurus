@@ -372,7 +372,7 @@ private:
             ExportConfig_->ExportDirectory,
             ELockMode::Shared,
             TLockNodeOptions{
-                .AttributeKey = TString(ExporterAttributeName_),
+                .AttributeKey = std::string(ExporterAttributeName_),
             }))
             .ThrowOnError();
 
@@ -702,6 +702,24 @@ private:
                 return tabletProgressIt != currentExportProgress->Tablets.end() && tabletProgressIt->second->LastChunk == FromProto<TChunkId>(chunkSpec->chunk_id());
             });
 
+            if (lastExportedSpecIt != chunkSpecs.end()) {
+                auto* chunkSpec = *lastExportedSpecIt;
+                auto miscExt = GetProtoExtension<TMiscExt>(chunkSpec->chunk_meta().extensions());
+                auto& tabletProgress = GetOrCrash(currentExportProgress->Tablets, tabletIndex);
+                bool rowCountMatches = chunkSpec->table_row_index() + miscExt.row_count() == tabletProgress->RowCount;
+                if (!rowCountMatches) {
+                    ProfilingCounters_->RowCountMismatches.Increment();
+                    if (DynamicConfig_.EnableRowCountCheck) {
+                        YT_LOG_ALERT_AND_THROW(
+                            "Mismatch between last chunk from tablet progress and row count from progress (TabletProgressLastChunk: %v, TabletProgressRowCount: %v, FoundChunkRowIndex: %v, FoundChunkRowCount: %v)",
+                            tabletProgress->LastChunk,
+                            tabletProgress->RowCount,
+                            chunkSpec->table_row_index(),
+                            miscExt.row_count());
+                    }
+                }
+            }
+
             // NB(apachee): Monotonically increasing export unix ts to provide intra-tablet chunk order.
             // It is required in case of weak commit ordering, as in this case latter chunks might have smaller max timestamps.
             ui64 accumulatedMinExportUnixTs = initialAccumulatedMinExportUnixTs;
@@ -784,7 +802,7 @@ private:
         YT_LOG_DEBUG("Finished fetching chunk specs (Count: %v)", ChunkSpecs_.size());
     }
 
-    TString GetOutputTableName(ui64 unixTs)
+    std::string GetOutputTableName(ui64 unixTs)
     {
         auto periodInSeconds = GetLastExportPeriod(unixTs, ExportConfig_);
 
@@ -796,7 +814,7 @@ private:
 
         auto outputTableName = ExportConfig_->OutputTableNamePattern;
 
-        std::vector<std::pair<TString, TString>> variables = {
+        std::vector<std::pair<std::string, std::string>> variables = {
             {"%UNIX_TS", ToString(unixTs)},
             {"%PERIOD", ToString(periodInSeconds)},
             {"%ISO", instant.ToStringUpToSeconds()},
@@ -804,7 +822,7 @@ private:
 
         // Replace all occurrences of variables with their values.
         for (const auto& [variable, value] : variables) {
-            for (size_t position = 0; (position = outputTableName.find(variable, position)) != TString::npos; ) {
+            for (size_t position = 0; (position = outputTableName.find(variable, position)) != std::string::npos; ) {
                 outputTableName.replace(position, variable.length(), value);
             }
         }
@@ -1120,14 +1138,17 @@ DEFINE_REFCOUNTED_TYPE(TQueueExportTask)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TQueueExportProfilingCounters::TQueueExportProfilingCounters(const TProfiler& profiler)
-    : ExportedRows(profiler.Counter("/exported_rows"))
-    , ExportedChunks(profiler.Counter("/exported_chunks"))
-    , ExportedTables(profiler.Counter("/exported_tables"))
-    , SkippedTables(profiler.Counter("/skipped_tables"))
-    , ExportTaskErrors(profiler.Counter("/export_task_errors"))
-    , TimeLag(profiler.TimeGauge("/time_lag"))
-    , TableLag(profiler.Gauge("/table_lag"))
+TQueueExportProfilingCounters::TQueueExportProfilingCounters(
+    const TProfiler& queueProfiler,
+    const TProfiler& queuePassProfiler)
+    : ExportedRows(queueProfiler.Counter("/exported_rows"))
+    , ExportedChunks(queueProfiler.Counter("/exported_chunks"))
+    , ExportedTables(queueProfiler.Counter("/exported_tables"))
+    , SkippedTables(queueProfiler.Counter("/skipped_tables"))
+    , ExportTaskErrors(queueProfiler.Counter("/export_task_errors"))
+    , TimeLag(queueProfiler.TimeGauge("/time_lag"))
+    , TableLag(queueProfiler.Gauge("/table_lag"))
+    , RowCountMismatches(queuePassProfiler.Counter("/row_count_mismatches"))
 { }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1137,8 +1158,8 @@ class TQueueExporter
 {
 public:
     TQueueExporter(
-        TString exportName,
-        TCrossClusterReference queue,
+        std::string exportName,
+        TTablePath queue,
         TQueueStaticExportConfigPtr exportConfig,
         TQueueExporterDynamicConfig dynamicConfig,
         TClientDirectoryPtr clientDirectory,
@@ -1157,7 +1178,7 @@ public:
         , Invoker_(std::move(invoker))
         , QueueExportManager_(std::move(queueExportManager))
         , AlertCollector_(std::move(alertCollector))
-        , ProfilingCounters_(New<TQueueExportProfilingCounters>(queueProfiler))
+        , ProfilingCounters_(New<TQueueExportProfilingCounters>(queueProfiler, queuePassProfiler))
         , PassProfiler_(queuePassProfiler)
         , Executor_(New<TPeriodicExecutor>(
             Invoker_,
@@ -1262,8 +1283,8 @@ private:
 
     std::atomic<ui64> LastSuccessfulExportUnixTs_ = 0;
 
-    const TString ExportName_;
-    const TCrossClusterReference Queue_;
+    const std::string ExportName_;
+    const TTablePath Queue_;
     const TClientDirectoryPtr ClientDirectory_;
     const IInvokerPtr Invoker_;
     const IQueueExportManagerPtr QueueExportManager_;
@@ -1366,9 +1387,9 @@ private:
         }
 
         TQueueExportTaskPtr exportTask = New<TQueueExportTask>(
-            ClientDirectory_->GetClientOrThrow(Queue_.Cluster),
+            ClientDirectory_->GetClientOrThrow(Queue_.GetCluster().value()),
             Invoker_,
-            Queue_.Path,
+            Queue_.GetPath(),
             exportConfig,
             std::move(dynamicConfig),
             isInitialInvocation,
@@ -1446,8 +1467,8 @@ DEFINE_REFCOUNTED_TYPE(TQueueExporter)
 ////////////////////////////////////////////////////////////////////////////////
 
 IQueueExporterPtr CreateQueueExporter(
-    TString exportName,
-    TCrossClusterReference queue,
+    std::string exportName,
+    TTablePath queue,
     TQueueStaticExportConfigPtr exportConfig,
     TQueueExporterDynamicConfig dynamicConfig,
     TClientDirectoryPtr clientDirectory,

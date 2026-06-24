@@ -372,6 +372,7 @@ private:
                 .SecureParams(secureParams)
                 .RuntimeLogLevel(State_->Types->RuntimeLogLevel)
                 .LangVer(State_->Types->LangVer)
+                .RuntimeSettings(State_->Types->RuntimeSettings)
                 .AdditionalSecurityTags(addSecTags)
                 .LayersPaths(std::move(finalCypressPaths))
             );
@@ -818,7 +819,7 @@ private:
         if (!delegatedNode) {
             const auto clusterStr = op.DataSink().Cluster().StringValue();
             const auto config = State_->Configuration->GetSettingsForNode(*input);
-            const auto tmpFolder = GetTablesTmpFolder(*config, clusterStr);
+            const auto tmpFolder = GetTablesTmpFolder(*config, clusterStr, State_->UseSecureTmp, State_->Types->OperationOptions);
             const ui64 nativeTypeCompat = config->NativeYtTypeCompatibility.Get(clusterStr).GetOrElse(NTCF_LEGACY);
 
             delegatedNode = input->ChildPtr(TYtDqProcessWrite::idx_Input);

@@ -142,6 +142,23 @@ struct TGradualCompactionConfig
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// TODO(dave11ar): This is a temporary interface that will be replaced by a more general solution.
+struct TOverloadReactiveBalancingConfig
+    : public NYTree::TYsonStructLite
+{
+    bool Enable;
+
+    // Legacy mode. Use actual tablet balancer configs to set metric and limit.
+    std::optional<std::string> Metric;
+    std::optional<double> Limit;
+
+    REGISTER_YSON_STRUCT_LITE(TOverloadReactiveBalancingConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TBuiltinTableMountConfig
     : public virtual NYTree::TYsonStruct
 {
@@ -214,6 +231,8 @@ struct TTestingTableMountConfig
 
     TDuration PartitioningDelay;
     TDuration CompactionDelay;
+
+    bool RejectReplicatedContentReceiving;
 
     REGISTER_YSON_STRUCT_LITE(TTestingTableMountConfig);
 
@@ -335,6 +354,7 @@ struct TCustomTableMountConfig
 
     bool SingleColumnGroupByDefault;
     bool SkipValueBlocksForMissingKeys;
+    bool CompressBlockLastKeys;
 
     bool EnableHunkColumnarProfiling;
 
@@ -372,6 +392,8 @@ struct TCustomTableMountConfig
 
     i64 MaxEdenDataSizeForSplitting;
 
+    TOverloadReactiveBalancingConfig OverloadReactiveBalancing;
+
     bool ValidateRowIndexInChaosReplication;
 
     // COMPAT(ponasenko-rs): Safety switch to be able to revert to pre-fix behaviour
@@ -380,7 +402,7 @@ struct TCustomTableMountConfig
 
     TTestingTableMountConfig Testing;
 
-    bool TablePullerStronglyPreferLocalQueue;
+    bool TablePullerForceSameClusterQueue;
 
     REGISTER_YSON_STRUCT(TCustomTableMountConfig);
 

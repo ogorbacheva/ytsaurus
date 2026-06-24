@@ -78,6 +78,7 @@ private:
 TProgram::TProgram()
 {
     Opts_.AddHelpOption();
+    Opts_.AddHelpOption('h');
     Opts_.AddLongOption("yt-version", "Prints YT version")
         .NoArgument()
         .StoreValue(&PrintYTVersion_, true);
@@ -181,7 +182,7 @@ bool TProgram::ShouldAbortOnHungShutdown() noexcept
     return true;
 }
 
-void TProgram::OnError(const TString& message) noexcept
+void TProgram::OnError(const std::string& message) noexcept
 {
     try {
         Cerr << message << Endl;
@@ -225,7 +226,7 @@ const NLastGetopt::TOptsParseResult& TProgram::GetOptsParseResult() const
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TProgramException::TProgramException(TString what)
+TProgramException::TProgramException(std::string what)
     : What_(std::move(what))
 { }
 
@@ -236,7 +237,7 @@ const char* TProgramException::what() const noexcept
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TString CheckPathExistsArgMapper(const TString& arg)
+std::string CheckPathExistsArgMapper(const std::string& arg)
 {
     if (!NFS::Exists(arg)) {
         throw TProgramException(Format("File %v does not exist", arg));

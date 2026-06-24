@@ -375,7 +375,7 @@ protected:
                 << TErrorAttribute("tablet_id", tabletId)));
         }
 
-        return ReadyEvent();
+        return InternalGetReadyEvent();
     }
 
 private:
@@ -1198,9 +1198,13 @@ IVersionedReaderPtr CreateRetryingRemoteSortedDynamicStoreReader(
         TChunkSpec chunkSpec,
         TChunkReaderMemoryManagerHolderPtr readerMemoryManagerHolder)
     {
-        return MakeFuture(chunkReaderFactory(
-            std::move(chunkSpec),
-            std::move(readerMemoryManagerHolder)));
+        try {
+            return MakeFuture(chunkReaderFactory(
+                std::move(chunkSpec),
+                std::move(readerMemoryManagerHolder)));
+        } catch (const std::exception& ex) {
+            return MakeFuture<IVersionedReaderPtr>(TError(ex));
+        }
     });
 
     return New<TRetryingRemoteSortedDynamicStoreReader>(

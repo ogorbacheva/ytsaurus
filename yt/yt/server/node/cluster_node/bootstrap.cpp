@@ -193,6 +193,7 @@ using namespace NAdmin;
 using namespace NApi;
 using namespace NAuth;
 using namespace NBus;
+using namespace NBus::NTcp;
 using namespace NCellarAgent;
 using namespace NCellarClient;
 using namespace NCellMasterClient;
@@ -692,7 +693,7 @@ private:
 
     IMonitoringManagerPtr MonitoringManager_;
 
-    NYT::NBus::IBusServerPtr BusServer_;
+    NYT::NBus::NTcp::IBusServerPtr BusServer_;
     NRpc::IServerPtr RpcServer_;
     NHttp::IServerPtr HttpServer_;
 
@@ -974,11 +975,11 @@ private:
 
         DynamicConfigManager_ = New<TClusterNodeDynamicConfigManager>(this);
         // Cycles are fine for bootstrap.
-        DynamicConfigManager_->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, MakeStrong(this)));
+        DynamicConfigManager_->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, MakeStrong(this)));
 
         BundleDynamicConfigManager_ = New<NCellarNode::TBundleDynamicConfigManager>(this);
         // Cycles are fine for bootstrap.
-        BundleDynamicConfigManager_->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnBundleDynamicConfigChanged, MakeStrong(this)));
+        BundleDynamicConfigManager_->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnBundleDynamicConfigChanged, MakeStrong(this)));
 
         IOTracker_ = CreateIOTracker(DynamicConfigManager_->GetConfig()->IOTracker);
 
@@ -1493,7 +1494,7 @@ private:
             fairShareScheduler->Reconfigure(newConfig->FairShareHierarchicalScheduler);
         }
 
-        BusServer_->OnDynamicConfigChanged(newConfig->BusServer);
+        BusServer_->Reconfigure(newConfig->BusServer);
         RpcServer_->OnDynamicConfigChanged(newConfig->RpcServer);
 
         ObjectServiceCache_->Reconfigure(newConfig->CachingObjectService);
@@ -1555,7 +1556,7 @@ private:
             Connection_->GetReplicationCardCache()->Reconfigure(std::move(newReplicationCardCacheConfig));
         }
 
-        Connection_->GetMasterCellDirectorySynchronizer()->Reconfigure(newConfig->MasterCellDirectorySynchronizer);
+        Connection_->GetMasterCellDirectorySynchronizer()->ApplyDynamicConfigOverride(newConfig->MasterCellDirectorySynchronizer);
     }
 
     void PopulateAlerts(std::vector<TError>* alerts)
@@ -1726,10 +1727,8 @@ private:
             if (GetDynamicConfigManager()->GetConfig()->DataNode->MasterConnector->CheckChunksCellTagsAfterReceivingNewMasterCellConfigs) {
                 YT_UNUSED_FUTURE(
                     // NB: Master cell tags were updated during firing the above signals.
-                    BIND([weakThis = MakeWeak(this), dataNodeBootstrap, masterCellTags = GetMasterConnector()->GetMasterCellTags()] {
-                        if (auto this_ = weakThis.Lock()) {
-                            dataNodeBootstrap->GetChunkStore()->CheckAllChunksHaveValidCellTags(masterCellTags);
-                        }
+                    BIND([this_ = MakeStrong(this), dataNodeBootstrap, masterCellTags = GetMasterConnector()->GetMasterCellTags()] {
+                        dataNodeBootstrap->GetChunkStore()->CheckAllChunksHaveValidCellTags(masterCellTags);
                     }).AsyncVia(NRpc::TDispatcher::Get()->GetHeavyInvoker())
                     .Run());
             }

@@ -7,7 +7,6 @@
 #include "helpers.h"
 #include "message.h"
 #include "request_queue_provider.h"
-#include "response_keeper.h"
 #include "server_detail.h"
 #include "stream.h"
 
@@ -33,6 +32,8 @@
 #include <yt/yt/core/utilex/random.h>
 
 #include <library/cpp/yt/misc/tls.h>
+
+#include <library/cpp/yt/containers/sentinel_optional.h>
 
 namespace NYT::NRpc {
 
@@ -371,8 +372,28 @@ public:
         YT_ASSERT(ReplyBus_);
         YT_ASSERT(Service_);
         YT_ASSERT(RuntimeInfo_);
+    }
 
-        Initialize();
+    void InitializeRefCounted()
+    {
+        // COMPAT(danilalexeev): legacy RPC codecs
+        RequestCodec_ = RequestHeader_->has_request_codec()
+            ? FromProto<NCompression::ECodec>(RequestHeader_->request_codec())
+            : NCompression::ECodec::None;
+        ResponseCodec_ = RequestHeader_->has_response_codec()
+            ? FromProto<NCompression::ECodec>(RequestHeader_->response_codec())
+            : NCompression::ECodec::None;
+
+        Service_->IncrementActiveRequestCount();
+        ActiveRequestCountIncremented_ = true;
+
+        BuildGlobalRequestInfo();
+
+        Cancelable_ = RuntimeInfo_->Descriptor.Cancelable && !RequestHeader_->uncancelable();
+
+        if (IsRegistrable()) {
+            Service_->RegisterRequest(this);
+        }
     }
 
     ~TServiceContext()
@@ -522,7 +543,7 @@ public:
             AbortStreamsUnlessClosed(TError(NYT::EErrorCode::Canceled, "Request canceled"));
         }
 
-        CancelInstant_ = NProfiling::GetInstant();
+        CancelInstant_.store(NProfiling::GetInstant(), std::memory_order::release);
 
         MethodPerformanceCounters_->CanceledRequestCounter.Increment();
     }
@@ -567,15 +588,15 @@ public:
 
     std::optional<TInstant> GetRunInstant() const override
     {
-        return RunInstant_;
+        return RunInstant_.load(std::memory_order::acquire);
     }
 
     std::optional<TInstant> GetFinishInstant() const override
     {
-        if (ReplyInstant_) {
-            return ReplyInstant_;
-        } else if (CancelInstant_) {
-            return CancelInstant_;
+        if (auto replyInstant = ReplyInstant_.load(std::memory_order::acquire)) {
+            return replyInstant;
+        } else if (auto cancelInstant = CancelInstant_.load(std::memory_order::acquire)) {
+            return cancelInstant;
         } else {
             return std::nullopt;
         }
@@ -583,19 +604,21 @@ public:
 
     std::optional<TDuration> GetWaitDuration() const override
     {
-        return LocalWaitTime_;
+        return LocalWaitTime_.load(std::memory_order::acquire);
     }
 
     std::optional<TDuration> GetExecutionDuration() const override
     {
-        return ExecutionTime_;
+        return ExecutionTime_.load(std::memory_order::acquire);
     }
 
     void RecordThrottling(TDuration throttleDuration) override
     {
-        ThrottlingTime_ = ThrottlingTime_ + throttleDuration;
-        if (ExecutionTime_) {
-            *ExecutionTime_ -= throttleDuration;
+        ThrottlingTime_.store(
+            ThrottlingTime_.load(std::memory_order::acquire) + throttleDuration,
+            std::memory_order::release);
+        if (auto executionTime = ExecutionTime_.load(std::memory_order::acquire)) {
+            ExecutionTime_.store(*executionTime - throttleDuration, std::memory_order::release);
         }
     }
 
@@ -718,15 +741,18 @@ private:
     bool Cancelable_ = false;
     TSingleShotCallbackList<void(const TError&)> CanceledList_;
 
-    const TInstant ArriveInstant_;
-    std::optional<TInstant> RunInstant_;
-    std::optional<TInstant> ReplyInstant_;
-    std::optional<TInstant> CancelInstant_;
-    TDuration ThrottlingTime_;
+    YT_DEFINE_SENTINEL_OPTIONAL(TSentinelOptionalInstant, TInstant, TInstant::Zero());
+    YT_DEFINE_SENTINEL_OPTIONAL(TSentinelOptionalDuration, TDuration, TDuration::Max());
 
-    std::optional<TDuration> ExecutionTime_;
-    std::optional<TDuration> TotalTime_;
-    std::optional<TDuration> LocalWaitTime_;
+    const TInstant ArriveInstant_;
+    std::atomic<TSentinelOptionalInstant> RunInstant_;
+    std::atomic<TSentinelOptionalInstant> ReplyInstant_;
+    std::atomic<TSentinelOptionalInstant> CancelInstant_;
+    std::atomic<TDuration> ThrottlingTime_;
+
+    std::atomic<TSentinelOptionalDuration> ExecutionTime_;
+    std::atomic<TSentinelOptionalDuration> TotalTime_;
+    std::atomic<TSentinelOptionalDuration> LocalWaitTime_;
 
     std::atomic<bool> CompletedLatch_ = false;
     std::atomic<bool> TimedOutLatch_ = false;
@@ -751,28 +777,6 @@ private:
         }
 
         return false;
-    }
-
-    void Initialize()
-    {
-        // COMPAT(danilalexeev): legacy RPC codecs
-        RequestCodec_ = RequestHeader_->has_request_codec()
-            ? FromProto<NCompression::ECodec>(RequestHeader_->request_codec())
-            : NCompression::ECodec::None;
-        ResponseCodec_ = RequestHeader_->has_response_codec()
-            ? FromProto<NCompression::ECodec>(RequestHeader_->response_codec())
-            : NCompression::ECodec::None;
-
-        Service_->IncrementActiveRequestCount();
-        ActiveRequestCountIncremented_ = true;
-
-        BuildGlobalRequestInfo();
-
-        Cancelable_ = RuntimeInfo_->Descriptor.Cancelable && !RequestHeader_->uncancelable();
-
-        if (IsRegistrable()) {
-            Service_->RegisterRequest(this);
-        }
     }
 
     void BuildGlobalRequestInfo()
@@ -879,20 +883,24 @@ private:
         guard.Release();
 
         if (requestAttachmentsStream) {
-            requestAttachmentsStream->AbortUnlessClosed(Error_);
+            requestAttachmentsStream->AbortUnlessClosed(error);
         }
 
         if (responseAttachmentsStream) {
-            responseAttachmentsStream->AbortUnlessClosed(Error_);
+            responseAttachmentsStream->AbortUnlessClosed(error);
         }
     }
 
 
     void DoRun(const TLiteHandler& handler)
     {
-        RunInstant_ = NProfiling::GetInstant();
-        LocalWaitTime_ = *RunInstant_ - ArriveInstant_;
-        MethodPerformanceCounters_->LocalWaitTimeCounter.Record(*LocalWaitTime_);
+        auto runInstant = NProfiling::GetInstant();
+        auto localWaitTime = runInstant - ArriveInstant_;
+
+        RunInstant_.store(runInstant, std::memory_order::release);
+        LocalWaitTime_.store(localWaitTime, std::memory_order::release);
+
+        MethodPerformanceCounters_->LocalWaitTimeCounter.Record(localWaitTime);
 
         try {
             TCurrentTraceContextGuard guard(TraceContext_);
@@ -917,7 +925,8 @@ private:
         }
 
         if (auto timeout = GetTimeout()) {
-            auto remainingTimeout = *timeout - (*RunInstant_ - ArriveInstant_);
+            auto runInstant = RunInstant_.load(std::memory_order::acquire);
+            auto remainingTimeout = *timeout - (*runInstant - ArriveInstant_);
             if (remainingTimeout == TDuration::Zero()) {
                 if (!TimedOutLatch_.exchange(true)) {
                     Reply(TError(NYT::EErrorCode::Timeout, "Request dropped due to timeout before being run"));
@@ -1028,15 +1037,20 @@ private:
             MethodPerformanceCounters_->TraceContextTimeCounter.Add(*traceContextTime);
         }
 
-        ReplyInstant_ = NProfiling::GetInstant();
-        ExecutionTime_ = RunInstant_ ? *ReplyInstant_ - *RunInstant_ : TDuration();
-        if (RunInstant_) {
-            *ExecutionTime_ -= ThrottlingTime_;
-        }
-        TotalTime_ = *ReplyInstant_ - ArriveInstant_;
+        auto replyInstant = NProfiling::GetInstant();
+        ReplyInstant_.store(replyInstant, std::memory_order::release);
 
-        MethodPerformanceCounters_->ExecutionTimeCounter.Record(*ExecutionTime_);
-        MethodPerformanceCounters_->TotalTimeCounter.Record(*TotalTime_);
+        TDuration executionTime;
+        if (auto runInstant = RunInstant_.load(std::memory_order::acquire)) {
+            executionTime = (replyInstant - *runInstant) - ThrottlingTime_.load(std::memory_order::acquire);
+        }
+        ExecutionTime_.store(executionTime, std::memory_order::release);
+
+        auto totalTime = replyInstant - ArriveInstant_;
+        TotalTime_.store(totalTime, std::memory_order::release);
+
+        MethodPerformanceCounters_->ExecutionTimeCounter.Record(executionTime);
+        MethodPerformanceCounters_->TotalTimeCounter.Record(totalTime);
         if (!Error_.IsOK()) {
             if (Service_->EnableErrorCodeCounter_.load()) {
                 const auto* counter = MethodPerformanceCounters_->ErrorCodeCounters.GetCounter(Error_.GetNonTrivialCode());
@@ -1072,7 +1086,7 @@ private:
             ? FromProto<TDuration>(RequestHeader_->logging_suppression_timeout())
             : RuntimeInfo_->LoggingSuppressionTimeout.load(std::memory_order::relaxed);
 
-        if (*TotalTime_ >= timeout) {
+        if (*TotalTime_.load(std::memory_order::acquire) >= timeout) {
             return;
         }
 
@@ -1175,8 +1189,8 @@ private:
         }
 
         delimitedBuilder->AppendFormat("ExecutionTime: %v, TotalTime: %v",
-            *ExecutionTime_,
-            *TotalTime_);
+            *ExecutionTime_.load(std::memory_order::acquire),
+            *TotalTime_.load(std::memory_order::acquire));
 
         if (auto traceContextTime = GetTraceContextTime()) {
             delimitedBuilder->AppendFormat("CpuTime: %v", traceContextTime);
@@ -2011,10 +2025,17 @@ TRequestQueue* TServiceBase::GetRequestQueue(
         auto profiler = runtimeInfo->Profiler.WithSparse();
         if (runtimeInfo->Descriptor.RequestQueueProvider) {
             profiler = profiler.WithTag("queue", requestQueue->GetName());
+
+            // If there is no request queue provider, then total metrics reported
+            // by method profilers are enough.
+            profiler.AddFuncGauge("/request_queue_size", MakeStrong(this), [=] {
+                return requestQueue->GetQueueSize();
+            });
+            profiler.AddFuncGauge("/request_queue_size_limit", MakeStrong(this), [=] {
+                // Reporting 0 for a sparse metric effectively hides it.
+                return requestQueue->GetQueueSizeLimit().value_or(0);
+            });
         }
-        profiler.AddFuncGauge("/request_queue_size", MakeStrong(this), [=] {
-            return requestQueue->GetQueueSize();
-        });
         profiler.AddFuncGauge("/request_queue_byte_size", MakeStrong(this), [=] {
             return requestQueue->GetQueueByteSize();
         });
@@ -2196,10 +2217,10 @@ void TServiceBase::OnRequestTimeout(TRequestId requestId, ERequestProcessingStag
     context->HandleTimeout(stage);
 }
 
-void TServiceBase::OnReplyBusTerminated(const TWeakPtr<NYT::NBus::IBus>& weakbus, const TError& error)
+void TServiceBase::OnReplyBusTerminated(const TWeakPtr<NYT::NBus::IBus>& weakBus, const TError& error)
 {
     std::vector<TServiceContextPtr> contexts;
-    if (auto bus = weakbus.Lock()) {
+    if (auto bus = weakBus.Lock()) {
         auto* bucket = GetReplyBusBucket(bus);
         auto guard = Guard(bucket->Lock);
         auto it = bucket->ReplyBusToData.find(bus);
@@ -2673,7 +2694,12 @@ TServiceBase::TRuntimeMethodInfoPtr TServiceBase::RegisterMethod(const TMethodDe
     // Failure here means that such method is already registered.
     YT_VERIFY(MethodMap_.emplace(descriptor.Method, runtimeInfo).second);
 
-    auto& profiler = runtimeInfo->Profiler;
+    auto profiler = runtimeInfo->Profiler
+        .WithSparse()
+        .WithTag("queue", "Aggr");
+    profiler.AddFuncGauge("/request_queue_size", MakeStrong(this), [=] {
+        return runtimeInfo->QueueSize.load(std::memory_order::relaxed);
+    });
     profiler.AddFuncGauge("/request_queue_size_limit", MakeStrong(this), [=] {
         return runtimeInfo->QueueSizeLimit.load(std::memory_order::relaxed);
     });

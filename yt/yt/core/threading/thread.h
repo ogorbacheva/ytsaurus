@@ -50,7 +50,7 @@ public:
     bool IsStopping() const;
 
     TThreadId GetThreadId() const;
-    TString GetThreadName() const;
+    std::string GetThreadName() const;
 
 protected:
     virtual void StartPrologue();
@@ -61,7 +61,7 @@ protected:
     virtual void ThreadMain() = 0;
 
 private:
-    const TString ThreadName_;
+    const std::string ThreadName_;
     const TThreadOptions Options_;
 
     const TThreadId UniqueThreadId_;
@@ -77,12 +77,10 @@ private:
     TThreadId ThreadId_ = InvalidThreadId;
     ::TThread UnderlyingThread_;
 
-#if defined(_unix_)
-    std::unique_ptr<NThreading::TExecutionStack> SignalHandlerStack_;
-#endif
+    //! Only valid on x86-64 linux.
+    [[maybe_unused]] void* FSBase_ = nullptr;
 
     void SetThreadPriority();
-    void ConfigureSignalHandlerStack();
 
     bool StartSlow();
 

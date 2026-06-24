@@ -74,7 +74,7 @@ public:
         }
     }
 
-    TChaosDataTrimProgressGuard(TChaosDataTrimProgressGuard&& guard)
+    TChaosDataTrimProgressGuard(TChaosDataTrimProgressGuard&& guard) noexcept
         : Logger(std::move(guard.Logger))
         , TabletCancelableContext_(std::move(guard.TabletCancelableContext_))
         , ChaosTabletData_(std::move(guard.ChaosTabletData_))
@@ -112,6 +112,7 @@ private:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+
 class TStoreTrimmer
     : public IStoreTrimmer
 {
@@ -218,7 +219,6 @@ private:
 
         i64 trimmedRowCount = 0;
         i64 remainingRowCount = tablet->GetTotalRowCount() - tablet->GetTrimmedRowCount();
-        std::vector<TOrderedChunkStorePtr> result;
         for (const auto& [_, store] : tablet->StoreRowIndexMap()) {
             if (!store->IsChunk()) {
                 break;
@@ -329,20 +329,13 @@ private:
                     return;
                 }
 
-                tabletInvoker->Invoke(BIND([
+                tabletInvoker->Invoke(BIND(
+                    &TStoreTrimmer::CommitTrimRowsMutation,
+                    std::move(slot),
                     tabletId,
-                    slot = std::move(slot),
-                    startRowIndex = *errorOrStartRowIndex.Value(),
-                    finallyGuard = std::move(finallyGuard),
-                    logger = Logger
-                ] () mutable {
-                    TStoreTrimmer::CommitTrimRowsMutation(
-                        std::move(slot),
-                        tabletId,
-                        startRowIndex,
-                        std::move(finallyGuard),
-                        std::move(logger));
-                }));
+                    *errorOrStartRowIndex.Value(),
+                    Passed(std::move(finallyGuard)),
+                    Logger));
             }));
     }
 

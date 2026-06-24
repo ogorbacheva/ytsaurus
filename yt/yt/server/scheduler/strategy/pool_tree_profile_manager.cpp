@@ -479,7 +479,8 @@ void TPoolTreeProfileManager::ProfilePool(
     ProfileResources(&buffer, attributes.InferredStrongGuaranteeResources, "/inferred_strong_guarantee_resources");
 
     auto integralGuaranteesConfig = element->GetIntegralGuaranteesConfig();
-    if (integralGuaranteesConfig->GuaranteeType != EIntegralGuaranteeType::None) {
+    if (integralGuaranteesConfig->ResourceFlow->Cpu.has_value()) {
+        buffer.AddGauge("/integral_guarantee_type", static_cast<int>(integralGuaranteesConfig->GuaranteeType));
         ProfileResources(&buffer, ToJobResources(integralGuaranteesConfig->ResourceFlow, {}), "/resource_flow");
         ProfileResources(&buffer, ToJobResources(integralGuaranteesConfig->BurstGuaranteeResources, {}), "/burst_guarantee_resources");
     }
@@ -527,7 +528,7 @@ void TPoolTreeProfileManager::ProfilePools(const TPoolTreeSnapshotPtr& treeSnaps
         poolNameToState = PoolNameToState_;
     }
 
-    auto findPoolBufferedProducer = [&poolNameToState] (const TString& poolName) -> NProfiling::TBufferedProducerPtr {
+    auto findPoolBufferedProducer = [&poolNameToState] (const std::string& poolName) -> NProfiling::TBufferedProducerPtr {
         auto it = poolNameToState.find(poolName);
         if (it == poolNameToState.end()) {
             return nullptr;
@@ -550,7 +551,8 @@ void TPoolTreeProfileManager::ProfilePools(const TPoolTreeSnapshotPtr& treeSnaps
     ProfilePool(
         treeSnapshot->RootElement().Get(),
         treeSnapshot->TreeConfig(),
-        findPoolBufferedProducer(RootPoolName));
+        // TODO(babenko): migrate to std::string
+        findPoolBufferedProducer(TString(RootPoolName)));
 }
 
 void TPoolTreeProfileManager::ProfileDistributedResources(const TPoolTreeSnapshotPtr& treeSnapshot)

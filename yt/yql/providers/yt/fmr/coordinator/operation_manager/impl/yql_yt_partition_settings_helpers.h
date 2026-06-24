@@ -4,6 +4,7 @@
 #include <yt/yql/providers/yt/fmr/coordinator/partitioner/yql_yt_fmr_partitioner.h>
 #include <yt/yql/providers/yt/fmr/coordinator/partitioner/yql_yt_ordered_partitioner.h>
 #include <yt/yql/providers/yt/fmr/coordinator/partitioner/yql_yt_sorted_partitioner.h>
+#include <yt/yql/providers/yt/fmr/coordinator/partitioner/yql_yt_reduce_partitioner.h>
 #include <yql/essentials/utils/yql_panic.h>
 
 namespace NYql::NFmr {
@@ -18,6 +19,7 @@ inline TFmrPartitionerSettings GetFmrPartitionerSettings(const NYT::TNode& fmrOp
     auto& fmrPartitionSettings = fmrOperationSpec["partition"]["fmr_table"];
     settings.MaxDataWeightPerPart = fmrPartitionSettings["max_data_weight_per_part"].AsInt64();
     settings.MaxParts = fmrPartitionSettings["max_parts"].AsInt64();
+    settings.AdjustDataWeightPerPartition = fmrPartitionSettings["adjust_data_weight_per_partition"].AsBool();
     return settings;
 }
 
@@ -37,9 +39,28 @@ inline TOrderedPartitionSettings GetOrderedPartitionerSettings(const NYT::TNode&
     return settings;
 }
 
+inline TOrderedPartitionSettings GetSortedUploadPartitionerSettings(const NYT::TNode& fmrOperationSpec) {
+    TOrderedPartitionSettings settings;
+    auto& sortedUploadSettings = fmrOperationSpec["partition"]["sorted_upload"];
+    settings.FmrPartitionSettings.MaxDataWeightPerPart = sortedUploadSettings["max_data_weight_per_part"].AsInt64();
+    settings.FmrPartitionSettings.MaxParts = sortedUploadSettings["max_parts"].AsInt64();
+    settings.FmrPartitionSettings.AdjustDataWeightPerPartition = sortedUploadSettings["adjust_data_weight_per_partition"].AsBool();
+    settings.YtPartitionSettings = GetYtPartitionerSettings(fmrOperationSpec);
+    settings.YtPartitionSettings.PartitionMode = NYT::ETablePartitionMode::Ordered;
+    return settings;
+}
+
 inline TSortedPartitionSettings GetSortedPartitionerSettings(const NYT::TNode& fmrOperationSpec) {
     TSortedPartitionSettings settings;
     settings.FmrPartitionSettings = GetFmrPartitionerSettings(fmrOperationSpec);
+    return settings;
+}
+
+inline TReducePartitionSettings GetReducePartitionSettings(const NYT::TNode& fmrOperationSpec) {
+    TReducePartitionSettings settings;
+    settings.FmrPartitionSettings.MaxDataWeightPerPart = fmrOperationSpec["reduce"]["max_data_weight_per_part"].AsInt64();
+    settings.FmrPartitionSettings.MaxParts = fmrOperationSpec["reduce"]["max_parts"].AsInt64();
+    settings.MaxKeySizePerPart = fmrOperationSpec["reduce"]["max_key_size_per_part"].AsInt64();
     return settings;
 }
 

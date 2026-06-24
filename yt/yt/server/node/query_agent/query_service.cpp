@@ -121,7 +121,7 @@ static constexpr i64 MaxRowsPerRemoteDynamicStoreRead = 1024;
 static const std::string DefaultQLExecutionPoolName = "default";
 static const std::string DefaultQLExecutionTag = "default";
 
-static const std::string DefaultPullRowsPoolName = "$ChaosPullRows";
+static const std::string DefaultPullRowsPoolName = "$chaos_pull_rows";
 static const std::string DefaultPullRowsTag = "default";
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -259,7 +259,7 @@ public:
             .SetInvokerProvider(BIND(&TQueryService::GetExecuteInvoker, Unretained(this)))
             .SetHandleMethodError(true));
 
-        Bootstrap_->GetDynamicConfigManager()->SubscribeConfigChanged(BIND(
+        Bootstrap_->GetDynamicConfigManager()->SubscribeBeforeConfigChanged(BIND(
             &TQueryService::OnDynamicConfigChanged,
             MakeWeak(this)));
         SubscribeLoadAdjusted();
@@ -426,11 +426,14 @@ private:
 
         auto dataSources = FromProto<std::vector<NQueryClient::TDataSource>>(request->data_sources(), memoryChunkProvider);
 
+        auto attachments = std::move(request->Attachments()); // TODO: capture in MemoryTracker_;
+
         YT_LOG_DEBUG("Query deserialized (FragmentId: %v, InputRowLimit: %v, OutputRowLimit: %v, "
             "RangeExpansionLimit: %v, MaxSubqueries: %v, EnableCodeCache: %v, WorkloadDescriptor: %v, "
             "ReadSessionId: %v, MemoryLimitPerNode: %v, "
             "RowsetProcessingBatchSize: %v, WriteRowsetSize: %v, MaxJoinBatchSize: %v, "
-            "DataRangeCount: %v, RandomTabletId: %v, StatisticsAggregation: %Qv)",
+            "DataRangeCount: %v, RandomTabletId: %v, StatisticsAggregation: %Qv, "
+            "AttachmentCount: %v)",
             query->Id,
             queryOptions.InputRowLimit,
             queryOptions.OutputRowLimit,
@@ -445,7 +448,8 @@ private:
             queryOptions.MaxJoinBatchSize,
             dataSources.size(),
             dataSources.begin()->ObjectId,
-            queryOptions.StatisticsAggregation);
+            queryOptions.StatisticsAggregation,
+            attachments.size());
 
         if (RejectUponThrottlerOverdraft_.load(std::memory_order::relaxed)) {
             TClientChunkReadOptions chunkReadOptions{
@@ -487,6 +491,7 @@ private:
                     query,
                     externalCGInfo,
                     dataSources,
+                    attachments,
                     writer,
                     memoryChunkProvider,
                     invoker,
@@ -529,6 +534,7 @@ private:
             .MemoryUsageTracker = Bootstrap_
                 ->GetNodeMemoryUsageTracker()
                 ->WithCategory(EMemoryCategory::Lookup),
+            .InitialQueryKind = EInitialQueryKind::LookupRows,
         };
 
         TRetentionConfigPtr retentionConfig;
@@ -592,6 +598,29 @@ private:
 
         Bootstrap_->GetInThrottler(EWorkloadCategory::UserInteractive)->Acquire(
             request->ByteSizeLong());
+
+        const auto& snapshotStore = Bootstrap_->GetTabletSnapshotStore();
+        std::vector<TError> servantNotActiveErrors;
+        for (int index = 0; index < tabletCount; ++index) {
+            auto tabletId = FromProto<TTabletId>(request->tablet_ids(index));
+            auto cellId = FromProto<TCellId>(request->cell_ids(index));
+            auto mountRevision = FromProto<NHydra::TRevision>(request->mount_revisions(index));
+            auto snapshot = snapshotStore->GetTabletSnapshotOrThrow(tabletId, cellId, mountRevision);
+            if (auto error = snapshot->ValidateServantIsActive(Bootstrap_->GetClient()->GetNativeConnection()->GetCellDirectory());
+                !error.IsOK())
+            {
+                servantNotActiveErrors.push_back(std::move(error));
+            }
+        }
+
+        if (!servantNotActiveErrors.empty()) {
+            if (servantNotActiveErrors.size() == 1) {
+                servantNotActiveErrors[0].ThrowOnError();
+            } else {
+                THROW_ERROR_EXCEPTION("Some tablet servants are not active")
+                    << servantNotActiveErrors;
+            }
+        }
 
         auto lookupSession = CreateLookupSession(
             inMemoryMode,
@@ -678,6 +707,7 @@ private:
         TClientChunkReadOptions chunkReadOptions{
             .WorkloadDescriptor = TWorkloadDescriptor(EWorkloadCategory::SystemTabletReplication),
             .ReadSessionId = TReadSessionId::Create(),
+            .InitialQueryKind = EInitialQueryKind::PullRows,
         };
 
         TRowBatchReadOptions rowBatchReadOptions{
@@ -798,20 +828,19 @@ private:
                     endReplicationRowIndex = startReplicationRowIndex;
                 }
 
+                auto replicationProgressMinTimestamp = GetReplicationProgressMinTimestamp(*replicationProgress);
                 YT_LOG_DEBUG("Read replication batch (LastTimestamp: %v, ReadAllRows: %v, UpperTimestamp: %v, ProgressMinTimestamp: %v)",
                     result.MaxTimestamp,
                     result.ReadAllRows,
                     upperTimestamp,
-                    GetReplicationProgressMinTimestamp(*replicationProgress));
+                    replicationProgressMinTimestamp);
 
                 if (result.ReadAllRows) {
                     if (upperTimestamp) {
                         result.MaxTimestamp = upperTimestamp;
                     }
 
-                    result.MaxTimestamp = std::max(
-                        result.MaxTimestamp,
-                        GetReplicationProgressMinTimestamp(*replicationProgress));
+                    result.MaxTimestamp = std::max(result.MaxTimestamp, replicationProgressMinTimestamp);
                 }
 
                 auto endProgress = AdvanceReplicationProgress(progress, result.MaxTimestamp);
@@ -1601,6 +1630,7 @@ private:
         chunkReadOptions.MemoryUsageTracker = Bootstrap_
             ->GetNodeMemoryUsageTracker()
             ->WithCategory(EMemoryCategory::FetchTableRows);
+        chunkReadOptions.InitialQueryKind = EInitialQueryKind::FetchRows;
 
         auto resultFuture = FetchRowsFromOrderedStore(
             std::move(tabletSnapshot),
@@ -1709,10 +1739,16 @@ private:
 
         // In practice, this should rarely happen, since there is almost always at least one active store.
         if (orderedStores.empty()) {
+            YT_LOG_DEBUG("Ordered stores are empty (TabletId: %v, Timestamp: %v, SafeToTrimRowCount: %v)",
+                tabletId,
+                timestamp,
+                tabletSnapshot->TotalRowCount);
+
             return tabletSnapshot->TotalRowCount;
         }
 
         // Should match TabletManaget::ValidateTrimmedRowCountPrecedeReplication
+        auto requestedTimestamp = timestamp;
         if (auto replicationCard = tabletSnapshot->TabletRuntimeData->ReplicationCard.Acquire();
             replicationCard && !replicationCard->Replicas.empty())
         {
@@ -1777,9 +1813,17 @@ private:
         // The list of ordered stores is produced from a mapping of the form [startingRowIndex -> store],
         // so only the last store can potentially be empty. This is perfectly fine for us.
 
-        return desiredStoreIt != storeSnapshots.end()
+        auto rowCount = desiredStoreIt != storeSnapshots.end()
             ? desiredStoreIt->StartRowIndex
             : lastStore.FinishRowIndex;
+
+        YT_LOG_DEBUG("No stores (TabletId: %v, Timestamp: %v, RequestedTimestamp: %v, SafeToTrimRowCount: %v)",
+            tabletId,
+            timestamp,
+            requestedTimestamp,
+            rowCount);
+
+        return rowCount;
     }
 
     void OnDynamicConfigChanged(

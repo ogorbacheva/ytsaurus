@@ -13,6 +13,9 @@ option go_package = "go.ytsaurus.tech/yt/yt_proto/yt/orm/client/proto;client";
 
 message TWatchLogOption
 {
+    reserved 6, 7, 8, 9, 10;
+    reserved "tablet_count", "min_data_ttl", "max_data_ttl", "min_data_versions", "max_data_versions";
+
     optional string snake_case_name = 1;
     optional string filter = 2;
     repeated string selectors = 3;
@@ -22,13 +25,6 @@ message TWatchLogOption
     repeated string required_tags = 4;
     // List of excluded tags.
     repeated string excluded_tags = 5;
-    // Table attributes.
-    optional int32 tablet_count = 6 [default = 6];
-    // Default 600000 is 10 minutes.
-    optional int32 min_data_ttl = 7 [default = 600000];
-    optional int32 max_data_ttl = 8 [default = 600000];
-    optional int32 min_data_versions = 9 [default = 0];
-    optional int32 max_data_versions = 10 [default = 1];
 }
 
 message THistoryAttribute
@@ -56,11 +52,27 @@ message THistoryTimeIndex
     repeated string included_attributes = 7;
 }
 
+enum EMigrationState
+{
+    MS_INITIAL = 0;
+    MS_WRITE_BOTH = 1;
+    MS_READ_NEW = 2;
+    MS_TARGET = 3;
+}
+
+message TPerObjectTypeHistoryTable
+{
+    // Optional custom name. Default value is going to be used if not specified or empty.
+    optional string name = 1;
+    optional EMigrationState table_mode = 2;
+}
+
 message THistoryOptions
 {
     repeated THistoryAttribute attributes = 1;
     optional string filter = 2;
     repeated THistoryTimeIndex time_indexes = 3;
+    optional TPerObjectTypeHistoryTable per_object_type_history_table = 4;
 }
 
 message TCustomOption
@@ -86,6 +98,8 @@ message TRevisionTracker
     repeated string excluded_paths = 7;
 
     repeated string tracked_tags = 8;
+
+    optional bool track_aggregate_attributes = 9;
 }
 
 message TAccessControlPermissionInfo
@@ -139,7 +153,8 @@ enum ECascadingRemovalPolicy
     // When all descendants become removed, foreign object itself may be removed.
     // The system may try to remove it with last removed descendant.
     CRP_AWAIT_FOREIGN = 3;
-    // Clear links to descendants upon removal. Inapplicable to parent-child references.
+    // Clear links to descendants upon finalization (or removal, if finalizers are disabled).
+    // Inapplicable to parent-child references.
     CRP_CLEAR = 4;
 }
 
@@ -355,6 +370,9 @@ message TIndexOption
     optional string predicate = 8;
     optional string custom_table_name = 9;
     optional bool native = 12; // Native-index support is under development. Do not use it in your ORM.
+    // Drop the index entry when the owner enters finalizing state
+    // (meta.finalization_time set) rather than at full removal.
+    optional bool exclude_finalizing_objects = 13;
 }
 
 enum EHistoryCommitTime
@@ -419,6 +437,10 @@ message THistoryTableOptions
 
     // Specifies `max_inline_hunk_size` attribute for `value` column in history table.
     optional uint64 value_column_max_inline_hunk_size = 11;
+
+    // True by default. Exactly one history table needs to be actual.
+    // Per object type history events table will have settings taken from the actual table.
+    optional bool actual = 12;
 }
 
 message TLockGroup
@@ -444,12 +466,13 @@ message TEtcOptions
     optional uint64 max_inline_hunk_size = 3;
 }
 
-// Next field 30058.
+// Next field 30062.
 extend google.protobuf.FileOptions
 {
     repeated TObjectTypeOption object_type = 30000;
     repeated TObjectTypeOption extend_object_type = 30036;
     repeated TIndexOption index = 30001;
+    repeated TReferencesOption references = 30059;
 
     // Specifies whether tombstones mechanics is enabled or not.
     // Disabled by default.
@@ -523,6 +546,7 @@ extend google.protobuf.FileOptions
     optional bool keep_removal_time = 30049;
 
     optional bool enable_finalizers = 30030;
+    optional bool exclude_finalizing_objects_from_indexes = 30058;
 
     // Correctness of new type is checked in codegen (must be one of "int64" or "string").
     optional string default_enum_storage_type = 30028;
@@ -558,6 +582,18 @@ extend google.protobuf.FileOptions
 
     // If true, treats default value and field absence as equal.
     optional bool compare_absent_value_as_default = 30056;
+
+    // Exposes the /control/partition_objects method on the schema object. Off by default during
+    // rollout: the codegen drops the schema control field unless this is set.
+    optional bool enable_schema_partition_objects = 30062;
+    // Exposes the /control/watch_log_info method on the schema object. Off by default during
+    // rollout: the codegen drops the schema control field unless this is set.
+    optional bool enable_schema_watch_log_info = 30060;
+
+    // Enables the |multi_consumer| system table and native multi-consumer support.
+    // When enabled, ORM generates the |multi_consumer| table and allows
+    // registering/advancing/reading queue progress via a single shared consumer table.
+    optional bool support_multi_consumer = 30061;
 }
 
 enum EGenerationPolicy
@@ -720,7 +756,10 @@ message TReferenceOption
 
     optional string foreign_type = 1;
 
-    // Path to the matching reference in the foreign object. If the matching reference is not,
+    // No backward reference in the foreign object.
+    optional bool one_sided = 18;
+
+    // Path to the matching reference in the foreign object. If the matching reference is not
     // declared, a tabular multiref will be autogenerated. If omitted, defaults to
     // /status/|foreign_type|_refs.
     optional string foreign_backref_path = 2;
@@ -752,6 +791,57 @@ message TReferenceOption
     optional EPresencePolicy presence_policy = 14;
     optional EDuplicatePolicy duplicate_policy = 15;
     optional EReferenceMode mode = 16;
+}
+
+// Declares a whole reference relationship in one place, as a file option. This is an alternative
+// to spelling out the two mirror-image |reference| field options by hand and keeping them in sync;
+// both ways are supported and may be mixed within a model. Each endpoint describes one side;
+// codegen materializes the matching TReference field on each side and links them. The opposite
+// endpoint plays the role of the backref, so no backref paths or numbers are specified here.
+message TReferencesOption
+{
+    enum ECardinality
+    {
+        RC_MULTI = 0;
+        RC_SINGLE = 1;
+    }
+
+    message TEndpoint
+    {
+        // The object type that owns this side of the reference (snake_case).
+        optional string object_type = 1;
+
+        // Path and number of this side's reference field. If omitted, the path defaults to
+        // /status/|foreign_type|_refs and the number is allocated from the hidden field range.
+        optional string path = 2;
+        optional int32 number = 3;
+
+        optional ECardinality cardinality = 4;
+
+        // A list of paths of the components of the other endpoint's key.
+        // Proto or columnar inline storage is automatically deduced.
+        // Effectively, part of the |key_storage| oneof.
+        repeated string key_paths = 11;
+
+        oneof key_storage
+        {
+            TReferenceOption.TTabularKeyStorageOption tabular_key_storage = 12;
+            TReferenceOption.TCountingKeyStorageOption counting_key_storage = 13;
+            // One-sided reference: this side is not materialized.
+            bool dummy = 14;
+        }
+
+        optional TReferenceOption.TReferenceViewOption view = 21;
+        optional bool store_foreign_parent_key = 22;
+        optional ECascadingRemovalPolicy cascading_removal_policy = 23;
+        optional bool local_modification_only = 24;
+        optional TReferenceOption.EPresencePolicy presence_policy = 25;
+        optional TReferenceOption.EDuplicatePolicy duplicate_policy = 26;
+    }
+
+    optional TEndpoint first = 1;
+    optional TEndpoint second = 2;
+    optional TReferenceOption.EReferenceMode mode = 3;
 }
 
 message TReference
@@ -807,7 +897,7 @@ message TJoinedColumnOption
     optional string aggregation = 5;
 }
 
-// Next field 31061.
+// Next field 31062.
 extend google.protobuf.FieldOptions
 {
     optional bool column = 31001;
@@ -816,6 +906,11 @@ extend google.protobuf.FieldOptions
     optional string foreign_key = 31002;
     // Generate new-style reference in codegen output.
     optional bool convert_to_new_reference = 31057;
+    // List of suppressed error types for |convert_to_new_reference| option.
+    // Supported values: "nullable" — suppresses the error when the field has |nullable = false|,
+    // which is not natively supported by the new-style reference. The user is responsible for
+    // emulating the nullable behavior manually.
+    repeated string convert_to_new_reference_suppress_errors = 31061;
     optional string children_view = 31046;
     optional bool no_foreign_view = 31024;
     // A special type of reference for ancestor fields.
@@ -1029,6 +1124,11 @@ extend google.protobuf.EnumOptions
 {
     // The file into which this enum should be exported.
     optional string enum_output_filename = 33006;
+
+    // For columnar enums there is DEFINE_ENUM generated.
+    // By default enum name is chosen. This option overrides it.
+    // TODO(dgolear): Get rid of DEFINE_ENUM.
+    optional string enum_cpp_type_name = 33008;
 }
 
 extend google.protobuf.EnumValueOptions

@@ -1,6 +1,16 @@
 // NOLINTBEGIN(misc-definitions-in-headers)
 #pragma once
 
+Y_UNIT_TEST(Syntax) {
+    TCases cases = {
+        {"--!syntax_v0\nselect 1", "--!syntax_v0\nselect 1"},
+        {"--!syntax_v1\nselect 1", "--!syntax_v1\nSELECT\n\t1\n;\n"},
+    };
+
+    TSetup setup;
+    setup.Run(cases);
+}
+
 Y_UNIT_TEST(Pragma) {
     TCases cases = {
         {"pragma user = user;", "PRAGMA user = user;\n"},
@@ -40,6 +50,25 @@ Y_UNIT_TEST(TruncateTable) {
 
         {"use plato;truncate table `/Root/test/table` with();",
          "USE plato;\n\nTRUNCATE TABLE `/Root/test/table` WITH ();\n"},
+    };
+
+    TSetup setup;
+    setup.Run(cases);
+}
+
+Y_UNIT_TEST(Materialize) {
+    TCases cases{
+        {"use plato;materialize Input into $result;",
+         "USE plato;\n\nMATERIALIZE Input INTO $result;\n"},
+
+        {"materialize plato.Input on plato into $result;",
+         "MATERIALIZE plato.Input ON plato INTO $result;\n"},
+
+        {"use plato;materialize Input into $result;select * from $result;",
+         "USE plato;\n\nMATERIALIZE Input INTO $result;\n\nSELECT\n\t*\nFROM\n\t$result\n;\n"},
+
+        {"materialize (select * from plato.Input) on plato into $result;",
+         "MATERIALIZE (\n\tSELECT\n\t\t*\n\tFROM\n\t\tplato.Input\n) ON plato INTO $result;\n"},
     };
 
     TSetup setup;
@@ -519,6 +548,28 @@ Y_UNIT_TEST(TypeSelection) {
     setup.Run(cases);
 }
 
+Y_UNIT_TEST(NullAsType) {
+    TCases cases = {
+        {"select cast(x as null)",
+         "SELECT\n\tCAST(x AS null)\n;\n"},
+        {"select cast(x as NULL)",
+         "SELECT\n\tCAST(x AS NULL)\n;\n"},
+        {"select cast(x as null?)",
+         "SELECT\n\tCAST(x AS null?)\n;\n"},
+        {"select list<null>",
+         "SELECT\n\tlist<null>\n;\n"},
+        {"select Optional<NULL>",
+         "SELECT\n\tOptional<NULL>\n;\n"},
+        {"select NULL",
+         "SELECT\n\tNULL\n;\n"},
+        {"select null",
+         "SELECT\n\tNULL\n;\n"},
+    };
+
+    TSetup setup;
+    setup.Run(cases);
+}
+
 Y_UNIT_TEST(AlterTable) {
     TCases cases = {
         {"alter table user add user int32",
@@ -607,8 +658,8 @@ Y_UNIT_TEST(AlterTable) {
          "ALTER TABLE user\n\tCOMPACT\n;\n"},
         {"alter table user compact with(cascade=FaLsE)",
          "ALTER TABLE user\n\tCOMPACT WITH (cascade = FALSE)\n;\n"},
-        {"alter table user compact with(cascade=TruE,max_shards_in_flight=3)",
-         "ALTER TABLE user\n\tCOMPACT WITH (cascade = TRUE, max_shards_in_flight = 3)\n;\n"},
+        {"alter table user compact with(cascade=TruE,parallel=3)",
+         "ALTER TABLE user\n\tCOMPACT WITH (cascade = TRUE, parallel = 3)\n;\n"},
         {"alter table t alter column c set default 42",
          "ALTER TABLE t\n\tALTER COLUMN c SET DEFAULT 42\n;\n"},
         {"alter table t alter column c drop default",
@@ -945,6 +996,36 @@ Y_UNIT_TEST(Reduce) {
     setup.Run(cases);
 }
 
+Y_UNIT_TEST(Combine) {
+    TCases cases = {
+        {"combine leftInput with rightInput "
+         "on leftInput.key=rightInput.key using $f((value),(value))",
+         "COMBINE leftInput\nWITH rightInput\n"
+         "ON\n\tleftInput.key == rightInput.key\nUSING $f((value), (value));\n"},
+        {"combine leftInput presort key with rightInput presort key "
+         "on leftInput.key=rightInput.key using $f((value),(value))",
+         "COMBINE leftInput\n\tPRESORT\n\t\tkey\nWITH rightInput\n\tPRESORT\n\t\tkey\n"
+         "ON\n\tleftInput.key == rightInput.key\nUSING $f((value), (value));\n"},
+        {"combine leftInput presort key,subkey with rightInput presort key,subkey "
+         "on leftInput.key=rightInput.key AND leftInput.subkey=rightInput.subkey "
+         "using $f((value,extra),(value,extra))",
+         "COMBINE leftInput\n\tPRESORT\n\t\tkey,\n\t\tsubkey\n"
+         "WITH rightInput\n\tPRESORT\n\t\tkey,\n\t\tsubkey\n"
+         "ON\n\tleftInput.key == rightInput.key AND leftInput.subkey == rightInput.subkey\n"
+         "USING $f((value, extra), (value, extra));\n"},
+        {"combine leftInput as L presort key,subkey with rightInput as R presort key,subkey "
+         "on L.key=R.key AND L.subkey=R.subkey "
+         "using $f((value,extra),(value,extra))",
+         "COMBINE leftInput AS L\n\tPRESORT\n\t\tkey,\n\t\tsubkey\n"
+         "WITH rightInput AS R\n\tPRESORT\n\t\tkey,\n\t\tsubkey\n"
+         "ON\n\tL.key == R.key AND L.subkey == R.subkey\n"
+         "USING $f((value, extra), (value, extra));\n"},
+    };
+
+    TSetup setup;
+    setup.Run(cases);
+}
+
 Y_UNIT_TEST(Select) {
     TCases cases = {
         {"select 1",
@@ -1031,6 +1112,52 @@ Y_UNIT_TEST(Select) {
          "SELECT\n\t1\nFROM\n\tuser\nGROUP COMPACT BY\n\tkey,\n\tvalue AS v\n;\n"},
         {"select 1 from user group by key with combine",
          "SELECT\n\t1\nFROM\n\tuser\nGROUP BY\n\tkey\n\tWITH combine\n;\n"},
+        {R"sql(select 1 from user group by grouping sets ((a, b), (b), ()))sql",
+         TrimIndent(R"sql(
+            SELECT
+                1
+            FROM
+                user
+            GROUP BY
+                GROUPING SETS (
+                    (a, b),
+                    (b),
+                    ()
+                )
+            ;
+
+         )sql")},
+        {R"sql(select 1 from user group by grouping sets ((a, b), (b), (),))sql",
+         TrimIndent(R"sql(
+            SELECT
+                1
+            FROM
+                user
+            GROUP BY
+                GROUPING SETS (
+                    (a, b),
+                    (b),
+                    (),
+                )
+            ;
+
+         )sql")},
+        {R"sql(select 1 from user group by grouping sets ((a, b), (b), (),), c)sql",
+         TrimIndent(R"sql(
+            SELECT
+                1
+            FROM
+                user
+            GROUP BY
+                GROUPING SETS (
+                    (a, b),
+                    (b),
+                    (),
+                ),
+                c
+            ;
+
+        )sql")},
         {"select 1 from user order by key asc",
          "SELECT\n\t1\nFROM\n\tuser\nORDER BY\n\tkey ASC\n;\n"},
         {"select 1 from user order by key, value desc",
@@ -1153,6 +1280,44 @@ Y_UNIT_TEST(TableHints) {
          "SELECT\n\t*\nFROM\n\tplato.T WITH (\n\t\tfoo = bar,\n\t\tx = $y,\n\t\ta = (a, b, c),\n\t\tu = 'aaa',\n\t\tSCHEMA (foo int32, bar list<string>)\n\t)\n;\n"},
         {"select * from plato.T with schema struct<\nfoo:int32,\nbar:double\n> as a",
          "SELECT\n\t*\nFROM\n\tplato.T WITH SCHEMA struct<\n\t\tfoo: int32,\n\t\tbar: double\n\t> AS a\n;\n"},
+        {R"sql($input=select * from plato.T; select * from $input with watermark=ts-Interval("PT1S"))sql",
+         TrimIndent(R"sql(
+            $input = (
+                SELECT
+                    *
+                FROM
+                    plato.T
+            );
+
+            SELECT
+                *
+            FROM
+                $input WITH WATERMARK = ts - Interval('PT1S')
+            ;
+
+        )sql")},
+        {R"sql(select * from (select * from plato.T) with watermark=ts-Interval("PT1S"))sql",
+         TrimIndent(R"sql(
+            SELECT
+                *
+            FROM (
+                SELECT
+                    *
+                FROM
+                    plato.T
+            ) WITH WATERMARK = ts - Interval('PT1S');
+
+        )sql")},
+        {R"sql(select * from (values(1)) with watermark=ts-Interval("PT1S"))sql",
+         TrimIndent(R"sql(
+            SELECT
+                *
+            FROM (
+                VALUES
+                    (1)
+            ) WITH WATERMARK = ts - Interval('PT1S');
+
+        )sql")},
     };
 
     TSetup setup;
@@ -1747,6 +1912,34 @@ Y_UNIT_TEST(CommentAfterLastSelect) {
     setup.Run(cases);
 }
 
+Y_UNIT_TEST(CommentAfterLastStatement) {
+    TCases cases = {
+        {
+            TrimIndent(R"sql(
+                SELECT
+                    1
+                ;
+
+                -- x
+
+                -- y
+            )sql"),
+            TrimIndent(R"sql(
+                SELECT
+                    1
+                ;
+                -- x
+
+                -- y
+
+            )sql"),
+        },
+    };
+
+    TSetup setup;
+    setup.Run(cases);
+}
+
 Y_UNIT_TEST(WindowFunctionInsideExpr) {
     TCases cases = {
         {"SELECT CAST(ROW_NUMBER() OVER () AS String) AS x,\nFROM Input;",
@@ -2230,6 +2423,181 @@ Y_UNIT_TEST(InlineSubquery) {
 
     TCases cases = {
         {input, expected},
+    };
+
+    TSetup setup;
+    setup.Run(cases);
+}
+
+Y_UNIT_TEST(PgSyntax) {
+    TCases cases = {
+        {
+            TrimIndent(R"sql(
+                --!syntax_pg
+                SELECT
+                    convert_from(a, 'UTF8')
+                FROM
+                    plato.x
+                WHERE
+                    convert_from(b, 'UTF8') !~ '^[0-9]+$';
+            )sql"),
+            TrimIndent(R"sql(
+                --!syntax_pg
+                SELECT
+                    convert_from(a, 'UTF8')
+                FROM
+                    plato.x
+                WHERE
+                    convert_from(b, 'UTF8') !~ '^[0-9]+$';
+            )sql"),
+        },
+    };
+
+    TSetup setup;
+    setup.Run(cases);
+}
+
+Y_UNIT_TEST(WithCTE) {
+    TCases cases = {
+        {
+            TrimIndent(R"sql(
+                WITH x AS (SELECT 1) SELECT 1;
+            )sql"),
+            TrimIndent(R"sql(
+                WITH x AS (
+                    SELECT
+                        1
+                )
+                SELECT
+                    1
+                ;
+
+            )sql"),
+        },
+        {
+            TrimIndent(R"sql(
+                WITH x (a) AS (VALUES (1)) SELECT 1;
+            )sql"),
+            TrimIndent(R"sql(
+                WITH x (a) AS (
+                    VALUES
+                        (1)
+                )
+                SELECT
+                    1
+                ;
+
+            )sql"),
+        },
+        {
+            TrimIndent(R"sql(
+                WITH x AS (SELECT 1), y AS (SELECT 1) SELECT 1;
+            )sql"),
+            TrimIndent(R"sql(
+                WITH
+                    x AS (
+                        SELECT
+                            1
+                    ),
+                    y AS (
+                        SELECT
+                            1
+                    )
+                SELECT
+                    1
+                ;
+
+            )sql"),
+        },
+        {
+            TrimIndent(R"sql(
+                WITH x(a, b) AS (SELECT 1), SELECT 1;
+            )sql"),
+            TrimIndent(R"sql(
+                WITH x (a, b) AS (
+                    SELECT
+                        1
+                ),
+                SELECT
+                    1
+                ;
+
+            )sql"),
+        },
+        {
+            TrimIndent(R"sql(
+                WITH RECURSIVE x(a, b) AS (SELECT 1), y(a, b) AS (SELECT 1), SELECT 1;
+            )sql"),
+            TrimIndent(R"sql(
+                WITH
+                    RECURSIVE x (a, b) AS (
+                        SELECT
+                            1
+                    ),
+                    y (a, b) AS (
+                        SELECT
+                            1
+                    ),
+                SELECT
+                    1
+                ;
+
+            )sql"),
+        },
+        {
+            TrimIndent(R"sql(
+                $x = (WITH x AS (SELECT 1) SELECT 1);
+            )sql"),
+            TrimIndent(R"sql(
+                $x = (
+                    WITH x AS (
+                        SELECT
+                            1
+                    )
+                    SELECT
+                        1
+                );
+
+            )sql"),
+        },
+        {
+            TrimIndent(R"sql(
+                SELECT (WITH x AS (SELECT 1) SELECT 1);
+            )sql"),
+            TrimIndent(R"sql(
+                SELECT
+                    (
+                        WITH x AS (
+                            SELECT
+                                1
+                        )
+                        SELECT
+                            1
+                    )
+                ;
+
+            )sql"),
+        },
+        {
+            TrimIndent(R"sql(
+                INSERT INTO x
+                WITH a AS (SELECT 1 AS b)
+                SELECT * FROM a;
+            )sql"),
+            TrimIndent(R"sql(
+                INSERT INTO x
+                WITH a AS (
+                    SELECT
+                        1 AS b
+                )
+                SELECT
+                    *
+                FROM
+                    a
+                ;
+
+            )sql"),
+        },
     };
 
     TSetup setup;

@@ -7,6 +7,7 @@
 #include <yql/essentials/public/langver/yql_langver.h>
 #include <yql/essentials/public/issue/yql_issue.h>
 #include <yql/essentials/public/udf/udf_log.h>
+#include <yql/essentials/minikql/runtime_settings/runtime_settings.h>
 
 #include <util/generic/maybe.h>
 #include <util/generic/vector.h>
@@ -47,6 +48,7 @@ public:
         const TTypeAnnotationNode* UserType = nullptr;
         THashMap<TString, TString> SecureParams;
         NYql::TLangVersion LangVer = NYql::UnknownLangVersion;
+        NYql::TRuntimeSettings::TConstPtr RuntimeSettings = MakeRuntimeSettings();
 
         // output
         TString NormalizedName;
@@ -80,6 +82,7 @@ public:
 
     virtual TResolveResult LoadRichMetadata(const TVector<TImport>& imports, NUdf::ELogLevel logLevel, THoldingFileStorage& storage) const = 0;
     virtual bool ContainsModule(const TStringBuf& moduleName) const = 0;
+    virtual bool IsPartial() const;
 };
 
 TResolveResult LoadRichMetadata(const IUdfResolver& resolver, const TVector<TUserDataBlock>& blocks, THoldingFileStorage& storage, NUdf::ELogLevel logLevel = NUdf::ELogLevel::Info);

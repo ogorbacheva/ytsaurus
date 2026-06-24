@@ -68,6 +68,7 @@ namespace NYT::NClusterClock {
 using namespace NApi;
 using namespace NAdmin;
 using namespace NBus;
+using namespace NBus::NTcp;
 using namespace NRpc;
 using namespace NNet;
 using namespace NYTree;
@@ -178,7 +179,7 @@ TFuture<void> TBootstrap::Run()
 }
 
 void TBootstrap::LoadSnapshot(
-    const TString& fileName,
+    const std::string& fileName,
     ESerializationDumpMode dumpMode)
 {
     BIND(&TBootstrap::DoLoadSnapshot, MakeStrong(this), fileName, dumpMode)
@@ -313,7 +314,7 @@ void TBootstrap::DoStart()
 }
 
 void TBootstrap::DoLoadSnapshot(
-    const TString& fileName,
+    const std::string& fileName,
     ESerializationDumpMode dumpMode)
 {
     auto reader = CreateLocalSnapshotReader(

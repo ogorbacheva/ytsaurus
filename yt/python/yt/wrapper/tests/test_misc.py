@@ -9,7 +9,7 @@ from .helpers import (TEST_DIR, wait, get_default_resource_limits,
                       get_python, get_binary_path, get_environment_for_binary_test)
 
 from yt.subprocess_wrapper import Popen, PIPE
-from yt.wrapper.errors import YtRetriableError, YtConfigError, YtResponseError
+from yt.wrapper.errors import YtRetriableError, YtConfigError, YtResponseError, YtResolveError
 from yt.wrapper.exceptions_catcher import KeyboardInterruptsCatcher
 from yt.wrapper.mappings import VerifiedDict, FrozenDict
 from yt.wrapper.spec_builders import MapSpecBuilder, MapperSpecBuilder
@@ -186,42 +186,45 @@ class TestYtBinary(object):
         if yatest_common is None:
             pytest.skip()
 
-        env = get_environment_for_binary_test(yt_env_job_archive)
-        env.update({
-            "YT_LOG_LEVEL": "DEBUG",
-            "YT_SPEC": '{"secure_vault": {"ENV": "MY_TOKEN"}}',
-        })
-
         yt.write_table(TEST_DIR + "/input", [{"x": 10}])
-        # TODO(ignat): use compiled yt
-        proc = subprocess.Popen(
-            [
-                get_python(), get_binary_path("yt"),
-                "map", "cat",
-                "--format", "yson",
-                "--src", TEST_DIR + "/input",
-                "--dst", TEST_DIR + "/output",
-            ],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
 
-        stdout, stderr = proc.communicate()
+        for backend in ["http", "rpc"]:
+            env = get_environment_for_binary_test(yt_env_job_archive)
+            env.update({
+                "YT_LOG_LEVEL": "DEBUG",
+                "YT_SPEC": '{"secure_vault": {"ENV": "MY_TOKEN"}}',
+            })
+            env["YT_CONFIG_PATCHES"] = env["YT_CONFIG_PATCHES"].replace("\"backend\"=\"http\"", f"\"backend\"=\"{backend}\"")
 
-        if proc.returncode != 0:
-            print("Process stdout", stdout, file=sys.stderr)
-            print("Process stderr", stderr, file=sys.stderr)
-        assert proc.returncode == 0
+            # TODO(ignat): use compiled yt
+            proc = subprocess.Popen(
+                [
+                    get_python(), get_binary_path("yt"),
+                    "map", "cat",
+                    "--format", "yson",
+                    "--src", TEST_DIR + "/input",
+                    "--dst", TEST_DIR + "/output",
+                ],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE)
 
-        start_op_line = None
-        for line in stderr.split(b"\n"):
-            if b"Executing " not in line:
-                assert b"MY_TOKEN" not in line
-            if b"start_op" in line:
-                start_op_line = line
-        assert start_op_line is not None
-        assert b"secure_vault" in start_op_line
-        assert b"hidden" in start_op_line
+            stdout, stderr = proc.communicate()
+
+            if proc.returncode != 0:
+                print("Process stdout", stdout, file=sys.stderr)
+                print("Process stderr", stderr, file=sys.stderr)
+            assert proc.returncode == 0
+
+            start_op_line = None
+            for line in stderr.split(b"\n"):
+                if b"Executing " not in line:
+                    assert b"MY_TOKEN" not in line
+                if b"start_op" in line and b"secure_vault" in line:
+                    assert b"MY_TOKEN" not in line
+                    assert b"hidden" in line
+                    start_op_line = line
+            assert start_op_line is not None
 
 
 @pytest.mark.usefixtures("yt_env_with_rpc")
@@ -1322,6 +1325,15 @@ class TestGetSupportedFeatures(object):
         }
         assert expected_node_flavors == \
             expected_node_flavors.intersection(set(features["node_flavors"]))
+
+
+@pytest.mark.usefixtures("yt_env")
+class TestCheckClusterLiveness(object):
+    @authors("dagorokhov")
+    def test_check_cluster_liveness(self):
+        yt.check_cluster_liveness()
+        with pytest.raises(YtResolveError, match="Cluster liveness subrequest failed"):
+            yt.check_cluster_liveness(check_tablet_cell_bundle="b")
 
 
 @pytest.mark.usefixtures("yt_env")

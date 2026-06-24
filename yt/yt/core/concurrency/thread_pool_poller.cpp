@@ -7,7 +7,7 @@
 #include <yt/yt/core/misc/proc.h>
 #include <yt/yt/core/misc/mpsc_stack.h>
 
-#include <yt/yt/core/profiling/tscp.h>
+#include <library/cpp/yt/system/tscp.h>
 
 #include <yt/yt/core/threading/thread.h>
 
@@ -227,7 +227,7 @@ public:
         FairShareThreadPool_->SetPollingPeriod(pollingPeriod);
     }
 
-    bool TryRegister(const IPollablePtr& pollable, const std::string poolName) override
+    bool TryRegister(const IPollablePtr& pollable, const std::string& poolName) override
     {
         // FIXME(lukyan): Enqueueing in register queue may happen after stopping.
         // Create cookie when dequeueing from register queue?
@@ -455,7 +455,7 @@ private:
                 continue;
             }
 
-            if (Y_UNLIKELY(!Pollables_.contains(pollable))) {
+            if (!Pollables_.contains(pollable)) [[unlikely]] {
                 // A stranded event from an unregistered pollable.
                 continue;
             }
@@ -569,9 +569,9 @@ public:
         Poller_->Shutdown();
     }
 
-    bool TryRegister(const IPollablePtr& pollable, const std::string poolName = "default") override
+    bool TryRegister(const IPollablePtr& pollable, const std::string& poolName = "default") override
     {
-        return Poller_->TryRegister(pollable, std::move(poolName));
+        return Poller_->TryRegister(pollable, poolName);
     }
 
     void SetExecutionPool(const IPollablePtr& pollable, const std::string& poolName) override

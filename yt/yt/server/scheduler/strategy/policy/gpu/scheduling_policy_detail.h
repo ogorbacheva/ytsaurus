@@ -1,20 +1,22 @@
 #pragma once
 
-#include "scheduling_policy.h"
-
-#include "assignment_plan_context_detail.h"
+#include "assignment_plan_update_context_detail.h"
 #include "persistent_state.h"
 
+#include <yt/yt/server/scheduler/strategy/policy/scheduling_policy.h>
+
 #include <yt/yt/server/scheduler/strategy/pool_tree_element.h>
+
+#include <yt/yt/server/scheduler/strategy/scheduling_heartbeat_context.h>
 
 #include <yt/yt/server/scheduler/common/allocation.h>
 
 #include <yt/yt/server/lib/scheduler/exec_node_descriptor.h>
 
+#include <yt/yt/core/concurrency/async_rw_lock.h>
 #include <yt/yt/core/concurrency/periodic_executor.h>
 
 #include <yt/yt/core/ytree/virtual.h>
-
 
 namespace NYT::NScheduler::NStrategy::NPolicy::NGpu {
 
@@ -26,10 +28,22 @@ using namespace NLogging;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TInitialOperationAssignment
+struct TAllocationInfo
 {
-    const TPersistentAssignmentStatePtr AssignmentState;
-    const TNodeId NodeId;
+    TAllocationPtr Allocation;
+    TPoolTreeOperationElement* OperationElement = nullptr;
+};
+
+using TAllocationInfoMap = THashMap<TAllocationId, TAllocationInfo>;
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Allocation revived on a node that is not yet known to the policy.
+//! Holds the data needed to reconstruct its assignment once the node registers.
+struct TPendingRevivedAllocation
+{
+    TWeakPtr<TOperation> Operation;
+    std::string AllocationGroupName;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -56,7 +70,7 @@ struct TGpuSchedulingProfilingCounters
     NProfiling::TEventTimer TotalPlanningTime;
     NProfiling::TEventTimer OperationResourcesUpdateTime;
     NProfiling::TEventTimer FullHostPlanningTime;
-    NProfiling::TEventTimer ReguralPlanningTime;
+    NProfiling::TEventTimer RegularPlanningTime;
     NProfiling::TEventTimer ExtraPlanningTime;
 
     NProfiling::TGauge EnabledOperations;
@@ -71,7 +85,6 @@ struct TGpuSchedulingProfilingCounters
 
 class TSchedulingPolicy
     : public ISchedulingPolicy
-    , public TAssignmentPlanContextBase
 {
 public:
     TSchedulingPolicy(
@@ -85,7 +98,6 @@ public:
 
     void RegisterNode(TNodeId nodeId, const std::string& nodeAddress) override;
     void UnregisterNode(TNodeId nodeId) override;
-    void UpdateNodeDescriptor(TNodeId nodeId, TExecNodeDescriptorPtr descriptor) override;
 
     void ProcessSchedulingHeartbeat(
         const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
@@ -94,42 +106,32 @@ public:
 
     void RegisterOperation(const TPoolTreeOperationElement* element) override;
     void UnregisterOperation(const TPoolTreeOperationElement* element) override;
-    TError OnOperationMaterialized(const TPoolTreeOperationElement* element) override;
+    TError OnOperationMaterialized(const TPoolTreeOperationElement* element, bool revivedFromSnapshot) override;
     TError CheckOperationSchedulingInSeveralTreesAllowed(const TPoolTreeOperationElement* element) const override;
     void EnableOperation(const TPoolTreeOperationElement* element) override;
     void DisableOperation(TPoolTreeOperationElement* element, bool markAsNonAlive) override;
 
     void RegisterAllocationsFromRevivedOperation(
         TPoolTreeOperationElement* element,
-        std::vector<TAllocationPtr> allocations) const override;
+        std::vector<TAllocationPtr> allocations) override;
 
-    bool ProcessAllocationUpdate(
+    TFuture<std::vector<TProcessAllocationUpdateResult>> ProcessAllocationUpdates(
         const TPoolTreeSnapshotPtr& treeSnapshot,
-        TPoolTreeOperationElement* element,
-        TAllocationId allocationId,
-        const TJobResources& allocationResources,
-        bool resetPreemptibleProgress,
-        const std::optional<std::string>& allocationDataCenter,
-        const std::optional<std::string>& allocationInfinibandCluster,
-        std::optional<EAbortReason>* maybeAbortReason) const override;
-
-    bool ProcessFinishedAllocation(
-        const TPoolTreeSnapshotPtr& treeSnapshot,
-        TPoolTreeOperationElement* element,
-        TAllocationId allocationId) const override;
+        const std::vector<TAllocationUpdate>& allocationUpdates) override;
 
     void BuildSchedulingAttributesStringForNode(
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
         TNodeId nodeId,
         TDelimitedStringBuilderWrapper& delimitedBuilder) const override;
 
     void BuildSchedulingAttributesForNode(TNodeId nodeId, TFluentMap fluent) const override;
 
+    // TODO(yaishenka): implement these methods in YT-27633.
     void BuildSchedulingAttributesStringForOngoingAllocations(
         const TPoolTreeSnapshotPtr& treeSnapshot,
         const std::vector<TAllocationPtr>& allocations,
         TInstant now,
         TDelimitedStringBuilderWrapper& delimitedBuilder) const override;
-
     void BuildElementLoggingStringAttributes(
         const TPoolTreeSnapshotPtr& treeSnapshot,
         const TPoolTreeElement* element,
@@ -158,10 +160,6 @@ public:
     void InitPersistentState(INodePtr persistentState) override;
     INodePtr BuildPersistentState() const override;
 
-    const TOperationMap& Operations() const override;
-    const TNodeMap& Nodes() const override;
-    const TGpuPlanUpdateStatisticsPtr& GetStatistics() const override;
-
 private:
     const TWeakPtr<ISchedulingPolicyHost> Host_;
     IStrategyHost* const StrategyHost_;
@@ -171,36 +169,33 @@ private:
     TGpuSchedulingPolicyConfigPtr Config_;
 
     TPeriodicExecutorPtr PlanUpdateExecutor_;
+    TAssignmentHandler AssignmentHandler_;
 
     TNodeMap Nodes_;
     TOperationMap EnabledOperations_;
     TOperationMap DisabledOperations_;
 
+    using TPendingRevivedAllocations =
+        TCompactFlatMap<TAllocationId, TPendingRevivedAllocation, MaxNodeGpuCount>;
+    THashMap<TNodeId, TPendingRevivedAllocations> PendingRevivedAllocations_;
+
     TInstant InitializationFromPersistentStateDeadline_;
     TPersistentStatePtr InitialPersistentState_ = New<TPersistentState>();
     TPersistentStatePtr PersistentState_;
-
-    THashMap<TOperationId, std::vector<TInitialOperationAssignment>> InitialOperationAssignments_;
 
     NProfiling::TProfiler Profiler_;
     TGpuSchedulingProfilingCounters ProfilingCounters_;
 
     TGpuPlanUpdateStatisticsPtr Statistics_;
 
+    // TODO(YT-27647): Refactor after switching to node shard paradigm.
+    NConcurrency::TAsyncReaderWriterLock AssignmentPlanUpdateLock_;
+
     DECLARE_THREAD_AFFINITY_SLOT(ControlThread);
 
+    void UpdateNodeDescriptor(const TNodePtr& node, TExecNodeDescriptorPtr descriptor);
+
     void UpdateAssignmentPlan();
-
-    // TODO(eshcherbin): Optimize not to recalculate preemptible assignments and ready to assign resources from scratch.
-    void UpdateOperationResources(
-        const TOperationPtr& operation,
-        const TPoolTreeSnapshotPtr& treeSnapshot);
-
-    TAllocationGroupResourcesMap GetGroupedNeededResources(
-        const TOperationPtr& operation,
-        const TPoolTreeOperationElement* operationElement) const;
-
-    void ResetOperationResources(const TOperationPtr& operation);
 
     void PreemptAllNodeAssignments(
         const TNodePtr& node,
@@ -212,9 +207,26 @@ private:
         EAllocationPreemptionReason preemptionReason,
         const std::string& preemptionDescription);
 
-    void ReviveNodeState(TNodeId nodeId, const TNodePtr& node);
+    void RemoveAllOperationAssignments(const TOperationPtr& operation);
+
+    void PreemptAssignment(
+        const TAssignmentPtr& assignment,
+        EAllocationPreemptionReason preemptionReason,
+        const std::string& preemptionDescription);
+
+    void RemoveAssignment(const TAssignmentPtr& assignment, bool strict = true);
+
+    void ReviveNodeState(const TNodePtr& node);
 
     void ReviveOperationState(TOperationPtr operation);
+
+    void ReviveAllocation(
+        TPoolTreeOperationElement* element,
+        const TOperationPtr& operation,
+        const TAllocationPtr& allocation);
+
+    void RevivePendingAllocations(const TNodePtr& node);
+    void DropPendingAllocationsForOperation(const TOperationPtr& operation);
 
     //! Returns false if Now > InitializationFromPersistentStateDeadline_ and drops persistentState
     //! Returns false if InitialPersistentState_ is empty
@@ -227,9 +239,65 @@ private:
 
     void UpdatePersistentState();
 
-    void LogSnapshotEvent() const;
+    void LogSnapshotEvent(const TGpuPlanUpdateStatisticsPtr& statistics) const;
 
-    void ProfileAssignmentPlanUpdating();
+    void ProfileAssignmentPlanUpdating(const TGpuPlanUpdateStatisticsPtr& statistics);
+
+    TLogger MakeNodeLogger(const TExecNodeDescriptorPtr& nodeDescriptor);
+
+    void DoProcessSchedulingHeartbeat(
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
+        const TPoolTreeSnapshotPtr& treeSnapshot,
+        bool skipScheduleAllocations);
+
+    void PreemptAllocations(
+        const TNodePtr& node,
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
+        const TPoolTreeSnapshotPtr& treeSnapshot);
+
+    void ScheduleAllocations(
+        const TNodePtr& node,
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
+        const TPoolTreeSnapshotPtr& treeSnapshot);
+
+    bool PreemptAllocation(
+        const TAllocationPtr& allocation,
+        TPoolTreeOperationElement* element,
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext) const;
+
+    TControllerScheduleAllocationResultPtr DoScheduleAllocation(
+        const TNodePtr& node,
+        const TOperationPtr& operation,
+        TPoolTreeOperationElement* element,
+        const TAssignmentPtr& assignment,
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
+        const TPoolTreeSnapshotPtr& treeSnapshot,
+        const TJobResources& availableResources);
+
+    std::vector<TProcessAllocationUpdateResult> DoProcessAllocationUpdates(
+        const TPoolTreeSnapshotPtr& treeSnapshot,
+        const std::vector<TAllocationUpdate>& allocationUpdates);
+
+    TProcessAllocationUpdateResult ProcessAllocationUpdate(
+        const TPoolTreeSnapshotPtr& treeSnapshot,
+        TPoolTreeOperationElement* element,
+        const TAllocationUpdate& allocationUpdate);
+
+    TProcessAllocationUpdateResult ProcessFinishedAllocation(
+        TPoolTreeOperationElement* element,
+        const TAllocationUpdate& allocationUpdate,
+        const TNodePtr& node,
+        const TOperationPtr& operation,
+        const TAssignmentPtr& assignment,
+        const TAllocationStatePtr& allocation);
+
+    void DoBuildSchedulingAttributesForNode(TNodeId nodeId, TFluentMap fluent) const;
+    void DoBuildSchedulingAttributesStringForNode(
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
+        TNodeId nodeId,
+        TDelimitedStringBuilderWrapper* builderWrapper) const;
+
+    void RemovePendingRevivedAllocation(TNodeId nodeId, TAllocationId allocationId);
 };
 
 DEFINE_REFCOUNTED_TYPE(TSchedulingPolicy)
@@ -246,11 +314,10 @@ public:
 
     void RegisterNode(TNodeId nodeId, const std::string& nodeAddress) override;
     void UnregisterNode(TNodeId nodeId) override;
-    void UpdateNodeDescriptor(TNodeId nodeId, TExecNodeDescriptorPtr descriptor) override;
 
     void RegisterOperation(const TPoolTreeOperationElement* element) override;
     void UnregisterOperation(const TPoolTreeOperationElement* element) override;
-    TError OnOperationMaterialized(const TPoolTreeOperationElement* element) override;
+    TError OnOperationMaterialized(const TPoolTreeOperationElement* element, bool revivedFromSnapshot) override;
     void EnableOperation(const TPoolTreeOperationElement* element) override;
     void DisableOperation(TPoolTreeOperationElement* element, bool markAsNonAlive) override;
 
@@ -281,24 +348,14 @@ public:
 
     void RegisterAllocationsFromRevivedOperation(
         TPoolTreeOperationElement* element,
-        std::vector<TAllocationPtr> allocations) const override;
+        std::vector<TAllocationPtr> allocations) override;
 
-    bool ProcessAllocationUpdate(
+    TFuture<std::vector<TProcessAllocationUpdateResult>> ProcessAllocationUpdates(
         const TPoolTreeSnapshotPtr& treeSnapshot,
-        TPoolTreeOperationElement* element,
-        TAllocationId allocationId,
-        const TJobResources& allocationResources,
-        bool resetPreemptibleProgress,
-        const std::optional<std::string>& allocationDataCenter,
-        const std::optional<std::string>& allocationInfinibandCluster,
-        std::optional<EAbortReason>* maybeAbortReason) const override;
-
-    bool ProcessFinishedAllocation(
-        const TPoolTreeSnapshotPtr& treeSnapshot,
-        TPoolTreeOperationElement* element,
-        TAllocationId allocationId) const override;
+        const std::vector<TAllocationUpdate>& allocationUpdates) override;
 
     void BuildSchedulingAttributesStringForNode(
+        const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
         TNodeId nodeId,
         TDelimitedStringBuilderWrapper& delimitedBuilder) const override;
 

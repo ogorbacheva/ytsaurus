@@ -85,7 +85,9 @@ void Initialize(
 
         BuildYsonFluently(consumer)
             .BeginMap()
-                .Item("dynamic_tags").Value(THashMap<TString, TString>(tags.begin(), tags.end()))
+                .Item("dynamic_tags").DoMapFor(tags, [] (auto fluent, const auto& tag) {
+                    fluent.Item(tag.first).Value(tag.second);
+                })
             .EndMap();
     }));
     (*monitoringManager)->Start();
@@ -98,7 +100,7 @@ void Initialize(
     SetNodeByYPath(
         *orchidRoot,
         "/tcp_dispatcher",
-        CreateVirtualNode(NYT::NBus::TTcpDispatcher::Get()->GetOrchidService()));
+        CreateVirtualNode(NYT::NBus::NTcp::TDispatcher::Get()->GetOrchidService()));
 
 #ifdef _linux_
     auto buildInfo = NYTProf::TBuildInfo::GetDefault();

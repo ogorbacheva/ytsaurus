@@ -92,14 +92,13 @@ UNIQUE_KEY_VALUE_PAIR_INDEX_SCHEMA = [
 
 def prepend_hash(schema):
     hash_column = {"name": "__hash__", "sort_order": "ascending", "type": "uint64"}
-    hash_column["expression"] = f"farm_hash(`{schema[0]["name"]}`)"
+    hash_column["expression"] = f"farm_hash(`{schema[0]['name']}`)"
 
     return [hash_column] + schema
 
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexBase(DynamicTablesBase):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 3
@@ -135,9 +134,6 @@ class TestSecondaryIndexBase(DynamicTablesBase):
     def _create_map_node(self, path):
         create("map_node", path)
 
-    def _get_index_path(self, table_path="//tmp/table", index_name="secondary"):
-        return f"//tmp/{index_name}"
-
     def _create_secondary_index(
         self,
         table_path="//tmp/table",
@@ -169,13 +165,13 @@ class TestSecondaryIndexBase(DynamicTablesBase):
         self,
         table_path="//tmp/table",
         table_schema=PRIMARY_SCHEMA,
-        index_name="secondary",
+        index_path="//tmp/secondary",
         index_schema=INDEX_ON_VALUE_SCHEMA,
         kind="full_sync",
         mount=False,
         **kwargs
     ):
-        index_table_path = self._get_index_path(table_path, index_name)
+        index_table_path = index_path
         table_id = self._create_table(table_path, table_schema)
         index_table_id = self._create_table(index_table_path, index_schema)
         index_id, _ = self._create_secondary_index(table_path, index_table_path, kind, **kwargs)
@@ -188,7 +184,7 @@ class TestSecondaryIndexBase(DynamicTablesBase):
 
     def _add_index(
         self,
-        index_name="secondary",
+        index_path="//tmp/secondary",
         table_path="//tmp/table",
         schema=INDEX_ON_VALUE_SCHEMA,
         kind="full_sync",
@@ -196,7 +192,6 @@ class TestSecondaryIndexBase(DynamicTablesBase):
         mount=True,
         **kwargs
     ):
-        index_path = self._get_index_path(table_path, index_name)
         self._create_table(index_path, schema)
         if self.NUM_REMOTE_CLUSTERS:
             collocation_id = get(table_path + "/@replication_collocation_id")
@@ -216,7 +211,6 @@ class TestSecondaryIndexBase(DynamicTablesBase):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexReplicatedBase(TestSecondaryIndexBase):
     ENABLE_MULTIDAEMON = True
     NUM_REMOTE_CLUSTERS = 1
@@ -284,13 +278,13 @@ class TestSecondaryIndexReplicatedBase(TestSecondaryIndexBase):
         self,
         table_path="//tmp/table",
         table_schema=PRIMARY_SCHEMA,
-        index_name="secondary",
+        index_path="//tmp/secondary",
         index_schema=INDEX_ON_VALUE_SCHEMA,
         kind="full_sync",
         mount=False,
         **kwargs
     ):
-        index_table_path = self._get_index_path(table_path, index_name)
+        index_table_path = index_path
         table_id = self._create_table(table_path, table_schema)
         index_table_id = self._create_table(index_table_path, index_schema)
         index_id, collocation_id = self._create_secondary_index(table_path, index_table_path, kind, **kwargs)
@@ -305,7 +299,6 @@ class TestSecondaryIndexReplicatedBase(TestSecondaryIndexBase):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexMaster(TestSecondaryIndexBase):
     ENABLE_MULTIDAEMON = True
 
@@ -332,7 +325,7 @@ class TestSecondaryIndexMaster(TestSecondaryIndexBase):
         if self.NUM_REMOTE_CLUSTERS:
             create_table_collocation(table_paths=["//tmp/table", "//tmp/secondary"])
         id = create_secondary_index("//tmp/table", "//tmp/secondary", "full_sync", authenticated_user="index_user")
-        with raises_yt_error(yt_error_codes.AuthorizationErrorCode):
+        with raises_yt_error(code=yt_error_codes.AuthorizationErrorCode):
             set(f"#{id}/@table_to_index_correspondence", "bijective", authenticated_user="index_user")
         set("//tmp/table/@acl", [make_ace("allow", "index_user", ["write"])])
         set(f"#{id}/@table_to_index_correspondence", "bijective", authenticated_user="index_user")
@@ -480,9 +473,9 @@ class TestSecondaryIndexMaster(TestSecondaryIndexBase):
     def test_copy_with_abandonment(self):
         self._create_basic_tables()
 
-        with raises_yt_error("Cannot copy table"):
+        with raises_yt_error("Cannot copy table .*"):
             copy("//tmp/table", "//tmp/table_copy")
-        with raises_yt_error("Cannot copy table"):
+        with raises_yt_error("Cannot copy table .*"):
             copy("//tmp/secondary", "//tmp/secondary_copy")
 
         copy("//tmp/table", "//tmp/table_copy", allow_secondary_index_abandonment=True)
@@ -515,15 +508,15 @@ class TestSecondaryIndexMaster(TestSecondaryIndexBase):
         assert get("//tmp/table/@secondary_indices")[secondary_index_id]["evaluated_columns_schema"][0]["expression"] \
             == evaluated_columns_schema[0]["expression"]
 
-        with raises_yt_error("Columns collision"):
-            self._add_index("secondary_2", schema=index_schema, evaluated_columns_schema=[{
+        with raises_yt_error("Columns collision on .*"):
+            self._add_index("//tmp/secondary_2", schema=index_schema, evaluated_columns_schema=[{
                 "name": "eva01",
                 "type": "int64", "expression":
                 "try_get_int64(value, \"/inner_field_other\")",
             }])
 
         self._add_index(
-            "secondary_3",
+            "//tmp/secondary_3",
             schema=index_schema,
             evaluated_columns_schema=[
                 {"name": "eva01", "type": "int64", "expression": "try_get_int64(value, \"/inner_field\")"}
@@ -538,7 +531,6 @@ class TestSecondaryIndexMaster(TestSecondaryIndexBase):
 # This test suite is not iterated over with replicated tables, because:
 # 1) Collocations beyond portals are not supported yet;
 # 2) Replicated tables cannot be moved.
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexPortal(TestSecondaryIndexBase):
     ENABLE_MULTIDAEMON = True
 
@@ -551,13 +543,13 @@ class TestSecondaryIndexPortal(TestSecondaryIndexBase):
         self,
         table_path="//tmp/table",
         table_schema=PRIMARY_SCHEMA,
-        index_name="secondary",
+        index_path="//tmp/secondary",
         index_schema=INDEX_ON_VALUE_SCHEMA,
         kind="full_sync",
         mount=False,
         **kwargs
     ):
-        index_table_path = self._get_index_path(table_path, index_name)
+        index_table_path = index_path
         table_id = self._create_table(table_path, table_schema)
         index_table_id = self._create_table(index_table_path, index_schema)
         wait(lambda: exists(f"#{table_id}"))
@@ -574,21 +566,21 @@ class TestSecondaryIndexPortal(TestSecondaryIndexBase):
     def test_forbid_create_beyond_portal(self):
         create("portal_entrance", "//tmp/p", attributes={"exit_cell_tag": 12})
         with raises_yt_error("Table and index table native cell tags differ"):
-            self._create_basic_tables(index_name="p/secondary")
+            self._create_basic_tables(index_path="//tmp/p/secondary")
 
     @authors("sabdenovch")
     def test_forbid_move_beyond_portal(self):
         self._create_basic_tables()
         create("portal_entrance", "//tmp/p", attributes={"exit_cell_tag": 12})
-        with raises_yt_error("Cannot cross-cell copy neither a table with a secondary index nor an index table itself"):
+        with raises_yt_error("Cannot cross-cell copy"):
             copy("//tmp/table", "//tmp/p/table")
-        with raises_yt_error("Cannot cross-cell copy neither a table with a secondary index nor an index table itself"):
+        with raises_yt_error("Cannot cross-cell copy"):
             copy("//tmp/secondary", "//tmp/p/secondary")
 
     @authors("sabdenovch")
     def test_mount_info_reaches_beyond_portal(self):
         create("portal_entrance", "//tmp/p", attributes={"exit_cell_tag": 12})
-        self._create_basic_tables(table_path="//tmp/p/table", index_name="p/index_table", mount=True)
+        self._create_basic_tables(table_path="//tmp/p/table", index_path="//tmp/p/index_table", mount=True)
 
         rows = []
         for i in range(10):
@@ -602,7 +594,6 @@ class TestSecondaryIndexPortal(TestSecondaryIndexBase):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexSelect(TestSecondaryIndexBase):
     ENABLE_MULTIDAEMON = True
 
@@ -619,17 +610,17 @@ class TestSecondaryIndexSelect(TestSecondaryIndexBase):
             "Alias.valueA": 100,
             "Alias.valueB": False,
         }]
-        rows = select_rows(f"""Alias.keyA, Alias.keyB, Alias.valueA, Alias.valueB
-            from [//tmp/table] Alias with index [{self._get_index_path()}] I""")
+        rows = select_rows("""Alias.keyA, Alias.keyB, Alias.valueA, Alias.valueB
+            from [//tmp/table] Alias with index [//tmp/secondary] I""")
         assert_items_equal(sorted_dicts(rows), sorted_dicts(aliased_table_rows))
 
     @authors("sabdenovch")
     def test_join_on_all_shared_columns(self):
         _, _, index_id, _ = self._create_basic_tables()
-        index_table_path = self._get_index_path()
+        index_table_path = "//tmp/secondary"
         remove(f"#{index_id}")
         self._sync_create_cells()
-        self._mount("//tmp/table", self._get_index_path())
+        self._mount("//tmp/table", "//tmp/secondary")
 
         table_rows = [{"keyA": 0, "keyB": "alpha", "valueA": 100}]
         insert_rows("//tmp/table", table_rows)
@@ -658,7 +649,7 @@ class TestSecondaryIndexSelect(TestSecondaryIndexBase):
             unfolded_index_column="value",
         )
 
-        index_table_path = self._get_index_path()
+        index_table_path = "//tmp/secondary"
 
         assert get("//tmp/table/@secondary_indices")[secondary_index_id]["unfolded_columns"] == {
             "table_column": "value",
@@ -723,13 +714,13 @@ class TestSecondaryIndexSelect(TestSecondaryIndexBase):
 
         assert_items_equal(
             sorted_dicts(select_rows("keyA, keyB from [//tmp/table]")),
-            sorted_dicts(select_rows(f"keyA, keyB from [//tmp/table] with index [{self._get_index_path()}] I")),
+            sorted_dicts(select_rows("keyA, keyB from [//tmp/table] with index [//tmp/secondary] I")),
         )
 
     @authors("sabdenovch")
     def test_correspondence(self):
         _, _, index_id, _ = self._create_basic_tables(table_to_index_correspondence=None, mount=True)
-        index_table_path = self._get_index_path()
+        index_table_path = "//tmp/secondary"
 
         assert get(f"#{index_id}/@table_to_index_correspondence") == "invalid"
 
@@ -797,7 +788,7 @@ class TestSecondaryIndexSelect(TestSecondaryIndexBase):
             make_row(9, " ".join(itertools.repeat("АБЫР", 15))),
         ])
 
-        index_table_path = self._get_index_path()
+        index_table_path = "//tmp/secondary"
 
         print("FDDAFDS", select_rows("* from [//tmp/table]"))
         print("DFAFDSF", select_rows(f"* from [{index_table_path}]"))
@@ -836,7 +827,6 @@ class TestSecondaryIndexSelect(TestSecondaryIndexBase):
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexModifications(TestSecondaryIndexBase):
     ENABLE_MULTIDAEMON = True
     NUM_TEST_PARTITIONS = 2
@@ -847,8 +837,8 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
     def _delete_rows(self, rows, table="//tmp/table"):
         delete_rows(table, rows)
 
-    def _expect_from_index(self, expected, index_name="secondary", table_path="//tmp/table"):
-        actual = select_rows(f"* from [{self._get_index_path(table_path, index_name)}]")
+    def _expect_from_index(self, expected, index_path="//tmp/secondary", table_path="//tmp/table"):
+        actual = select_rows(f"* from [{index_path}]")
         for row in actual:
             if "__hash__" in row:
                 del row["__hash__"]
@@ -1003,8 +993,8 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
     def test_multiple_indices(self):
         self._sync_create_cells(1)
         self._create_basic_tables()
-        self._add_index(index_name="auxiliary", schema=INDEX_ON_KEY_SCHEMA, mount=False)
-        self._mount("//tmp/table", self._get_index_path(), self._get_index_path(index_name="auxiliary"))
+        self._add_index(index_path="//tmp/auxiliary", schema=INDEX_ON_KEY_SCHEMA, mount=False)
+        self._mount("//tmp/table", "//tmp/secondary", "//tmp/auxiliary")
 
         N = 8
 
@@ -1014,7 +1004,7 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
         self._insert_rows([row(i) for i in range(N)])
 
         self._expect_from_index([row(i) for i in range(N - 1, -1, -1)])
-        self._expect_from_index([row(i) for i in range(N)], index_name="auxiliary")
+        self._expect_from_index([row(i) for i in range(N)], index_path="//tmp/auxiliary")
 
     @pytest.mark.parametrize("strong_typing", [False, True])
     @authors("sabdenovch")
@@ -1189,7 +1179,7 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
         )
 
         # Conflict within write itself.
-        with raises_yt_error(yt_error_codes.UniqueIndexConflict):
+        with raises_yt_error(code=yt_error_codes.UniqueIndexConflict):
             self._insert_rows([
                 {"keyA": 1, "keyB": "yyy", "valueB": True},
                 {"keyA": 2, "keyB": "yyy", "valueB": True},
@@ -1206,7 +1196,7 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
             {"valueB": True, "keyA": 0, "keyB": "xxx"},
         ])
         # Existing True has different key - conflict.
-        with raises_yt_error(yt_error_codes.UniqueIndexConflict):
+        with raises_yt_error(code=yt_error_codes.UniqueIndexConflict):
             self._insert_rows([
                 {"keyA": 2, "keyB": "yyy", "valueB": True},
             ])
@@ -1251,7 +1241,7 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
             {"valueA": 222, "keyB": "yyy", "keyA": 0},
         ])
         # Conflict with existing row.
-        with raises_yt_error(yt_error_codes.UniqueIndexConflict):
+        with raises_yt_error(code=yt_error_codes.UniqueIndexConflict):
             self._insert_rows([
                 {"keyA": 3, "keyB": "yyy", "valueA": 111},
             ])
@@ -1309,7 +1299,7 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
         )
 
         # Both rows satisfy predicate, but there is a conflict.
-        with raises_yt_error(yt_error_codes.UniqueIndexConflict):
+        with raises_yt_error(code=yt_error_codes.UniqueIndexConflict):
             self._insert_rows([
                 {"keyA": 1, "valueA": 200, "valueB": True},
                 {"keyA": 2, "valueA": 200, "valueB": True},
@@ -1343,25 +1333,24 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
         ]
         duplicated_evaluated_column = {"name": "eva01", "type": "int64", "expression": 'try_get_int64(value, "/field")'}
 
-        index_name = "secondary"
+        index_table_path = "//tmp/secondary"
         index_schema = [
             {"name": "eva01", "type": "int64", "sort_order": "ascending"},
             {"name": "key", "type": "int64", "sort_order": "ascending"},
             {"name": EMPTY_COLUMN_NAME, "type": "int64"},
         ]
         self._create_basic_tables(
-            index_name=index_name,
+            index_path=index_table_path,
             table_schema=table_schema,
             index_schema=index_schema,
             evaluated_columns_schema=[duplicated_evaluated_column],
             mount=False,
         )
-        index_table_path = self._get_index_path(index_name=index_name)
 
-        another_index_name = "seconary_2"
+        another_index_table_path = "//tmp/seconary_2"
         another_index_schema = [{"name": "eva00", "type": "string", "sort_order": "ascending"}] + index_schema
         self._add_index(
-            index_name=another_index_name,
+            index_path=another_index_table_path,
             schema=another_index_schema,
             evaluated_columns_schema=[
                 {"name": "eva00", "type": "string", "expression": 'try_get_string(value, "/name")'},
@@ -1369,7 +1358,6 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
             ],
             mount=False,
         )
-        another_index_table_path = self._get_index_path(index_name=another_index_name)
 
         self._sync_create_cells()
         self._mount("//tmp/table", index_table_path, another_index_table_path)
@@ -1408,11 +1396,37 @@ class TestSecondaryIndexModifications(TestSecondaryIndexBase):
         index_query = f"{prefix} with index [{another_index_table_path}] as i {suffix}"
         assert select_rows(query) == select_rows(index_query)
 
+    @authors("sabdenovch")
+    def test_lookup_skip_deletion(self):
+        table_schema = [
+            {"name": "key1", "type": "int64", "sort_order": "ascending"},
+            {"name": "key2", "type": "int64", "sort_order": "ascending"},
+            {"name": "value", "type": "string"},
+        ]
+        index_schema = [
+            {"name": "key2", "type": "int64", "sort_order": "ascending"},
+            {"name": "key1", "type": "int64", "sort_order": "ascending"},
+            {"name": EMPTY_COLUMN_NAME, "type": "int64"},
+        ]
+        self._create_basic_tables(
+            table_schema=table_schema,
+            index_schema=index_schema,
+            mount=True,
+        )
+
+        self._insert_rows([
+            {"key1": 1, "key2": 2, "value": "value"}
+        ])
+        self._expect_from_index([{"key2": 2, "key1": 1, EMPTY_COLUMN_NAME: None}])
+        self._delete_rows([
+            {"key1": 1, "key2": 2}
+        ])
+        self._expect_from_index([])
+
 
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexReplicatedMaster(TestSecondaryIndexReplicatedBase, TestSecondaryIndexMaster):
     ENABLE_MULTIDAEMON = True
 
@@ -1422,9 +1436,9 @@ class TestSecondaryIndexReplicatedMaster(TestSecondaryIndexReplicatedBase, TestS
         _ = self._create_table("//tmp/secondary", INDEX_ON_VALUE_SCHEMA)
         index_id, collocation_id = self._create_secondary_index()
 
-        with raises_yt_error("Cannot remove table //tmp/table from collocation"):
+        with raises_yt_error("Cannot remove table .* from collocation"):
             remove("//tmp/table/@replication_collocation_id")
-        with raises_yt_error("Cannot remove table //tmp/secondary from collocation"):
+        with raises_yt_error("Cannot remove table .* from collocation"):
             remove("//tmp/secondary/@replication_collocation_id")
         with raises_yt_error("Cannot remove collocation"):
             remove(f"#{collocation_id}")
@@ -1440,7 +1454,6 @@ class TestSecondaryIndexReplicatedMaster(TestSecondaryIndexReplicatedBase, TestS
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexReplicatedSelect(TestSecondaryIndexReplicatedBase, TestSecondaryIndexSelect):
     ENABLE_MULTIDAEMON = True
 
@@ -1533,14 +1546,13 @@ class TestSecondaryIndexReplicatedSelect(TestSecondaryIndexReplicatedBase, TestS
 
         remove("//tmp/index_table", driver=self.REPLICA_DRIVER)
 
-        with raises_yt_error(yt_error_codes.ResolveErrorCode):
+        with raises_yt_error(code=yt_error_codes.ResolveErrorCode):
             select_rows("* from [//tmp/table] with index [//tmp/index_table] I")
 
 
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexReplicatedModifications(TestSecondaryIndexReplicatedBase, TestSecondaryIndexModifications):
     ENABLE_MULTIDAEMON = True
 
@@ -1548,7 +1560,6 @@ class TestSecondaryIndexReplicatedModifications(TestSecondaryIndexReplicatedBase
 ##################################################################
 
 
-@pytest.mark.enabled_multidaemon
 class TestSecondaryIndexModificationsOverRpc(TestSecondaryIndexModifications):
     ENABLE_MULTIDAEMON = True
     DRIVER_BACKEND = "rpc"

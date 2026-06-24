@@ -74,6 +74,7 @@ namespace NYT::NQueryTracker {
 using namespace NAdmin;
 using namespace NAlertManager;
 using namespace NBus;
+using namespace NBus::NTcp;
 using namespace NHydra;
 using namespace NMonitoring;
 using namespace NObjectClient;
@@ -204,7 +205,7 @@ private:
         NLogging::GetDynamicTableLogWriterFactory()->SetClient(NativeClient_);
 
         DynamicConfigManager_ = New<TDynamicConfigManager>(Config_, NativeClient_, ControlInvoker_);
-        DynamicConfigManager_->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, Unretained(this)));
+        DynamicConfigManager_->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, Unretained(this)));
 
         BusServer_ = CreateBusServer(Config_->BusServer);
 

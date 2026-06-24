@@ -55,13 +55,13 @@ struct TChytSettings
 {
     std::optional<std::string> Cluster;
 
-    std::optional<TString> Clique;
+    std::optional<std::string> Clique;
 
     std::optional<ui64> Instance;
 
     TDuration QueryTimeout;
 
-    THashMap<TString, TString> QuerySettings;
+    THashMap<std::string, std::string> QuerySettings;
 
     REGISTER_YSON_STRUCT(TChytSettings);
 
@@ -140,7 +140,7 @@ public:
 private:
     const TChytSettingsPtr Settings_;
     const TChytEngineConfigPtr Config_;
-    TString Clique_;
+    std::string Clique_;
     std::string Cluster_;
     NApi::NNative::IConnectionPtr NativeConnection_;
     NApi::IClientPtr QueryClient_;
@@ -148,7 +148,7 @@ private:
     IChannelFactoryPtr ChannelFactory_;
 
     IDiscoveryPtr Discovery_;
-    THashMap<TString, NYTree::IAttributeDictionaryPtr> Instances_;
+    THashMap<std::string, NYTree::IAttributeDictionaryPtr> Instances_;
 
     TFuture<TExecuteQueryResponse> AsyncQueryResult_;
     std::atomic<bool> Cancelled_ = false;
@@ -241,7 +241,7 @@ private:
             Logger);
     }
 
-    TString GetStringRepresentation(const INodePtr& node)
+    std::string GetStringRepresentation(const INodePtr& node)
     {
         switch (node->GetType()) {
             case ENodeType::Int64:
@@ -255,12 +255,12 @@ private:
             case ENodeType::String:
                 return node->AsString()->GetValue();
             default:
-                THROW_ERROR_EXCEPTION("Can't convert non-scalar data to string (Type: %v)", node->GetType());
+                THROW_ERROR_EXCEPTION("Cannot convert non-scalar data of type %Qlv to string", node->GetType());
         }
     }
 
     void DFSForUnrecognizedSettings(
-        THashMap<TString, TString>& flattenedSettings,
+        THashMap<std::string, std::string>& flattenedSettings,
         const INodePtr& node)
     {
         auto type = node->GetType();
@@ -284,10 +284,10 @@ private:
         }
     }
 
-    THashMap<TString, TString> GetUnrecognizedFlattenedSettings()
+    THashMap<std::string, std::string> GetUnrecognizedFlattenedSettings()
     {
         auto unrecognized = Settings_->GetLocalUnrecognized();
-        THashMap<TString, TString> flattenedSettings;
+        THashMap<std::string, std::string> flattenedSettings;
         DFSForUnrecognizedSettings(flattenedSettings, unrecognized);
         return flattenedSettings;
     }
@@ -335,7 +335,13 @@ private:
             YT_UNUSED_FUTURE(progressPollerExecutor->Stop());
         }));
 
-        return WaitFor(rsp).ValueOrThrow();
+        auto result = WaitFor(rsp);
+
+        // Do a final progress poll after query completion to capture any progress
+        // updates that arrived after the last periodic poll and before query finish.
+        PollQueryProgress(proxy, instanceChannel->GetEndpointDescription());
+
+        return result.ValueOrThrow();
     }
 
     void PollQueryProgress(TQueryServiceProxy coordinator, std::string endpoint)

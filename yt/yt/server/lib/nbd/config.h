@@ -28,6 +28,8 @@ struct TChunkBlockDeviceConfig
     TDuration DataNodeNbdServiceRpcTimeout;
     //! Time to create chunk and make filesystem in it.
     TDuration DataNodeNbdServiceMakeTimeout;
+    //! Number of TCP connections to use for NBD RPC requests.
+    int MultiplexingParallelism;
 
     REGISTER_YSON_STRUCT(TChunkBlockDeviceConfig);
 
@@ -102,7 +104,7 @@ DEFINE_REFCOUNTED_TYPE(TIdsConfig)
 struct TUdsConfig
     : public NYTree::TYsonStruct
 {
-    TString Path;
+    std::string Path;
     int MaxBacklogSize;
 
     REGISTER_YSON_STRUCT(TUdsConfig);

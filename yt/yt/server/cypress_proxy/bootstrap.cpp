@@ -2,7 +2,6 @@
 
 #include "private.h"
 
-#include "config.h"
 #include "cypress_transaction_service.h"
 #include "dynamic_config_manager.h"
 #include "master_connector.h"
@@ -14,6 +13,8 @@
 #include "user_directory_synchronizer.h"
 
 #include <yt/yt/server/lib/admin/admin_service.h>
+
+#include <yt/yt/server/lib/cypress_proxy/config.h>
 
 #include <yt/yt/server/lib/cypress_registrar/cypress_registrar.h>
 
@@ -31,6 +32,7 @@
 
 #include <yt/yt/ytlib/distributed_throttler/distributed_throttler.h>
 
+#include <yt/yt/ytlib/sequoia_client/connection.h>
 #include <yt/yt/ytlib/sequoia_client/public.h>
 #include <yt/yt/ytlib/sequoia_client/sequoia_reign.h>
 #include <yt/yt/ytlib/sequoia_client/table_descriptor.h>
@@ -200,15 +202,16 @@ public:
         NProfiling::TProfiler profiler) const override
     {
         auto selfAddress = BuildServiceAddress(GetLocalHostName(), Config_->RpcPort);
+        auto selfAddressCopy = selfAddress;
         return NDistributedThrottler::CreateDistributedThrottlerFactory(
             std::move(config),
             NativeConnection_->GetChannelFactory(),
             NativeConnection_,
             std::move(invoker),
             NYPath::TYPath(groupId),
-            selfAddress,
-            RpcServer_,
             std::move(selfAddress),
+            RpcServer_,
+            std::move(selfAddressCopy),
             std::move(logger),
             NativeAuthenticator_,
             profiler);
@@ -256,7 +259,7 @@ private:
     {
         ITableDescriptor::ScheduleInitialization();
 
-        BusServer_ = NBus::CreateBusServer(Config_->BusServer);
+        BusServer_ = NBus::NTcp::CreateBusServer(Config_->BusServer);
         RpcServer_ = NRpc::NBus::CreateBusServer(BusServer_);
         HttpServer_ = NHttp::CreateServer(Config_->CreateMonitoringHttpServerConfig());
 
@@ -272,7 +275,7 @@ private:
         NLogging::GetDynamicTableLogWriterFactory()->SetClient(NativeRootClient_);
 
         DynamicConfigManager_ = New<TDynamicConfigManager>(this);
-        DynamicConfigManager_->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, Unretained(this)));
+        DynamicConfigManager_->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnDynamicConfigChanged, Unretained(this)));
 
         UserDirectory_ = New<TUserDirectory>();
         UserDirectorySynchronizer_ = CreateUserDirectorySynchronizer(
@@ -313,6 +316,19 @@ private:
             OrchidRoot_,
             "/ground_reign",
             ConvertToNode(GetCurrentGroundReign()));
+
+        SetNodeByYPath(
+            OrchidRoot_,
+            "/sequoia_connection_reconfiguration_time",
+            CreateVirtualNode(IYPathService::FromProducer(
+                BIND_NO_PROPAGATE([this, weakThis = MakeWeak(this)] (NYson::IYsonConsumer* consumer) {
+                    if (auto strongThis = weakThis.Lock()) {
+                        BuildYsonFluently(consumer)
+                            .Value(GetSequoiaConnection()->GetLastReconfigurationTime());
+                    } else {
+                        consumer->OnEntity();
+                    }
+                }))));
 
         RpcServer_->RegisterService(CreateOrchidService(
             OrchidRoot_,

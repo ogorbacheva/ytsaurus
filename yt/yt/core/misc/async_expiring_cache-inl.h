@@ -258,6 +258,13 @@ TFuture<std::vector<TErrorOr<TValue>>> TAsyncExpiringCache<TKey, TValue>::GetMan
 template <class TKey, class TValue>
 std::optional<TErrorOr<TValue>> TAsyncExpiringCache<TKey, TValue>::Find(const TKey& key)
 {
+    return Find<TKey>(key);
+}
+
+template <class TKey, class TValue>
+template <class THeterogenousKey>
+std::optional<TErrorOr<TValue>> TAsyncExpiringCache<TKey, TValue>::Find(const THeterogenousKey& key)
+{
     EnsureStarted();
 
     auto config = GetConfig();
@@ -270,7 +277,7 @@ std::optional<TErrorOr<TValue>> TAsyncExpiringCache<TKey, TValue>::Find(const TK
         if (!entry->IsExpired(now) && entry->Promise.IsSet()) {
             HitCounter_.Increment();
             entry->AccessDeadline.store(now + NProfiling::DurationToCpuDuration(config->ExpireAfterAccessTime));
-            return entry->Future.GetOrCrash();
+            return entry->Promise.GetOrCrash();
         }
     }
 
@@ -298,7 +305,7 @@ std::vector<std::optional<TErrorOr<TValue>>> TAsyncExpiringCache<TKey, TValue>::
                 const auto& entry = it->second;
                 if (!entry->IsExpired(now) && entry->Promise.IsSet()) {
                     HitCounter_.Increment();
-                    results[requestIndex] = entry->Future.GetOrCrash();
+                    results[requestIndex] = entry->Promise.GetOrCrash();
                     entry->AccessDeadline.store(now + NProfiling::DurationToCpuDuration(config->ExpireAfterAccessTime));
                 } else {
                     MissedCounter_.Increment();
@@ -891,7 +898,8 @@ std::vector<std::vector<typename TAsyncExpiringCache<TKey, TValue>::TItem>> TAsy
 }
 
 template <class TKey, class TValue>
-int TAsyncExpiringCache<TKey, TValue>::GetShardIndex(const TKey& key) const
+template <class THeterogenousKey>
+int TAsyncExpiringCache<TKey, TValue>::GetShardIndex(const THeterogenousKey& key) const
 {
     return ShardKeyHash_(key) % ShardCount_;
 }
@@ -913,8 +921,9 @@ TAsyncExpiringCache<TKey, TValue>::LockAndGetReadableShard(int shardIndex)
 }
 
 template <class TKey, class TValue>
+template <class THeterogenousKey>
 std::pair<NThreading::TReaderGuard<NThreading::TReaderWriterSpinLock>, const typename TAsyncExpiringCache<TKey, TValue>::TEntryMap&>
-TAsyncExpiringCache<TKey, TValue>::LockAndGetReadableShardForKey(const TKey& key)
+TAsyncExpiringCache<TKey, TValue>::LockAndGetReadableShardForKey(const THeterogenousKey& key)
 {
     return LockAndGetReadableShard(GetShardIndex(key));
 }

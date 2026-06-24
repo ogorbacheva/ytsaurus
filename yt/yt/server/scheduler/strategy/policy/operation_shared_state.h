@@ -23,11 +23,12 @@ public:
     bool ProcessAllocationUpdate(
         TPoolTreeOperationElement* operationElement,
         TAllocationId allocationId,
-        const TJobResources& resources,
+        const std::optional<TJobResources>& resources,
         bool resetAllocationPreemptibleProgress);
     bool ProcessAllocationPreemption(
         TPoolTreeOperationElement* operationElement,
-        TAllocationId allocationId);
+        TAllocationId allocationId,
+        const TJobResources& precommittedResources);
 
     TDiskQuota GetTotalDiskQuota() const;
 
@@ -134,9 +135,11 @@ private:
     YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, PreemptionStatusStatisticsLock_);
     TPreemptionStatusStatisticsVector PreemptionStatusStatistics_;
 
+    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, DiagnosticCountersLock_);
+
     const NLogging::TLogger Logger;
 
-    //! Thread affinity: control.
+    //! Protected by DiagnosticCountersLock_. Accessed from FairShareLoggingInvoker, OrchidWorkerInvoker, and FairShareUpdateInvoker.
     TEnumIndexedArray<EDeactivationReason, int> DeactivationReasons_;
     TEnumIndexedArray<EDeactivationReason, int> DeactivationReasonsFromLastNonStarvingTime_;
     TEnumIndexedArray<EJobResourceWithDiskQuotaType, int> MinNeededResourcesWithDiskQuotaUnsatisfiedCount_;

@@ -200,7 +200,7 @@ class TestSimpleQueriesYql(TestQueriesYqlSimpleBase):
 
     @authors("max42")
     def test_issues(self, query_tracker, yql_agent):
-        with raises_yt_error(30000):
+        with raises_yt_error(code=30000):
             self._run_simple_query("select * from primary.`//tmp/nonexistent`")
 
     @authors("max42")
@@ -341,9 +341,9 @@ class TestTypes(TestQueriesYqlSimpleBase):
             select
                 Just(2) as `SimpleOptional`,
                 Just(Just(2)) as `DoubleOptional`,
-                AsTagged(AsTuple(AsTagged(1, "tag1"), Just(Just(2))), "tag2") as `TaggedTupple`,
+                AsTagged(AsTuple(AsTagged(1, "tag1"), Just(Just(2))), "tag2") as `TaggedTuple`,
                 AsTagged(AsTagged(1, "tag1"), "tag2") as `NestedTagged`\
-            """, [{"SimpleOptional": 2, "DoubleOptional": [2], "TaggedTupple": [1, [2]], "NestedTagged": 1}])
+            """, [{"SimpleOptional": 2, "DoubleOptional": [2], "TaggedTuple": [1, [2]], "NestedTagged": 1}])
 
     @authors("a-romanov")
     def test_double_optional(self, query_tracker, yql_agent):
@@ -380,7 +380,7 @@ class TestYqlAgentBan(TestQueriesYqlSimpleBase):
         address = yql_agent.yql_agent.addresses[0]
         set(f"//sys/yql_agent/instances/{address}/@banned", True)
 
-        with raises_yt_error(yt_error_codes.Unavailable) as err:
+        with raises_yt_error(code=yt_error_codes.Unavailable) as err:
             wait(self._test_query_fails)
         assert err[0].contains_text("No alive peers found")
 
@@ -403,7 +403,7 @@ class TestYqlAgentBan(TestQueriesYqlSimpleBase):
         address = yql_agent.yql_agent.addresses[0]
         set(f"//sys/yql_agent/instances/{address}/@banned", True)
 
-        with raises_yt_error(yt_error_codes.Unavailable) as err:
+        with raises_yt_error(code=yt_error_codes.Unavailable) as err:
             wait(self._test_query_fails)
         assert err[0].contains_text("No alive peers found")
 
@@ -773,7 +773,7 @@ class TestDefaultCluster(TestQueriesYqlSimpleBase):
         rows = [{"a": 42}]
         write_table("//tmp/t", rows)
 
-        with raises_yt_error(1):  # Generic error
+        with raises_yt_error(code=1):  # Generic error
             self._run_simple_query("select a + 1 from primary.`//tmp/t`;", settings={"cluster": "unknown_cluster"})
 
 
@@ -878,6 +878,21 @@ class TestYqlAgent(TestQueriesYqlSimpleBase):
             ],
         )
 
+    @authors("a-romanov")
+    @pytest.mark.timeout(180)
+    def test_files_from_folder(self, query_tracker, yql_agent):
+        create("file", "//tmp/first_file")
+        write_file("//tmp/first_file", b"eerste")
+
+        create("map_node", "//tmp/dir")
+        create("file", "//tmp/dir/second_file")
+        write_file("//tmp/dir/second_file", b"twede")
+
+        self._test_simple_query("""
+            pragma folder("tt", "yt://{}/tmp");
+            select FileContent("tt/first_file") as first, FileContent("tt/dir/second_file") as second;
+        """.format(self.Env.get_http_proxy_address()), [{'first': 'eerste', 'second': 'twede'}])
+
     @authors("apollo1321")
     def test_config_defaults(self, query_tracker, yql_agent):
         instances = ls("//sys/yql_agent/instances")
@@ -891,7 +906,7 @@ class TestYqlAgent(TestQueriesYqlSimpleBase):
             assert not gateway_config["execute_udf_locally_if_possible"]
             assert len(gateway_config["cluster_mapping"]) == 1
             assert len(gateway_config["cluster_mapping"][0]["settings"]) == 3
-            assert len(gateway_config["default_settings"]) == 61
+            assert len(gateway_config["default_settings"]) == 62
 
             setting_found = False
             for setting in gateway_config["default_settings"]:
@@ -1965,7 +1980,6 @@ class TestDeclare(TestQueriesYqlBase):
 
 
 @authors("kirsiv40")
-@pytest.mark.enabled_multidaemon
 class TestGetQueryTrackerInfoWithMaxYqlVersionRpcProxy(TestGetQueryTrackerInfoWithMaxYqlVersion):
     ENABLE_RPC_PROXY = True
     NUM_RPC_PROXIES = 1
@@ -1975,7 +1989,6 @@ class TestGetQueryTrackerInfoWithMaxYqlVersionRpcProxy(TestGetQueryTrackerInfoWi
 
 
 @authors("kirsiv40")
-@pytest.mark.enabled_multidaemon
 class TestGetQueryTrackerInfoWithoutMaxYqlVersionRpcProxy(TestGetQueryTrackerInfoWithoutMaxYqlVersion):
     ENABLE_RPC_PROXY = True
     NUM_RPC_PROXIES = 1
@@ -1985,7 +1998,6 @@ class TestGetQueryTrackerInfoWithoutMaxYqlVersionRpcProxy(TestGetQueryTrackerInf
 
 
 @authors("kirsiv40")
-@pytest.mark.enabled_multidaemon
 class TestGetQueryTrackerInfoWithInvalidMaxYqlVersionRpcProxy(TestGetQueryTrackerInfoWithInvalidMaxYqlVersion):
     ENABLE_RPC_PROXY = True
     NUM_RPC_PROXIES = 1
@@ -1995,7 +2007,6 @@ class TestGetQueryTrackerInfoWithInvalidMaxYqlVersionRpcProxy(TestGetQueryTracke
 
 
 @authors("lucius")
-@pytest.mark.enabled_multidaemon
 class TestGetQueryTrackerInfoWithVisibleYqlVersionStaticRpcProxy(TestGetQueryTrackerInfoWithVisibleYqlVersionStatic):
     ENABLE_RPC_PROXY = True
     NUM_RPC_PROXIES = 1
@@ -2005,7 +2016,6 @@ class TestGetQueryTrackerInfoWithVisibleYqlVersionStaticRpcProxy(TestGetQueryTra
 
 
 @authors("lucius")
-@pytest.mark.enabled_multidaemon
 class TestGetQueryTrackerInfoWithVisibleYqlVersionDynamicRpcProxy(TestGetQueryTrackerInfoWithVisibleYqlVersionDynamic):
     ENABLE_RPC_PROXY = True
     NUM_RPC_PROXIES = 1
@@ -2015,7 +2025,6 @@ class TestGetQueryTrackerInfoWithVisibleYqlVersionDynamicRpcProxy(TestGetQueryTr
 
 
 @authors("lucius")
-@pytest.mark.enabled_multidaemon
 class TestGetQueryTrackerInfoWithVisibleYqlVersionBothRpcProxy(TestGetQueryTrackerInfoWithVisibleYqlVersionBoth):
     ENABLE_RPC_PROXY = True
     NUM_RPC_PROXIES = 1
@@ -2025,7 +2034,6 @@ class TestGetQueryTrackerInfoWithVisibleYqlVersionBothRpcProxy(TestGetQueryTrack
 
 
 @authors("kirsiv40")
-@pytest.mark.enabled_multidaemon
 class TestDeclareRpcProxy(TestDeclare):
     DRIVER_BACKEND = "rpc"
     ENABLE_MULTIDAEMON = True
@@ -2033,17 +2041,17 @@ class TestDeclareRpcProxy(TestDeclare):
 
 @authors("staketd")
 class TestYqlAgentWithProcesses(TestYqlAgent):
-    YQL_SUBPROCESSES_COUNT = 8
+    YQL_SUBPROCESS_COUNT = 8
 
 
 @authors("staketd")
 class TestYqlAgentDynConfigWithProcesses(TestYqlAgentDynConfig):
-    YQL_SUBPROCESSES_COUNT = 8
+    YQL_SUBPROCESS_COUNT = 8
 
 
 @authors("staketd")
 class TestMaxYqlVersionConfigAttrWithProcesses(TestMaxYqlVersionConfigAttr):
-    YQL_SUBPROCESSES_COUNT = 8
+    YQL_SUBPROCESS_COUNT = 8
 
 
 @authors("a-romanov")
@@ -2195,7 +2203,7 @@ class TestsDDL(TestQueriesYqlSimpleBase):
 
 @authors("mpereskokova")
 class TestStackOverflowWithProcesses(TestStackOverflow):
-    YQL_SUBPROCESSES_COUNT = 8
+    YQL_SUBPROCESS_COUNT = 8
 
 
 @authors("a-romanov")
@@ -2259,3 +2267,16 @@ class TestCrossClusterQueriesYql(TestQueriesYqlSimpleBase):
             select * from primary.`//tmp/t0` as p
             cross join remote_0.`//tmp/t0` as r
         """,  [{'klm': 'dode vis', 'uvw': 456}])
+
+
+@authors("ziganshinmr")
+class TestOperationOptions(TestQueriesYqlBase):
+    @authors("ziganshinmr")
+    @pytest.mark.timeout(180)
+    def test_operation_options(self, query_tracker, yql_agent):
+        query = self.start_query("yql", "select CurrentOperationId() AS op_id, CurrentAuthenticatedUser() AS user")
+        query.track()
+        query_info = query.get()
+
+        expected_result = [{"op_id": query_info["id"], "user": query_info["user"]}]
+        assert query.read_result(0) == expected_result

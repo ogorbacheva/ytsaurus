@@ -87,7 +87,6 @@ void TApiTestBase::SetUpTestCase()
         config->GetChildOrThrow("writers")->AsMap()->AddChild("stderr", ConvertToNode(stderrConfig));
 
         auto ruleConfig = New<NLogging::TRuleConfig>();
-        ruleConfig->IncludeCategories = {"CppTests"};
         ruleConfig->Writers = {"stderr"};
         config
             ->GetChildOrThrow("rules")
@@ -99,19 +98,20 @@ void TApiTestBase::SetUpTestCase()
 
     {
         const auto* testSuite = ::testing::UnitTest::GetInstance()->current_test_suite();
-        YT_LOG_INFO("Set Up Test (SuiteName: %v)",
+        YT_LOG_INFO("Testcase setup (SuiteName: %v)",
             testSuite->name());
     }
 
     Client_ = CreateClient(NRpc::RootUserName);
-    ClusterName_ = ConvertTo<std::string>(WaitFor(Client_->GetNode("//sys/@cluster_name")).ValueOrThrow());
+    ClusterName_ = ConvertTo<std::string>(WaitFor(Client_->GetNode("//sys/@cluster_name"))
+        .ValueOrThrow());
 }
 
 void TApiTestBase::TearDownTestCase()
 {
     {
         const auto* testSuite = ::testing::UnitTest::GetInstance()->current_test_suite();
-        YT_LOG_INFO("Tear Down Test (SuiteName: %v)",
+        YT_LOG_INFO("Testcase teardown (SuiteName: %v)",
             testSuite->name());
     }
 
@@ -127,25 +127,42 @@ IClientPtr TApiTestBase::CreateClient(const std::string& userName)
     return Connection_->CreateClient(clientOptions);
 }
 
-void TApiTestBase::WaitUntil(
+void WaitUntil(
     std::function<bool()> predicate,
-    TStringBuf errorMessage)
+    TStringBuf errorMessage,
+    TWaitUntilOptions options)
 {
     auto start = Now();
-    bool reached = false;
-    for (int attempt = 0; attempt < 2*30; ++attempt) {
-        if (predicate()) {
-            reached = true;
-            break;
+    std::exception_ptr lastException;
+
+    while (Now() - start < options.Timeout) {
+        try {
+            if (predicate()) {
+                return;
+            }
+        } catch (...) {
+            if (!options.IgnoreExceptions) {
+                throw;
+            }
+            lastException = std::current_exception();
         }
-        Sleep(TDuration::MilliSeconds(500));
+        Sleep(options.SleepBackoff);
     }
 
-    if (!reached) {
-        THROW_ERROR_EXCEPTION("%v after %v seconds",
-            errorMessage,
-            (Now() - start).Seconds());
+    TStringBuilder message;
+    message.AppendFormat("%v (Timeout: %v", errorMessage, options.Timeout);
+    if (lastException) {
+        try {
+            std::rethrow_exception(lastException);
+        } catch (const std::exception& ex) {
+            message.AppendFormat(", LastException: %v", ex.what());
+        } catch (...) {
+            message.AppendString(", LastException: <unknown>");
+        }
     }
+    message.AppendChar(')');
+
+    THROW_ERROR_EXCEPTION("%v", message.Flush());
 }
 
 void TApiTestBase::WaitUntilEqual(const TYPath& path, TStringBuf expected)

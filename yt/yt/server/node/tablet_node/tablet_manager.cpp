@@ -43,6 +43,7 @@
 #include <yt/yt/server/lib/hive/persistent_mailbox_state_cookie.h>
 
 #include <yt/yt/server/lib/hydra/distributed_hydra_manager.h>
+#include <yt/yt/server/lib/hydra/helpers.h>
 #include <yt/yt/server/lib/hydra/mutation.h>
 #include <yt/yt/server/lib/hydra/mutation_context.h>
 
@@ -50,6 +51,8 @@
 #include <yt/yt/server/lib/lease_server/helpers.h>
 
 #include <yt/yt/server/lib/misc/profiling_helpers.h>
+
+#include <yt/yt/server/lib/tablet_balancer/config.h>
 
 #include <yt/yt/server/lib/tablet_node/proto/tablet_manager.pb.h>
 
@@ -332,7 +335,7 @@ public:
         BackupManager_->Initialize();
 
         const auto& tableConfigManager = Bootstrap_->GetTableDynamicConfigManager();
-        tableConfigManager->SubscribeConfigChanged(TableDynamicConfigChangedCallback_);
+        tableConfigManager->SubscribeAfterConfigChanged(TableDynamicConfigChangedCallback_);
 
         Bootstrap_->SubscribeTabletNodeConfigChanged(DynamicConfigChangedCallback_);
         OnDynamicConfigChanged(
@@ -343,25 +346,7 @@ public:
     void Finalize() override
     {
         const auto& tableConfigManager = Bootstrap_->GetTableDynamicConfigManager();
-        tableConfigManager->UnsubscribeConfigChanged(TableDynamicConfigChangedCallback_);
-    }
-
-    void OnStartLeading() override
-    {
-        TTabletAutomatonPart::OnStartLeading();
-
-        const auto& tableConfigManager = Bootstrap_->GetTableDynamicConfigManager();
-        if (tableConfigManager->IsConfigLoaded()) {
-            OnTableDynamicConfigChanged(nullptr, tableConfigManager->GetConfig());
-        }
-
-        auto storeCompactorConfig = GetDynamicConfig()->StoreCompactor;
-        for (auto [storeKind, partitionKind] : NLsm::StoreCompactionHintKinds) {
-            CompactionHintFetchers_[storeKind]->Start(
-                // NB(dave11ar): Do not take epoch automaton invoker from Slot_, it might be initialized later.
-                EpochAutomatonInvoker_,
-                storeCompactorConfig->CompactionHintFetchers[storeKind]);
-        }
+        tableConfigManager->UnsubscribeAfterConfigChanged(TableDynamicConfigChangedCallback_);
     }
 
     void UpdateTabletSnapshot(TTablet* tablet, std::optional<TLockManagerEpoch> epoch = std::nullopt) override
@@ -541,6 +526,42 @@ public:
         return results;
     }
 
+    TRowCacheControllerContext GetRowCacheControllerContext() const override
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        TRowCacheControllerContext context;
+
+        for (const auto& [tabletId, tablet] : Tablets()) {
+            if (!tablet->IsPhysicallySorted()) {
+                continue;
+            }
+
+            if (tablet->GetSettings().MountConfig->LookupCacheRowsRatio <= 0) {
+                continue;
+            }
+
+            i64 unmergedRowCount = tablet->GetNonActiveStoresUnmergedRowCount();
+            if (const auto& store = tablet->GetActiveStore()) {
+                unmergedRowCount += store->GetRowCount();
+            }
+
+            const auto& rowCache = tablet->GetRowCache();
+            if (!rowCache) {
+                continue;
+            }
+
+            context.Tablets[tabletId] = {
+                .RowCache = rowCache,
+                .TabletDataWeight = tablet->GetTotalDataWeight(),
+                .TabletRowCount = unmergedRowCount,
+                .LookupCacheRowsRatio = tablet->GetSettings().MountConfig->LookupCacheRowsRatio,
+            };
+        }
+
+        return context;
+    }
+
     TFuture<void> Trim(
         const TTabletSnapshotPtr& tabletSnapshot,
         i64 trimmedRowCount) override
@@ -566,7 +587,7 @@ public:
             }
 
             if (tablet->GetReplicationCardId()) {
-                ValidateTrimmedRowCountPrecedeReplication(tablet, trimmedRowCount);
+                ValidateTrimmedRowCountPrecedesReplication(tablet, trimmedRowCount);
             }
 
             NProto::TReqTrimRows hydraRequest;
@@ -695,9 +716,12 @@ public:
     }
 
     void UnregisterSiblingTabletAvenue(
-        NHiveServer::TAvenueEndpointId siblingEndpointId) override
+        NHiveServer::TAvenueEndpointId siblingEndpointId,
+        bool allowDestructionInMessageToSelf = false) override
     {
-        Slot_->UnregisterSiblingTabletAvenue(siblingEndpointId);
+        Slot_->UnregisterSiblingTabletAvenue(
+            siblingEndpointId,
+            allowDestructionInMessageToSelf);
         Slot_->GetTransactionManager()->AbortTransactionsExternalizedToThisCell(
             TTransactionExternalizationToken(GetSiblingAvenueEndpointId(siblingEndpointId)));
     }
@@ -949,6 +973,11 @@ private:
             return Owner_->Bootstrap_->GetNodeMemoryUsageTracker();
         }
 
+        TRowCacheControllerPtr GetRowCacheController() const final
+        {
+            return Owner_->Bootstrap_->GetRowCacheController();
+        }
+
         NChunkClient::IChunkReplicaCachePtr GetChunkReplicaCache() const final
         {
             return Owner_->Bootstrap_->GetConnection()->GetChunkReplicaCache();
@@ -1039,7 +1068,7 @@ private:
 
     const NLsm::TStoreCompactionHintArray<TCompactionHintFetcherPtr> CompactionHintFetchers_;
 
-    const TCallback<void(TClusterTableConfigPatchSetPtr, TClusterTableConfigPatchSetPtr)> TableDynamicConfigChangedCallback_ =
+    const TCallback<void(TClusterTableConfigPatchSetPtr)> TableDynamicConfigChangedCallback_ =
         BIND(&TTabletManager::OnTableDynamicConfigChanged, MakeWeak(this));
 
     const TCallback<void(TTabletNodeDynamicConfigPtr, TTabletNodeDynamicConfigPtr)> DynamicConfigChangedCallback_ =
@@ -1171,6 +1200,14 @@ private:
 
         TTabletAutomatonPart::OnLeaderRecoveryComplete();
 
+        auto storeCompactorConfig = GetDynamicConfig()->StoreCompactor;
+        for (auto [storeKind, partitionKind] : NLsm::StoreCompactionHintKinds) {
+            CompactionHintFetchers_[storeKind]->Start(
+                // NB(dave11ar): Do not take epoch automaton invoker from Slot_, it might be initialized later.
+                EpochAutomatonInvoker_,
+                storeCompactorConfig->CompactionHintFetchers[storeKind]);
+        }
+
         StartEpoch();
     }
 
@@ -1179,6 +1216,31 @@ private:
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
         TTabletAutomatonPart::OnLeaderActive();
+
+        // Serialize executions of OnTableDynamicConfigChanged via control invoker
+        // to avoid reordering.
+        Bootstrap_->GetControlInvoker()->Invoke(BIND(
+            [
+                tableConfigManager = Bootstrap_->GetTableDynamicConfigManager(),
+                weakThis = MakeWeak(this),
+                automatonInvoker = Slot_->GetAutomatonInvoker()
+            ] {
+                if (!tableConfigManager->IsConfigLoaded()) {
+                    return;
+                }
+
+                // OnTableDynamicConfigChanged schedules a callback via
+                // guarded automaton invoker. It will not execute anything
+                // until OnLeaderActive finishes execution, so we introduce
+                // a barrier.
+                WaitFor(BIND([] {}).AsyncVia(automatonInvoker).Run())
+                    .ThrowOnError();
+
+                if (auto this_ = weakThis.Lock()) {
+                    this_->OnTableDynamicConfigChanged(/*oldConfig*/ nullptr);
+                }
+            }
+        ));
 
         for (auto [tabletId, tablet] : TabletMap_) {
             CheckIfTabletFullyUnlocked(tablet);
@@ -1415,6 +1477,7 @@ private:
             movementData.SetRole(ESmoothMovementRole::Target);
             movementData.SetStage(ESmoothMovementStage::TargetAllocated);
             movementData.SetSiblingMountRevision(siblingMountRevision);
+            movementData.SetReign(GetCurrentMutationEffectiveReign());
 
             movementData.SetSiblingAvenueEndpointId(siblingEndpointId);
             Slot_->RegisterSiblingTabletAvenue(siblingEndpointId, siblingCellId);
@@ -1444,7 +1507,7 @@ private:
         YT_LOG_INFO("Tablet mounted (%v, MountRevision: %x, Keys: %v .. %v, "
             "StoreCount: %v, HunkChunkCount: %v, PartitionCount: %v, TotalRowCount: %v, TrimmedRowCount: %v, Atomicity: %v, "
             "CommitOrdering: %v, Frozen: %v, UpstreamReplicaId: %v, RetainedTimestamp: %v, SchemaId: %v, "
-            "MasterAvenueEndpointId: %v, SerializationType: %v)",
+            "MasterAvenueEndpointId: %v, SerializationType: %v, ConflictHorizonTimestamp: %v)",
             tablet->GetLoggingTag(),
             mountRevision,
             pivotKey,
@@ -1461,7 +1524,8 @@ private:
             retainedTimestamp,
             schemaId,
             masterAvenueEndpointId,
-            serializationType);
+            serializationType,
+            conflictHorizonTimestamp);
 
         for (const auto& descriptor : replicaDescriptors) {
             AddTableReplica(tablet, descriptor);
@@ -1581,6 +1645,35 @@ private:
         YT_VERIFY(movementData.GetRole() == ESmoothMovementRole::Target);
         YT_VERIFY(movementData.GetStage() == ESmoothMovementStage::TargetAllocated);
         YT_VERIFY(movementData.GetSiblingCellId());
+
+        // Check that source and target reigns are the same.
+        // NB: Target reign could have changed after target tablet was mounted. In this case
+        // reign mismatch is still reported.
+        auto mutationReign = static_cast<ETabletReign>(GetHiveMutationSenderReign());
+        if (movementData.GetReign() != mutationReign) {
+            YT_LOG_DEBUG("Got replicate tablet content request from servant with different reign "
+                "(%v, SenderReign: %v, ReceiverReign: %v)",
+                tablet->GetLoggingTag(),
+                movementData.GetReign(),
+                mutationReign);
+
+            Slot_->GetSmoothMovementTracker()->RejectMovement(
+                tablet,
+                TError("Replicated content reign %Qv differs from current reign %Qv",
+                    mutationReign,
+                    movementData.GetReign()));
+            return;
+        }
+
+        if (tablet->GetSettings().MountConfig->Testing.RejectReplicatedContentReceiving) {
+            YT_LOG_DEBUG("Target servant rejected replicated content for testing purposes (%v)",
+                tablet->GetLoggingTag());
+
+            Slot_->GetSmoothMovementTracker()->RejectMovement(
+                tablet,
+                TError("Smooth movement rejected by target for testing purposes"));
+            return;
+        }
 
         const auto& replicatableContent = request->replicatable_content();
 
@@ -1939,6 +2032,7 @@ private:
             /*createNewStore*/ true,
             EStoreRotationReason::None,
             /*allowEmptyStore*/ true);
+        UpdateTabletSnapshot(tablet);
 
         CheckIfTabletFullyFlushed(tablet);
     }
@@ -2651,14 +2745,16 @@ private:
 
         YT_LOG_INFO("Tablet stores update prepared "
             "(%v, TransactionId: %v, StoreIdsToAdd: %v, HunkChunkIdsToAdd: %v, StoreIdsToRemove: %v, HunkChunkIdsToRemove: %v, "
-            "UpdateReason: %v)",
+            "UpdateReason: %v, ConflictHorizonTimestamp: %v, UnleashedBackingStoreId: %v)",
             tablet->GetLoggingTag(),
             transaction->GetId(),
             storeIdsToAdd,
             hunkChunkIdsToAdd,
             storeIdsToRemove,
             hunkChunkIdsToRemove,
-            updateReason);
+            updateReason,
+            FromProto<TTimestamp>(request->conflict_horizon_timestamp()),
+            FromProto<TStoreId>(request->unleashed_backing_store_id()));
     }
 
     void HydraPrepareAndCommitBoggleHunkTabletStoreLock(
@@ -3145,7 +3241,7 @@ private:
         }
 
         if (needResetRowCache) {
-            YT_LOG_ALERT_IF(IsLeader() && tablet->IsActiveServant(),
+            YT_LOG_DEBUG_IF(IsLeader() && tablet->IsActiveServant(),
                 "Store that was not flushed to row cache is detected "
                 "at the leading cell peer, row cache will be reset (%v)",
                 tablet->GetLoggingTag());
@@ -3233,7 +3329,9 @@ private:
                         tablet->AdvancePersistentConflictHorizonTimestamp(storeTimestamp);
 
                         if (!backingStoreId) {
-                            tablet->AdvanceTransientConflictHorizonTimestamp(storeTimestamp);
+                            tablet->AdvanceTransientConflictHorizonTimestamp(
+                                storeTimestamp,
+                                /*expectedMountRevision*/ std::nullopt);
                         }
                     }
                 }
@@ -3282,7 +3380,8 @@ private:
                     ETabletReign::AddConflictHorizon)
                 {
                     tablet->AdvanceTransientConflictHorizonTimestamp(
-                        FromProto<TTimestamp>(request->conflict_horizon_timestamp()));
+                        FromProto<TTimestamp>(request->conflict_horizon_timestamp()),
+                        /*expectedMountRevision*/ std::nullopt);
                 }
             }
         }
@@ -3535,7 +3634,7 @@ private:
             ? std::make_optional(ETableReplicaMode(request->mode()))
             : std::nullopt;
         if (mode && !IsStableReplicaMode(*mode)) {
-            THROW_ERROR_EXCEPTION("Invalid replica mode %Qlv", *mode);
+            THROW_ERROR WrapHydraError(TError("Invalid replica mode %Qlv", *mode));
         }
 
         auto atomicity = request->has_atomicity()
@@ -3644,7 +3743,7 @@ private:
         }
 
         if (tablet->IsActiveServant()) {
-            tablet->SmoothMovementData().ValidateWriteToTablet();
+            tablet->SmoothMovementData().ValidateWriteToTablet(tabletId);
         }
 
         chaosData->PreparedWritePulledRowsTransactionId.Store(transaction->GetId());
@@ -3844,7 +3943,7 @@ private:
         }
 
         if (tablet->IsActiveServant()) {
-            tablet->SmoothMovementData().ValidateWriteToTablet();
+            tablet->SmoothMovementData().ValidateWriteToTablet(tabletId);
         }
 
         chaosData->PreparedAdvanceReplicationProgressTransactionId.Store(transaction->GetId());
@@ -3977,7 +4076,13 @@ private:
         auto tabletId = FromProto<TTabletId>(request->tablet_id());
         auto newReplicationEra = FromProto<TReplicationEra>(request->new_replication_era());
 
-        auto* tablet = GetTabletOrThrow(tabletId);
+        auto* tablet = FindTablet(tabletId);
+        if (!tablet) {
+            YT_LOG_DEBUG("Tablet is missing during advancement of replication era (TabletId: %v, NewReplicationEra: %v)",
+                tabletId,
+                newReplicationEra);
+            return;
+        }
         if (auto era = tablet->RuntimeData()->ReplicationEra.load();
             era == InvalidReplicationEra || era < newReplicationEra)
         {
@@ -4996,7 +5101,11 @@ private:
         TDelayedExecutor::Submit(
             // NB: Submit the callback via the regular automaton invoker, not the epoch one since
             // we need the store to be released even if the epoch ends.
-            BIND(&TTabletManager::ReleaseBackingStoreWeak, MakeWeak(this), MakeWeak(store))
+            BIND(
+                &TTabletManager::ReleaseBackingStoreWeak,
+                MakeWeak(this),
+                MakeWeak(store),
+                tablet->GetMountRevision())
                 .Via(Slot_->GetAutomatonInvoker()),
             tablet->GetSettings().MountConfig->BackingStoreRetentionTime);
     }
@@ -5012,12 +5121,15 @@ private:
                 &TTabletManager::ReleaseUnleashedBackingStoreWeak,
                 MakeWeak(this),
                 tablet->GetId(),
-                backingStore->GetId())
+                backingStore->GetId(),
+                tablet->GetMountRevision())
                 .Via(Slot_->GetEpochAutomatonInvoker()),
             tablet->GetSettings().MountConfig->BackingStoreRetentionTime);
     }
 
-    void ReleaseBackingStoreWeak(const TWeakPtr<IChunkStore>& storeWeak)
+    void ReleaseBackingStoreWeak(
+        const TWeakPtr<IChunkStore>& storeWeak,
+        TRevision expectedMountRevision)
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
@@ -5025,12 +5137,15 @@ private:
             ReleaseBackingStore(store);
 
             if (auto* tablet = FindTablet(store->GetTabletId())) {
-                tablet->AdvanceTransientConflictHorizonTimestamp(store->GetMaxTimestamp());
+                tablet->AdvanceTransientConflictHorizonTimestamp(store->GetMaxTimestamp(), expectedMountRevision);
             }
         }
     }
 
-    void ReleaseUnleashedBackingStoreWeak(TTabletId tabletId, TDynamicStoreId backingStoreToRemoveId)
+    void ReleaseUnleashedBackingStoreWeak(
+        TTabletId tabletId,
+        TDynamicStoreId backingStoreToRemoveId,
+        TRevision expectedMountRevision)
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
@@ -5042,7 +5157,7 @@ private:
         // It is possible that at this point this tablet is a recreated c++ object after unmount and mount.
         // Sorted store manager is ready for this.
         // TODO(ponasenko-rs): Use TTablet::CancelableContext_ to simplify interface.
-        tablet->GetStoreManager()->AsSorted()->ReleaseUnleashedBackingStore(backingStoreToRemoveId);
+        tablet->GetStoreManager()->AsSorted()->ReleaseUnleashedBackingStore(backingStoreToRemoveId, expectedMountRevision);
     }
 
     void ValidateMemoryLimit(const std::optional<std::string>& poolTag) override
@@ -5082,6 +5197,11 @@ private:
             }
         }
 
+        // COMPAT(navasardianna): EMasterReign::SendTableTabletBalancerConfigToTablet.
+        auto tabletBalancerConfig = tableSettings.has_tablet_balancer_config()
+            ? ConvertTo<IMapNodePtr>(TYsonString(tableSettings.tablet_balancer_config()))
+            : GetEphemeralNodeFactory()->CreateMap();
+
         TRawTableSettings settings{
             .Provided = {
                 .MountConfigNode = ConvertTo<IMapNodePtr>(TYsonString(tableSettings.mount_config())),
@@ -5097,7 +5217,8 @@ private:
                 .HunkWriterConfig = DeserializeTabletHunkWriterConfig(
                     TYsonString(tableSettings.hunk_writer_config()), tabletId),
                 .HunkWriterOptions = DeserializeTabletHunkWriterOptions(
-                    TYsonString(tableSettings.hunk_writer_options()), tabletId)
+                    TYsonString(tableSettings.hunk_writer_options()), tabletId),
+                .TabletBalancerConfig = tabletBalancerConfig,
             },
             // COMPAT(ifsmirnov)
             .GlobalPatch = tableSettings.has_global_patch()
@@ -5128,6 +5249,12 @@ private:
         ToProto(request->mutable_store_writer_options(), ConvertToYsonString(provided.StoreWriterOptions));
         ToProto(request->mutable_hunk_writer_config(), ConvertToYsonString(provided.HunkWriterConfig));
         ToProto(request->mutable_hunk_writer_options(), ConvertToYsonString(provided.HunkWriterOptions));
+
+        // COMPAT(navasardianna)
+        if (static_cast<ETabletReign>(GetCurrentMutationContext()->Request().Reign) >= ETabletReign::SendTableTabletBalancerConfigToTablet) {
+            ToProto(request->mutable_tablet_balancer_config(), ConvertToYsonString(provided.TabletBalancerConfig));
+        }
+
         ToProto(request->mutable_global_patch(), ConvertToYsonString(settings.GlobalPatch));
         ToProto(request->mutable_experiments(), ConvertToYsonString(settings.Experiments));
     }
@@ -5650,16 +5777,14 @@ private:
         return Bootstrap_->GetTabletNodeDynamicConfig();
     }
 
-    void OnTableDynamicConfigChanged(
-        const TClusterTableConfigPatchSetPtr& /*oldConfig*/,
-        const TClusterTableConfigPatchSetPtr& newConfig)
+    void OnTableDynamicConfigChanged(const TClusterTableConfigPatchSetPtr& /*oldConfig*/)
     {
-        YT_ASSERT_THREAD_AFFINITY_ANY();
+        YT_ASSERT_INVOKER_AFFINITY(Bootstrap_->GetControlInvoker());
 
         Slot_->GetGuardedAutomatonInvoker()->Invoke(BIND(
             &TTabletManager::DoTableDynamicConfigChanged,
             MakeWeak(this),
-            newConfig));
+            Bootstrap_->GetTableDynamicConfigManager()->GetConfig()));
     }
 
     void OnDynamicConfigChanged(
@@ -5887,57 +6012,17 @@ private:
         }
     }
 
-    void ValidateTrimmedRowCountPrecedeReplication(TTablet* tablet, i64 trimmedRowCount)
+    static void ValidateTrimmedRowCountPrecedesReplication(const TTablet* tablet, i64 trimmedRowCount)
     {
         const auto& storeRowIndexMap = tablet->StoreRowIndexMap();
+        // Fast path: skip replicationTimestamp calculation for empty tablet.
         if (storeRowIndexMap.empty()) {
-            // No stores
+            // No stores.
             return;
         }
 
         auto replicationTimestamp = tablet->GetOrderedChaosReplicationMinTimestamp();
-
-        auto it = storeRowIndexMap.lower_bound(trimmedRowCount);
-        if (it == storeRowIndexMap.end()) {
-            // trimmedRowCount is beyond the last store start row index, so check the last store
-            --it;
-
-            // Check that we are not trimmig more than the table size
-            if (trimmedRowCount > it->second->GetStartingRowIndex() + it->second->GetRowCount()) {
-                THROW_ERROR_EXCEPTION("Could not trim tablet since trimmed row count is greater than current row count")
-                    << TErrorAttribute("tablet_id", tablet->GetId())
-                    << TErrorAttribute("trimmed_row_count", trimmedRowCount)
-                    << TErrorAttribute("replication_timestamp", replicationTimestamp)
-                    << TErrorAttribute("last_store_starting_row_index", it->second->GetStartingRowIndex())
-                    << TErrorAttribute("last_store_row_count", it->second->GetRowCount());
-            }
-        }
-
-        // Last store could be empty and have min_timestamp == MaxTimestamp, so check the last non-empty one
-        // it should have valid timestamp
-        if (it->second->GetMinTimestamp() == MaxTimestamp) {
-            if (it == storeRowIndexMap.begin()) {
-                // Check for trim row count mismatch
-                THROW_ERROR_EXCEPTION_IF(trimmedRowCount != it->second->GetStartingRowIndex(),
-                    "Could not fully trim tablet since trimmed row count is greater than current row count: "
-                    "trimmed_row_count: %v, starting row index: %v",
-                    trimmedRowCount,
-                    it->second->GetStartingRowIndex());
-
-                // The only store is empty and it's a full trim
-                return;
-            }
-
-            --it;
-        }
-
-        if (replicationTimestamp < it->second->GetMaxTimestamp()) {
-            THROW_ERROR_EXCEPTION("Could not trim tablet since some replicas may not be replicated up to this point")
-                << TErrorAttribute("tablet_id", tablet->GetId())
-                << TErrorAttribute("trimmed_row_count", trimmedRowCount)
-                << TErrorAttribute("replication_timestamp", replicationTimestamp)
-                << TErrorAttribute("max_timestamp", it->second->GetMaxTimestamp());
-        }
+        ValidateTrimmedRowCountPrecedesTimestamp(tablet, trimmedRowCount, replicationTimestamp);
     }
 
     void ValidatePreparingTransactionIsProperlyExternalized(

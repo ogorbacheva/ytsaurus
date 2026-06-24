@@ -21,6 +21,46 @@ public:
         const auto& fmrOperationSpec = context.FmrOperationSpec;
         const auto& partIdsForTables = context.PartIdsForTables;
         const auto& partIdStats = context.PartIdStats;
+        const auto& clusterConnections = context.ClusterConnections;
+
+        std::vector<TYtTableRef> ytInputTables;
+        std::vector<TFmrTableRef> fmrInputTables;
+        for (const auto& table : operationParams.Input) {
+            if (const auto* ytTable = std::get_if<TYtTableRef>(&table)) {
+                ytInputTables.emplace_back(*ytTable);
+            } else {
+                fmrInputTables.emplace_back(std::get<TFmrTableRef>(table));
+            }
+        }
+
+        if (!ytInputTables.empty() && !fmrInputTables.empty()) {
+            return TPartitionResult{.Error = TFmrError{
+                .Component = EFmrComponent::Coordinator,
+                .Reason = EFmrErrorReason::FallbackOperation,
+                .ErrorMessage = "SortedMerge does not support mixed YT and FMR inputs"
+            }};
+        }
+
+        if (!ytInputTables.empty()) {
+            YQL_ENSURE(ytInputTables.size() == 1, "SortedMerge supports at most one YT input table");
+            auto ytPartitionerSettings = GetYtPartitionerSettings(fmrOperationSpec);
+            ytPartitionerSettings.PartitionMode = NYT::ETablePartitionMode::Ordered;
+            auto [ytTasks, ytPartitionStatus] = context.YtCoordinatorService->PartitionYtTables(ytInputTables, clusterConnections, ytPartitionerSettings);
+            if (!ytPartitionStatus) {
+                YQL_CLOG(WARN, FastMapReduce) << "FMR fallback to YT: failed to partition single YT input table for SortedMerge";
+                return TPartitionResult{.Error = TFmrError{
+                    .Component = EFmrComponent::Coordinator,
+                    .Reason = EFmrErrorReason::FallbackOperation,
+                    .ErrorMessage = "Failed to partition single YT input table for SortedMerge"
+                }};
+            }
+            std::vector<TTaskTableInputRef> taskInputs;
+            taskInputs.reserve(ytTasks.size());
+            for (auto& ytTask : ytTasks) {
+                taskInputs.emplace_back(TTaskTableInputRef{.Inputs = {std::move(ytTask)}});
+            }
+            return TPartitionResult{.TaskInputs = std::move(taskInputs)};
+        }
 
         auto sortedPartitionerSettings = GetSortedPartitionerSettings(fmrOperationSpec);
 
@@ -31,13 +71,16 @@ public:
         auto sortedPartitioner = TSortedPartitioner(partIdsForTables, partIdStats, sortingColumns, sortedPartitionerSettings);
 
         std::vector<TOperationTableRef> inputTables = operationParams.Input;
-        return PartitionInputTablesIntoTasksSorted(inputTables, sortedPartitioner);
+        return sortedPartitioner.PartitionTablesIntoTasks(inputTables);
     }
 
     TGenerateTasksResult GenerateTasksImpl(const TGenerateTasksContext& context) final {
         const auto& sortedMergeOperationParams = std::get<TSortedMergeOperationParams>(context.OperationParams);
         TGenerateTasksResult result;
         std::vector<TGeneratedTaskInfo> generatedTasks;
+
+        YQL_CLOG(INFO, FastMapReduce) << "Starting SortedMerge operation";
+
         for (auto& task: context.PartitionResult.TaskInputs) {
             TSortedMergeTaskParams sortedMergeTaskParams;
             sortedMergeTaskParams.Input = task;
@@ -60,7 +103,7 @@ public:
         return result;
     }
 
-    TGetNewPartIdsForTaskResult GetNewPartIdsForTask(const TGetNewPartIdsForTaskContext& context) {
+    TGetNewPartIdsForTaskResult GetNewPartIdsForTask(const TGetNewPartIdsForTaskContext& context) override {
         TGetNewPartIdsForTaskResult result;
         TSortedMergeTaskParams& sortedMergeTaskParams = std::get<TSortedMergeTaskParams>(context.Task->TaskParams);
 
@@ -97,7 +140,12 @@ public:
             return result;
     }
 
-    std::vector<TPartIdInfo> GetPartIdsForTask(const GetPartIdsForTaskContext& context) {
+    std::vector<TString> GetExpectedOutputTableIds(const TOperationParams& params) const override {
+        const auto& sortedMergeParams = std::get<TSortedMergeOperationParams>(params);
+        return {sortedMergeParams.Output.FmrTableId.Id};
+    }
+
+    std::vector<TPartIdInfo> GetPartIdsForTask(const GetPartIdsForTaskContext& context) override {
         std::vector<TPartIdInfo> groupsToClear;
         TSortedMergeTaskParams& sortedMergeTaskParams = std::get<TSortedMergeTaskParams>(context.Task->TaskParams);
         TString tableId = sortedMergeTaskParams.Output.TableId;

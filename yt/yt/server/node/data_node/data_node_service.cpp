@@ -258,6 +258,8 @@ public:
             .SetInvoker(Bootstrap_->GetControlInvoker()));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(AnnounceChunkReplicas)
             .SetInvoker(Bootstrap_->GetStorageLightInvoker()));
+
+        DeclareServerFeature(EChunkClientFeature::MultiplePartitionTags);
     }
 
 private:
@@ -359,7 +361,7 @@ private:
         auto meta = request->has_chunk_meta()
             ? New<TRefCountedChunkMeta>(std::move(*request->mutable_chunk_meta()))
             : nullptr;
-        session->Finish(meta, blockCount, request->truncate_extra_blocks())
+        session->Finish(meta, blockCount)
             .Subscribe(BIND([
                 =,
                 this,
@@ -1044,6 +1046,8 @@ private:
         options.FetchFromCache = fetchFromCache;
         options.FetchFromDisk = fetchFromDisk;
         options.EnableSequentialIORequests = GetDynamicConfig()->EnableSequentialIORequests.value_or(Config_->EnableSequentialIORequests);
+        options.ReturnBlocksIfSessionFails = GetDynamicConfig()->ReturnBlocksIfSessionFails.value_or(Config_->ReturnBlocksIfSessionFails);
+        options.FailSessionAtReadBlocksDeadline = GetDynamicConfig()->FailSessionAtReadBlocksDeadline.value_or(Config_->FailSessionAtReadBlocksDeadline);
         options.ChunkReaderStatistics = chunkReaderStatistics;
         options.ReadSessionId = FromProto<TReadSessionId>(request->read_session_id());
         options.MemoryUsageTracker = Bootstrap_->GetReadBlockMemoryUsageTracker();

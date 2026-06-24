@@ -110,8 +110,8 @@ public:
 
             auto shape = blockInspector.IsScalar() ? arrow::ValueDescr::SCALAR : arrow::ValueDescr::ARRAY;
 
-            inTypes.emplace_back(arrow::compute::InputType(type, shape));
-            ArgsValuesDescr_.emplace_back(arrow::ValueDescr(type, shape));
+            inTypes.emplace_back(type, shape);
+            ArgsValuesDescr_.emplace_back(type, shape);
         }
 
         ReturnArrowTypeHandle_ = TypeInfoHelper_->MakeArrowType(outputType);
@@ -204,7 +204,7 @@ public:
                 TVector<ArrowArray> a;
                 if (res.is_array()) {
                     a.resize(1);
-                    ARROW_OK(arrow::ExportArray(*res.make_array(), &a[0]));
+                    ARROW_OK(arrow::ExportArray(*res.make_array(), a.data()));
                 } else {
                     Y_ENSURE(res.is_arraylike());
                     a.resize(res.chunks().size());

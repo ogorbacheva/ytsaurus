@@ -87,6 +87,8 @@
 
 #include <yt/yt/library/profiling/producer.h>
 
+#include <library/cpp/yt/string/raw_formatter.h>
+
 #include <optional>
 
 namespace NYT::NSecurityServer {
@@ -224,7 +226,7 @@ public:
     TYPath GetRootPath(const TAccount* rootAccount) const override;
 
 protected:
-    TCellTagList DoGetReplicationCellTags(const TAccount* /*account*/) override
+    TCellTagSet DoGetReplicationCellTags(const TAccount* /*account*/) override
     {
         return TNonversionedMapObjectTypeHandlerBase<TAccount>::AllSecondaryCellTags();
     }
@@ -313,7 +315,7 @@ public:
             ETypeFlags::TwoPhaseRemoval;
     }
 
-    TCellTagList DoGetReplicationCellTags(const TUser* /*object*/) override
+    TCellTagSet DoGetReplicationCellTags(const TUser* /*object*/) override
     {
         return AllSecondaryCellTags();
     }
@@ -375,7 +377,7 @@ public:
 private:
     TSecurityManager* const Owner_;
 
-    TCellTagList DoGetReplicationCellTags(const TGroup* /*group*/) override
+    TCellTagSet DoGetReplicationCellTags(const TGroup* /*group*/) override
     {
         return AllSecondaryCellTags();
     }
@@ -584,7 +586,70 @@ public:
         }
 
         std::vector<TSensorBuffer> buffers(std::ssize(AccountProfilingProducers_));
+        auto bufferForAccount = [&] (TAccount* account) -> TSensorBuffer& {
+            // NB: always mapping an account to the same bucket isn't strictly
+            // necessary while using WithProducerRemoveSupport but it doesn't hurt.
+            auto bufferIndex = account->GetProfilingBucketIndex() % std::ssize(buffers);
+            return buffers[bufferIndex];
+        };
+
         const auto& chunkManager = Bootstrap_->GetChunkManager();
+
+        static constexpr int FormatterBufferSize = 1024;
+        TRawFormatter<FormatterBufferSize> formatter;
+
+        auto addLimitGauges = [&] (
+            TSensorBuffer& buffer,
+            const TClusterResourceLimits& limits,
+            std::string_view prefix,
+            bool includeLimitToSensorName)
+        {
+            auto formatFullSensorName = [&] (std::string_view baseName) -> TStringBuf
+            {
+                formatter.Reset();
+
+                formatter.AppendString(prefix);
+                formatter.AppendChar('/');
+                formatter.AppendString(baseName);
+                if (includeLimitToSensorName) {
+                    formatter.AppendString("_limit");
+                }
+                if (baseName == "disk_space" || baseName == "tablet_static_memory") {
+                    formatter.AppendString("_in_gb");
+                }
+
+                return TStringBuf(formatter.GetData(), formatter.GetBytesWritten());
+            };
+
+            buffer.AddGauge(formatFullSensorName("node_count"), limits.GetNodeCount().UnsafeToUnderlying());
+            buffer.AddGauge(formatFullSensorName("chunk_count"), limits.GetChunkCount().UnsafeToUnderlying());
+            buffer.AddGauge(formatFullSensorName("tablet_count"), limits.GetTabletCount().UnsafeToUnderlying());
+            buffer.AddGauge(formatFullSensorName("tablet_static_memory"), limits.GetTabletStaticMemory().UnsafeToUnderlying());
+
+            for (auto [mediumIndex, diskSpaceLimit] : limits.DiskSpace()) {
+                const auto* medium = chunkManager->FindMediumByIndex(mediumIndex);
+                if (!IsObjectAlive(medium)) {
+                    continue;
+                }
+
+                TWithTagGuard guard(&buffer, "medium", medium->GetName());
+                buffer.AddGauge(formatFullSensorName("disk_space"), diskSpaceLimit.UnsafeToUnderlying() / static_cast<double>(1_GB));
+            }
+
+            const auto& masterMemoryLimits = limits.MasterMemory();
+            buffer.AddGauge(formatFullSensorName("total_master_memory"), masterMemoryLimits.Total.UnsafeToUnderlying());
+            buffer.AddGauge(formatFullSensorName("chunk_host_master_memory"), masterMemoryLimits.ChunkHost.UnsafeToUnderlying());
+            for (auto [cellTag, limit] : masterMemoryLimits.PerCell) {
+                TWithTagGuard guard(&buffer, "cell_tag", ToString(cellTag));
+                buffer.AddGauge(formatFullSensorName("per_cell_master_memory"), limit.UnsafeToUnderlying());
+            }
+        };
+
+        if (auto* rootAccount = GetRootAccount(); IsShardActive(rootAccount->GetShardIndex())) {
+            auto& buffer = bufferForAccount(rootAccount);
+            auto topmostAccountLimits =  rootAccount->ComputeTotalChildrenLimits();
+            addLimitGauges(buffer, topmostAccountLimits, "/total_allocated_limits", /* includeLimitToSensorName */ false);
+        }
 
         for (const auto& [shardIndex, accounts] : IncumbentShardIndexToAccountsForProfiling_) {
             if (!IsShardActive(shardIndex)) {
@@ -592,13 +657,11 @@ public:
             }
 
             for (auto* account : accounts) {
-                // NB: Account should always stay in the same bucket. If the bucket changes, then the previous bucket will continue
-                // to report outdated values. The worst part is that outdated and current values will get added up.
-                // On the other note, the distribution is not quite uniform, but it does not matter here.
-                auto bufferIndex = account->GetProfilingBucketIndex() % std::ssize(buffers);
-                auto& buffer = buffers[bufferIndex];
+                auto& buffer = bufferForAccount(account);
 
                 TWithTagGuard accountTag(&buffer, "account", account->GetName());
+
+                addLimitGauges(buffer, account->ClusterResourceLimits(), /* prefix */ "", /* includeLimitToSensorName */ true);
 
                 const auto& statistics = account->ClusterStatistics();
                 buffer.AddGauge("/node_count", statistics.CommittedResourceUsage.GetNodeCount());
@@ -651,40 +714,18 @@ public:
                     }
                 }
 
-                const auto& resourceLimit = account->ClusterResourceLimits();
-                for (const auto& [index, space] : resourceLimit.DiskSpace()) {
-                    const auto* medium = chunkManager->FindMediumByIndex(index);
-                    if (!IsObjectAlive(medium)) {
-                        continue;
-                    }
-                    TWithTagGuard guard(&buffer, "medium", medium->GetName());
-                    buffer.AddGauge("/disk_space_limit_in_gb", space.UnsafeToUnderlying() / static_cast<double>(1_GB));
-                }
-
-                buffer.AddGauge("/node_count_limit", resourceLimit.GetNodeCount().UnsafeToUnderlying());
-                buffer.AddGauge("/chunk_count_limit", resourceLimit.GetChunkCount().UnsafeToUnderlying());
-
                 buffer.AddGauge("/tablet_static_memory_in_gb", statistics.ResourceUsage.GetTabletStaticMemory());
-                buffer.AddGauge("/tablet_static_memory_limit_in_gb", resourceLimit.GetTabletStaticMemory().UnsafeToUnderlying());
+
                 profileDetailed(
                     statistics.ResourceUsage.GetTabletStaticMemory(),
                     statistics.CommittedResourceUsage.GetTabletStaticMemory(),
                     "/detailed_tablet_static_memory_in_gb");
 
                 buffer.AddGauge("/tablet_count", statistics.ResourceUsage.GetTabletCount());
-                buffer.AddGauge("/tablet_count_limit", resourceLimit.GetTabletCount().UnsafeToUnderlying());
                 profileDetailed(
                     statistics.ResourceUsage.GetTabletCount(),
                     statistics.CommittedResourceUsage.GetTabletCount(),
                     "/detailed_tablet_count");
-
-                const auto& masterLimits = resourceLimit.MasterMemory();
-                buffer.AddGauge("/total_master_memory_limit", masterLimits.Total.UnsafeToUnderlying());
-                buffer.AddGauge("/chunk_host_master_memory", masterLimits.ChunkHost.UnsafeToUnderlying());
-                for (const auto& [cellTag, limit] : masterLimits.PerCell) {
-                    TWithTagGuard guard(&buffer, "cell_tag", ToString(cellTag));
-                    buffer.AddGauge("/per_cell_master_memory_limit", limit.UnsafeToUnderlying());
-                }
 
                 const auto& multicellStatistics = account->MulticellStatistics();
                 for (const auto& [cellTag, cellStatistics] : multicellStatistics) {
@@ -734,6 +775,8 @@ public:
         // Destroying accounts is rare, so O(n) deletion should be OK.
         auto it = std::remove(accounts.begin(), accounts.end(), account);
         accounts.erase(it, accounts.end());
+
+        RemoveBackupConfigForAccount(account);
 
         auto usageDelta = -account->LocalStatistics().ResourceUsage;
         auto committedUsageDelta = -account->LocalStatistics().CommittedResourceUsage;
@@ -790,7 +833,7 @@ public:
 
     TAccount* FindAccountByName(const std::string& name, bool activeLifeStageOnly) override
     {
-        auto* account = DoFindAccountByName(name, /*throwOnInvalidId=*/ false);
+        auto* account = DoFindAccountByName(name, /*throwOnInvalidId*/ false);
         if (!account) {
             return account;
         }
@@ -1220,6 +1263,89 @@ public:
         DoUpdateAccountResourceUsageLease(accountResourceUsageLease, resources);
     }
 
+    void RegisterBackupConfigForAccount(TAccount* account)
+    {
+        if (!account->GetBackupConfig()) {
+            return;
+        }
+        try {
+            account->GetBackupConfig()->Validate(Bootstrap_);
+            auto backupAccountId = account->GetBackupConfig()->BackupAccountId;
+            InsertOrCrash(BackupSourceAccountsMap_[backupAccountId], account->GetId());
+        } catch (const std::exception& ex) {
+            YT_LOG_ALERT(ex, "Invalid backup config for account (AccountId: %v)",
+                account->GetId());
+        }
+    }
+
+    void UpdateBackupConfigForAccount(TAccount* account, TAccountBackupConfig backupConfig) override
+    {
+        RemoveBackupConfigForAccount(account);
+        account->SetBackupConfig(std::move(backupConfig));
+        RegisterBackupConfigForAccount(account);
+    }
+
+    void RemoveBackupConfigForAccount(TAccount* account) override
+    {
+        if (!account->GetBackupConfig()) {
+            return;
+        }
+
+        auto oldBackupAccountId = account->GetBackupConfig()->BackupAccountId;
+        auto oldBackupAccount = FindAccount(oldBackupAccountId);
+        if (!oldBackupAccount) {
+            YT_LOG_ALERT("Account had invalid backup account (AccountId: %v, BackupAccountId: %v)",
+                account->GetId(),
+                oldBackupAccountId);
+        }
+        auto it = BackupSourceAccountsMap_.find(oldBackupAccountId);
+        if (it == BackupSourceAccountsMap_.end()) {
+            YT_LOG_ALERT("Account that was used as backup account has no entry in BackupSourceAccountsMap (BackupAccountId: %v)",
+                oldBackupAccountId);
+        } else {
+            it->second.erase(account->GetId());
+            if (it->second.empty()) {
+                BackupSourceAccountsMap_.erase(it);
+            }
+        }
+
+        account->SetBackupConfig(std::nullopt);
+    }
+
+    std::vector<std::string> GetBackupSourceAccountNames(const TAccount* account) const override
+    {
+        auto it = BackupSourceAccountsMap_.find(account->GetId());
+        if (it == BackupSourceAccountsMap_.end()) {
+            return {};
+        }
+        std::vector<std::string> result;
+        for (const auto& sourceAccountId : it->second) {
+            auto sourceAccount = FindAccount(sourceAccountId);
+            if (!sourceAccount) {
+                YT_LOG_ALERT("Invalid account is used as backup source account (BackupSourceAccountId: %v, BackupAccountId: %v)",
+                    sourceAccountId,
+                    account->GetId());
+                continue;
+            }
+            if (!IsObjectActive(sourceAccount)) {
+                YT_LOG_ALERT("Non active account is used as backup source account (BackupSourceAccountId: %v, BackupAccountId: %v)",
+                    sourceAccountId,
+                    account->GetId());
+                continue;
+            }
+            result.push_back(sourceAccount->GetName());
+        }
+        return result;
+    }
+
+    void ValidateAccountRemoval(const TAccount* account) const override
+    {
+        auto it = BackupSourceAccountsMap_.find(account->GetId());
+        if (it != BackupSourceAccountsMap_.end()) {
+            THROW_ERROR_EXCEPTION("Account is used as backup account for %v accounts", it->second.size());
+        }
+    }
+
     void UpdateTransactionResourceUsage(
         const TChunk* chunk,
         const TChunkRequisition& requisition,
@@ -1235,7 +1361,7 @@ public:
             // If a chunk has been created before the migration but is being confirmed after it,
             // charge it to the staging account anyway: it's ok, because transaction resource usage accounting
             // isn't really delta-based, and it's nicer from the user's point of view.
-            if (Y_UNLIKELY(account == ChunkWiseAccountingMigrationAccount_)) {
+            if (account == ChunkWiseAccountingMigrationAccount_) [[unlikely]] {
                 account = stagingAccount;
             }
 
@@ -2188,7 +2314,7 @@ public:
         return acd;
     }
 
-    TAccessControlList GetEffectiveAcl(NObjectServer::TObject* object) override
+    TAccessControlList GetEffectiveAcl(NObjectServer::TObject* object, bool skipFirstObject) override
     {
         TAccessControlList result;
         const auto& objectManager = Bootstrap_->GetObjectManager();
@@ -2197,18 +2323,20 @@ public:
             const auto& handler = objectManager->GetHandler(object);
             auto acd = handler->FindAcd(object);
             if (acd) {
-                for (auto entry : acd->Acl().Entries) {
-                    auto inheritedMode = GetInheritedInheritanceMode(entry.InheritanceMode, depth);
-                    if (inheritedMode) {
-                        entry.InheritanceMode = *inheritedMode;
-                        result.Entries.push_back(entry);
+                if (!skipFirstObject) {
+                    for (auto entry : acd->Acl().Entries) {
+                        auto inheritedMode = GetInheritedInheritanceMode(entry.InheritanceMode, depth);
+                        if (inheritedMode) {
+                            entry.InheritanceMode = *inheritedMode;
+                            result.Entries.push_back(entry);
+                        }
                     }
                 }
                 if (!acd->Inherit()) {
                     break;
                 }
             }
-
+            skipFirstObject = false;
             object = handler->GetParent(object);
             ++depth;
         }
@@ -2374,7 +2502,19 @@ public:
         }
 
         CheckPermissionTimeCounter_.Add(checkPermissionTimer.GetElapsedTime());
-        return std::move(checker).GetResponse();
+        auto response = std::move(checker).GetResponse();
+
+        YT_LOG_ERROR_IF(response.Action == ESecurityAction::Allow && response.DeniedColumnResult,
+            "Checking all ACE columns would result in unexpected permission denial "
+            "(Permission: %v, ObjectId: %v, SubjectName: %v, SubjectId: %v, DeniedById: %v, DeniedForId: %v)",
+            permission,
+            object->GetId(),
+            user->GetName(),
+            user->GetId(),
+            response.DeniedColumnResult->ObjectId,
+            response.DeniedColumnResult->SubjectId);
+
+        return response;
     }
 
     TSubject* GetObjectOwner(
@@ -2928,7 +3068,7 @@ public:
 
     void IncreaseLocalAndClusterAccountStatistics(TAccount* account, const TAccountStatistics& delta) override
     {
-        if (delta == TAccountStatistics()) {
+        if (delta == TAccountStatistics::Empty) {
             return;
         }
         account->IncreaseStatistics(delta);
@@ -3051,6 +3191,8 @@ private:
     TEnumIndexedArray<NApi::EProxyKind, THashMap<std::string, TProxyRole*>> ProxyRoleNameMaps_;
 
     TSyncMap<std::string, TProfilerTagPtr> CpuProfilerTags_;
+
+    THashMap<TAccountId, THashSet<TAccountId>> BackupSourceAccountsMap_;
 
     bool IsChunkHostCell_ = false;
 
@@ -3400,6 +3542,10 @@ private:
                 // Reconstruct account name map.
                 RegisterAccountName(name, account);
             }
+
+            if (account->GetBackupConfig()) {
+                RegisterBackupConfigForAccount(account);
+            }
         }
 
         UserNameMap_.clear();
@@ -3745,6 +3891,24 @@ private:
                 actualRefCounter);
         }
 
+        for (const auto& [backupAccountId, sourceAccounts] : BackupSourceAccountsMap_) {
+            auto* backupAccount = FindAccount(backupAccountId);
+            if (!backupAccount) {
+                YT_LOG_ALERT("Backup account not found (BackupAccountId: %v)", backupAccountId);
+            }
+
+            if (sourceAccounts.empty()) {
+                YT_LOG_ALERT("Backup account in BackupSourceAccountsMap has no source accounts (BackupAccountId: %v)", backupAccountId);
+            }
+
+            for (const auto& sourceAccountId : sourceAccounts) {
+                auto* sourceAccount = FindAccount(sourceAccountId);
+                if (!sourceAccount) {
+                    YT_LOG_ALERT("Source account not found (BackupAccountId: %v, SourceAccountId: %v)", backupAccountId, sourceAccountId);
+                }
+            }
+        }
+
         ValidateAccountResourceUsages();
     }
 
@@ -3848,6 +4012,7 @@ private:
             ProxyRoleNameMaps_[proxyKind].clear();
         }
 
+        BackupSourceAccountsMap_.clear();
 
         RootUser_ = nullptr;
         GuestUser_ = nullptr;
@@ -4290,9 +4455,8 @@ private:
         multicellStatistics.emplace(selfCellTag, account->ClusterStatistics());
 
         if (multicellManager->IsPrimaryMaster()) {
-            const auto& registeredSecondaryCellTags = multicellManager->GetRegisteredMasterCellTags();
-            for (auto secondaryCellTag : registeredSecondaryCellTags) {
-                multicellStatistics[secondaryCellTag];
+            for (auto cellTag : multicellManager->GetRegisteredMasterCellTags()) {
+                multicellStatistics[cellTag];
             }
 
             const auto& secondaryCellTags = multicellManager->GetSecondaryCellTags();
@@ -4753,7 +4917,7 @@ private:
             : MatchAceSubjectCallback_(
                 user,
                 impl->GetOwnerUser())
-            , Underlying_(permission, MatchAceSubjectCallback_, options)
+            , Underlying_(permission, MatchAceSubjectCallback_, options, impl->GetDynamicConfig()->CheckAllAceColumnsFullRead)
         {
             YT_LOG_ALERT_IF(
                 PopCount(permission) > 1 && Any(permission & EPermission::FullRead),

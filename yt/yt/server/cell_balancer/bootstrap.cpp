@@ -9,8 +9,6 @@
 
 #include <yt/yt/server/lib/admin/admin_service.h>
 
-#include <yt/yt/server/lib/cypress_election/election_manager.h>
-
 #include <yt/yt/server/lib/cypress_registrar/cypress_registrar.h>
 #include <yt/yt/server/lib/cypress_registrar/config.h>
 
@@ -27,6 +25,8 @@
 #include <yt/yt/library/orchid/orchid_service.h>
 
 #include <yt/yt/library/coredumper/public.h>
+
+#include <yt/yt/library/cypress_election/election_manager.h>
 
 #include <yt/yt/library/monitoring/http_integration.h>
 
@@ -159,6 +159,8 @@ public:
         YT_LOG_DEBUG("Iteration started (DryRun: %v)",
             dryRun);
 
+        DynamicConfigManager_->Start();
+
         WaitFor(
             BIND(&IBundleController::ExecuteIteration, BundleController_, dryRun)
                 .AsyncVia(GetControlInvoker())
@@ -208,14 +210,18 @@ private:
         Connection_->GetClusterDirectorySynchronizer()->Start();
         Connection_->GetMasterCellDirectorySynchronizer()->Start();
 
-        auto clientOptions = NNative::TClientOptions::FromUser(NSecurityClient::RootUserName);
+        const auto& bundleController = Config_->BundleController;
+        auto clientOptions = NNative::TClientOptions::FromUser(
+            bundleController && bundleController->UseDedicatedUserName
+                ? NSecurityClient::BundleControllerUserName
+                : NSecurityClient::RootUserName);
         Client_ = Connection_->CreateNativeClient(clientOptions);
 
         NLogging::GetDynamicTableLogWriterFactory()->SetClient(Client_);
 
         NativeAuthenticator_ = NNative::CreateNativeAuthenticator(Connection_);
 
-        BusServer_ = NBus::CreateBusServer(Config_->BusServer);
+        BusServer_ = NBus::NTcp::CreateBusServer(Config_->BusServer);
         RpcServer_ = NRpc::NBus::CreateBusServer(BusServer_);
         HttpServer_ = NHttp::CreateServer(Config_->CreateMonitoringHttpServerConfig());
 

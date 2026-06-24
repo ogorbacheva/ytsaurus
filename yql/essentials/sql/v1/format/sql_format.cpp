@@ -1,5 +1,6 @@
 #include "sql_format.h"
 
+#include <yql/essentials/utils/yql_panic.h>
 #include <yql/essentials/sql/v1/proto_parser/parse_tree.h>
 
 #include <yql/essentials/parser/lexer_common/lexer.h>
@@ -857,7 +858,7 @@ private:
                 break;
             }
             case TRule_value_constructor::ALT_NOT_SET:
-                Y_UNREACHABLE();
+                YQL_ENSURE(false, "Unreachable");
         }
     }
 
@@ -901,10 +902,78 @@ private:
         }
     }
 
-    void VisitSelect(const TRule_select_stmt& msg) {
+    void VisitCTEWithClause(const TRule_cte_with_clause& msg) {
         NewLine();
-        Visit(msg.GetRule_select_stmt_intersect1());
-        for (const auto& block : msg.GetBlock2()) {
+        Visit(msg.GetToken1());
+
+        if (!msg.GetBlock3().empty()) {
+            PushCurrentIndent();
+            NewLine();
+            Visit(msg.GetRule_cte_binding2());
+            for (const auto& block : msg.GetBlock3()) {
+                Visit(block.GetToken1());
+                NewLine();
+                Visit(block.GetRule_cte_binding2());
+            }
+            PopCurrentIndent();
+        } else {
+            Visit(msg.GetRule_cte_binding2());
+        }
+
+        if (msg.HasBlock4()) {
+            Visit(msg.GetBlock4().GetToken1());
+        }
+
+        NewLine();
+    }
+
+    void VisitCTEBinding(const TRule_cte_binding& msg) {
+        if (msg.HasBlock1()) {
+            Visit(msg.GetBlock1().GetToken1());
+        }
+
+        Visit(msg.GetRule_cte_key2());
+        Visit(msg.GetToken3());
+        Visit(msg.GetToken4());
+        PushCurrentIndent();
+        NewLine();
+        Visit(msg.GetRule_cte_value5());
+        PopCurrentIndent();
+        Visit(msg.GetToken6());
+    }
+
+    void VisitCTEKey(const TRule_cte_key& msg) {
+        Visit(msg.GetRule_id_table_or_type1());
+        if (msg.HasBlock2()) {
+            Visit(msg.GetBlock2().GetRule_pure_column_list1());
+        }
+    }
+
+    void VisitCTEValue(const TRule_cte_value& msg) {
+        switch (msg.GetAltCase()) {
+            case TRule_cte_value::kAltCteValue1: {
+                Visit(msg.GetAlt_cte_value1().GetRule_select_stmt1());
+                break;
+            }
+            case TRule_cte_value::kAltCteValue2: {
+                Visit(msg.GetAlt_cte_value2().GetRule_values_stmt1());
+                break;
+            }
+            case TRule_cte_value::ALT_NOT_SET:
+                YQL_ENSURE(false, "Unreachable");
+        }
+    }
+
+    void VisitSelect(const TRule_select_stmt& msg) {
+        const auto& core = msg.GetRule_select_stmt_core2();
+
+        if (msg.HasBlock1()) {
+            Visit(msg.GetBlock1().GetRule_cte_with_clause1());
+        }
+
+        NewLine();
+        Visit(core.GetRule_select_stmt_intersect1());
+        for (const auto& block : core.GetBlock2()) {
             NewLine();
             Visit(block.GetRule_union_op1());
             NewLine();
@@ -939,9 +1008,35 @@ private:
         Visit(msg.GetToken3());
     }
 
+    void VisitNLPureColumnList(const TRule_pure_column_list& msg) {
+        Visit(msg.GetToken1());
+        NewLine();
+        PushCurrentIndent();
+        Visit(msg.GetRule_an_id2());
+        for (const auto& block : msg.GetBlock3()) {
+            Visit(block.GetToken1());
+            NewLine();
+            Visit(block.GetRule_an_id2());
+        }
+
+        if (msg.HasBlock4()) {
+            Visit(msg.GetBlock4().GetToken1());
+        }
+
+        PopCurrentIndent();
+        NewLine();
+        Visit(msg.GetToken5());
+    }
+
     void VisitSelectSubExpr(const TRule_select_subexpr& msg) {
-        Visit(msg.GetRule_select_subexpr_intersect1());
-        for (const auto& block : msg.GetBlock2()) {
+        const auto& core = msg.GetRule_select_subexpr_core2();
+
+        if (msg.HasBlock1()) {
+            Visit(msg.GetBlock1().GetRule_cte_with_clause1());
+        }
+
+        Visit(core.GetRule_select_subexpr_intersect1());
+        for (const auto& block : core.GetBlock2()) {
             NewLine();
             Visit(block.GetRule_union_op1());
             NewLine();
@@ -960,9 +1055,15 @@ private:
     }
 
     void VisitSelectUnparenthesized(const TRule_select_unparenthesized_stmt& msg) {
+        const auto& core = msg.GetRule_select_unparenthesized_stmt_core2();
+
+        if (msg.HasBlock1()) {
+            Visit(msg.GetBlock1().GetRule_cte_with_clause1());
+        }
+
         NewLine();
-        Visit(msg.GetRule_select_unparenthesized_stmt_intersect1());
-        for (const auto& block : msg.GetBlock2()) {
+        Visit(core.GetRule_select_unparenthesized_stmt_intersect1());
+        for (const auto& block : core.GetBlock2()) {
             NewLine();
             Visit(block.GetRule_union_op1());
             NewLine();
@@ -1024,6 +1125,11 @@ private:
     void VisitTruncateTable(const TRule_truncate_table_stmt& msg) {
         NewLine();
         VisitAllFields(TRule_truncate_table_stmt::GetDescriptor(), msg);
+    }
+
+    void VisitMaterialize(const TRule_materialize_stmt& msg) {
+        NewLine();
+        VisitAllFields(TRule_materialize_stmt::GetDescriptor(), msg);
     }
 
     void VisitCreateTable(const TRule_create_table_stmt& msg) {
@@ -1872,6 +1978,10 @@ private:
             }
         }
 
+        if (ForcedTokenStr_.Defined()) {
+            str = *std::exchange(ForcedTokenStr_, Nothing());
+        }
+
         Out(str);
 
         if (TokenIndex_ + 1 >= ParsedTokens_.size() || ParsedTokens_[TokenIndex_ + 1].Line > LastLine_) {
@@ -1908,24 +2018,7 @@ private:
             case TRule_into_values_source::kAltIntoValuesSource1: {
                 const auto& alt = msg.GetAlt_into_values_source1();
                 if (alt.HasBlock1()) {
-                    const auto& columns = alt.GetBlock1().GetRule_pure_column_list1();
-                    Visit(columns.GetToken1());
-                    NewLine();
-                    PushCurrentIndent();
-                    Visit(columns.GetRule_an_id2());
-                    for (const auto& block : columns.GetBlock3()) {
-                        Visit(block.GetToken1());
-                        NewLine();
-                        Visit(block.GetRule_an_id2());
-                    }
-
-                    if (columns.HasBlock4()) {
-                        Visit(columns.GetBlock4().GetToken1());
-                    }
-
-                    PopCurrentIndent();
-                    NewLine();
-                    Visit(columns.GetToken5());
+                    VisitNLPureColumnList(alt.GetBlock1().GetRule_pure_column_list1());
                     NewLine();
                 }
 
@@ -2068,6 +2161,42 @@ private:
             NewLine();
             Visit(msg.GetBlock13());
         }
+    }
+
+    void VisitCombineCore(const TRule_combine_core& msg) {
+        Visit(msg.GetToken1());
+        Visit(msg.GetRule_named_single_source2());
+        if (msg.HasBlock3()) {
+            PushCurrentIndent();
+            NewLine();
+            Visit(msg.GetBlock3());
+            PopCurrentIndent();
+        }
+
+        NewLine();
+
+        Visit(msg.GetToken4());
+        Visit(msg.GetRule_named_single_source5());
+        if (msg.HasBlock6()) {
+            PushCurrentIndent();
+            NewLine();
+            Visit(msg.GetBlock6());
+            PopCurrentIndent();
+        }
+
+        NewLine();
+
+        // Process similar way as join constraint alternative (see VisitJoinConstraint).
+        Visit(msg.GetToken7());
+        NewLine();
+        PushCurrentIndent();
+        Visit(msg.GetRule_expr8());
+        PopCurrentIndent();
+
+        NewLine();
+
+        Visit(msg.GetToken9());
+        Visit(msg.GetRule_using_call_expr10());
     }
 
     void VisitSortSpecificationList(const TRule_sort_specification_list& msg) {
@@ -2320,7 +2449,8 @@ private:
 
     void VisitFlattenSource(const TRule_flatten_source& msg) {
         const auto& namedSingleSource = msg.GetRule_named_single_source1();
-        bool indentBeforeSource = namedSingleSource.GetRule_single_source1().Alt_case() == TRule_single_source::kAltSingleSource1;
+        const auto& singleSource = namedSingleSource.GetRule_hinted_single_source1().GetRule_single_source1();
+        bool indentBeforeSource = singleSource.Alt_case() == TRule_single_source::kAltSingleSource1;
 
         if (indentBeforeSource) {
             NewLine();
@@ -2342,7 +2472,7 @@ private:
     }
 
     void VisitNamedSingleSource(const TRule_named_single_source& msg) {
-        Visit(msg.GetRule_single_source1());
+        Visit(msg.GetRule_hinted_single_source1());
         if (msg.HasBlock2()) {
             Visit(msg.GetBlock2());
         }
@@ -2350,30 +2480,22 @@ private:
             const auto& block3 = msg.GetBlock3();
             Visit(block3.GetBlock1());
             if (block3.HasBlock2()) {
-                const auto& columns = block3.GetBlock2().GetRule_pure_column_list1();
-                Visit(columns.GetToken1());
-                NewLine();
-                PushCurrentIndent();
-                Visit(columns.GetRule_an_id2());
-                for (const auto& block : columns.GetBlock3()) {
-                    Visit(block.GetToken1());
-                    NewLine();
-                    Visit(block.GetRule_an_id2());
-                }
-
-                if (columns.HasBlock4()) {
-                    Visit(columns.GetBlock4().GetToken1());
-                }
-
-                NewLine();
-                PopCurrentIndent();
-                Visit(columns.GetToken5());
+                VisitNLPureColumnList(block3.GetBlock2().GetRule_pure_column_list1());
             }
         }
 
         if (msg.HasBlock4()) {
             NewLine();
             Visit(msg.GetBlock4());
+        }
+    }
+
+    void VisitHintedSingleSource(const TRule_hinted_single_source& msg) {
+        Visit(msg.GetRule_single_source1());
+
+        if (msg.HasBlock2()) {
+            const auto hints = msg.GetBlock2().GetRule_table_hints1();
+            Visit(hints);
         }
     }
 
@@ -2424,24 +2546,7 @@ private:
             PushCurrentIndent();
             Visit(block2.GetToken1());
             Visit(block2.GetToken2());
-            const auto& columns = block2.GetRule_pure_column_list3();
-            Visit(columns.GetToken1());
-            NewLine();
-            PushCurrentIndent();
-            Visit(columns.GetRule_an_id2());
-            for (const auto& block : columns.GetBlock3()) {
-                Visit(block.GetToken1());
-                NewLine();
-                Visit(block.GetRule_an_id2());
-            }
-
-            if (columns.HasBlock4()) {
-                Visit(columns.GetBlock4().GetToken1());
-            }
-
-            PopCurrentIndent();
-            NewLine();
-            Visit(columns.GetToken5());
+            VisitNLPureColumnList(block2.GetRule_pure_column_list3());
             PopCurrentIndent();
         }
     }
@@ -2554,10 +2659,6 @@ private:
             default:
                 ythrow yexception() << "Alt is not supported";
         }
-
-        if (msg.HasBlock4()) {
-            Visit(msg.GetBlock4());
-        }
     }
 
     void VisitGroupingElementList(const TRule_grouping_element_list& msg) {
@@ -2572,6 +2673,32 @@ private:
 
         PopCurrentIndent();
         NewLine();
+    }
+
+    void VisitGroupingSetsSpecification(const TRule_grouping_sets_specification& msg) {
+        Visit(msg.GetToken1());
+        Visit(msg.GetToken2());
+        Visit(msg.GetToken3());
+        NewLine();
+        PushCurrentIndent();
+
+        const auto& list = msg.GetRule_grouping_element_list4();
+
+        Visit(list.GetRule_grouping_element1());
+        for (const auto& block : list.GetBlock2()) {
+            Visit(block.GetToken1());
+            NewLine();
+            Visit(block.GetRule_grouping_element2());
+        }
+
+        if (msg.HasBlock5()) {
+            Visit(msg.GetBlock5());
+        }
+
+        PopCurrentIndent();
+        NewLine();
+
+        Visit(msg.GetToken6());
     }
 
     void VisitGroupByClause(const TRule_group_by_clause& msg) {
@@ -2735,6 +2862,11 @@ private:
         Visit(msg.GetToken6());
     }
 
+    void VisitTypeNameNull(const TRule_type_name_null& msg) {
+        ForcedTokenStr_ = msg.GetToken1().GetValue();
+        Visit(msg.GetToken1());
+    }
+
     void VisitExtOrderByClause(const TRule_ext_order_by_clause& msg) {
         if (msg.HasBlock1()) {
             Visit(msg.GetBlock1());
@@ -2872,7 +3004,7 @@ private:
                 VisitKeyword(msg.GetAlt_ttl_tier_action2().GetToken1());
                 break;
             case TRule_ttl_tier_action::ALT_NOT_SET:
-                Y_UNREACHABLE();
+                YQL_ENSURE(false, "Unreachable");
         }
     }
 
@@ -3113,6 +3245,7 @@ private:
     TMarkTokenStack MarkTokenStack_;
     TVector<TTokenInfo> MarkedTokens_;
     ui64 InsideExpr_ = 0;
+    TMaybe<TString> ForcedTokenStr_;
 };
 
 template <typename T>
@@ -3156,6 +3289,7 @@ TStaticData::TStaticData()
           {TRule_select_kind::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSelectKind)},
           {TRule_process_core::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitProcessCore)},
           {TRule_reduce_core::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitReduceCore)},
+          {TRule_combine_core::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitCombineCore)},
           {TRule_sort_specification_list::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSortSpecificationList)},
           {TRule_select_core::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSelectCore)},
           {TRule_row_pattern_recognition_clause::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitRowPatternRecognitionClause)},
@@ -3164,6 +3298,7 @@ TStaticData::TStaticData()
           {TRule_single_source::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSingleSource)},
           {TRule_flatten_source::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitFlattenSource)},
           {TRule_named_single_source::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitNamedSingleSource)},
+          {TRule_hinted_single_source::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitHintedSingleSource)},
           {TRule_table_hints::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitTableHints)},
           {TRule_simple_table_ref::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSimpleTableRef)},
           {TRule_into_simple_table_ref::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitIntoSimpleTableRef)},
@@ -3172,6 +3307,7 @@ TStaticData::TStaticData()
           {TRule_without_column_list::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitWithoutColumnList)},
           {TRule_table_ref::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitTableRef)},
           {TRule_grouping_element_list::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitGroupingElementList)},
+          {TRule_grouping_sets_specification::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitGroupingSetsSpecification)},
           {TRule_group_by_clause::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitGroupByClause)},
           {TRule_window_definition_list::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitWindowDefinitionList)},
           {TRule_window_specification::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitWindowSpecification)},
@@ -3180,6 +3316,7 @@ TStaticData::TStaticData()
           {TRule_select_kind_parenthesis::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSelectKindParenthesis)},
           {TRule_cast_expr::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitCastExpr)},
           {TRule_bitcast_expr::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitBitCastExpr)},
+          {TRule_type_name_null::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitTypeNameNull)},
           {TRule_ext_order_by_clause::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitExtOrderByClause)},
           {TRule_key_expr::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitKeyExpr)},
           {TRule_define_action_or_subquery_body::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitDefineActionOrSubqueryBody)},
@@ -3203,6 +3340,10 @@ TStaticData::TStaticData()
           {TRule_shift_right::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitShiftRight)},
 
           {TRule_pragma_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitPragma)},
+          {TRule_cte_with_clause::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitCTEWithClause)},
+          {TRule_cte_binding::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitCTEBinding)},
+          {TRule_cte_key::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitCTEKey)},
+          {TRule_cte_value::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitCTEValue)},
           {TRule_select_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSelect)},
           {TRule_select_stmt_intersect::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSelectIntersect)},
           {TRule_smart_parenthesis::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitSmartParenthesis)},
@@ -3270,6 +3411,7 @@ TStaticData::TStaticData()
           {TRule_alter_sequence_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitAlterSequence)},
           {TRule_alter_database_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitAlterDatabase)},
           {TRule_truncate_table_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitTruncateTable)},
+          {TRule_materialize_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitMaterialize)},
           {TRule_show_create_table_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitShowCreateTable)},
           {TRule_streaming_query_settings::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitStreamingQuerySettings)},
           {TRule_create_streaming_query_stmt::GetDescriptor(), MakePrettyFunctor(&TPrettyVisitor::VisitCreateStreamingQuery)},
@@ -3324,11 +3466,14 @@ public:
     bool Format(const TString& query, TString& formattedQuery, NYql::TIssues& issues, EFormatMode mode) override {
         formattedQuery = (mode == EFormatMode::Obfuscate) ? "" : query;
         auto parsedSettings = Settings_;
+        parsedSettings.InferSyntaxVersion = true;
+        parsedSettings.V0Behavior = NSQLTranslation::EV0Behavior::Silent;
+        parsedSettings.V0ForceDisable = false;
         if (!NSQLTranslation::ParseTranslationSettings(query, parsedSettings, issues)) {
             return false;
         }
 
-        if (parsedSettings.PgParser) {
+        if ((parsedSettings.SyntaxVersion == 0) || parsedSettings.PgParser) {
             return mode != EFormatMode::Obfuscate;
         }
 
@@ -3359,7 +3504,8 @@ public:
             }
 
             TVector<NSQLTranslation::TParsedToken> comments;
-            TParsedTokenList parsedTokens, stmtTokens;
+            TParsedTokenList parsedTokens;
+            TParsedTokenList stmtTokens;
             auto onNextRawToken = [&](NSQLTranslation::TParsedToken&& token) {
                 stmtTokens.push_back(token);
                 if (token.Name == "COMMENT") {
@@ -3374,8 +3520,8 @@ public:
             }
 
             NYql::TIssues parserIssues;
-            auto message = NSQLTranslationV1::SqlAST(Parsers_, currentQuery, parsedSettings.File, parserIssues, NSQLTranslation::SQL_MAX_PARSER_ERRORS, parsedSettings.AnsiLexer, parsedSettings.Arena);
-            if (!message) {
+            google::protobuf::Message* message = NSQLTranslationV1::SqlAST(Parsers_, currentQuery, parsedSettings.File, parserIssues, NSQLTranslation::SQL_MAX_PARSER_ERRORS, parsedSettings.AnsiLexer, parsedSettings.Arena);
+            if (!message || IsEmptyQuery(message)) {
                 finalFormattedQuery << currentQuery;
                 if (!currentQuery.EndsWith("\n")) {
                     finalFormattedQuery << "\n";
@@ -3439,9 +3585,16 @@ ISqlFormatter::TPtr MakeSqlFormatter(const NSQLTranslationV1::TLexers& lexers,
 TString MutateQuery(const NSQLTranslationV1::TLexers& lexers,
                     const TString& query, const NSQLTranslation::TTranslationSettings& settings) {
     auto parsedSettings = settings;
+    parsedSettings.InferSyntaxVersion = true;
+    parsedSettings.V0Behavior = NSQLTranslation::EV0Behavior::Silent;
+    parsedSettings.V0ForceDisable = false;
     NYql::TIssues issues;
     if (!NSQLTranslation::ParseTranslationSettings(query, parsedSettings, issues)) {
         throw yexception() << issues.ToString();
+    }
+
+    if ((parsedSettings.SyntaxVersion == 0) || parsedSettings.PgParser) {
+        return query;
     }
 
     auto lexer = NSQLTranslationV1::MakeLexer(lexers, parsedSettings.AnsiLexer);

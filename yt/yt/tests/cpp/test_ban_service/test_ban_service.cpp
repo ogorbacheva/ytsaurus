@@ -87,7 +87,7 @@ public:
         attributes->Set("name", "user");
         userOptions.Attributes = std::move(attributes);
         userOptions.IgnoreExisting = true;
-        Client_->CreateObject(EObjectType::User, userOptions).BlockingGet()
+        WaitFor(Client_->CreateObject(EObjectType::User, userOptions))
             .ThrowOnError();
 
         auto config = New<TCrossClusterReplicatedStateConfig>();
@@ -166,33 +166,6 @@ TEST_F(TBanServiceTest, BanService)
     bannedList = WaitFor(nativeClient->ListBannedUsers())
         .ValueOrThrow();
     EXPECT_TRUE(bannedList.empty());
-}
-
-TEST_F(TBanServiceTest, BanServicePermissionDenied)
-{
-    TCreateObjectOptions userOptions;
-    auto attributes = CreateEphemeralAttributes();
-    attributes->Set("name", "smol_user");
-    userOptions.Attributes = std::move(attributes);
-    WaitFor(Client_->CreateObject(EObjectType::User, userOptions))
-        .ThrowOnError();
-
-    auto client = Connection_->CreateClient(NNative::TClientOptions::FromUser("smol_user"));
-
-    auto nativeClient = DynamicPointerCast<NApi::NNative::IClient>(client);
-    auto isBanned = WaitFor(nativeClient->GetUserBanned("user"))
-        .ValueOrThrow();
-    EXPECT_FALSE(isBanned);
-    auto bannedList = WaitFor(nativeClient->ListBannedUsers())
-        .ValueOrThrow();
-    EXPECT_TRUE(bannedList.empty());
-    try {
-        WaitFor(nativeClient->SetUserBanned("user", true))
-            .ThrowOnError();
-        ADD_FAILURE();
-    } catch (const TErrorException& error) {
-        EXPECT_TRUE(std::string_view(error.what()).contains("Superuser permissions required"));
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

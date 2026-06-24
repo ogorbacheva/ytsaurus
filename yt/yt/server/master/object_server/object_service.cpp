@@ -20,6 +20,7 @@
 #include <yt/yt/server/master/security_server/security_manager.h>
 #include <yt/yt/server/master/security_server/user.h>
 
+#include <yt/yt/server/master/sequoia_server/ground_update_queue_manager.h>
 #include <yt/yt/server/master/sequoia_server/config.h>
 
 #include <yt/yt/server/master/transaction_server/transaction_replication_session.h>
@@ -27,6 +28,8 @@
 #include <yt/yt/server/master/transaction_server/proto/transaction_manager.pb.h>
 
 #include <yt/yt/server/lib/hive/hive_manager.h>
+
+#include <yt/yt/server/lib/hydra/persistent_response_keeper.h>
 
 #include <yt/yt/server/lib/object_server/helpers.h>
 
@@ -101,6 +104,8 @@ using namespace NHiveServer;
 using namespace NCellMaster;
 using namespace NProfiling;
 using namespace NTracing;
+using namespace NSequoiaClient;
+using namespace NSequoiaServer;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -235,14 +240,27 @@ public:
         ProcessSessionsExecutor_->Start();
     }
 
+    IInvokerPtr GetAutomatonInvoker()
+    {
+        return AutomatonInvoker_;
+    }
+
     TObjectServiceCachePtr GetCache() override
     {
         return Cache_;
     }
 
-    IInvokerPtr CreateLocalReadInvoker(const std::string& user) override
+    IInvokerPtr CreateLocalReadInvoker(const std::string& user)
     {
         return New<TLocalReadInvoker>(LocalReadScheduler_, user);
+    }
+
+    IInvokerPtr CreateEpochLocalReadInvoker(const std::string& user) override
+    {
+        auto localReadInvoker = CreateLocalReadInvoker(user);
+        return Bootstrap_
+            ->GetHydraFacade()
+            ->CreateEpochInvoker(std::move(localReadInvoker));
     }
 
     IInvokerPtr GetLocalReadOffloadInvoker() override
@@ -468,6 +486,7 @@ public:
         , CellSyncSession_(New<TMultiPhaseCellSyncSession>(Bootstrap_, Logger))
         , PrematureBackoffAlarmProbability_(Owner_->GetPrematureBackoffAlarmProbability())
         , LocalReadInvoker_(Owner_->CreateLocalReadInvoker(Identity_.User))
+        , AutomatonInvoker_(Owner_->GetAutomatonInvoker())
         , ReplyLockCount_(TotalSubrequestCount_)
     { }
 
@@ -622,6 +641,8 @@ private:
         TFuture<TMutationResponse> MutationResponseFuture;
 
         TReadRequestComplexityOverrides ReadRequestComplexityOverrides;
+
+        i64 GroundUpdateQueueSequenceNumber = -1;
     };
 
     // For (local) read requests. (Write requests are handled by per-subrequest replication sessions.)
@@ -672,6 +693,7 @@ private:
     TEphemeralObjectPtr<TUser> User_;
     // NB: LocalRead invoker is user-specific and, consequently, session-specific.
     IInvokerPtr LocalReadInvoker_;
+    IInvokerPtr AutomatonInvoker_;
 
     struct TReadRequestComplexityLimits
     {
@@ -849,7 +871,9 @@ private:
             }
         }
 
-        CellSyncSession_->SetSyncWithUpstream(!suppressUpstreamSync);
+        if (!suppressUpstreamSync) {
+            CellSyncSession_->ScheduleSyncWithUpstream();
+        }
         SuppressTransactionCoordinatorSync_ = suppressTransactionCoordinatorSync;
         SuppressStronglyOrderedTransactionBarrier_ = suppressStronglyOrderedTransactionBarrier;
     }
@@ -1057,23 +1081,16 @@ private:
                 "Cannot synchronize with cells when read-only mode is active");
         }
 
-        std::vector<TFuture<void>> additionalFutures;
         if (syncPhase == ESyncPhase::One &&
-            !SuppressStronglyOrderedTransactionBarrier_) {
-            // NB: We have to wait all current prepared transactions to
-            // observe side effects of Sequoia transactions.
-            const auto& transactionSupervisor = Bootstrap_->GetTransactionSupervisor();
-            additionalFutures.push_back(
-                hydraManager->SyncWithLeader().Apply(BIND([=] {
-                    return transactionSupervisor->WaitUntilPreparedTransactionsFinished();
-                })));
+            !SuppressStronglyOrderedTransactionBarrier_)
+        {
+            // NB: We have to wait for all currently prepared transactions
+            // with respect to barrier tags to observe side effects of
+            // Sequoia transactions.
+            CellSyncSession_->ScheduleSyncWithSequoiaTransactions();
         }
 
-        if (additionalFuture) {
-            additionalFutures.push_back(std::move(additionalFuture));
-        }
-
-        return CellSyncSession_->Sync(cellTags, std::move(additionalFutures));
+        return CellSyncSession_->Sync(cellTags, std::move(additionalFuture));
     }
 
     void RunSyncPhaseOne()
@@ -1214,7 +1231,7 @@ private:
                 << TErrorAttribute("rootstock_node_id", resolveResult.RootstockNodeId)
                 << TErrorAttribute("rootstock_path", resolveResult.RootstockPath)));
         YT_LOG_DEBUG(
-            "Request redirected to Sequoia (Subrequest index: %v, TargetPath: %v, "
+            "Request redirected to Sequoia (SubrequestIndex: %v, TargetPath: %v, "
             "RootstockNodeId: %v, RootstockPath: %v)",
             subrequest->Index,
             subrequest->YPathExt->target_path(),
@@ -1397,6 +1414,7 @@ private:
                     addSubrequestTransactions(&writeSubrequestTransactions, subrequest, nullptr);
                     subrequest.RemoteTransactionReplicationSession = New<TTransactionReplicationSessionWithBoomerangs>(
                         Bootstrap_,
+                        CellSyncSession_,
                         std::move(writeSubrequestTransactions),
                         TTransactionReplicationInitiatorRequestInfo{
                             .Identity = Identity_,
@@ -1421,6 +1439,7 @@ private:
             // Pre-phase-one.
             RemoteTransactionReplicationSession_ = New<TTransactionReplicationSessionWithoutBoomerangs>(
                 Bootstrap_,
+                CellSyncSession_,
                 std::move(transactionsToReplicateWithoutBoomerangs),
                 TTransactionReplicationInitiatorRequestInfo{
                     .Identity = Identity_,
@@ -1976,7 +1995,7 @@ private:
         while (*currentSubrequestIndex < TotalSubrequestCount_) {
             // NB: PrematureBackoffAlarmProbability_ is usually std::nullopt.
             // NB: This may trigger even at 0 processed subrequests, which is intended.
-            if (Y_UNLIKELY(RandomNumber<double>() <= PrematureBackoffAlarmProbability_)) {
+            if (RandomNumber<double>() <= PrematureBackoffAlarmProbability_) [[unlikely]] {
                 OnBackoffAlarm(/*premature*/ true);
             }
 
@@ -2054,11 +2073,38 @@ private:
         const auto& context = subrequest->RpcContext;
 
         if (response.Origin != EMutationResponseOrigin::Commit) {
+            const auto& responseKeeper = Bootstrap_->GetHydraFacade()->GetResponseKeeper();
+            auto mutationId = context->GetMutationId();
+            if (mutationId != NullMutationId) {
+                auto sequenceNumber = responseKeeper->GetGroundUpdateQueueSequenceNumber(mutationId);
+                if (sequenceNumber) {
+                    // We should have patched it before.
+                    if (!response.GroundUpdateQueueSequenceNumber) {
+                        YT_LOG_ALERT("Mutation response is missing GroundUpdateQueueSequenceNumber "
+                            "(MutationId: %v: GroundUpdateQueueSequenceNumber: %v, Origin: %v)",
+                            mutationId,
+                            sequenceNumber,
+                            response.Origin);
+                        subrequest->GroundUpdateQueueSequenceNumber = *sequenceNumber;
+                    }
+                    if (response.GroundUpdateQueueSequenceNumber && response.GroundUpdateQueueSequenceNumber != sequenceNumber) {
+                        YT_LOG_ALERT("GroundUpdateQueueSequenceNumber is different in response keeper and mutation response"
+                            "(MutationId: %v: ResponserGroundUpdateQueueSequenceNumber: %v, ResponseKeeperGroundUpdateQueueSequenceNumber: %v)",
+                            mutationId,
+                            response.GroundUpdateQueueSequenceNumber,
+                            sequenceNumber);
+                        subrequest->GroundUpdateQueueSequenceNumber = std::max(*response.GroundUpdateQueueSequenceNumber, *sequenceNumber);
+                    }
+                }
+            }
+
             YT_VERIFY(!context->IsReplied());
             // Either we're answering with a kept response or this is a boomerang mutation.
             context->SetRequestInfo();
             context->SetResponseInfo("KeptResponse: %v", true);
             context->Reply(response.Data);
+        }  else if (response.GroundUpdateQueueSequenceNumber) {
+            subrequest->GroundUpdateQueueSequenceNumber = *response.GroundUpdateQueueSequenceNumber;
         }
 
         WaitForSubresponse(subrequest);
@@ -2125,6 +2171,10 @@ private:
             auto onRemoteTransactionReplicated = [weakThis = MakeWeak(this), subrequest] (const TError& error) {
                 auto this_ = weakThis.Lock();
                 if (!this_) {
+                    return;
+                }
+
+                if (this_->InterruptIfCanceled()) {
                     return;
                 }
 
@@ -2324,6 +2374,8 @@ private:
         TCompactVector<int, 16> completedIndexes;
         TCompactVector<int, 16> uncertainIndexes;
 
+        i64 groundUpdateQueueSequenceNumber = -1;
+
         // Check for forwarding errors.
         for (auto index = 0; index < TotalSubrequestCount_; ++index) {
             auto& subrequest = Subrequests_[index];
@@ -2337,9 +2389,10 @@ private:
                 if (subrequest.Started) {
                     uncertainIndexes.push_back(index);
                 }
-
                 continue;
             }
+
+            groundUpdateQueueSequenceNumber = std::max(groundUpdateQueueSequenceNumber, subrequest.GroundUpdateQueueSequenceNumber);
 
             const auto& subresponseMessage = subrequest.ResponseMessage;
             NRpc::NProto::TResponseHeader subresponseHeader;
@@ -2392,7 +2445,30 @@ private:
             response.subresponses_size(),
             response.uncertain_subrequest_indexes());
 
-        RpcContext_->Reply();
+        if (groundUpdateQueueSequenceNumber != -1) {
+            YT_LOG_DEBUG("Synchronizing with ground update queue before replying (GroundUpdateQueueSequenceNumber: %v)",
+                groundUpdateQueueSequenceNumber);
+
+            const auto& groundUpdateQueueManager = Bootstrap_->GetGroundUpdateQueueManager();
+            BIND(&IGroundUpdateQueueManager::Sync,
+                groundUpdateQueueManager,
+                EGroundUpdateQueue::Sequoia,
+                groundUpdateQueueSequenceNumber)
+            .AsyncVia(AutomatonInvoker_)
+            .Run()
+            .Subscribe(BIND([error, this, this_ = MakeStrong(this)] (const TError& syncError) {
+                if (!ReplyScheduled_.exchange(true)) {
+                    if (!syncError.IsOK()) {
+                        // Hope cypress proxies retry that.
+                        RpcContext_->Reply(error);
+                    } else {
+                        RpcContext_->Reply();
+                    }
+                }
+            }).Via(TObjectService::GetRpcInvoker()));
+        } else {
+            RpcContext_->Reply();
+        }
     }
 
     void CancelPendingCacheSubrequests()
@@ -2446,7 +2522,7 @@ private:
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
-        if (Y_UNLIKELY(premature)) {
+        if (premature) [[unlikely]] {
             // Premature backoff alarm is only triggered from Automaton or LocalRead threads,
             // so it's safe to read subrequest indices here.
             YT_LOG_DEBUG("Backoff alarm triggered prematurely "

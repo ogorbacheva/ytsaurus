@@ -129,7 +129,17 @@ public:
         YT_UNIMPLEMENTED();
     }
 
-    void Revive(std::vector<TStartedAllocationInfo>) override
+    void Revive(std::vector<TStartedAllocationInfo> /*allocations*/, bool /*suspended*/) override
+    {
+        YT_UNIMPLEMENTED();
+    }
+
+    void SuspendOperation() override
+    {
+        YT_UNIMPLEMENTED();
+    }
+
+    void ResumeOperation() override
     {
         YT_UNIMPLEMENTED();
     }
@@ -546,7 +556,7 @@ void GuardedMain(int argc, char** argv)
         operation = DownloadOperation(token, proxy, path);
     }
 
-    NBus::TTcpDispatcher::Get()->DisableNetworking();
+    NBus::NTcp::TDispatcher::Get()->DisableNetworking();
 
     if (!ValidateSnapshotVersion(operation.SnapshotVersion)) {
         auto error = TError("Snapshot version %v is not supported over current snapshot version %v (%v)",

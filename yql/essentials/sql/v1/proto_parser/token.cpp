@@ -2,10 +2,13 @@
 
 #include "parse_tree.h"
 
+#include <yql/essentials/utils/yql_panic.h>
+
 namespace NSQLTranslationV1 {
 
 TToken Beginning(const TRule_select_stmt& rule) {
-    const auto& parenthesis = rule.GetRule_select_stmt_intersect1()
+    const auto& parenthesis = rule.GetRule_select_stmt_core2()
+                                  .GetRule_select_stmt_intersect1()
                                   .GetRule_select_kind_parenthesis1();
     return Beginning(Unpack(parenthesis).GetRule_select_kind1());
 }
@@ -19,8 +22,10 @@ TToken Beginning(const TRule_select_kind& rule) {
             return block.GetAlt2().GetRule_reduce_core1().GetToken1();
         case NSQLv1Generated::TRule_select_kind_TBlock2::kAlt3:
             return block.GetAlt3().GetRule_select_core1().GetToken2();
+        case NSQLv1Generated::TRule_select_kind_TBlock2::kAlt4:
+            return block.GetAlt4().GetRule_combine_core1().GetToken1();
         case NSQLv1Generated::TRule_select_kind_TBlock2::ALT_NOT_SET:
-            Y_UNREACHABLE();
+            YQL_ENSURE(false, "Unreachable");
     }
 }
 

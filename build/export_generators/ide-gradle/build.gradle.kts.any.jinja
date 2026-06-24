@@ -88,6 +88,7 @@
 {%- include "[generator]/import.jinja" -%}
 {%- include "[generator]/plugins_block.jinja" -%}
 {%- include "[generator]/builddir.jinja" -%}
+{%- include "[generator]/content_root.jinja" -%}
 {%- include "[generator]/java_toolchains.jinja" -%}
 
 {%- if proto_template -%}
@@ -100,6 +101,7 @@
 {%- include "[generator]/preview.jinja" -%}
 {%- include "[generator]/test.jinja" -%}
 {%- include "[generator]/build.gradle.kts.common.jinja" -%}
+{%- include "[generator]/solomon_checkstyle.jinja" -%}
 {%- include "[generator]/dependencies.jinja" -%}
 {%- include "extra-tests.gradle.kts" ignore missing -%}
 {%- include "[generator]/debug.jinja" ignore missing -%}

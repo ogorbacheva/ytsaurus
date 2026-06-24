@@ -97,20 +97,11 @@ public:
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
-        bool failBeforeExecution = false;
-        bool failAfterExecution = false;
-
-        if (auto failureProbability = GetDynamicConfig()->WriteFailureProbability) {
-            if (RandomNumber<double>() < *failureProbability) {
-                if (RandomNumber<ui32>() % 2 == 0) {
-                    failBeforeExecution = true;
-                } else {
-                    failAfterExecution = true;
-                }
-            }
-        }
-        if (failBeforeExecution) {
-            THROW_ERROR_EXCEPTION("Test error before write call execution");
+        if (RandomNumber<double>() < GetDynamicConfig()->FailureProbabilityBeforeWrite) [[unlikely]] {
+            THROW_ERROR_EXCEPTION(
+                NTabletClient::EErrorCode::TestingFailureBeforeWrite,
+                "Test error before write call execution")
+                << TErrorAttribute("tablet_id", tabletSnapshot->TabletId);
         }
 
         const auto& identity = NRpc::GetCurrentAuthenticationIdentity();
@@ -201,9 +192,8 @@ public:
             Host_->ValidateMemoryLimit(poolTag);
             ValidateWriteBarrier(replicatorWrite, tablet);
 
-            tablet->SmoothMovementData().ValidateWriteToTablet();
-
             auto tabletId = tablet->GetId();
+            tablet->SmoothMovementData().ValidateWriteToTablet(tabletId);
 
             TTransaction* transaction = nullptr;
             bool updateReplicationProgress = false;
@@ -346,7 +336,7 @@ public:
                 auto mutation = CreateMutation(HydraManager_, hydraRequest);
                 mutation->SetHandler(BIND_NO_PROPAGATE(
                     &TTabletCellWriteManager::HydraLeaderWriteRows,
-                    MakeStrong(this),
+                    MakeWeak(this),
                     params.TransactionId,
                     tablet->GetMountRevision(),
                     mutationPrepareSignature,
@@ -368,17 +358,26 @@ public:
             // NB: Yielding is now possible.
             // Cannot neither access tablet, nor transaction.
             if (context.BlockedStore) {
-                context.BlockedStore->WaitOnBlockedRow(
+                auto waitOnBlockedRowDuration = context.BlockedStore->WaitOnBlockedRow(
                     context.BlockedRow,
                     context.BlockedLockMask,
                     context.BlockedTimestamp);
+
+                tablet
+                    ->GetTableProfiler()
+                    ->GetWriteCounters(GetCurrentProfilingUser())
+                    ->WaitOnBlockedRowDuration
+                    .Record(waitOnBlockedRowDuration);
             }
 
             context.Error.ThrowOnError();
         }
 
-        if (failAfterExecution) {
-            THROW_ERROR_EXCEPTION("Test error after write call execution");
+        if (RandomNumber<double>() < GetDynamicConfig()->FailureProbabilityAfterWrite) [[unlikely]] {
+            THROW_ERROR_EXCEPTION(
+                NTabletClient::EErrorCode::TestingFailureAfterWrite,
+                "Test error after write call execution")
+                << TErrorAttribute("tablet_id", tabletSnapshot->TabletId);
         }
 
         return commitResult;

@@ -2,8 +2,6 @@
 
 #include "private.h"
 
-#include <yt/yt/server/lib/cypress_election/config.h>
-
 #include <yt/yt/server/lib/misc/config.h>
 
 #include <yt/yt/client/ypath/public.h>
@@ -14,6 +12,8 @@
 #include <yt/yt/ytlib/discovery_client/public.h>
 
 #include <yt/yt/ytlib/queue_client/public.h>
+
+#include <yt/yt/library/cypress_election/config.h>
 
 #include <yt/yt/library/dynamic_config/config.h>
 
@@ -125,6 +125,9 @@ struct TQueueExporterDynamicConfig
      * \note #InvocationCount must be int max as exports are retried indefinitely.
     */
     TExponentialBackoffOptions RetryBackoff;
+
+    //! If true, the queue exporter will check that #LastChunk and #RowCount in tablet progress refer to the same chunk.
+    bool EnableRowCountCheck;
 
     NConcurrency::TPeriodicExecutorOptions GetPeriodicExecutorOptions() const;
 
@@ -263,7 +266,7 @@ struct TQueueAgentBootstrapConfig
     NCypressElection::TCypressElectionManagerConfigPtr ElectionManager;
 
     NDynamicConfig::TDynamicConfigManagerConfigPtr DynamicConfigManager;
-    TString DynamicConfigPath;
+    NYPath::TYPath DynamicConfigPath;
 
     REGISTER_YSON_STRUCT(TQueueAgentBootstrapConfig);
 

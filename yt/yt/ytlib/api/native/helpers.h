@@ -1,3 +1,5 @@
+#pragma once
+
 #include "public.h"
 
 #include <yt/yt/ytlib/controller_agent/helpers.h>
@@ -88,11 +90,11 @@ void CheckWritePermission(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-THashSet<TString> DeduceActualAttributes(
-    const std::optional<THashSet<TString>>& originalAttributes,
-    const THashSet<TString>& requiredAttributes,
-    const THashSet<TString>& defaultAttributes,
-    const THashSet<TString>& ignoredAttributes = {});
+THashSet<std::string> DeduceActualAttributes(
+    const std::optional<THashSet<std::string>>& originalAttributes,
+    const THashSet<std::string>& requiredAttributes,
+    const THashSet<std::string>& defaultAttributes,
+    const THashSet<std::string>& ignoredAttributes = {});
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -102,4 +104,26 @@ TSelectRowsOptions GetDefaultSelectRowsOptions(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! Invalidates the mount cache based on the provided error and returns the delay before the next retry.
+//! Rethrows the provided error if it is not retryable or if the retry limit is exceeded.
+TDuration InvalidateMountCacheAndGetRetryDelay(
+    const IConnectionPtr& connection,
+    const TDetailedProfilingInfoPtr& profilingInfo,
+    const NLogging::TLogger& logger,
+    const TError& error,
+    int* retryCount);
+
+template <class TCallback>
+auto CallAndRetryIfMetadataCacheIsInconsistent(
+    const IConnectionPtr& connection,
+    const TDetailedProfilingInfoPtr& profilingInfo,
+    const NLogging::TLogger& logger,
+    TCallback&& callback) -> decltype(callback());
+
+////////////////////////////////////////////////////////////////////////////////
+
 } // namespace NYT::NApi::NNative
+
+#define HELPERS_INL_H_
+#include "helpers-inl.h"
+#undef HELPERS_INL_H_

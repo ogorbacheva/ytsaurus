@@ -47,43 +47,45 @@ protected:
 
     void RegisterSaver(
         ESyncSerializationPriority priority,
-        const TString& name,
+        const std::string& name,
         TCallback<void(TSaveContext&)> callback);
 
     template <class TContext>
     void RegisterSaver(
         ESyncSerializationPriority priority,
-        const TString& name,
+        const std::string& name,
         TCallback<void(TContext&)> callback);
 
     void RegisterSaver(
         EAsyncSerializationPriority priority,
-        const TString& name,
+        const std::string& name,
         TCallback<TCallback<void(TSaveContext&)>()> callback);
 
     template <class TContext>
     void RegisterSaver(
         EAsyncSerializationPriority priority,
-        const TString& name,
+        const std::string& name,
         TCallback<TCallback<void(TContext&)>()> callback);
 
     void RegisterLoader(
-        const TString& name,
+        const std::string& name,
         TCallback<void(TLoadContext&)> callback);
 
     template <class TContext>
     void RegisterLoader(
-        const TString& name,
+        const std::string& name,
         TCallback<void(TContext&)> callback);
 
     template <class TRequest>
     void RegisterMethod(
         TCallback<void(TRequest*)> callback,
-        const std::vector<TString>& aliases = {});
+        const std::vector<std::string>& aliases = {},
+        bool exceptionsAreNormal = false);
     template <class TRpcRequest, class TRpcResponse, class THandlerRequest, class THandlerResponse>
     void RegisterMethod(
         TCallback<void(const TIntrusivePtr<NRpc::TTypedServiceContext<TRpcRequest, TRpcResponse>>&, THandlerRequest*, THandlerResponse*)> callback,
-        const std::vector<TString>& aliases = {});
+        const std::vector<std::string>& aliases = {},
+        bool exceptionsAreNormal = false);
 
     bool IsLeader() const;
     bool IsActiveLeader() const;
@@ -122,8 +124,6 @@ private:
 
     void StartEpoch();
     void StopEpoch();
-
-    void LogHandlerError(const TError& error);
 };
 
 DEFINE_REFCOUNTED_TYPE(TCompositeAutomatonPart)
@@ -182,15 +182,18 @@ protected:
     template <class TRequest>
     void RegisterMethod(
         TCallback<void(TRequest*)> callback,
-        const std::vector<TString>& aliases = {});
+        const std::vector<std::string>& aliases = {},
+        bool exceptionsAreNormal = false);
     template <class TRpcRequest, class TRpcResponse, class THandlerRequest, class THandlerResponse>
     void RegisterMethod(
         TCallback<void(const TIntrusivePtr<NRpc::TTypedServiceContext<TRpcRequest, TRpcResponse>>&, THandlerRequest*, THandlerResponse*)> callback,
-        const std::vector<TString>& aliases = {});
+        const std::vector<std::string>& aliases = {},
+        bool exceptionsAreNormal = false);
 
     void RegisterMethod(
-        const TString& name,
-        TCallback<void(TMutationContext*)> callback);
+        const std::string& name,
+        TCallback<void(TMutationContext*)> callback,
+        bool exceptionsAreNormal);
 
 private:
     using TThis = TCompositeAutomaton;
@@ -208,11 +211,13 @@ private:
         NProfiling::TGauge RequestSizeCounter;
 
         NYTProf::TProfilerTagPtr CpuProfilerTag;
+
+        bool ExceptionsAreAllowed;
     };
 
     struct TSaverDescriptorBase
     {
-        TString Name;
+        std::string Name;
         int SnapshotVersion;
     };
 
@@ -232,7 +237,7 @@ private:
 
     struct TLoaderDescriptor
     {
-        TString Name;
+        std::string Name;
         TCallback<void(TLoadContext&)> Callback;
     };
 
@@ -240,11 +245,11 @@ private:
 
     std::vector<TWeakPtr<TCompositeAutomatonPart>> Parts_;
 
-    THashMap<TString, TMethodDescriptor> MethodNameToDescriptor_;
+    THashMap<std::string, TMethodDescriptor> MethodNameToDescriptor_;
 
-    THashMap<TString, TLoaderDescriptor> PartNameToLoaderDescriptor_;
+    THashMap<std::string, TLoaderDescriptor> PartNameToLoaderDescriptor_;
 
-    THashSet<TString> SaverPartNames_;
+    THashSet<std::string> SaverPartNames_;
     std::vector<TSyncSaverDescriptor> SyncSavers_;
     std::vector<TAsyncSaverDescriptor> AsyncSavers_;
 
@@ -270,9 +275,8 @@ private:
     void OnRecoveryStarted();
     void OnRecoveryComplete();
 
-    TMethodDescriptor* GetMethodDescriptor(const TString& mutationType);
+    TMethodDescriptor* GetMethodDescriptor(const std::string& mutationType);
     std::vector<TCompositeAutomatonPartPtr> GetParts();
-    void LogHandlerError(const TError& error);
     void DeserializeRequestAndProfile(
         google::protobuf::MessageLite* requestMessage,
         TRef requestData,

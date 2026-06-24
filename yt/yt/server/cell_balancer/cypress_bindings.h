@@ -356,8 +356,8 @@ struct TZoneInfo
 
     std::optional<std::string> ShortName;
 
-    int MaxTabletNodeCount;
-    int MaxRpcProxyCount;
+    std::optional<int> MaxTabletNodeCount;
+    std::optional<int> MaxRpcProxyCount;
 
     THashMap<std::string, NBundleControllerClient::TInstanceSizePtr> TabletNodeSizes;
     THashMap<std::string, NBundleControllerClient::TInstanceSizePtr> RpcProxySizes;
@@ -714,6 +714,10 @@ struct TInstanceInfoBase
     TCypressAnnotationsPtr CypressAnnotations;
     THashMap<std::string, TCmsMaintenanceRequestPtr> CmsMaintenanceRequests;
 
+    // NB: This method should be pure virtual but intermediate yson structs must be
+    // self-contained.
+    virtual bool IsOnline() const;
+
     REGISTER_YSON_STRUCT(TInstanceInfoBase);
 
     static void Register(TRegistrar registrar);
@@ -739,7 +743,10 @@ struct TTabletNodeInfo
     TTabletNodeStatisticsPtr Statistics;
     std::string Rack;
 
-    ELocalNodeState LocalState; // Not registered as yson struct field.
+    // Not registered as YSON struct field.
+    ELocalNodeState LocalState = ELocalNodeState::Unknown;
+
+    bool IsOnline() const override;
 
     REGISTER_YSON_STRUCT(TTabletNodeInfo);
 
@@ -747,6 +754,25 @@ struct TTabletNodeInfo
 };
 
 DEFINE_REFCOUNTED_TYPE(TTabletNodeInfo)
+
+////////////////////////////////////////////////////////////////////////////////
+
+DECLARE_REFCOUNTED_STRUCT(TDataNodeInfo)
+
+struct TDataNodeInfo
+    : public NYTree::TYsonStruct
+{
+    std::string Host;
+    std::string Switch;
+    std::string State;
+    TInstant LastSeenTime;
+
+    REGISTER_YSON_STRUCT(TDataNodeInfo);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDataNodeInfo)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -770,6 +796,8 @@ struct TRpcProxyInfo
     TInstant ModificationTime;
 
     TRpcProxyAlivePtr Alive;
+
+    bool IsOnline() const override;
 
     REGISTER_YSON_STRUCT(TRpcProxyInfo);
 

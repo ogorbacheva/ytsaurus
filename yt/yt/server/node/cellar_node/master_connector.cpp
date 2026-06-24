@@ -61,6 +61,7 @@ public:
         : TMasterHeartbeatReporterBase(
             bootstrap,
             /*reportHeartbeatsToAllSecondaryMasters*/ true,
+            ENodeHeartbeatType::Cellar,
             CellarNodeLogger().WithTag("HeartbeatType: %v", ENodeHeartbeatType::Cellar))
         , Bootstrap_(bootstrap)
         , Config_(bootstrap->GetConfig()->CellarNode->MasterConnector)
@@ -77,7 +78,7 @@ public:
         Bootstrap_->SubscribePopulateAlerts(BIND_NO_PROPAGATE(&TMasterConnector::PopulateAlerts, MakeWeak(this)));
 
         const auto& dynamicConfigManager = Bootstrap_->GetDynamicConfigManager();
-        dynamicConfigManager->SubscribeConfigChanged(BIND_NO_PROPAGATE(&TMasterConnector::OnDynamicConfigChanged, MakeWeak(this)));
+        dynamicConfigManager->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TMasterConnector::OnDynamicConfigChanged, MakeWeak(this)));
 
         Reconfigure(GetDynamicConfig()->HeartbeatExecutor.value_or(Config_->HeartbeatExecutor));
     }
@@ -143,15 +144,24 @@ public:
             }
         }
 
-        if (singleCellarType) {
-            static const std::string tabletCellBundleTagName("tablet_cell_bundle");
-            static const std::string cellBundleTagName("cell_bundle");
-            auto cellarType = *singleCellarType;
+        const auto& dynamicConfig = Bootstrap_->GetDynamicConfigManager()->GetConfig();
+        if (dynamicConfig->CellarNode->DeduceProfilingTagFromBundleName.value_or(
+            Bootstrap_->GetConfig()->CellarNode->DeduceProfilingTagFromBundleName))
+        {
+            if (singleCellarType) {
+                static const std::string tabletCellBundleTagName("tablet_cell_bundle");
+                static const std::string cellBundleTagName("cell_bundle");
+                auto cellarType = *singleCellarType;
 
-            SolomonTagAlert_ = UpdateSolomonTags(
-                cellarManager,
-                cellarType,
-                cellarType == ECellarType::Tablet ? tabletCellBundleTagName : cellBundleTagName);
+                SolomonTagAlert_ = UpdateSolomonTags(
+                    cellarManager,
+                    cellarType,
+                    cellarType == ECellarType::Tablet ? tabletCellBundleTagName : cellBundleTagName);
+            }
+        } else {
+            NProfiling::TSolomonRegistry::Get()->SetDynamicTags({});
+
+            SolomonTagAlert_ = {};
         }
     }
 

@@ -57,7 +57,7 @@ void TJournalSession::DoCancel(const TError& /*error*/)
 {
     YT_ASSERT_INVOKER_AFFINITY(SessionInvoker_);
 
-    OnFinished();
+    OnFinished(/*executedSeal*/ false);
 }
 
 i64 TJournalSession::GetMemoryUsage() const
@@ -90,13 +90,12 @@ i64 TJournalSession::GetIntermediateEmptyBlockCount() const
 
 TFuture<ISession::TFinishResult> TJournalSession::DoFinish(
     const TRefCountedChunkMetaPtr& /*chunkMeta*/,
-    std::optional<int> blockCount,
-    bool truncateExtraBlocks)
+    std::optional<int> blockCount)
 {
-    YT_VERIFY(!truncateExtraBlocks);
     YT_ASSERT_INVOKER_AFFINITY(SessionInvoker_);
 
     auto result = Changelog_->Finish();
+    auto executedSeal = false;
 
     if (blockCount) {
         if (*blockCount != Changelog_->GetRecordCount()) {
@@ -105,12 +104,13 @@ TFuture<ISession::TFinishResult> TJournalSession::DoFinish(
                 Changelog_->GetRecordCount(),
                 *blockCount));
         }
-        result = result.Apply(BIND(&TJournalChunk::Seal, Chunk_)
+        executedSeal = true;
+        result = result.Apply(BIND(&TJournalChunk::ExecuteSeal, Chunk_)
             .AsyncVia(SessionInvoker_));
     }
 
     return result.Apply(BIND([=, this, this_ = MakeStrong(this)] (const TError& error) {
-        OnFinished();
+        OnFinished(executedSeal && error.IsOK());
 
         error.ThrowOnError();
 
@@ -188,7 +188,7 @@ TFuture<NIO::TIOCounters> TJournalSession::DoPutBlocks(
     }
 
     return MakeFuture(TIOCounters{
-        .Bytes = Changelog_->EstimateChangelogSize(payloadSize),
+        .Bytes = Changelog_->EstimateWriteSize(payloadSize),
         .IORequests = 1,
     });
 }
@@ -244,7 +244,7 @@ TFuture<ISession::TFlushBlocksResult> TJournalSession::DoFlushBlocks(int blockIn
         }).AsyncVia(SessionInvoker_));
 }
 
-void TJournalSession::OnFinished()
+void TJournalSession::OnFinished(bool executedSeal)
 {
     YT_ASSERT_INVOKER_AFFINITY(SessionInvoker_);
 
@@ -254,10 +254,14 @@ void TJournalSession::OnFinished()
     }
 
     if (Chunk_) {
-        Chunk_->SetActive(false);
-
         const auto& chunkStore = Bootstrap_->GetChunkStore();
-        chunkStore->UpdateExistingChunk(Chunk_);
+        auto guard = chunkStore->AcquireChunkMapWriterLock();
+
+        if (executedSeal) {
+            Chunk_->SetSealed();
+        }
+        Chunk_->SetActive(false);
+        chunkStore->UpdateExistingChunk(Chunk_, guard);
     }
 
     Finished_.Fire(TError());

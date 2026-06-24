@@ -213,6 +213,7 @@ namespace NYT::NCellMaster {
 using namespace NAdmin;
 using namespace NApi;
 using namespace NBus;
+using namespace NBus::NTcp;
 using namespace NCellarClient;
 using namespace NCellServer;
 using namespace NChaosServer;
@@ -327,7 +328,7 @@ TCellTag TBootstrap::GetPrimaryCellTag() const
     return PrimaryCellTag_;
 }
 
-const std::set<TCellTag>& TBootstrap::GetSecondaryCellTags() const
+const TCellTagSet& TBootstrap::GetSecondaryCellTags() const
 {
     return SecondaryCellTags_;
 }
@@ -665,7 +666,7 @@ TFuture<void> TBootstrap::Run()
 }
 
 void TBootstrap::LoadSnapshot(
-    const TString& fileName,
+    const std::string& fileName,
     ESerializationDumpMode dumpMode,
     TSerializationDumpScopeFilter dumpScopeFilter,
     bool checkInvariants)
@@ -1029,6 +1030,7 @@ void TBootstrap::DoInitialize()
     TabletManager_->Initialize();
     BackupManager_->Initialize();
     ChaosManager_->Initialize();
+    SequoiaManager_->Initialize();
     SchedulerPoolManager_->Initialize();
     CypressProxyTracker_->Initialize();
     GroundUpdateQueueManager_->Initialize();
@@ -1247,7 +1249,7 @@ void TBootstrap::DoStart()
 }
 
 void TBootstrap::DoLoadSnapshot(
-    const TString& fileName,
+    const std::string& fileName,
     ESerializationDumpMode dumpMode,
     TSerializationDumpScopeFilter dumpScopeFilter,
     bool checkInvariants)
@@ -1293,7 +1295,7 @@ void TBootstrap::DoReplayChangelogs(const std::vector<TString>& changelogFileNam
 
     auto dispatcher = CreateFileChangelogDispatcher(
         std::move(ioEngine),
-        /*memoryUsageTracker*/ nullptr,
+        /*indexMemoryUsageTracker*/ nullptr,
         changelogsConfig,
         "DryRunChangelogDispatcher",
         /*profiler*/ {});

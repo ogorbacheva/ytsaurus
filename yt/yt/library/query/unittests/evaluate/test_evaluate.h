@@ -5,6 +5,8 @@
 #include <yt/yt/library/query/engine_api/config.h>
 #include <yt/yt/library/query/engine_api/evaluator.h>
 
+#include <yt/yt/client/query_client/query_statistics.h>
+
 namespace NYT::NQueryClient {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -27,6 +29,7 @@ struct TEvaluateOptions
     NCodegen::EExecutionBackend ExecutionBackend = NCodegen::EExecutionBackend::Native;
     bool UseCanonicalNullRelations = false;
     bool AllowUnorderedGroupByWithLimit = true;
+    i64 MaxJoinBatchSize = DefaultMaxJoinBatchSize;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -37,6 +40,20 @@ std::vector<TOwningRow> YsonToRows(TRange<std::string> rowsData, const TDataSpli
 TResultMatcher ResultMatcher(std::vector<TOwningRow> expectedResult, TTableSchemaPtr expectedSchema = nullptr);
 TResultMatcher OrderedResultMatcher(std::vector<TOwningRow> expectedResult, std::vector<std::string> columns);
 TResultMatcher OrderedResultMatcher(std::vector<TOwningRow> expectedResult, const std::vector<int>& indexes);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TEvaluateCoordinatedGroupByResult
+{
+    TQueryStatistics Statistics;
+    int TabletsScanned = 0;
+};
+
+struct TRunOnCoordinatorResult
+{
+    TSharedRange<TUnversionedRow> Rows;
+    int TabletsScanned = 0;
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -117,7 +134,7 @@ protected:
         TStringBuf query,
         const TSplitMap& dataSplits,
         NYson::TYsonStringBuf placeholderValues,
-        int syntaxVersion);
+        const TPreparePlanFragmentOptions& options = {});
 
     std::pair<TQueryPtr, TQueryStatistics> DoEvaluate(
         TStringBuf query,
@@ -127,14 +144,14 @@ protected:
         TEvaluateOptions evaluateOptions,
         std::optional<std::string> expectedError);
 
-    TQueryStatistics EvaluateCoordinatedGroupByImpl(
+    TEvaluateCoordinatedGroupByResult EvaluateCoordinatedGroupByImpl(
         TStringBuf query,
         const TDataSplit& dataSplit,
         const std::vector<TSource>& owningSources,
         const TResultMatcher& resultMatcher,
         NCodegen::EExecutionBackend executionBackend);
 
-    TQueryStatistics EvaluateCoordinatedGroupBy(
+    TEvaluateCoordinatedGroupByResult EvaluateCoordinatedGroupBy(
         TStringBuf query,
         const TDataSplit& dataSplit,
         const std::vector<TSource>& owningSources,
@@ -150,7 +167,7 @@ protected:
         const std::vector<TSource>& tabletData,
         NCodegen::EExecutionBackend executionBackend);
 
-    TSharedRange<TUnversionedRow> RunOnCoordinator(
+    TRunOnCoordinatorResult RunOnCoordinator(
         TQueryPtr primary,
         const std::vector<std::vector<TSource>>& tabletsData,
         NCodegen::EExecutionBackend executionBackend);

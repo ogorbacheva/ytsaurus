@@ -5,6 +5,7 @@
 
 #include <yt/yt/server/lib/scheduler/config.h>
 #include <yt/yt/server/lib/scheduler/exec_node_descriptor.h>
+#include <yt/yt/server/lib/scheduler/helpers.h>
 
 #include <yt/yt/core/misc/collection_helpers.h>
 
@@ -115,7 +116,7 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::Run()
 
     InitializeModuleStates();
 
-    // TODO(eshcherbin): (!) Process nodes with resource overcommit and preempt extra assigments.
+    // TODO(eshcherbin): (!) Process nodes with resource overcommit and preempt extra assignments.
     {
         NProfiling::TWallTimer fullHostTimer;
         ProcessFullHostModuleBoundOperations();
@@ -124,7 +125,7 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::Run()
     {
         NProfiling::TWallTimer regularTimer;
         ProcessRegularOperations();
-        Context_->GetStatistics()->ReguralPlanningDuration = regularTimer.GetElapsedTime();
+        Context_->GetStatistics()->RegularPlanningDuration = regularTimer.GetElapsedTime();
     }
     {
         NProfiling::TWallTimer extraTimer;
@@ -184,7 +185,7 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::InitializeModuleStates()
 
         // Preemptible operation cannot be bound to a module.
         if (operation->IsPreemptible()) {
-            operation->SchedulingModule().reset();
+            operation->ResetSchedulingModule();
             continue;
         }
 
@@ -308,12 +309,13 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::PlanFullHostModuleBoundOperatio
 
         // TODO(eshcherbin): (!) Deal with modules that can change between updates.
         auto& moduleState = GetOrCrash(ModuleStates_, *operation->SchedulingModule());
-        for (const auto& [allocationGroupName, allocationGroupResources] : operation->ReadyToAssignGroupedNeededResources()) {
+
+        // NB(severovv): Be careful, allocationGroupResources are modified during planning.
+        for (const auto& [allocationGroupName, _] : operation->ReadyToAssignGroupedNeededResources()) {
             // First we try to schedule allocations without preemption.
             PlanAllocationGroup(
                 operation,
                 allocationGroupName,
-                allocationGroupResources,
                 &moduleState.AvailableNodes());
 
             // Then we try to schedule allocations using regular preemption.
@@ -321,7 +323,6 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::PlanFullHostModuleBoundOperatio
                 PlanAllocationGroupWithPreemption(
                     operation,
                     allocationGroupName,
-                    allocationGroupResources,
                     &moduleState.AvailableNodes());
             }
 
@@ -330,7 +331,6 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::PlanFullHostModuleBoundOperatio
                 PlanAllocationGroupWithPreemption(
                     operation,
                     allocationGroupName,
-                    allocationGroupResources,
                     &moduleState.AvailableNodes(),
                     /*useFullHostAggressivePreemption*/ true);
             }
@@ -383,17 +383,19 @@ bool TGpuAllocationAssignmentPlanUpdateExecutor::ShouldUsePriorityModuleBinding(
         *operation->WaitingForModuleBindingSince() + Config_->PriorityModuleBindingTimeout < Now_;
 }
 
-bool TGpuAllocationAssignmentPlanUpdateExecutor::ShouldResetModule(const TOperationPtr& operation) const {
+bool TGpuAllocationAssignmentPlanUpdateExecutor::ShouldResetModule(const TOperationPtr& operation) const
+{
     return operation->SchedulingModule() &&
         operation->WaitingForAssignmentsSince() &&
         operation->WaitingForAssignmentsSince().value() + Config_->ModuleReconsiderationTimeout < Now_;
 }
 
-void TGpuAllocationAssignmentPlanUpdateExecutor::EvictOperationFromSchedulingModule(const TOperationPtr& operation, const std::string& preemptionDescription) {
+void TGpuAllocationAssignmentPlanUpdateExecutor::EvictOperationFromSchedulingModule(const TOperationPtr& operation, const std::string& preemptionDescription)
+{
     auto& moduleState = GetOrCrash(ModuleStates_, operation->SchedulingModule().value());
     moduleState.RemoveFullHostBoundOperation(operation);
 
-    operation->SchedulingModule().reset();
+    operation->ResetSchedulingModule();
 
     PreemptAllOperationAssignments(
         operation,
@@ -498,7 +500,26 @@ bool TGpuAllocationAssignmentPlanUpdateExecutor::BindFullHostOperationToModule(
     auto& moduleState = GetOrCrash(ModuleStates_, bestModule);
     moduleState.AddFullHostBoundOperation(operation.Get());
 
+    UpdateNetworkPriority(operation);
+
     return true;
+}
+
+void TGpuAllocationAssignmentPlanUpdateExecutor::UpdateNetworkPriority(const TOperationPtr& operation)
+{
+    YT_VERIFY(operation->SchedulingModule());
+
+    const auto& moduleState = GetOrCrash(ModuleStates_, *operation->SchedulingModule());
+    const int nodeCount = moduleState.GetNodeCount();
+    if (nodeCount <= 0) {
+        operation->NetworkPriority().reset();
+        return;
+    }
+
+    // NB(yaishenka): GetInitialNeededAllocationCount is the canonical "node footprint on a module"
+    // signal in this policy — see BindFullHostOperationToModule and FindOperationsToEvict.
+    const auto share = static_cast<double>(operation->GetInitialNeededAllocationCount()) / nodeCount;
+    operation->NetworkPriority() = ComputeNetworkPriority(share, Config_->ModuleShareToNetworkPriority);
 }
 
 std::optional<NDetail::TOperationModuleBindingOutcome> TGpuAllocationAssignmentPlanUpdateExecutor::ConsiderModuleForFullHostOperation(
@@ -652,18 +673,17 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::ProcessRegularOperations()
 
     // 3. Plan assignments.
     for (const auto& operation : operationsToPlan) {
-        for (const auto& [allocationGroupName, allocationGroupResources] : operation->ReadyToAssignGroupedNeededResources()) {
+        // NB(severovv): Be careful, allocationGroupResources are modified during planning.
+        for (const auto& [allocationGroupName, _] : operation->ReadyToAssignGroupedNeededResources()) {
             PlanAllocationGroup(
                 operation,
                 allocationGroupName,
-                allocationGroupResources,
                 &SchedulableNodes_);
 
             if (operation->IsStarving()) {
                 PlanAllocationGroupWithPreemption(
                     operation,
                     allocationGroupName,
-                    allocationGroupResources,
                     &SchedulableNodes_);
             }
         }
@@ -716,11 +736,11 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::ProcessRegularOperationsWithExt
 
     // 3. Plan assignments.
     for (const auto& operation : operationsToPlan) {
-        for (const auto& [allocationGroupName, allocationGroupResources] : operation->ExtraGroupedNeededResources()) {
+        // NB(severovv): Be careful, allocationGroupResources are modified during planning.
+        for (const auto& [allocationGroupName, _] : operation->ExtraGroupedNeededResources()) {
             PlanPreemptibleAllocationGroup(
                 operation,
                 allocationGroupName,
-                allocationGroupResources,
                 &SchedulableNodes_);
         }
     }
@@ -737,20 +757,28 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::PreemptAllOperationAssignments(
     }
 }
 
-// TODO(eshcherbin): Support non-empty assignments.
 NDetail::TPreemptionPenalty TGpuAllocationAssignmentPlanUpdateExecutor::GetAssignmentPreemptionPenalty(
     const TAssignmentPtr& assignment) const
 {
-    return static_cast<NDetail::TPreemptionPenalty>(Config_->MinAssignmentPreemptibleDuration.Seconds()) *
+    auto duration = [&] {
+        if (!assignment->PreemptibleProgressStartTime) {
+            return Config_->MinAssignmentPreemptibleDuration;
+        }
+        return std::max(
+            Now_ - *assignment->PreemptibleProgressStartTime,
+            Config_->MinAssignmentPreemptibleDuration);
+    }();
+
+    return static_cast<NDetail::TPreemptionPenalty>(duration.Seconds()) *
         assignment->ResourceUsage.GetGpu();
 }
 
 void TGpuAllocationAssignmentPlanUpdateExecutor::PlanAllocationGroup(
     const TOperationPtr& operation,
     const std::string& allocationGroupName,
-    const TAllocationGroupResources allocationGroupResources,
     std::vector<TNode*>* availableNodes)
 {
+    auto allocationGroupResources = GetOrCrash(operation->ReadyToAssignGroupedNeededResources(), allocationGroupName);
     if (allocationGroupResources.AllocationCount == 0) {
         return;
     }
@@ -780,10 +808,10 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::PlanAllocationGroup(
 void TGpuAllocationAssignmentPlanUpdateExecutor::PlanAllocationGroupWithPreemption(
     const TOperationPtr& operation,
     const std::string& allocationGroupName,
-    TAllocationGroupResources allocationGroupResources,
     std::vector<TNode*>* availableNodes,
     bool useFullHostAggressivePreemption)
 {
+    auto allocationGroupResources = GetOrCrash(operation->ReadyToAssignGroupedNeededResources(), allocationGroupName);
     if (allocationGroupResources.AllocationCount == 0) {
         return;
     }
@@ -819,12 +847,45 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::PlanAllocationGroupWithPreempti
         operation->GetId());
 }
 
+int TGpuAllocationAssignmentPlanUpdateExecutor::GetLimitedAllocationCount(
+    const TOperationPtr& operation,
+    const std::string& allocationGroupName,
+    const TAllocationGroupResources& allocationGroupResources) const
+{
+    if (allocationGroupResources.AllocationCount == 0) {
+        return 0;
+    }
+
+    int limitedAllocationCount = allocationGroupResources.AllocationCount;
+    auto maxAvailableResources = Context_->GetAvailableOperationLimits(operation);
+    if (maxAvailableResources != TJobResources::Infinite()) {
+        double maxAvailableAllocationCount = NVectorHdrf::GetMinResourceRatio(
+            maxAvailableResources,
+            allocationGroupResources.MinNeededResources);
+
+        limitedAllocationCount = std::min(limitedAllocationCount, static_cast<int>(maxAvailableAllocationCount));
+    }
+    if (limitedAllocationCount != allocationGroupResources.AllocationCount) {
+        YT_LOG_DEBUG(
+            "Preemptible allocation group count decreased to satisfy limits "
+            "(AllocationGroup: {Name: %v, Resources: %v}, OperationId: %v, NonLimitedAllocationCount: %v, LimitedAllocationCount: %v)",
+            allocationGroupName,
+            allocationGroupResources,
+            operation->GetId(),
+            allocationGroupResources.AllocationCount,
+            limitedAllocationCount);
+    }
+    return limitedAllocationCount;
+}
+
 void TGpuAllocationAssignmentPlanUpdateExecutor::PlanPreemptibleAllocationGroup(
     const TOperationPtr& operation,
     const std::string& allocationGroupName,
-    const TAllocationGroupResources allocationGroupResources,
     std::vector<TNode*>* availableNodes)
 {
+    auto allocationGroupResources = GetOrCrash(operation->ExtraGroupedNeededResources(), allocationGroupName);
+    allocationGroupResources.AllocationCount = GetLimitedAllocationCount(operation, allocationGroupName, allocationGroupResources);
+
     if (allocationGroupResources.AllocationCount == 0) {
         return;
     }
@@ -1011,6 +1072,10 @@ TGpuAllocationAssignmentPlanUpdateExecutor::TPreemptiveAllocationGroupPlanner::T
     for (auto* node : *availableNodes) {
         auto& nodeState = NodeStates_[node];
         for (const auto& assignment : node->Assignments()) {
+            if (assignment->Reviving) {
+                continue;
+            }
+
             bool preemptible = assignment->Preemptible ||
                 (UseFullHostAggressivePreemption_ && !assignment->Operation->IsFullHostModuleBound());
             if (preemptible) {
@@ -1069,7 +1134,8 @@ void TGpuAllocationAssignmentPlanUpdateExecutor::TPreemptiveAllocationGroupPlann
         Host_->Context_->PreemptAssignment(
             preemptibleAssignment,
             PreemptionReason_,
-            PreemptionDescription_);
+            PreemptionDescription_,
+            Operation_->GetId());
 
         ++PreemptedAssignmentCount_;
     }

@@ -103,7 +103,7 @@ public:
     NObjectClient::TCellId GetPrimaryCellId() const;
     NObjectClient::TCellTag GetPrimaryCellTag() const;
 
-    const std::set<NObjectClient::TCellTag>& GetSecondaryCellTags() const;
+    const NObjectClient::TCellTagSet& GetSecondaryCellTags() const;
 
     const IAlertManagerPtr& GetAlertManager() const;
     const IConfigManagerPtr& GetConfigManager() const;
@@ -176,7 +176,7 @@ public:
     TFuture<void> Run() final;
 
     void LoadSnapshot(
-        const TString& fileName,
+        const std::string& fileName,
         ESerializationDumpMode dumpMode,
         TSerializationDumpScopeFilter dumpScopeFilter,
         bool checkInvariants);
@@ -204,7 +204,7 @@ protected:
     NObjectClient::TCellTag PrimaryCellTag_;
 
     // Strong deterministic order is important here.
-    std::set<NObjectClient::TCellTag> SecondaryCellTags_;
+    NObjectClient::TCellTagSet SecondaryCellTags_;
 
     IAlertManagerPtr AlertManager_;
     IConfigManagerPtr ConfigManager_;
@@ -285,7 +285,7 @@ protected:
     void InitializeTimestampProvider();
 
     void DoLoadSnapshot(
-        const TString& fileName,
+        const std::string& fileName,
         ESerializationDumpMode dumpMode,
         TSerializationDumpScopeFilter dumpScopeFilter,
         bool checkInvariants);

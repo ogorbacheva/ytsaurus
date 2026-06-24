@@ -345,15 +345,29 @@ private:
             YT_LOG_DEBUG("Remote changelog created (ChangelogId: %v)",
                 id);
 
-            UpdateLatestChangelogId(id);
-
-            return CreateRemoteChangelog(
+            auto changelogFuture = CreateRemoteChangelog(
                 id,
                 path,
                 meta,
                 /*recordCount*/ 0,
                 /*dataSize*/ 0,
                 options);
+
+            return changelogFuture.Apply(
+                BIND([=, this, this_ = MakeStrong(this)] (const TErrorOr<IChangelogPtr>& result) -> TFuture<IChangelogPtr> {
+                    if (!result.IsOK()) {
+                        return RemoveChangelog(id).Apply(
+                            BIND([=] (const TError& removeResult) -> IChangelogPtr {
+                                auto error = result;
+                                if (!removeResult.IsOK()) {
+                                    error <<= removeResult;
+                                }
+                                 THROW_ERROR(error);
+                            }));
+                    }
+                    UpdateLatestChangelogId(id);
+                    return MakeFuture(result.Value());
+                }));
         } catch (const std::exception& ex) {
             THROW_ERROR_EXCEPTION("Error creating remote changelog")
                 << TErrorAttribute("changelog_path", path)
@@ -532,9 +546,19 @@ private:
             return DataSize_;
         }
 
-        i64 EstimateChangelogSize(i64 payloadSize) const override
+        i64 EstimateWriteSize(i64 payloadSize) const override
         {
             return payloadSize;
+        }
+
+        i64 EstimateReadSize(
+            int /*firstRecordId*/,
+            int /*maxRecords*/,
+            i64 maxBytes) const override
+        {
+            // TODO(babenko): Provide a more precise estimate based on the requested record range.
+            // For now use the total changelog size as the read guess.
+            return std::min(maxBytes, GetDataSize());
         }
 
         TFuture<void> Append(TRange<TSharedRef> records) override
@@ -690,10 +714,10 @@ private:
 
         TFuture<void> FlushPendingRecords()
         {
+            auto guard = Guard(WriterLock_);
+
             YT_LOG_DEBUG("Journal writer opened; flushing pending records (PendingRecordCount: %v)",
                 PendingRecords_.size());
-
-            auto guard = Guard(WriterLock_);
 
             auto rows = std::exchange(PendingRecords_, {});
             auto flushedFuture = rows.empty() ? OKFuture : Writer_->Write(TRange(rows));

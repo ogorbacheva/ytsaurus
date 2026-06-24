@@ -1,7 +1,7 @@
 #pragma once
 
-#include "public.h"
 #include "artifact.h"
+#include "public.h"
 
 #include <yt/yt/server/node/exec_node/volume.pb.h>
 
@@ -41,17 +41,20 @@ struct IVolume
     virtual const TVolumeId& GetId() const = 0;
     //! Get absolute path to volume mount point.
     virtual const std::string& GetPath() const = 0;
-    //! Overlayfs stores its upper/work directories in root volume.
-    virtual bool IsRootVolume() const = 0;
     //! Link volume mount point to target.
     virtual TFuture<void> Link(
         TGuid tag,
-        const TString& target) = 0;
+        const std::string& target) = 0;
+    //! Unlink volume from all targets without removing the volume.
+    //! Used for reusable volumes that need to be re-linked in the next job.
+    virtual TFuture<void> Unlink() = 0;
     //! Remove volume and links where it points to.
     virtual TFuture<void> Remove() = 0;
     //! Check if volume is cached.
     virtual bool IsCached() const = 0;
 };
+
+DEFINE_REFCOUNTED_TYPE(IVolume)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -63,7 +66,7 @@ struct TLayerMetaHeader
     //! Version of layer meta format. Update every time layer meta version is updated.
     ui64 Version = ExpectedVersion;
 
-    ui64 MetaChecksum;
+    ui64 MetaChecksum = 0;
 
     static constexpr ui64 ExpectedSignature = 0xbe17d73ce7ff9ea6ull; // YTLMH001
     static constexpr ui64 ExpectedVersion = 1;
@@ -80,14 +83,14 @@ struct TLayerMeta
 
 ////////////////////////////////////////////////////////////////////////////////
 
-DECLARE_REFCOUNTED_CLASS(TLayerLocation)
-DECLARE_REFCOUNTED_CLASS(TLayer)
-
 class TLayer
     : public TAsyncCacheValueBase<TArtifactKey, TLayer>
 {
 public:
-    TLayer(const TLayerMeta& layerMeta, const TArtifactKey& artifactKey, const TLayerLocationPtr& layerLocation);
+    TLayer(
+        const TLayerMeta& layerMeta,
+        const TArtifactKey& artifactKey,
+        const TLayerLocationPtr& layerLocation);
 
     ~TLayer();
 
@@ -119,6 +122,8 @@ private:
     bool IsLayerRemovalNeeded_ = true;
 };
 
+DEFINE_REFCOUNTED_TYPE(TLayer)
+
 ////////////////////////////////////////////////////////////////////////////////
 
 class TOverlayData
@@ -148,8 +153,6 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
-DECLARE_REFCOUNTED_CLASS(TSimpleTmpfsVolume)
-
 class TSimpleTmpfsVolume
     : public IVolume
 {
@@ -166,7 +169,9 @@ public:
 
     TFuture<void> Link(
         TGuid tag,
-        const TString& target) override final;
+        const std::string& target) override final;
+
+    TFuture<void> Unlink() override final;
 
     TFuture<void> Remove() override final;
 
@@ -174,16 +179,16 @@ public:
 
     const std::string& GetPath() const override final;
 
-    bool IsRootVolume() const override final;
-
 private:
     const NProfiling::TTagSet TagSet_;
     const std::string Path_;
     const TVolumeId VolumeId_;
     const IInvokerPtr Invoker_;
-    const bool DetachUnmount_;
+    const bool DetachUnmount_ = false;
     TFuture<void> RemoveFuture_;
 };
+
+DEFINE_REFCOUNTED_TYPE(TSimpleTmpfsVolume)
 
 ////////////////////////////////////////////////////////////////////////////////
 

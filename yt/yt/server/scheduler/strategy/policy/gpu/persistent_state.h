@@ -17,6 +17,8 @@ struct TPersistentOperationState
 {
     std::optional<std::string> SchedulingModule;
 
+    std::optional<TNetworkPriority> NetworkPriority;
+
     REGISTER_YSON_STRUCT_LITE(TPersistentOperationState);
 
     static void Register(TRegistrar registrar);
@@ -26,28 +28,9 @@ using TPersistentOperationStateMap = THashMap<TOperationId, TPersistentOperation
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TPersistentAssignmentState
-    : public NYTree::TYsonStruct
-{
-    TOperationId OperationId;
-    std::string AllocationGroupName;
-    TJobResourcesWithQuota ResourceUsage;
-
-    REGISTER_YSON_STRUCT(TPersistentAssignmentState);
-
-    static void Register(TRegistrar registrar);
-};
-
-
-using TPersistentAssignmentStatePtr = TIntrusivePtr<TPersistentAssignmentState>;
-using TPersistentAssignmentStateList = TCompactVector<TPersistentAssignmentStatePtr, MaxNodeGpuCount>;
-
-////////////////////////////////////////////////////////////////////////////////
-
 struct TPersistentNodeState
     : public NYTree::TYsonStructLite
 {
-    TPersistentAssignmentStateList AssignmentStates;
     std::optional<std::string> SchedulingModule;
 
     // For debug purposes.

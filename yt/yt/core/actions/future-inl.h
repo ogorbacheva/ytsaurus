@@ -3,7 +3,6 @@
 // For the sake of sane code completion.
 #include "future.h"
 #endif
-#undef FUTURE_INL_H_
 
 #include "bind.h"
 #include "cancelation_token.h"
@@ -18,6 +17,7 @@
 
 #include <library/cpp/yt/compact_containers/compact_vector.h>
 
+#include <algorithm>
 #include <atomic>
 #include <type_traits>
 
@@ -123,11 +123,11 @@ public:
     }
 
     template <class... As>
-    void RunAndClear(As&&... args)
+    void RunAndClear(const As&... args)
     {
         for (const auto& callback : Callbacks_) {
             if (callback) {
-                RunFutureHandler(callback, std::forward<As>(args)...);
+                RunFutureHandler(callback, args...);
             }
         }
         Callbacks_.clear();
@@ -140,7 +140,7 @@ public:
     }
 
 private:
-    static constexpr int TypicalCount = 8;
+    static constexpr int TypicalCount = 2;
     TCompactVector<T, TypicalCount> Callbacks_;
     TCompactVector<TFutureCallbackCookie, TypicalCount> SpareCookies_;
 };
@@ -161,7 +161,7 @@ public:
         , CancelableRefCount_(cancelableRefCount)
     { }
 
-    virtual ~TCancelableStateBase() noexcept = default;
+    ~TCancelableStateBase() noexcept override = default;
 
     virtual bool Cancel(const TError& error) noexcept = 0;
 
@@ -228,7 +228,7 @@ public:
     using TUniqueVoidResultHandler = TCallback<void(TError&&)>;
 
     using TCancelHandler = TCallback<void(const TError&)>;
-    using TCancelHandlers = TCompactVector<TCancelHandler, 8>;
+    using TCancelHandlers = TCompactVector<TCancelHandler, 2>;
 
     void RefFuture()
     {
@@ -367,11 +367,11 @@ protected:
     //! Protects the following section of members.
     YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
     std::atomic<bool> Canceled_ = false;
-    TError CancelationError_;
     std::atomic<bool> Set_;
     std::atomic<bool> AbandonedUnset_ = false;
-    TError ResultError_;
     bool HasHandlers_ = false;
+    TError CancelationError_;
+    TError ResultError_;
     TVoidResultHandlers VoidResultHandlers_;
     TCancelHandlers CancelHandlers_;
     mutable std::unique_ptr<NThreading::TEvent> ReadyEvent_;
@@ -1108,12 +1108,6 @@ bool TFutureBase<T>::IsSet() const
 }
 
 template <class T>
-const TErrorOr<T>& TFutureBase<T>::Get() const
-{
-    return BlockingGet();
-}
-
-template <class T>
 const TErrorOr<T>& TFutureBase<T>::BlockingGet() const
 {
     YT_ASSERT(Impl_);
@@ -1140,18 +1134,6 @@ bool TFutureBase<T>::BlockingWait(TInstant deadline) const
 {
     YT_ASSERT(Impl_);
     return Impl_->BlockingWait(deadline);
-}
-
-template <class T>
-bool TFutureBase<T>::Wait(TDuration timeout) const
-{
-    return BlockingWait(timeout);
-}
-
-template <class T>
-bool TFutureBase<T>::Wait(TInstant deadline) const
-{
-    return BlockingWait(deadline);
 }
 
 template <class T>
@@ -1450,12 +1432,6 @@ inline TFuture<void>::TFuture(TIntrusivePtr<NYT::NDetail::TFutureState<void>> im
 ////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
-TErrorOr<T> TUniqueFutureBase<T>::Get() const
-{
-    return BlockingGet();
-}
-
-template <class T>
 TErrorOr<T> TUniqueFutureBase<T>::BlockingGet() const
 {
     YT_ASSERT(this->Impl_);
@@ -1641,12 +1617,6 @@ inline void TPromiseBase<T>::TrySetFrom(const TFuture<U>& another) const
     OnCanceled(BIND_NO_PROPAGATE([anotherCancelable = another.AsCancelable()] (const TError& error) {
         anotherCancelable.Cancel(error);
     }));
-}
-
-template <class T>
-const TErrorOr<T>& TPromiseBase<T>::Get() const
-{
-    return BlockingGet();
 }
 
 template <class T>
@@ -2247,7 +2217,7 @@ public:
             TFutureCallbackCookie cookie;
             if (future.IsSet()) {
                 cookie = NullFutureCallbackCookie;
-                OnFutureSet(future.BlockingGet());
+                OnFutureSet(future.GetOrCrash());
             } else {
                 cookie = future.Subscribe(BIND_NO_PROPAGATE(&TAnyFutureCombiner::OnFutureSet, MakeStrong(this)));
             }
@@ -2314,6 +2284,112 @@ private:
     }
 };
 
+template <class T, CAnySetMatchingPredicate<T> TPredicate>
+class TAnySetMatchingFutureCombiner
+    : public TFutureCombinerWithSubscriptionBase<T>
+{
+public:
+    TAnySetMatchingFutureCombiner(
+        std::vector<TFuture<T>> futures,
+        TPredicate isMatching,
+        TFutureCombinerOptions options)
+        : TFutureCombinerWithSubscriptionBase<T>(std::move(futures))
+        , IsMatching_(std::move(isMatching))
+        , Options_(options)
+        , Results_(this->Futures_.size())
+    { }
+
+    TFuture<TAnySetMatchingResult<T>> Run()
+    {
+        if (this->Futures_.empty()) {
+            return MakeFuture<TAnySetMatchingResult<T>>(TError(
+                NYT::EErrorCode::FutureCombinerFailure,
+                "Any-set-matching combiner failure: empty input"));
+        }
+
+        std::vector<TFutureCallbackCookie> subscriptionCookies;
+        subscriptionCookies.reserve(this->Futures_.size());
+        for (int index = 0; index < std::ssize(this->Futures_); ++index) {
+            const auto& future = this->Futures_[index];
+            TFutureCallbackCookie cookie;
+            if (future.IsSet()) {
+                cookie = NullFutureCallbackCookie;
+                OnFutureSet(index, future.GetOrCrash());
+            } else {
+                cookie = future.Subscribe(
+                    BIND_NO_PROPAGATE(&TAnySetMatchingFutureCombiner::OnFutureSet, MakeStrong(this), index));
+            }
+            subscriptionCookies.push_back(cookie);
+        }
+        this->RegisterSubscriptionCookies(std::move(subscriptionCookies));
+
+        if (Options_.PropagateCancelationToInput) {
+            Promise_.OnCanceled(BIND_NO_PROPAGATE(&TAnySetMatchingFutureCombiner::OnCanceled, MakeWeak(this)));
+        }
+
+        return Promise_;
+    }
+
+private:
+    const TPredicate IsMatching_;
+    const TFutureCombinerOptions Options_;
+    const TPromise<TAnySetMatchingResult<T>> Promise_ = NewPromise<TAnySetMatchingResult<T>>();
+
+    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
+    std::vector<std::optional<TErrorOr<T>>> Results_;
+    int ResponseCount_ = 0;
+    std::atomic<bool> ResultObtained_ = false;
+
+    void OnFutureSet(int index, const TErrorOr<T>& result) noexcept
+    {
+        if (ResultObtained_.load(std::memory_order::relaxed)) {
+            // NB: Relaxed ordering is sufficient since this flag is only a best-effort fast path;
+            // ResultsLock_ synchronizes access to Results_ and ResponseCount_.
+            return;
+        }
+
+        bool isMatching = IsMatching_(result);
+
+        auto guard = Guard(SpinLock_);
+
+        if (ResultObtained_.load(std::memory_order::relaxed)) {
+            return;
+        }
+
+        Results_[index] = result;
+        ++ResponseCount_;
+
+        if (!isMatching && ResponseCount_ != std::ssize(this->Futures_)) {
+            return;
+        }
+        ResultObtained_.store(true, std::memory_order::relaxed);
+        guard.Release();
+
+        YT_VERIFY(
+            ResponseCount_ != std::ssize(this->Futures_) ||
+            std::ranges::all_of(Results_, [] (const auto& result) { return result.has_value(); }));
+
+        TAnySetMatchingResult<T> combinedResult{
+            .MatchingIndex = isMatching ? std::optional(index) : std::nullopt,
+            .Results = std::move(Results_),
+        };
+
+        if (Promise_.TrySet(std::move(combinedResult))) {
+            this->OnCombinerFinished();
+        }
+
+        if (ResponseCount_ != std::ssize(this->Futures_) &&
+            Options_.CancelInputOnShortcut &&
+            this->Futures_.size() > 1 &&
+            this->TryAcquireFuturesCancelLatch())
+        {
+            this->CancelFutures(TError(
+                NYT::EErrorCode::FutureCombinerShortcut,
+                "Any-set-matching combiner shortcut: matching response received"));
+        }
+    }
+};
+
 template <class T, class TResultHolder>
 class TAllFutureCombiner
     : public TFutureCombinerBase<T>
@@ -2336,7 +2412,7 @@ public:
         for (int index = 0; index < std::ssize(this->Futures_); ++index) {
             const auto& future = this->Futures_[index];
             if (future.IsSet()) {
-                OnFutureSet(index, future.BlockingGet());
+                OnFutureSet(index, future.GetOrCrash());
             } else {
                 future.Subscribe(BIND_NO_PROPAGATE(&TAllFutureCombiner::OnFutureSet, MakeStrong(this), index));
             }
@@ -2434,7 +2510,7 @@ public:
             const auto& future = this->Futures_[index];
             if (future.IsSet()) {
                 cookie = NullFutureCallbackCookie;
-                OnFutureSet(index, future.BlockingGet());
+                OnFutureSet(index, future.GetOrCrash());
             } else {
                 cookie = future.Subscribe(
                     BIND_NO_PROPAGATE(&TAnyNFutureCombiner::OnFutureSet, MakeStrong(this), index));
@@ -2459,6 +2535,7 @@ private:
     TResultHolder ResultHolder_;
 
     std::atomic<int> ResponseCount_ = 0;
+    std::atomic<int> FillCount_ = 0;
 
     YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ErrorsLock_);
     std::vector<TError> Errors_;
@@ -2492,13 +2569,16 @@ private:
             return;
         }
 
-        if (responseIndex == N_ - 1) {
+        // responseIndex reflects reservation order, not fill order, so the N_-th reserver
+        // may run before a lower-indexed slot is written. Trigger on the count of filled
+        // slots instead, so all writes are complete and visible.
+        if (++FillCount_ == N_) {
             if (ResultHolder_.TrySetPromise(Promise_)) {
                 this->OnCombinerFinished();
             }
 
             if (Options_.CancelInputOnShortcut &&
-                responseIndex < std::ssize(this->Futures_) - 1 &&
+                N_ < std::ssize(this->Futures_) &&
                 this->TryAcquireFuturesCancelLatch())
             {
                 this->CancelFutures(TError(
@@ -2565,6 +2645,19 @@ TFuture<T> AnySet(
     TFutureCombinerOptions options)
 {
     return New<NYT::NDetail::TAnyFutureCombiner<T>>(std::move(futures), false, options)
+        ->Run();
+}
+
+template <class T, CAnySetMatchingPredicate<T> TPredicate>
+TFuture<TAnySetMatchingResult<T>> AnySetMatching(
+    std::vector<TFuture<T>> futures,
+    TPredicate isMatching,
+    TFutureCombinerOptions options)
+{
+    return New<NYT::NDetail::TAnySetMatchingFutureCombiner<T, TPredicate>>(
+        std::move(futures),
+        std::move(isMatching),
+        options)
         ->Run();
 }
 
@@ -2703,7 +2796,14 @@ public:
         // No need to acquire SpinLock here.
         auto startImmediatelyCount = CurrentIndex_;
 
-        for (int index = 0; index < startImmediatelyCount; ++index) {
+        RunCallback(0);
+        for (int index = 1; index < startImmediatelyCount; ++index) {
+            {
+                auto guard = Guard(SpinLock_);
+                if (Error_) {
+                    break;
+                }
+            }
             RunCallback(index);
         }
 
@@ -2751,7 +2851,7 @@ private:
                 break;
             }
 
-            auto suggestedIndex = HandleResultAndSuggestNextIndex(index, std::move(future.BlockingGet()));
+            auto suggestedIndex = HandleResultAndSuggestNextIndex(index, std::move(future.GetOrCrash()));
             if (!suggestedIndex) {
                 break;
             }
@@ -2868,10 +2968,10 @@ private:
                     BIND_NO_PROPAGATE(&TBoundedConcurrencyRunner::OnResult, MakeStrong(this), index)
                         // NB: Sync invoker protects from unbounded recursion.
                         .Via(GetSyncInvoker()));
-                        break;
+                break;
             }
 
-            auto suggestedIndex = HandleResultAndSuggestNextIndex(index, future.BlockingGet());
+            auto suggestedIndex = HandleResultAndSuggestNextIndex(index, future.GetOrCrash());
             if (!suggestedIndex) {
                 break;
             }

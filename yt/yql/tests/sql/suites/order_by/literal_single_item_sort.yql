@@ -1,0 +1,10 @@
+/* postgres can not */
+/* multirun can not */
+use plato;
+
+$t = AsList(
+    AsStruct(1 as key, 101 as value)
+);
+
+insert into Output
+select * from as_table($t) order by key;

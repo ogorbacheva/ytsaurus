@@ -13,12 +13,7 @@
 #include <yql/essentials/utils/yql_panic.h>
 #include <yql/essentials/utils/checked_deref_ptr.h>
 
-// #define YQL_USE_CHECKED_DEREF_PTR_FOR_TYPE_ANN
-#ifdef YQL_USE_CHECKED_DEREF_PTR_FOR_TYPE_ANN
-    #define YQL_TYPE_ANN_PTR NYql::TCheckedDerefPtr<const TTypeAnnotationNode>
-#else
-    #define YQL_TYPE_ANN_PTR const TTypeAnnotationNode*
-#endif
+#define YQL_TYPE_ANN_PTR NYql::TCheckedDerefPtr<const TTypeAnnotationNode>
 
 #include <yql/essentials/public/issue/yql_issue_manager.h>
 #include <yql/essentials/public/udf/udf_data_type.h>
@@ -2443,13 +2438,7 @@ public:
 
     TExprNode& operator=(TExprNode&&) = delete;
 
-    ~TExprNode() {
-        Y_ABORT_UNLESS(Dead(), "Node (id: %lu, type: %s, content: '%s') not dead on destruction.",
-                       UniqueId_, ToString(Type_).data(), TString(ContentUnchecked()).data());
-        Y_ABORT_UNLESS(!UseCount(), "Node (id: %lu, type: %s, content: '%s') has non-zero use count on destruction.",
-                       UniqueId_, ToString(Type_).data(), TString(ContentUnchecked()).data());
-        DestroyPtrs();
-    }
+    ~TExprNode();
 
 private:
     static void DestroyNode(TExprNode::TPtr& node, TExprNode*& root);
@@ -2850,10 +2839,10 @@ class TExprCycleDetector {
 public:
     explicit TExprCycleDetector(ui64 maxQueueSize);
     void Reset();
-    void AddNode(const TExprNode& node);
+    void AddNode(const TExprNode& node, ui64 repeatTransformCount);
 
 private:
-    THashSet<TString> Set_;
+    THashMap<TString, ui64> Map_;
     TQueue<TString> Queue_;
     const ui64 MaxQueueSize_;
 };
@@ -2924,7 +2913,7 @@ struct TExprContext: private TNonCopyable {
 
     TStringBuf AppendString(const TStringBuf& buf) {
         ENSURE_NOT_FROZEN_CTX
-        if (buf.size() == 0) {
+        if (buf.empty()) {
             return ZeroString;
         }
 
@@ -3125,7 +3114,7 @@ struct TExprContext: private TNonCopyable {
 
     void CheckCycle(const TExprNode& node) {
         if (CycleDetector) {
-            CycleDetector->AddNode(node);
+            CycleDetector->AddNode(node, RepeatTransformCounter);
         }
     }
 
@@ -3262,7 +3251,7 @@ const TTypeAnnotationNode& RemoveOptionality(const TTypeAnnotationNode& type);
 
 template <>
 inline void Out<NYql::TTypeAnnotationNode>(
-    IOutputStream& out, const NYql::TTypeAnnotationNode& type)
+    IOutputStream& out, const NYql::TTypeAnnotationNode& value)
 {
-    type.Out(out);
+    value.Out(out);
 }

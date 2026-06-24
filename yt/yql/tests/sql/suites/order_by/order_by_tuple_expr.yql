@@ -1,0 +1,9 @@
+/* postgres can not */
+/* multirun can not */
+USE plato;
+
+$keys = ($key) -> {
+    return AsTuple($key, $key);
+};
+
+select * from Input order by $keys(value);

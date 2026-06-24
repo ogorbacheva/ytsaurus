@@ -80,6 +80,7 @@ public:
 
     virtual void OnTaskCompleted(const TStatistics& /* stats */) {}
 
+    // Must be idempotent: GetOperation can call this multiple times and must get the same result.
     virtual std::vector<TString> GetOperationResult() { return {}; }
 
     virtual TGetNewPartIdsForTaskResult GetNewPartIdsForTask(
@@ -87,10 +88,12 @@ public:
     ) { return {}; }
 
     virtual std::vector<TPartIdInfo> GetPartIdsForTask(
-        const GetPartIdsForTaskContext& /* context */
-    ) { return {}; }
+        const GetPartIdsForTaskContext& context
+    ) = 0;
 
     virtual TAdvanceStageResult AdvanceToNextStage() = 0;
+
+    virtual std::vector<TString> GetExpectedOutputTableIds(const TOperationParams& params) const = 0;
 };
 
 } // namespace NYql::NFmr

@@ -16,15 +16,14 @@
 
 #include <yt/yt/ytlib/scheduler/job_resources_helpers.h>
 
-#include <yt/yt/core/ytree/ephemeral_node_factory.h>
-
-#include <yt/yt/core/concurrency/config.h>
-
-#include <yt/yt/core/ytree/fluent.h>
-
 #include <yt/yt/library/re2/re2.h>
 
 #include <yt/yt/library/program/config.h>
+
+#include <yt/yt/core/ytree/ephemeral_node_factory.h>
+#include <yt/yt/core/ytree/fluent.h>
+
+#include <yt/yt/core/concurrency/config.h>
 
 namespace NYT::NControllerAgent {
 
@@ -1163,6 +1162,9 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .Alias("operation_alerts")
         .DefaultNew();
 
+    registrar.Parameter("max_job_thread_count_formula", &TThis::MaxJobThreadCountFormula)
+        .Default();
+
     registrar.Parameter("controller_row_buffer_chunk_size", &TThis::ControllerRowBufferChunkSize)
         .Default(64_KB)
         .GreaterThan(0);
@@ -1311,7 +1313,7 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
 
     // COMPAT(gritukan): This default is quite dangerous, change it when all controller agents will have fresh configs.
     registrar.Parameter("tags", &TThis::Tags)
-        .Default(std::vector<TString>({"default"}));
+        .Default(std::vector<std::string>({"default"}));
 
     registrar.Parameter("user_job_monitoring", &TThis::UserJobMonitoring)
         .DefaultNew();
@@ -1322,6 +1324,10 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("deprecated_media", &TThis::DeprecatedMedia)
         .Alias("deprecated_mediums")
+        .Default();
+
+    registrar.Parameter("nbd_media", &TThis::NbdMedia)
+        .Alias("nbd_mediums")
         .Default();
 
     registrar.Parameter("enable_master_resource_usage_accounting", &TThis::EnableMasterResourceUsageAccounting)
@@ -1381,6 +1387,9 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .Default(true);
 
     registrar.Parameter("rpc_server", &TThis::RpcServer)
+        .DefaultNew();
+
+    registrar.Parameter("master_cell_directory_synchronizer", &TThis::MasterCellDirectorySynchronizer)
         .DefaultNew();
 
     registrar.Parameter("max_job_aborts_until_operation_failure", &TThis::MaxJobAbortsUntilOperationFailure)
@@ -1455,7 +1464,7 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         BuildOptions(&config->RemoteCopyOperationOptions, config->RemoteCopyOperationOptionsNode, config->OperationOptions);
         BuildOptions(&config->VanillaOperationOptions, config->VanillaOperationOptionsNode, config->OperationOptions);
 
-        THashSet<TString> customJobMetricsProfilingNames;
+        THashSet<std::string> customJobMetricsProfilingNames;
         for (const auto& customJobMetricDescription : config->CustomJobMetrics) {
             const auto& profilingName = customJobMetricDescription.ProfilingName;
 
@@ -1486,6 +1495,12 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
                 config->CudaProfilerEnvironment->PathEnvironmentVariableName,
                 config->CudaProfilerEnvironment->PathEnvironmentVariableValue);
         }
+
+#if defined(_tsan_enabled_)
+        // TODO(pogorelov): Implement building snapshots without fork to improve compatibility with tsan (YT-27927).
+        config->EnableSnapshotBuilding = false;
+        config->EnableSnapshotBuildingDisabledAlert = false;
+#endif
     });
 }
 

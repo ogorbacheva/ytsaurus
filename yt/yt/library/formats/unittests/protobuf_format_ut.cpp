@@ -493,14 +493,14 @@ public:
         if (read == 0) {
             return std::nullopt;
         } else if (read < sizeof(rowSize)) {
-            THROW_ERROR_EXCEPTION("corrupted lenval: can't read row length");
+            THROW_ERROR_EXCEPTION("corrupted lenval: cannot read row length");
         }
         switch (rowSize) {
             case LenvalTableIndexMarker: {
                 ui32 tableIndex;
                 read = Input_->Load(&tableIndex, sizeof(tableIndex));
                 if (read != sizeof(tableIndex)) {
-                    THROW_ERROR_EXCEPTION("corrupted lenval: can't read table index");
+                    THROW_ERROR_EXCEPTION("corrupted lenval: cannot read table index");
                 }
                 CurrentTableIndex_ = tableIndex;
                 return Next();
@@ -509,7 +509,7 @@ public:
                 ui64 tabletIndex;
                 read = Input_->Load(&tabletIndex, sizeof(tabletIndex));
                 if (read != sizeof(tabletIndex)) {
-                    THROW_ERROR_EXCEPTION("corrupted lenval: can't read tablet index");
+                    THROW_ERROR_EXCEPTION("corrupted lenval: cannot read tablet index");
                 }
                 CurrentTabletIndex_ = tabletIndex;
                 return Next();
@@ -797,7 +797,7 @@ TEST(TProtobufFormatTest, TestConfigParsing)
 
     EXPECT_THROW_WITH_SUBSTRING(
         ParseAndValidateConfig(repeatedEmbeddedConfig),
-        R"(type "embedded_message" can not be repeated)");
+        R"(type "embedded_message" cannot be repeated)");
 
     auto multipleOtherColumnsConfig = BuildYsonNodeFluently()
         .BeginMap()
@@ -3611,6 +3611,60 @@ TEST(TProtobufFormatTest, SchemaConfigMismatch)
         "Optional variant field \"variant.a\"");
     EXPECT_NO_THROW(createParser(schema_variant_with_int, config_with_oneof));
     EXPECT_NO_THROW(createWriter(schema_variant_with_int, config_with_oneof));
+
+    auto schema_dict = New<TTableSchema>(std::vector<TColumnSchema>{
+        {"dict_field", DictLogicalType(
+            SimpleLogicalType(ESimpleLogicalValueType::Int64),
+            SimpleLogicalType(ESimpleLogicalValueType::Int64))},
+    });
+
+    auto buildDictConfig = [] (bool repeated) {
+        return BuildYsonNodeFluently()
+            .BeginMap()
+                .Item("tables")
+                .BeginList()
+                    .Item()
+                    .BeginMap()
+                        .Item("columns")
+                        .BeginList()
+                            .Item()
+                            .BeginMap()
+                                .Item("name").Value("dict_field")
+                                .Item("field_number").Value(1)
+                                .Item("proto_type").Value("structured_message")
+                                .Item("repeated").Value(repeated)
+                                .Item("fields")
+                                .BeginList()
+                                    .Item().BeginMap()
+                                        .Item("name").Value("key")
+                                        .Item("field_number").Value(1)
+                                        .Item("proto_type").Value("int64")
+                                    .EndMap()
+                                    .Item().BeginMap()
+                                        .Item("name").Value("value")
+                                        .Item("field_number").Value(2)
+                                        .Item("proto_type").Value("int64")
+                                    .EndMap()
+                                .EndList()
+                            .EndMap()
+                        .EndList()
+                    .EndMap()
+                .EndList()
+            .EndMap();
+    };
+
+    // A dict-typed column requires a repeated protobuf field.
+    EXPECT_NO_THROW(createParser(schema_dict, buildDictConfig(/*repeated*/ true)));
+    EXPECT_NO_THROW(createWriter(schema_dict, buildDictConfig(/*repeated*/ true)));
+
+    // Mapping a dict-typed column to a non-repeated field is invalid user input
+    // and must yield a schema-mismatch error rather than crash the process.
+    EXPECT_THROW_WITH_SUBSTRING(
+        createParser(schema_dict, buildDictConfig(/*repeated*/ false)),
+        "non-repeated protobuf field cannot match \"dict\" type in schema");
+    EXPECT_THROW_WITH_SUBSTRING(
+        createWriter(schema_dict, buildDictConfig(/*repeated*/ false)),
+        "non-repeated protobuf field cannot match \"dict\" type in schema");
 }
 
 TEST(TProtobufFormatTest, MultipleOtherColumns)
@@ -3663,6 +3717,55 @@ TEST(TProtobufFormatTest, MultipleOtherColumns)
             CanonizeYson("{field1=foo}"),
             CanonizeYson("{field2=bar}"),
         }));
+}
+
+TEST(TProtobufFormatTest, EmbeddedSecondTableBug)
+{
+    auto nameTable = New<TNameTable>();
+
+    TString data;
+    TStringOutput resultStream(data);
+
+    auto controlAttributesConfig = New<TControlAttributesConfig>();
+    controlAttributesConfig->EnableTableIndex = true;
+    controlAttributesConfig->EnableEndOfStream = true;
+
+    auto protoWriter = CreateWriterForProtobuf(
+        MakeProtobufFormatConfig({TNoEmbeddedKeyValue::descriptor(), TEmbeddedKeyValue::descriptor()}),
+        std::vector<TTableSchemaPtr>(2, New<TTableSchema>()),
+        nameTable,
+        CreateAsyncAdapter(&resultStream),
+        true,
+        controlAttributesConfig,
+        0);
+
+    EXPECT_EQ(true, protoWriter->Write(
+        std::vector<TUnversionedRow>{
+            NNamedValue::MakeRow(nameTable, {
+                {TableIndexColumnName, 1},
+                {"key", "foo"},
+                {"value", "bar"},
+            }),
+        }));
+
+    WaitFor(protoWriter->Close())
+        .ThrowOnError();
+
+    std::vector<std::string> result;
+    auto parser = TLenvalParser(data);
+    while (auto item = parser.Next()) {
+        TEmbeddedKeyValue message;
+        bool parsed = message.ParseFromString(item->RowData);
+        EXPECT_TRUE(parsed);
+        result.push_back(message.ShortUtf8DebugString());
+    }
+
+    EXPECT_EQ(
+        result,
+        std::vector<std::string>({
+            "key: \"foo\" embedded_value { value: \"bar\" }"
+        }));
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////

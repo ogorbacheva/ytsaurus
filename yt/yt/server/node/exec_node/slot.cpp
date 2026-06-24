@@ -1,19 +1,19 @@
 #include "slot.h"
 
 #include "bootstrap.h"
-#include "private.h"
 #include "job_environment.h"
+#include "private.h"
 #include "slot_location.h"
 #include "slot_manager.h"
 #include "volume.h"
 #include "volume_manager.h"
 
-#include <yt/yt/ytlib/scheduler/helpers.h>
-
 #include <yt/yt/server/node/cluster_node/config.h>
 
 #include <yt/yt/server/lib/exec_node/config.h>
 #include <yt/yt/server/lib/exec_node/helpers.h>
+
+#include <yt/yt/ytlib/scheduler/helpers.h>
 
 #include <yt/yt/server/tools/proc.h>
 #include <yt/yt/server/tools/tools.h>
@@ -38,6 +38,7 @@ namespace NYT::NExecNode {
 static NLogging::TLogger SlotLogger("Slot");
 
 using namespace NBus;
+using namespace NBus::NTcp;
 using namespace NConcurrency;
 using namespace NContainers;
 using namespace NNode;
@@ -66,7 +67,7 @@ public:
         IJobEnvironmentPtr environment,
         IVolumeManagerPtr volumeManager,
         NExecNode::IBootstrap* bootstrap,
-        const TString& nodeTag,
+        const std::string& nodeTag,
         ESlotType slotType,
         NClusterNode::TCpu requestedCpu,
         NScheduler::NProto::TDeprecatedDiskRequest diskRequest,
@@ -123,15 +124,33 @@ public:
         }
     }
 
-    void CleanSandbox() override
+    void CleanUserImportedPortoResources(const THashSet<std::string>& preservedVolumePaths) override
     {
         YT_ASSERT_THREAD_AFFINITY(JobThread);
 
         VerifyEnabled();
 
-        RemoveVolumesFromPortoPlace();
+        YT_VERIFY(VolumeManager_);
 
-        RemoveLayersFromPortoPlace();
+        Location_->RemoveVolumesFromPortoPlace(SlotIndex_, VolumeManager_, preservedVolumePaths);
+        Location_->RemoveLayersFromPortoPlace(SlotIndex_, VolumeManager_);
+    }
+
+    void CleanPortoPlace() override
+    {
+        YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+        VerifyEnabled();
+
+        WaitFor(Location_->CleanPortoPlace(SlotIndex_))
+            .ThrowOnError();
+    }
+
+    void CleanSandbox() override
+    {
+        YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+        VerifyEnabled();
 
         WaitFor(Location_->CleanSandboxes(
             SlotIndex_))
@@ -209,10 +228,10 @@ public:
 
     TFuture<void> MakeLink(
         TJobId jobId,
-        const TString& artifactName,
+        const std::string& artifactName,
         ESandboxKind sandboxKind,
-        const TString& targetPath,
-        const TString& linkName,
+        const std::string& targetPath,
+        const std::string& linkName,
         bool executable) override
     {
         YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -236,10 +255,10 @@ public:
 
     TFuture<void> MakeFileForSandboxBind(
         TJobId jobId,
-        const TString& artifactName,
+        const std::string& artifactName,
         ESandboxKind sandboxKind,
-        const TString& targetPath,
-        const TString& bindPath,
+        const std::string& targetPath,
+        const std::string& bindPath,
         bool executable) override
     {
         YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -263,9 +282,9 @@ public:
 
     TFuture<void> MakeCopy(
         TJobId jobId,
-        const TString& artifactName,
+        const std::string& artifactName,
         ESandboxKind sandboxKind,
-        const TString& sourcePath,
+        const std::string& sourcePath,
         const TFile& destinationFile,
         const TCacheLocationPtr& sourceLocation) override
     {
@@ -290,7 +309,7 @@ public:
 
     TFuture<void> MakeFile(
         TJobId jobId,
-        const TString& artifactName,
+        const std::string& artifactName,
         ESandboxKind sandboxKind,
         const std::function<void(IOutputStream*)>& producer,
         const TFile& destinationFile) override
@@ -320,8 +339,24 @@ public:
         return VolumeManager_->IsLayerCached(artifactKey);
     }
 
+    std::vector<TFuture<TOverlayData>> PrepareLayers(
+        TJobId jobId,
+        const std::vector<TOverlayLayerPreparationOptions>& layerOptions,
+        const TArtifactDownloadOptions& artifactDownloadOptions) override
+    {
+        YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+        VerifyEnabled();
+
+        if (!VolumeManager_) {
+            return {};
+        }
+
+        return VolumeManager_->PrepareOverlayLayers(jobId, layerOptions, artifactDownloadOptions);
+    }
+
     TFuture<IVolumePtr> PrepareRootVolume(
-        const std::vector<TArtifactKey>& layers,
+        std::vector<TOverlayData> overlayDataArray,
         const TVolumePreparationOptions& options) override
     {
         YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -329,14 +364,16 @@ public:
         VerifyEnabled();
 
         if (!VolumeManager_) {
-            return MakeFuture<IVolumePtr>(TError("Can not prepare root volume without volume manager."));
+            return MakeFuture<IVolumePtr>(TError("Cannot prepare root volume without volume manager."));
         }
 
         return RunPreparationAction(
             /*actionName*/ "PrepareRootVolume",
             /*uncancelable*/ false,
             [&] {
-                return VolumeManager_->PrepareVolume(layers, options);
+                return VolumeManager_->PrepareVolume(
+                    std::move(overlayDataArray),
+                    options);
             });
     }
 
@@ -349,7 +386,7 @@ public:
         VerifyEnabled();
 
         if (!VolumeManager_) {
-            return MakeFuture<IVolumePtr>(TError("Can not bind root volume without volume manager."));
+            return MakeFuture<IVolumePtr>(TError("Cannot bind root volume without volume manager."));
         }
 
         return RunPreparationAction(
@@ -361,7 +398,7 @@ public:
     }
 
     TFuture<IVolumePtr> PrepareGpuCheckVolume(
-        const std::vector<TArtifactKey>& layers,
+        std::vector<TOverlayData> overlayDataArray,
         const TVolumePreparationOptions& options) override
     {
         YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -376,13 +413,17 @@ public:
             /*actionName*/ "PrepareGpuCheckVolume",
             /*uncancelable*/ false,
             [&] {
-                return VolumeManager_->PrepareVolume(layers, options);
+                return VolumeManager_->PrepareVolume(
+                    std::move(overlayDataArray),
+                    options);
             });
     }
 
-    TFuture<std::vector<TTmpfsVolumeResult>> PrepareTmpfsVolumes(
+    TFuture<std::vector<TVolumeResultPtr>> PrepareNonRootVolumes(
+        TJobId jobId,
         const IVolumePtr& rootVolume,
-        const std::vector<TTmpfsVolumeParams>& volumeParams,
+        const std::vector<TBaseVolumeParamsPtr>& volumeParams,
+        std::vector<std::vector<TOverlayData>> perVolumeOverlayData,
         const std::vector<TVolumeMountPtr>& volumeMounts,
         bool testRootFs) override
     {
@@ -390,53 +431,58 @@ public:
 
         VerifyEnabled();
 
-        YT_LOG_DEBUG("Preparing tmpfs volumes (Volumes: %v)",
-            MakeFormattableView(volumeParams,
-                [] (auto* builder, const TTmpfsVolumeParams& volume) {
-                    builder->AppendFormat("{VolumeId: %v}", volume.VolumeId);
+        YT_LOG_DEBUG(
+            "Preparing non-root volumes (Volumes: %v)",
+            MakeFormattableView(
+                volumeParams,
+                [] (auto* builder, const TBaseVolumeParamsPtr& volume) {
+                    builder->AppendFormat("{VolumeId: %v}", volume->VolumeId);
                 }));
 
         if (!VolumeManager_) {
-            auto error = TError("Failed to prepare tmpfs volumes since volume manager is not initialized");
+            auto error = TError("Failed to prepare non-root volumes since volume manager is not initialized");
             YT_LOG_WARNING(error);
-            return MakeFuture<std::vector<TTmpfsVolumeResult>>(std::move(error));
+            return MakeFuture<std::vector<TVolumeResultPtr>>(std::move(error));
         }
 
         auto userSandboxPath = GetSandboxPath(ESandboxKind::User, rootVolume, testRootFs);
-        return Location_->CreateTmpfsDirectoriesInsideSandbox(userSandboxPath, volumeParams, volumeMounts)
-            .Apply(BIND([userSandboxPath = std::move(userSandboxPath), rootVolume, volumeParams, volumeMounts, this, this_ = MakeStrong(this)] () mutable {
-                // Check if tmpfs volumes are enabled only after tmpfs directories are created.
-                if (!Bootstrap_->GetConfig()->ExecNode->SlotManager->EnableTmpfs) {
-                    YT_LOG_INFO("Do not prepare tmpfs volumes since tmpfs is disabled in slot manager");
-                    return MakeFuture(std::vector<TTmpfsVolumeResult>{});
-                }
-
-                return RunPreparationAction(
-                    /*actionName*/ "PrepareTmpfsVolumes",
-                    /*uncancelable*/ false,
-                    [userSandboxPath = std::move(userSandboxPath), rootVolume = std::move(rootVolume), volumeParams = std::move(volumeParams), volumeMounts, this, this_ = MakeStrong(this)] {
-                        return VolumeManager_->PrepareTmpfsVolumes(userSandboxPath, volumeParams, volumeMounts)
-                            .AsUnique().Apply(BIND([rootVolume, volumeMounts, this, this_ = MakeStrong(this)] (TErrorOr<std::vector<TTmpfsVolumeResult>>&& volumeResultsOrError) {
+        return RunPreparationAction(
+            /*actionName*/ "PrepareNonRootVolumes",
+            /*uncancelable*/ false,
+            [&] {
+                return VolumeManager_->PrepareNonRootVolumes(userSandboxPath, jobId, volumeParams, std::move(perVolumeOverlayData), volumeMounts)
+                    .AsUnique()
+                    .Apply(
+                        BIND(
+                            [
+                                rootVolume,
+                                volumeMounts,
+                                this,
+                                this_ = MakeStrong(this)
+                            ] (TErrorOr<std::vector<TVolumeResultPtr>>&& volumeResultsOrError) {
                                 if (!volumeResultsOrError.IsOK()) {
-                                    THROW_ERROR_EXCEPTION("Failed to prepare tmpfs volumes: %v",
+                                    THROW_ERROR_EXCEPTION("Failed to prepare non-root volumes: %v",
                                         volumeResultsOrError);
                                 }
 
                                 auto& volumeResults = volumeResultsOrError.Value();
 
                                 // Inform slot location about tmpfses to be used.
-                                Location_->TakeIntoAccountTmpfsVolumes(SlotIndex_, rootVolume, volumeResults, volumeMounts);
+                                Location_->TakeIntoAccountTmpfsVolumes(
+                                    SlotIndex_,
+                                    rootVolume,
+                                    volumeResults,
+                                    volumeMounts);
                                 return std::move(volumeResults);
-                            })
-                            .AsyncVia(Bootstrap_->GetJobInvoker()));
-                    });
-            })
-            .AsyncVia(Bootstrap_->GetJobInvoker()));
+                    })
+                    .AsyncVia(Bootstrap_->GetJobInvoker()));
+            });
+
     }
 
-    TFuture<void> LinkTmpfsVolumes(
+    TFuture<void> LinkVolumes(
         const IVolumePtr& rootVolume,
-        const std::vector<TTmpfsVolumeResult>& volumeResults,
+        const std::vector<TVolumeResultPtr>& volumeResults,
         const std::vector<TVolumeMountPtr>& volumeMounts,
         bool testRootFs) override
     {
@@ -445,31 +491,30 @@ public:
         VerifyEnabled();
 
         if (!VolumeManager_) {
-            auto error = TError("Failed to link tmpfs volumes since volume manager is not initialized");
+            auto error = TError("Failed to link volumes since volume manager is not initialized");
             YT_LOG_WARNING(error);
             return MakeFuture<void>(std::move(error));
         }
 
-        if (!Bootstrap_->GetConfig()->ExecNode->SlotManager->EnableTmpfs) {
-            YT_LOG_INFO("Do not link tmpfs volumes since tmpfs is disabled in slot manager");
-            return OKFuture;
-        }
+        auto rootPath = GetRootPath(rootVolume, testRootFs);
 
-        auto userSandboxPath = GetSandboxPath(ESandboxKind::User, rootVolume, testRootFs);
-
-        YT_LOG_DEBUG("Linking tmpfs volumes into sandbox (UserSandboxPath: %v, Volumes: %v)",
-            userSandboxPath,
-            MakeFormattableView(volumeResults,
-                [] (auto* builder, const TTmpfsVolumeResult& result) {
-                    builder->AppendFormat("{VolumeId: %v}",
-                        result.VolumeId);
+        YT_LOG_DEBUG(
+            "Linking volumes into root (RootPath: %v, Volumes: %v)",
+            rootPath,
+            MakeFormattableView(volumeMounts,
+                [] (auto* builder, const TVolumeMountPtr& volumeMount) {
+                    builder->AppendFormat(
+                        "{VolumeId: %v, MountPath: %v}",
+                        volumeMount->VolumeId,
+                        volumeMount->MountPath);
                 }));
 
+
         return RunPreparationAction(
-            /*actionName*/ "LinkTmpfsVolumes",
+            /*actionName*/ "LinkVolumes",
             /*uncancelable*/ true,
-            [userSandboxPath = std::move(userSandboxPath), volumeResults, volumeMounts, this, this_ = MakeStrong(this)] {
-                return VolumeManager_->LinkTmpfsVolumes(userSandboxPath, volumeResults, volumeMounts);
+            [rootPath = std::move(rootPath), volumeResults, volumeMounts, this, this_ = MakeStrong(this)] {
+                return VolumeManager_->LinkVolumes(rootPath, volumeResults, volumeMounts);
         });
     }
 
@@ -487,7 +532,7 @@ public:
         return Location_->GetDiskStatistics(SlotIndex_);
     }
 
-    TString GetSlotPath() const override
+    std::string GetSlotPath() const override
     {
         VerifyEnabled();
 
@@ -558,7 +603,7 @@ public:
         const NContainers::TRootFS& rootFS,
         const std::string& user,
         const std::optional<std::vector<TDevice>>& devices,
-        const std::optional<TString>& hostName,
+        const std::optional<std::string>& hostName,
         const std::vector<TIP6Address>& ipAddresses,
         std::string tag,
         bool throwOnFailedCommand) override
@@ -588,9 +633,9 @@ public:
 
     void OnArtifactPreparationFailed(
         TJobId jobId,
-        const TString& artifactName,
+        const std::string& artifactName,
         ESandboxKind sandboxKind,
-        const TString& artifactPath,
+        const std::string& artifactPath,
         const TError& error) override
     {
         YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -634,7 +679,7 @@ public:
         Logger.AddTag("AllocationId: %v", allocationId);
     }
 
-    TString GetJobProxyUnixDomainSocketPath() const override
+    std::string GetJobProxyUnixDomainSocketPath() const override
     {
         VerifyEnabled();
 
@@ -668,7 +713,7 @@ public:
         return Location_->ValidateRootFS(rootVolume);
     }
 
-    TString GetSandboxPath(ESandboxKind sandboxKind, const IVolumePtr& rootVolume, bool testRootFs) const override
+    std::string GetSandboxPath(ESandboxKind sandboxKind, const IVolumePtr& rootVolume, bool testRootFs) const override
     {
         VerifyEnabled();
 
@@ -687,6 +732,18 @@ public:
                 return Location_->GetSandboxPath(
                     SlotIndex_,
                     sandboxKind);
+        }
+    }
+
+    TString GetRootPath(const IVolumePtr& rootVolume, bool testRootFs) const
+    {
+        VerifyEnabled();
+
+        if (rootVolume && !testRootFs) {
+            YT_VERIFY(!rootVolume->GetPath().empty());
+            return TString(rootVolume->GetPath());
+        } else {
+            return Location_->GetSlotPath(SlotIndex_);
         }
     }
 
@@ -714,11 +771,11 @@ private:
 
     //! Uniquely identifies a node process on the current host.
     //! Used for unix socket name generation, to communicate between node and job proxies.
-    const TString NodeTag_;
+    const std::string NodeTag_;
 
     bool PreparationCanceled_ = false;
 
-    const TString JobProxyUnixDomainSocketPath_;
+    const std::string JobProxyUnixDomainSocketPath_;
 
     const std::optional<TNumaNodeInfo> NumaNodeAffinity_;
 
@@ -759,7 +816,7 @@ private:
         }
     }
 
-    TString GetJobProxyGrpcUnixDomainSocketPath() const
+    std::string GetJobProxyGrpcUnixDomainSocketPath() const
     {
         VerifyEnabled();
 
@@ -769,71 +826,6 @@ private:
             Format("%v-job-proxy-grpc-%v", NodeTag_, SlotIndex_)});
     }
 
-    //! Remove volumes planted in porto place.
-    void RemoveVolumesFromPortoPlace()
-    {
-        auto portoPlacePath = Location_->GetSandboxPath(SlotIndex_, ESandboxKind::PortoPlace);
-
-        if (!VolumeManager_) {
-            YT_LOG_DEBUG(
-                "Volume manager is not available, skipping porto place cleanup (PortoPlace: %v)",
-                portoPlacePath);
-            return;
-        }
-
-        YT_LOG_DEBUG(
-            "Cleaning up volumes from porto place (PortoPlace: %v)",
-            portoPlacePath);
-
-        static constexpr TDuration Timeout = TDuration::Minutes(10);
-
-        auto removeVolumesResult = WaitFor(VolumeManager_->RemoveVolumes(portoPlacePath, Timeout));
-        if (!removeVolumesResult.IsOK()) {
-            auto error = TError("Failed to remove volumes from porto place")
-                << TErrorAttribute("porto_place", portoPlacePath)
-                << removeVolumesResult;
-            YT_LOG_ERROR(error);
-            Location_->Disable(error);
-            THROW_ERROR error;
-        }
-
-        YT_LOG_DEBUG(
-            "Cleaned up volumes from porto place (PortoPlace: %v)",
-            portoPlacePath);
-    }
-
-    //! Remove layers planted in porto place.
-    void RemoveLayersFromPortoPlace()
-    {
-        auto portoPlacePath = Location_->GetSandboxPath(SlotIndex_, ESandboxKind::PortoPlace);
-
-        if (!VolumeManager_) {
-            YT_LOG_DEBUG(
-                "Volume manager is not available, skipping porto place layer cleanup (PortoPlace: %v)",
-                portoPlacePath);
-            return;
-        }
-
-        YT_LOG_DEBUG(
-            "Cleaning up layers from porto place (PortoPlace: %v)",
-            portoPlacePath);
-
-        static constexpr TDuration Timeout = TDuration::Minutes(10);
-
-        auto removeLayersResult = WaitFor(VolumeManager_->RemoveLayers(portoPlacePath, Timeout));
-        if (!removeLayersResult.IsOK()) {
-            auto error = TError("Failed to remove layers from porto place")
-                << TErrorAttribute("porto_place", portoPlacePath)
-                << removeLayersResult;
-            YT_LOG_ERROR(error);
-            Location_->Disable(error);
-            THROW_ERROR error;
-        }
-
-        YT_LOG_DEBUG(
-            "Cleaned up layers from porto place (PortoPlace: %v)",
-            portoPlacePath);
-    }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -844,7 +836,7 @@ IUserSlotPtr CreateSlot(
     IJobEnvironmentPtr environment,
     IVolumeManagerPtr volumeManager,
     NExecNode::IBootstrap* bootstrap,
-    const TString& nodeTag,
+    const std::string& nodeTag,
     ESlotType slotType,
     NClusterNode::TCpu requestedCpu,
     NScheduler::NProto::TDeprecatedDiskRequest diskRequest,
