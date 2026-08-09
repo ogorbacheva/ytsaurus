@@ -159,12 +159,12 @@ void TJobWorkspaceBuilder::MakeArtifactSymlinks()
 
     YT_LOG_INFO(
         "Making artifact symlinks (ArtifactCount: %v)",
-        std::size(Context_.FSSecretary->GetArtifacts()));
+        std::size(Context_.FSSecretary->GetArtifactDescriptors()));
 
-    for (const auto& artifact : Context_.FSSecretary->GetArtifacts()) {
+    for (const auto& artifact : Context_.FSSecretary->GetArtifactDescriptors()) {
         // Artifact is passed into the job via symlink.
         if (!artifact.BypassArtifactCache && !artifact.CopyFile) {
-            YT_VERIFY(artifact.Artifact);
+            const auto& preparedArtifact = Context_.FSSecretary->GetArtifactByName(artifact.Name);
 
             YT_LOG_INFO(
                 "Making symlink for artifact (FileName: %v, Executable: "
@@ -181,7 +181,7 @@ void TJobWorkspaceBuilder::MakeArtifactSymlinks()
                 Context_.Job->GetId(),
                 artifact.Name,
                 artifact.SandboxKind,
-                artifact.Artifact->GetFileName(),
+                preparedArtifact->GetFileName(),
                 symlinkPath,
                 artifact.Executable))
                 .ThrowOnError();
@@ -205,7 +205,7 @@ void TJobWorkspaceBuilder::MakeFilesForArtifactBinds()
 {
     const auto& slot = Context_.Slot;
 
-    const auto& artifacts = Context_.FSSecretary->GetArtifacts();
+    const auto& artifacts = Context_.FSSecretary->GetArtifactDescriptors();
 
     YT_LOG_INFO(
         "Setting permissions for artifacts (ArtifactCount: %v)",
@@ -216,7 +216,7 @@ void TJobWorkspaceBuilder::MakeFilesForArtifactBinds()
 
     for (const auto& artifact : artifacts) {
         if (artifact.AccessedViaBind) {
-            YT_VERIFY(artifact.Artifact);
+            const auto& preparedArtifact = Context_.FSSecretary->GetArtifactByName(artifact.Name);
 
             auto sandboxPath = slot->GetSandboxPath(artifact.SandboxKind, ResultHolder_.RootVolume, Context_.TestRootFS);
             auto artifactPath = CombinePaths(sandboxPath, artifact.Name);
@@ -233,7 +233,7 @@ void TJobWorkspaceBuilder::MakeFilesForArtifactBinds()
                 Context_.Job->GetId(),
                 artifact.Name,
                 artifact.SandboxKind,
-                artifact.Artifact->GetFileName(),
+                preparedArtifact->GetFileName(),
                 artifactPath,
                 artifact.Executable));
         } else {
@@ -523,7 +523,7 @@ private:
         YT_LOG_DEBUG("GPU check is not supported in simple workspace");
 
         ValidateJobPhase(EJobPhase::RunningCustomPreparations);
-        // NB: we intentionally not set running_gpu_check_command phase, since this phase is empty.
+        // NB: we intentionally do not set running_gpu_check_command phase, since this phase is empty.
 
         return OKFuture;
     }
@@ -643,7 +643,15 @@ private:
                 this,
                 this_ = MakeStrong(this),
                 layerOptions = std::move(layerOptions)
-            ] (std::vector<TOverlayData>&& overlayDataArray) mutable {
+            ] (TErrorOr<std::vector<TOverlayData>>&& overlayDataArrayOrError) mutable {
+                if (!overlayDataArrayOrError.IsOK()) {
+                    YT_LOG_WARNING(overlayDataArrayOrError, "Failed to prepare overlay layers");
+
+                    THROW_ERROR_EXCEPTION(NExecNode::EErrorCode::OverlayLayerPreparationFailed, "Failed to prepare overlay layers")
+                        << overlayDataArrayOrError;
+                }
+
+                auto& overlayDataArray = overlayDataArrayOrError.Value();
                 YT_VERIFY(overlayDataArray.size() == layerOptions.size());
                 TPreparedLayers preparedLayers;
                 for (int i = 0; i < std::ssize(layerOptions); ++i) {
@@ -1112,7 +1120,7 @@ private:
                     YT_LOG_INFO("Preliminary GPU check command finished");
                 }).AsyncVia(Invoker_));
         } else {
-            // NB: we intentionally not set running_gpu_check_command phase, since this phase is empty.
+            // NB: we intentionally do not set running_gpu_check_command phase, since this phase is empty.
             YT_LOG_INFO("No preliminary GPU check is needed");
 
             return OKFuture;
@@ -1399,7 +1407,7 @@ private:
         YT_LOG_DEBUG_IF(Context_.GpuCheckOptions, "GPU check is not supported in CRI workspace");
 
         ValidateJobPhase(EJobPhase::RunningCustomPreparations);
-        // NB: we intentionally not set running_gpu_check_command phase, since this phase is empty.
+        // NB: we intentionally do not set running_gpu_check_command phase, since this phase is empty.
 
         return OKFuture;
     }

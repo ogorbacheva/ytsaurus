@@ -55,6 +55,9 @@ public:
         , MasterLocateChunksCounter_(profiler.Counter("/master_locate_chunks"))
         , SequoiaLocateCallsCounter_(profiler.Counter("/sequoia_locate_calls"))
         , SequoiaLocateChunksCounter_(profiler.Counter("/sequoia_locate_chunks"))
+        , SequoiaLocateChunksFailedCounter_(profiler.Counter("/sequoia_locate_chunks_failed"))
+        , SequoiaLocateChunksSuccessfulCounter_(profiler.Counter("/sequoia_locate_chunks_successful"))
+        , SequoiaLocateChunksMissingCounter_(profiler.Counter("/sequoia_locate_chunks_missing"))
         , ExpiredChunksCounter_(profiler.Counter("/expired_chunks"))
         , MasterErrorDiscardsCounter_(profiler.Counter("/master_error_discards"))
         , CacheSizeGauge_(profiler.Gauge("/cache_size"))
@@ -500,6 +503,9 @@ private:
     const TCounter MasterLocateChunksCounter_;
     const TCounter SequoiaLocateCallsCounter_;
     const TCounter SequoiaLocateChunksCounter_;
+    const TCounter SequoiaLocateChunksFailedCounter_;
+    const TCounter SequoiaLocateChunksSuccessfulCounter_;
+    const TCounter SequoiaLocateChunksMissingCounter_;
     const TCounter ExpiredChunksCounter_;
     const TCounter MasterErrorDiscardsCounter_;
     const TGauge CacheSizeGauge_;
@@ -602,7 +608,11 @@ private:
             std::vector<NSequoiaClient::NRecords::TChunkReplicasKey> recordKeys;
             recordKeys.reserve(chunkIds.size());
             for (auto chunkId : chunkIds) {
-                recordKeys.push_back({.ChunkId = chunkId});
+                recordKeys.push_back({
+                    .CellTag = CellTagFromId(chunkId),
+                    .ShardIndex = static_cast<i8>(GetShardIndex<ChunkShardCount>(chunkId)),
+                    .ChunkId = chunkId,
+                });
             }
 
             const auto& idMapping = NSequoiaClient::NRecords::TChunkReplicasDescriptor::Get()->GetIdMapping();
@@ -672,6 +682,8 @@ private:
         if (!resultsOrError.IsOK()) {
             YT_LOG_WARNING(resultsOrError, "Error locating chunks in Sequoia");
 
+            SequoiaLocateChunksFailedCounter_.Increment(std::ssize(chunkIds));
+
             OnLocateChunksFailed(chunkIds, promises, resultsOrError);
             return;
         }
@@ -687,6 +699,8 @@ private:
             auto& optionalResult = results[index];
 
             if (!optionalResult) {
+                SequoiaLocateChunksMissingCounter_.Increment();
+
                 YT_LOG_DEBUG("Chunk is missing in Sequoia (ChunkId: %v)", chunkId);
                 promise.TrySet(TError(
                     NChunkClient::EErrorCode::NoSuchChunk,
@@ -695,6 +709,7 @@ private:
                 continue;
             }
 
+            SequoiaLocateChunksSuccessfulCounter_.Increment();
             promise.TrySet(std::move(*optionalResult));
         }
     }
@@ -892,9 +907,11 @@ private:
                 auto& optionalResult = results[index];
 
                 if (!optionalResult) {
+                    SequoiaLocateChunksMissingCounter_.Increment();
                     continue;
                 }
 
+                SequoiaLocateChunksSuccessfulCounter_.Increment();
                 chunkIdToReplicasInfo.emplace(chunkId, std::move(*optionalResult));
             }
 
@@ -920,6 +937,7 @@ private:
                 }
             }
         } else {
+            SequoiaLocateChunksFailedCounter_.Increment(std::ssize(chunkIds));
             YT_LOG_WARNING(resultsOrError, "Error refreshing chunks in Sequoia");
         }
 

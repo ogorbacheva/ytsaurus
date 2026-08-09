@@ -32,9 +32,6 @@
 #include <yt/yt/server/lib/nbd/config.h>
 #include <yt/yt/server/lib/nbd/server.h>
 
-#include <yt/yt/server/lib/signature/components/components.h>
-#include <yt/yt/server/lib/signature/components/config.h>
-
 #include <yt/yt/ytlib/auth/native_authentication_manager.h>
 #include <yt/yt/ytlib/auth/tvm_bridge_service.h>
 
@@ -55,6 +52,9 @@
 #include <yt/yt/library/dns_over_rpc/server/dns_over_rpc_service.h>
 
 #include <yt/yt/library/disk_manager/hotswap_manager.h>
+
+#include <yt/yt/library/signature/components/components.h>
+#include <yt/yt/library/signature/components/config.h>
 
 #include <yt/yt/core/service_discovery/yp/config.h>
 
@@ -160,7 +160,7 @@ public:
             ClusterNodeBootstrap_,
             {
                 .LocalAddress = NNet::BuildServiceAddress(GetLocalHostName(), GetConfig()->RpcPort),
-                .Logger = ExecNodeLogger().WithTag("Component: ThrottlerManager"),
+                .Logger = ExecNodeLogger().WithTag("Component", "ThrottlerManager"),
                 .Profiler = ExecNodeProfiler().WithPrefix("/throttler_manager")
             }
         );
@@ -480,7 +480,7 @@ private:
 
     TSignatureComponentsPtr SignatureComponents_;
 
-    IPollerPtr AuxPoller_;
+    IThreadPoolPollerPtr AuxPoller_;
 
     void BuildJobProxyConfigTemplate(const std::optional<TSecondaryMasterConnectionConfigs>& optionalNewSecondaryMasterConfigs)
     {
@@ -637,6 +637,8 @@ private:
         if (NbdThreadPool_ && newConfig->ExecNode->Nbd) {
             NbdThreadPool_->SetThreadCount(newConfig->ExecNode->Nbd->Server->ThreadCount);
         }
+        AuxPoller_->SetThreadCount(
+            newConfig->AuxPollerThreadCount.value_or(GetConfig()->AuxPollerThreadCount));
     }
 
     DECLARE_THREAD_AFFINITY_SLOT(ControlThread);

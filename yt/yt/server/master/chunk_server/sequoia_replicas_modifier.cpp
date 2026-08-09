@@ -69,6 +69,7 @@ public:
         if (ReplaceLocationRequest_) {
             YT_LOG_ALERT_AND_THROW("Sequoia replicas modifier can not have both replace and modify requests");
         }
+        IsIncrementalHeartbeat_ &= request->is_incremental_heartbeat();
         Requests_.push_back(std::move(request));
     }
 
@@ -79,11 +80,13 @@ public:
             YT_LOG_ALERT_AND_THROW("Replace location request must be unique in sequoia replicas modifier");
         }
         ReplaceLocationRequest_ = std::move(request);
+        IsIncrementalHeartbeat_ = false;
+        IsValidationHeartbeat_ = true;
     }
 
     TFuture<void> ModifyReplicas() override
     {
-        return Bootstrap_
+        auto result = Bootstrap_
             ->GetSequoiaConnection()
             ->CreateClient(NRpc::GetRootAuthenticationIdentity())
             ->StartTransaction(
@@ -91,6 +94,13 @@ public:
                 {.CellTag = Bootstrap_->GetCellTag()})
             .Apply(BIND(&TSequoiaReplicasModifier::DoModifyReplicas, MakeStrong(this))
                 .AsyncVia(TDispatcher::Get()->GetHeavyInvoker()));
+
+        if (Config_->EnableInGhostMode) {
+            YT_VERIFY(!Config_->Enable);
+            return MakeFuture<void>(TError());
+        } else {
+            return result;
+        }
     }
 
 private:
@@ -115,6 +125,9 @@ private:
 
     THashSet<TChunkId> ChunksWithMediumChange_;
     THashMap<TChunkId, TReplicaList> ModifiedReplicas_;
+
+    bool IsIncrementalHeartbeat_ = true;
+    bool IsValidationHeartbeat_ = false;
 
     static constexpr size_t ChunkSampleSizeOnValidationFail = 10;
 
@@ -145,6 +158,7 @@ private:
         auto modifyRequest = std::make_unique<TReqModifyReplicas>();
         modifyRequest->set_node_id(ReplaceLocationRequest_->node_id());
         modifyRequest->set_caused_by_node_disposal(ReplaceLocationRequest_->caused_by_node_disposal());
+        modifyRequest->set_caused_by_validation(ReplaceLocationRequest_->is_validation());
         Requests_.push_back(std::move(modifyRequest));
 
         GatherReplacedLocationReplicasDifference();
@@ -174,11 +188,21 @@ private:
 
         if (chunkInfo.caused_by_medium_change()) {
             ChunksWithMediumChange_.insert(chunkId);
-            YT_LOG_TRACE("%v of Sequoia replica is caused by medium change (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v)",
-                chunkAdded ? "Addition" : "Removal",
-                chunkId,
-                chunkIdWithIndex.ReplicaIndex,
-                locationIndex);
+            // We need 2 different messages to be able to override some of them to debug.
+            if constexpr (chunkAdded) {
+                YT_LOG_TRACE(
+                    "Addition of Sequoia replica is caused by medium change (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v)",
+                    chunkId,
+                    chunkIdWithIndex.ReplicaIndex,
+                    locationIndex);
+            } else {
+                YT_LOG_TRACE(
+                    "Removal of Sequoia replica is caused by medium change (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v)",
+                    chunkId,
+                    chunkIdWithIndex.ReplicaIndex,
+                    locationIndex);
+            }
+
             return;
         }
 
@@ -194,12 +218,42 @@ private:
             ModifiedReplicas_[chunkId].RemovedReplicas.push_back(replica);
         }
 
-        YT_LOG_TRACE("Sequoia replica is being %v (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v)",
-            chunkAdded ? "added" : "removed",
-            chunkId,
-            chunkIdWithIndex.ReplicaIndex,
-            locationIndex,
-            nodeId);
+        // We need 4 different messages to be able to override some of them to debug.
+        if (IsIncrementalHeartbeat_) {
+            if constexpr (chunkAdded) {
+                YT_LOG_TRACE(
+                    "Sequoia replica is being added during incremental heartbeat (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v)",
+                    chunkId,
+                    chunkIdWithIndex.ReplicaIndex,
+                    locationIndex,
+                    nodeId);
+            } else {
+                YT_LOG_TRACE(
+                    "Sequoia replica is being removed during incremental heartbeat (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v)",
+                    chunkId,
+                    chunkIdWithIndex.ReplicaIndex,
+                    locationIndex,
+                    nodeId);
+            }
+        } else {
+            if constexpr (chunkAdded) {
+                YT_LOG_TRACE(
+                    "Sequoia replica is being added during full heartbeat (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v, IsValidationHeartbeat: %v)",
+                    chunkId,
+                    chunkIdWithIndex.ReplicaIndex,
+                    locationIndex,
+                    nodeId,
+                    IsValidationHeartbeat_);
+            } else {
+                YT_LOG_TRACE(
+                    "Sequoia replica is being removed during full heartbeat (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v, IsValidationHeartbeat: %v)",
+                    chunkId,
+                    chunkIdWithIndex.ReplicaIndex,
+                    locationIndex,
+                    nodeId,
+                    IsValidationHeartbeat_);
+            }
+        }
     }
 
     void GatherModifiedAddedChunkReplicas()
@@ -240,11 +294,22 @@ private:
                     .ReplicaIndex = static_cast<i8>(chunkIdWithIndex.ReplicaIndex)
                 };
                 removedReplicasKeys.push_back(locationReplicaKey);
-                YT_LOG_TRACE("Preparing removed Sequoia replicas keys (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v)",
-                    chunkId,
-                    chunkIdWithIndex.ReplicaIndex,
-                    locationIndex,
-                    nodeId);
+                // We need 2 messages to be able to override some of them to debug.
+                if (IsIncrementalHeartbeat_) {
+                    YT_LOG_TRACE(
+                        "Removed Sequoia replica is being added during incremental heartbeat (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v)",
+                        chunkId,
+                        chunkIdWithIndex.ReplicaIndex,
+                        locationIndex,
+                        nodeId);
+                } else {
+                    YT_LOG_TRACE(
+                        "Removed Sequoia replica is being added during full heartbeat (ChunkId: %v, ReplicaIndex: %v, LocationIndex: %v, NodeId: %v)",
+                        chunkId,
+                        chunkIdWithIndex.ReplicaIndex,
+                        locationIndex,
+                        nodeId);
+                }
             }
         }
 
@@ -412,6 +477,9 @@ private:
         if (!ReplaceLocationRequest_->is_validation()) {
             return false;
         }
+        if (Config_->EnableInGhostMode) {
+            return false;
+        }
 
         auto nodeId = FromProto<TNodeId>(ReplaceLocationRequest_->node_id());
 
@@ -455,10 +523,21 @@ private:
                 .LastSeenReplicas = GetReplicasListYson(chunkModifiedReplicas.AddedReplicas),
             };
 
-            YT_LOG_TRACE("Sequoia chunk replicas changed (ChunkId: %v, StoredReplicasDiff: %v, LastSeenReplicasDiff: %v)",
-                chunkId,
-                MakeFormattableView(chunkModifiedReplicas.AddedReplicas, TChunkReplicaWithLocationIndexAndStateFormatter()),
-                MakeFormattableView(chunkModifiedReplicas.RemovedReplicas, TChunkReplicaWithLocationIndexAndStateFormatter()));
+            // We need 2 messages to be able to override some of them to debug.
+            if (IsIncrementalHeartbeat_) {
+                YT_LOG_DEBUG(
+                    "Sequoia chunk replicas changed during incremental heartbeat (ChunkId: %v, StoredReplicasDiff: %v, LastSeenReplicasDiff: %v)",
+                    chunkId,
+                    MakeFormattableView(chunkModifiedReplicas.AddedReplicas, TChunkReplicaWithLocationIndexAndStateFormatter()),
+                    MakeFormattableView(chunkModifiedReplicas.RemovedReplicas, TChunkReplicaWithLocationIndexAndStateFormatter()));
+            } else {
+                YT_LOG_TRACE(
+                    "Sequoia chunk replicas changed during full heartbeat (ChunkId: %v, StoredReplicasDiff: %v, LastSeenReplicasDiff: %v, IsValidationHeartbeat: %v)",
+                    chunkId,
+                    MakeFormattableView(chunkModifiedReplicas.AddedReplicas, TChunkReplicaWithLocationIndexAndStateFormatter()),
+                    MakeFormattableView(chunkModifiedReplicas.RemovedReplicas, TChunkReplicaWithLocationIndexAndStateFormatter()),
+                    IsValidationHeartbeat_);
+            }
 
             YT_VERIFY(chunkModifiedReplicas.AddedReplicas.size() + chunkModifiedReplicas.RemovedReplicas.size() > 0);
             Transaction_->WriteRow(
@@ -511,6 +590,7 @@ private:
             }
         }
 
+
         for (auto& request : Requests_) {
             // We always clean master request to avoid additional work in automaton thread.
             auto addedChunksEndIt = std::remove_if(
@@ -538,20 +618,22 @@ private:
             }
         }
 
-        if (Requests_.size() == 1) {
-            // COMPAT(grphil)
-            Transaction_->AddTransactionAction(
-                Bootstrap_->GetCellTag(),
-                NTransactionClient::MakeTransactionActionData(*Requests_[0]));
-        } else {
-            TReqModifyReplicasBatch batchRequest;
-            for (auto& request : Requests_) {
-                *batchRequest.add_requests() = std::move(*request);
-            }
+        if (Config_->Enable) {
+            if (Requests_.size() == 1) {
+                // COMPAT(grphil)
+                Transaction_->AddTransactionAction(
+                    Bootstrap_->GetCellTag(),
+                    NTransactionClient::MakeTransactionActionData(*Requests_[0]));
+            } else {
+                TReqModifyReplicasBatch batchRequest;
+                for (auto& request : Requests_) {
+                    *batchRequest.add_requests() = std::move(*request);
+                }
 
-            Transaction_->AddTransactionAction(
-                Bootstrap_->GetCellTag(),
-                NTransactionClient::MakeTransactionActionData(batchRequest));
+                Transaction_->AddTransactionAction(
+                    Bootstrap_->GetCellTag(),
+                    NTransactionClient::MakeTransactionActionData(batchRequest));
+            }
         }
 
 

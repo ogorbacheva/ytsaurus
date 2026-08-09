@@ -256,6 +256,7 @@ struct TUringRequest
     };
 
     EUringRequestType Type;
+    EWorkloadCategory Category;
     std::optional<TRequestStatsGuard> RequestTimeGuard_;
     TRequestCounterGuard RequestCounterGuard;
 
@@ -731,7 +732,7 @@ private:
 
             ++request->IORequests;
 
-            SetRequestUserData(sqe, request, Sensors_->ReadSensors, subrequestIndex);
+            SetRequestUserData(sqe, request, Sensors_->ReadSensors[request->Category], subrequestIndex);
         }
 
         if (!request->PendingReadSubrequestIndexes.empty()) {
@@ -760,7 +761,7 @@ private:
 
         ++request->IOSyncRequests;
 
-        SetRequestUserData(sqe, request, Sensors_->DataSyncSensors);
+        SetRequestUserData(sqe, request, Sensors_->DataSyncSensors[request->Category]);
         return true;
     }
 
@@ -833,7 +834,7 @@ private:
 
         ++request->IOWriteRequests;
 
-        SetRequestUserData(sqe, request, Sensors_->WriteSensors);
+        SetRequestUserData(sqe, request, Sensors_->WriteSensors[request->Category]);
     }
 
     static ui32 GetSyncFlags(EFlushFileMode mode)
@@ -863,7 +864,7 @@ private:
 
         ++request->IOSyncRequests;
 
-        SetRequestUserData(sqe, request, Sensors_->SyncSensors);
+        SetRequestUserData(sqe, request, Sensors_->SyncSensors[request->Category]);
     }
 
     void HandleCompletion(const io_uring_cqe* cqe)
@@ -921,7 +922,7 @@ private:
             if (Config_->SimulatedMaxBytesPerRead) {
                 readSize = Min(readSize, *Config_->SimulatedMaxBytesPerRead);
             }
-            Sensors_->RegisterReadBytes(readSize);
+            Sensors_->RegisterReadBytes(readSize, request->Category);
             auto bufferSize = std::ssize(subrequestState.Buffer);
             subrequest.Offset += readSize;
             if (bufferSize == readSize) {
@@ -966,7 +967,7 @@ private:
         if (Config_->SimulatedMaxBytesPerWrite) {
             writtenSize = Min(writtenSize, *Config_->SimulatedMaxBytesPerWrite);
         }
-        Sensors_->RegisterWrittenBytes(writtenSize);
+        Sensors_->RegisterWrittenBytes(writtenSize, request->Category);
         request->WriteRequest.Offset += writtenSize;
         request->WrittenBytes += writtenSize;
 
@@ -1739,8 +1740,9 @@ public:
         for (auto& slice : slices) {
             auto uringRequest = std::make_unique<TWriteUringRequest>();
             uringRequest->Type = EUringRequestType::Write;
+            uringRequest->Category = category;
             uringRequest->WriteRequest = std::move(slice);
-            uringRequest->RequestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Write);
+            uringRequest->RequestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Write, category);
 
             futures.push_back(uringRequest->Promise.ToFuture());
             uringRequests.push_back(std::move(uringRequest));
@@ -1768,6 +1770,7 @@ public:
     {
         auto uringRequest = std::make_unique<TFlushFileUringRequest>();
         uringRequest->Type = EUringRequestType::FlushFile;
+        uringRequest->Category = category;
         uringRequest->FlushFileRequest = std::move(request);
         return SubmitRequest(std::move(uringRequest), category, { });
     }
@@ -1828,11 +1831,12 @@ private:
             for (auto& slice : slicer.Slice(std::move(request.ReadRequest), request.ResultBuffer, Config_->GetDirectIOBlockSize())) {
                 auto uringRequest = std::make_unique<TReadUringRequest>(readRequestCombiner);
                 uringRequest->Type = EUringRequestType::Read;
+                uringRequest->Category = category;
 
                 uringRequest->ReadSubrequests.reserve(1);
                 uringRequest->ReadSubrequestStates.reserve(1);
                 uringRequest->PendingReadSubrequestIndexes.reserve(1);
-                uringRequest->RequestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Read);
+                uringRequest->RequestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Read, category);
 
                 uringRequest->PaddedBytes += GetPaddedSize(
                     slice.Request.Offset,

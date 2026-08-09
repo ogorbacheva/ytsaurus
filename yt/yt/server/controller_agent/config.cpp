@@ -326,10 +326,8 @@ void TDataBalancerOptions::Register(TRegistrar registrar)
 
 void TUserJobOptions::Register(TRegistrar registrar)
 {
-    registrar.Parameter("thread_limit_multiplier", &TThis::ThreadLimitMultiplier)
-        .Default(10'000);
-    registrar.Parameter("initial_thread_limit", &TThis::InitialThreadLimit)
-        .Default(10'000);
+    registrar.Parameter("thread_limit_formula", &TThis::ThreadLimitFormula)
+        .DefaultCtor([] { return MakeArithmeticFormula("250000"); });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -580,8 +578,11 @@ void TSortOperationOptionsBase::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Parameter("default_partition_data_weight_for_merging", &TThis::DefaultPartitionDataWeightForMerging)
-        .Default(50_MBs)
+        .Default(128_MBs)
         .GreaterThanOrEqual(1);
+
+    registrar.Parameter("enable_final_partitions_merging_by_default", &TThis::EnableFinalPartitionsMergingByDefault)
+        .Default(true);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1093,8 +1094,6 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
     registrar.Parameter("udf_registry_path", &TThis::UdfRegistryPath)
         .Default();
 
-    registrar.Parameter("enable_tmpfs", &TThis::EnableTmpfs)
-        .Default(true);
     registrar.Parameter("enable_map_job_size_adjustment", &TThis::EnableMapJobSizeAdjustment)
         .Default(true);
     registrar.Parameter("enable_ordered_map_job_size_adjustment", &TThis::EnableOrderedMapJobSizeAdjustment)
@@ -1349,6 +1348,8 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("footprint_memory", &TThis::FootprintMemory)
         .Default();
+    registrar.Parameter("exec_footprint_memory", &TThis::ExecFootprintMemory)
+        .Default();
 
     registrar.Parameter("enable_job_profiling", &TThis::EnableJobProfiling)
         .Default();
@@ -1393,7 +1394,7 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Parameter("max_job_aborts_until_operation_failure", &TThis::MaxJobAbortsUntilOperationFailure)
-        .Default(THashMap<EAbortReason, int>({{EAbortReason::RootVolumePreparationFailed, 1000}, {EAbortReason::NbdError, 10}}));
+        .Default(THashMap<EAbortReason, int>({{EAbortReason::RootVolumePreparationFailed, 1000}, {EAbortReason::OverlayLayerPreparationFailed, 1000}, {EAbortReason::NbdError, 10}}));
 
     registrar.Parameter("remote_operations", &TThis::RemoteOperations)
         .Default();
@@ -1435,6 +1436,9 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Parameter("fail_operations_in_empty_trees", &TThis::FailOperationsInEmptyTrees)
+        .Default(true);
+
+    registrar.Parameter("forbid_operations_on_offshore_media", &TThis::ForbidOperationsOnOffshoreMedia)
         .Default(true);
 
     registrar.Preprocessor([&] (TControllerAgentConfig* config) {

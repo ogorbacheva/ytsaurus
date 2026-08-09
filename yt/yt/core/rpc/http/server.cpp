@@ -1,4 +1,5 @@
 #include "server.h"
+#include "config.h"
 #include "helpers.h"
 
 #include <yt/yt/core/net/address.h>
@@ -7,6 +8,8 @@
 #include <yt/yt/core/http/private.h>
 #include <yt/yt/core/http/helpers.h>
 #include <yt/yt/core/http/server.h>
+
+#include <yt/yt/core/https/server.h>
 
 #include <yt/yt/core/rpc/message.h>
 #include <yt/yt/core/rpc/service.h>
@@ -150,7 +153,8 @@ public:
     TFuture<void> ReplySent(IServicePtr underlying, TRequestId requestId)
     {
         ReplySent_.OnCanceled(BIND([underlying, requestId, Logger = this->Logger] (const TError&) {
-            YT_LOG_INFO("Request cancelled (RequestId: %v)", requestId);
+            YT_TLOG_INFO("Request cancelled")
+                .With("RequestId", requestId);
             underlying->HandleRequestCancellation(requestId);
         }));
         return ReplySent_.ToFuture();
@@ -385,7 +389,7 @@ class TServer
 {
 public:
     explicit TServer(NYT::NHttp::IServerPtr httpServer)
-        : TServerBase(HttpLogger().WithTag("ServerId: %v", TGuid::Create()))
+        : TServerBase(HttpLogger().WithTag("ServerId", TGuid::Create()))
         , HttpServer_(std::move(httpServer))
     { }
 
@@ -426,6 +430,14 @@ private:
 
 NRpc::IServerPtr CreateServer(NYT::NHttp::IServerPtr httpServer)
 {
+    return New<TServer>(std::move(httpServer));
+}
+
+NRpc::IServerPtr CreateServer(TServerConfigPtr config)
+{
+    auto httpServer = config->Credentials
+        ? NYT::NHttps::CreateServer(config, config->PollerThreadCount)
+        : NYT::NHttp::CreateServer(config, config->PollerThreadCount);
     return New<TServer>(std::move(httpServer));
 }
 

@@ -81,6 +81,7 @@
 
 #include <yt/yt/core/profiling/timing.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/ephemeral_node_factory.h>
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
@@ -532,14 +533,14 @@ public:
     void ValidatePoolPermission(
         const std::string& treeId,
         NObjectClient::TObjectId poolObjectId,
-        const TString& poolName,
+        const std::string& poolName,
         const std::string& user,
         EPermission permission) const override
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
         auto path = poolObjectId
-            ? Format("#%v", poolObjectId)
+            ? TYPath(Format("#%v", poolObjectId))
             : Config_->PoolTreesRoot;
 
         YT_LOG_DEBUG("Validating pool permission (Permission: %v, User: %v, Pool: %v, Path: %v, TreeId: %v)",
@@ -1040,10 +1041,9 @@ public:
 
         {
             const auto& shells = operation->Spec()->JobShells;
-            THashSet<TString> jobShellNames;
+            THashSet<std::string> jobShellNames;
             for (const auto& shell : shells) {
-                // TODO(babenko): migrate to std::string
-                jobShellNames.insert(TString(shell->Name));
+                jobShellNames.insert(shell->Name);
             }
             for (const auto& [jobShellName, options] : update->OptionsPerJobShell) {
                 if (!jobShellNames.contains(jobShellName)) {
@@ -1496,7 +1496,7 @@ public:
             return;
         }
 
-        auto buildCommonLogEventPart = [&] (const TString& schema, i64 usageQuantity, TInstant startTime, TInstant finishTime) {
+        auto buildCommonLogEventPart = [&] (const std::string& schema, i64 usageQuantity, TInstant startTime, TInstant finishTime) {
             return NLogging::LogStructuredEventFluently(SchedulerResourceMeteringLogger(), NLogging::ELogLevel::Info)
                 .Item("schema").Value(schema)
                 .Item("id").Value(TGuid::Create())
@@ -2494,7 +2494,7 @@ private:
             return;
         }
 
-        ClusterName_ = ConvertTo<TString>(TYsonString(rspOrError.Value()->value()));
+        ClusterName_ = ConvertTo<std::string>(TYsonString(rspOrError.Value()->value()));
     }
 
     void RequestUserToDefaultPoolMap(TObjectServiceProxy::TReqExecuteBatchPtr batchReq)
@@ -3301,9 +3301,23 @@ private:
 
         operation->SetUnregistering();
 
-        // Switch to regular control invoker.
-        // No recurrent complete is possible after this point.
-        SwitchTo(operation->GetControlInvoker());
+        // Run the final part via the operation's control invoker (the master
+        // connector's cancelable invoker): unlike the operation's own cancelable
+        // invoker it is not canceled by a per-operation abort/agent revocation.
+        operation->GetControlInvoker()->Invoke(BIND(
+            &TImpl::DoFinalizeCompletedOperation,
+            MakeStrong(this),
+            operation,
+            operationProgress));
+    }
+
+    void DoFinalizeCompletedOperation(
+        const TOperationPtr& operation,
+        const TOperationProgress& operationProgress)
+    {
+        YT_ASSERT_THREAD_AFFINITY(ControlThread);
+
+        auto codicilGuard = operation->MakeCodicilGuard();
 
         SubmitOperationToCleaner(operation, operationProgress);
 
@@ -3319,7 +3333,7 @@ private:
         FinishOperation(operation);
 
         YT_LOG_INFO("Operation completed (OperationId: %v)",
-            operationId);
+            operation->GetId());
     }
 
     void DoFailOperation(
@@ -3433,6 +3447,7 @@ private:
             req->SetTimeout(Config_->ControllerAgentTracker->LightRpcTimeout);
             ToProto(req->mutable_operation_id(), operation->GetId());
             auto rspOrError = WaitFor(req->Invoke());
+
             if (rspOrError.IsOK()) {
                 auto rsp = rspOrError.Value();
                 TOperationProgress result;
@@ -3452,23 +3467,6 @@ private:
                 return result;
             } else {
                 YT_LOG_INFO(rspOrError, "Failed to get operation info from controller agent (OperationId: %v)",
-                    operation->GetId());
-            }
-        }
-
-        // If we failed to get progress from controller then we try to fetch it from Cypress.
-        {
-            auto attributesOrError = WaitFor(MasterConnector_->GetOperationNodeProgressAttributes(operation));
-            if (attributesOrError.IsOK()) {
-                auto attributes = ConvertToAttributes(attributesOrError.Value());
-
-                TOperationProgress result;
-                result.Progress = attributes->FindYson("progress");
-                result.BriefProgress = attributes->FindYson("brief_progress");
-                result.Alerts = attributes->FindYson("alerts");
-                return result;
-            } else {
-                YT_LOG_INFO(attributesOrError, "Failed to get operation progress from Cypress (OperationId: %v)",
                     operation->GetId());
             }
         }
@@ -3595,9 +3593,27 @@ private:
 
         operation->SetUnregistering();
 
-        // Switch to regular control invoker.
-        // No recurrent terminate is possible after this point.
-        SwitchTo(operation->GetControlInvoker());
+        // Run the final part via the operation's control invoker (the master
+        // connector's cancelable invoker): unlike the operation's own cancelable
+        // invoker it is not canceled by a per-operation abort/agent revocation.
+        operation->GetControlInvoker()->Invoke(BIND(
+            &TImpl::DoFinalizeTerminatedOperation,
+            MakeStrong(this),
+            operation,
+            logEventType,
+            error,
+            operationProgress));
+    }
+
+    void DoFinalizeTerminatedOperation(
+        const TOperationPtr& operation,
+        ELogEventType logEventType,
+        const TError& error,
+        const TOperationProgress& operationProgress)
+    {
+        YT_ASSERT_THREAD_AFFINITY(ControlThread);
+
+        auto codicilGuard = operation->MakeCodicilGuard();
 
         SubmitOperationToCleaner(operation, operationProgress);
 
@@ -3779,7 +3795,7 @@ private:
 
     IYPathServicePtr GetNodesOrchidService()
     {
-        auto nodesService = New<TCompositeMapService>();
+        auto nodesService = CreateCompositeMapService();
 
         nodesService->AddChild("ongoing_heartbeat_count", IYPathService::FromProducer(BIND(
             [scheduler{this}] (IYsonConsumer* consumer) {
@@ -3796,7 +3812,7 @@ private:
 
     IYPathServicePtr GetDynamicOrchidService()
     {
-        auto dynamicOrchidService = New<TCompositeMapService>();
+        auto dynamicOrchidService = CreateCompositeMapService();
         dynamicOrchidService->AddChild("operations", New<TOperationsService>(this));
         dynamicOrchidService->AddChild("allocations", New<TAllocationsService>(this));
         dynamicOrchidService->AddChild("node_shards", GetNodesOrchidService());

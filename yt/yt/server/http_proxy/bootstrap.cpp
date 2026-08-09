@@ -16,8 +16,6 @@
 
 #include <yt/yt/server/lib/misc/bootstrap.h>
 
-#include <yt/yt/server/lib/signature/components/components.h>
-
 #include <yt/yt/library/disk_manager/hotswap_manager.h>
 
 #include <yt/yt/library/coredumper/public.h>
@@ -56,6 +54,8 @@
 #include <yt/yt/library/program/helpers.h>
 
 #include <yt/yt/library/fusion/service_locator.h>
+
+#include <yt/yt/library/signature/components/components.h>
 
 #include <yt/yt/client/driver/driver.h>
 #include <yt/yt/client/driver/config.h>
@@ -143,10 +143,14 @@ void TBootstrap::DoRun()
 void TBootstrap::DoInitialize()
 {
     MonitoringServer_ = NHttp::CreateServer(Config_->CreateMonitoringHttpServerConfig());
+    if (auto httpsConfig = Config_->CreateMonitoringHttpsServerConfig()) {
+        MonitoringHttpsServer_ = NHttps::CreateServer(httpsConfig, /*pollerThreadCount*/ 1);
+    }
 
     IMapNodePtr orchidRoot;
     NMonitoring::Initialize(
         MonitoringServer_,
+        MonitoringHttpsServer_,
         ServiceLocator_->GetServiceOrThrow<NProfiling::TSolomonExporterPtr>(),
         &MonitoringManager_,
         &orchidRoot);
@@ -474,7 +478,7 @@ void TBootstrap::HandleRequest(
                 .EndMap();
         });
     } else {
-        WaitFor(rsp->WriteBody(TSharedRef::FromString(GetVersion())))
+        WaitFor(rsp->WriteBody(TSharedRef::FromString(std::string(GetVersion()))))
             .ThrowOnError();
     }
 }
@@ -491,6 +495,10 @@ void TBootstrap::DoStart()
     DynamicConfigManager_->Start();
 
     MonitoringServer_->Start();
+    if (MonitoringHttpsServer_) {
+        YT_LOG_INFO("Listening for HTTPS monitoring requests (Port: %v)", MonitoringHttpsServer_->GetAddress().GetPort());
+        MonitoringHttpsServer_->Start();
+    }
 
     // NB(pavook):
     // We don't wait for key rotation completion anywhere in bootstrap, because proxy bootstrap

@@ -112,11 +112,11 @@ public:
         TArchiveReporterConfigPtr reporterConfig,
         TArchiveHandlerConfigPtr handlerConfig,
         TNameTablePtr nameTable,
-        TString reporterName,
+        std::string reporterName,
         NNative::IClientPtr client,
         IInvokerPtr invoker,
         const TProfiler& profiler)
-        : Logger(NServer::NDetail::ArchiveReporterLogger().WithTag("ReporterName: %v", std::move(reporterName)))
+        : Logger(NServer::NDetail::ArchiveReporterLogger().WithTag("ReporterName", std::move(reporterName)))
         , ReporterConfig_(std::move(reporterConfig))
         , HandlerConfig_(std::move(handlerConfig))
         , NameTable_(std::move(nameTable))
@@ -400,7 +400,7 @@ IArchiveReporterPtr CreateArchiveReporter(
     TArchiveReporterConfigPtr reporterConfig,
     TArchiveHandlerConfigPtr handlerConfig,
     TNameTablePtr nameTable,
-    TString reporterName,
+    std::string reporterName,
     NNative::IClientPtr client,
     IInvokerPtr invoker,
     TProfiler profiler)

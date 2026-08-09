@@ -45,9 +45,6 @@ const std::string FinishedQueriesByUserAndStartTimeTable = "finished_queries_by_
 const std::string SearchIndexTable = "search_inverted_index";
 const std::string SearchMetaTable = "search_meta";
 
-// Path to access control object namespace for QT.
-const TYPath QueriesAcoNamespacePath = "//sys/access_control_object_namespaces/queries";
-
 // Rows in SearchTable and SearchMetaTable are duplicated:
 // one with the actual engine value, and one with NoEngineFilterString in the 'engine' column.
 // This allows efficient searching both with and without an engine filter.
@@ -78,7 +75,7 @@ struct TQueryIndexSearchOptions
 {
     std::string User;
     std::vector<std::string> AcosForUser;
-    ui64 Timestamp;
+    TTimestamp Timestamp;
     bool IsSuperuser;
     TAttributeFilter Attributes;
 };
@@ -554,7 +551,7 @@ public:
             TFinishedQueryByStartTimeKey removeKey{
                 .IsTutorial = isTutorial,
                 .MinusStartTime = -TMinusTimestamp(query.StartTime->MicroSeconds()),
-                .QueryId = query.Id
+                .QueryId = query.Id,
             };
             auto keys = FromRecordKeys(TRange(std::array{removeKey}));
 
@@ -570,7 +567,7 @@ public:
                 .IsTutorial = isTutorial,
                 .User = query.User.value(),
                 .MinusStartTime = -TMinusTimestamp(query.StartTime->MicroSeconds()),
-                .QueryId = query.Id
+                .QueryId = query.Id,
             };
             auto keys = FromRecordKeys(TRange(std::array{removeKey}));
 
@@ -590,7 +587,7 @@ public:
                         .IsTutorial = isTutorial,
                         .AccessControlObject = aco,
                         .MinusStartTime = -TMinusTimestamp(query.StartTime->MicroSeconds()),
-                        .QueryId = query.Id
+                        .QueryId = query.Id,
                     };
                     keys.push_back(removeKey);
                 }
@@ -867,7 +864,7 @@ private:
             .ValueOrThrow();
 
         for (const auto& record : ToRecords<TRecord>(selectResult.Rowset)) {
-            results.push_back({-record.Key.MinusStartTime, record.Key.QueryId});
+            results.push_back({NTransactionClient::TTimestamp(-record.Key.MinusStartTime), record.Key.QueryId});
         }
     }
 

@@ -179,6 +179,7 @@ public:
         const TString& revision,
         const TString& address,
         ui32 pid,
+        const TString& startTime,
         const VectorLike& files)
     {
         auto now = TInstant::Now();
@@ -188,6 +189,11 @@ public:
         t.Revision = revision;
         t.Pid = pid;
         t.Address = address;
+        if (!startTime.empty()) {
+            t.StartTime = startTime;
+        } else if (t.StartTime.empty()) {
+            t.StartTime = ToString(now);
+        }
         bool needUpdate = false;
         for (const auto& f : files) {
             needUpdate |= t.Files.insert(f.GetObjectId()).second;
@@ -236,6 +242,7 @@ public:
         TString Revision;
         ui32 Pid;
         TString Address;
+        TString StartTime;
     };
 
     const THashMap<TGUID, TServiceNodeFiles>& GetNodes() const {
@@ -304,7 +311,8 @@ public:
            const ICoordinationHelper::TPtr& coordinator,
            const TVector<TResourceManagerOptions>& resourceUploaderOptions,
            IMetricsRegistryPtr metricsRegistry,
-           const NProto::TDqConfig::TScheduler& schedulerConfig)
+           const NProto::TDqConfig::TScheduler& schedulerConfig,
+           TDuration scheduleInterval)
        : TWorkerManagerCommon<TGlobalWorkerManager>(&TGlobalWorkerManager::Initialization)
         , Coordinator(coordinator)
         , LeaderResolver(std::make_shared<TSingleNodeResolver>())
@@ -313,9 +321,11 @@ public:
         , LatencyHistogram(Metrics->GetHistogram("LeaderLatency", ExponentialHistogram(10, 2, 1)))
         , Workers(Coordinator->GetNodeId(), Metrics, metricsRegistry->GetSensors()->GetSubgroup("counters", "workers"))
         , Scheduler(NDq::IScheduler::Make(schedulerConfig, metricsRegistry))
+        , MaxRequestsPerTick(schedulerConfig.GetMaxRequestsPerTick())
         , Revision(ToString(GetProgramCommitId()))
         , ResourceUploaderOptions(resourceUploaderOptions)
         , WaitListSize(nullptr)
+        , ScheduleInterval(scheduleInterval)
     { }
 
 private:
@@ -585,11 +595,12 @@ private:
         auto [hasExeFile, err]  = MaybeUpload(ev->Get()->Record.GetIsForwarded(), TVector<TFileResource>(ev->Get()->Record.GetFiles().begin(), ev->Get()->Record.GetFiles().end()));
         if (!err.empty()) {
             Send(ev->Sender, new TEvAllocateWorkersResponse(err, NYql::NDqProto::StatusIds::EXTERNAL_ERROR));
+            return;
         }
 
         if (!hasExeFile && LeaderRevision != Revision) {
             Send(ev->Sender, new TEvAllocateWorkersResponse(
-                Sprintf("Wrong revision %s!=%s", LeaderRevision.c_str(), Revision.c_str()), NYql::NDqProto::StatusIds::BAD_REQUEST));
+                Sprintf("Wrong revision %s!=%s", LeaderRevision.c_str(), Revision.c_str()), NYql::NDqProto::StatusIds::UNSUPPORTED));
         } else {
             ev->Get()->Record.SetIsForwarded(true);
             ctx.Send(ev->Forward(MakeWorkerManagerActorID(LeaderId)));
@@ -620,12 +631,39 @@ private:
         UploadProcesses.erase(it);
     }
 
+    void EnterTerminatingMode() {
+        if (TerminatingMode) {
+            return;
+        }
+        TerminatingMode = true;
+        LocalCriticalFiles->Clear();
+        YQL_CLOG(INFO, ProviderDq) << "Graceful shutdown: release lock and stop leader election";
+        if (LockId) {
+            Send(LockId, new TEvBecomeFollower());
+        }
+    }
+
+    void TransitionToFollowerOfRemoteLeader() {
+        WaitListSize = nullptr;
+        Workers.Clear();
+        for (const auto& [key, value] : AllocatedResources) {
+            Send(value.ActorId, new TEvents::TEvPoison());
+        }
+        for (const auto sender : Scheduler->Cleanup()) {
+            Send(sender, new TEvAllocateWorkersResponse("Worker reallocation is required because of DQ leader change", NYql::NDqProto::StatusIds::UNAVAILABLE));
+        }
+        AllocatedResources.clear();
+        for (auto& [k, v] : LiteralQueries) {
+            *v -= *v;
+        }
+        Become(&TGlobalWorkerManager::Follower);
+    }
+
     void StartLeader(TEvBecomeLeader::TPtr& ev, const TActorContext& ctx)
     {
         Y_UNUSED(ctx);
-        if (FollowingMode) {
-            YQL_CLOG(INFO, ProviderDq) << "Skip Leader request in following mode";
-            Send(SelfId(), new TEvBecomeFollower(), /*flag=*/0, /*cookie=*/1);
+        if (TerminatingMode) {
+            YQL_CLOG(INFO, ProviderDq) << "Skip Leader request in terminating mode";
             return;
         }
         LeaderEpoch = CurrentResourceId.Epoch = ev->Get()->LeaderEpoch;
@@ -649,57 +687,44 @@ private:
 
     void StartFollower(TEvBecomeFollower::TPtr& ev, const TActorContext& ctx) {
         Y_UNUSED(ctx);
-        if (ev->Cookie == 1 && LockId) {
-            // kill from main
-            YQL_CLOG(INFO, ProviderDq) << "Kill from main";
-            ctx.Send(ev->Forward(LockId));
-            FollowingMode = true;
-            LocalCriticalFiles->Clear(); // disable wormup for old dq process
+        if (ev->Cookie == 1) {
+            EnterTerminatingMode();
             return;
         }
         auto attributes = NYT::NodeFromYsonString(ev->Get()->Attributes).AsMap();
-        if (ev->Cookie == 1 && LockId) {
-            // kill from main
-            YQL_CLOG(INFO, ProviderDq) << "Kill from main";
-            Send(LockId, new NActors::TEvents::TEvPoison);
-            LockId = TActorId();
+        UpdateRemoteLeaderInfo(attributes);
+        if (TerminatingMode && LeaderId == SelfId().NodeId()) {
+            YQL_CLOG(INFO, ProviderDq) << "Terminating mode: lock still points to us, keep local workers";
+            return;
         }
-        LeaderId = attributes.at(NCommonAttrs::ACTOR_NODEID_ATTR).AsUint64();
-        LeaderResolver->SetLeaderHostPort(
-                attributes.at(NCommonAttrs::HOSTNAME_ATTR).AsString() + ":" + attributes.at(NCommonAttrs::GRPCPORT_ATTR).AsString());
         if (!LeaderPinger) {
             TResourceManagerOptions rmOptions;
             rmOptions.FileCache = LocalCriticalFiles;
             LeaderPinger = RegisterChild(Coordinator->CreateServiceNodePinger(LeaderResolver, rmOptions));
         }
-        if (attributes.contains(NCommonAttrs::REVISION_ATTR)) {
-            LeaderRevision = attributes.at(NCommonAttrs::REVISION_ATTR).AsString();
-        }
-
-        UpdateLeaderInfo(attributes);
 
         YQL_CLOG(TRACE, ProviderDq) << " Following leader: " << LeaderId;
         YQL_CLOG(INFO, ProviderDq) << "Leader resolver=" << LeaderHost << ":" << LeaderPort;
 
-        WaitListSize = nullptr;
-        Workers.Clear();
-        for (const auto& [key, value] : AllocatedResources) {
-            Send(value.ActorId, new TEvents::TEvPoison());
-        }
-        for (const auto sender : Scheduler->Cleanup()) {
-            Send(sender, new TEvAllocateWorkersResponse("Worker reallocation is required because of DQ leader change", NYql::NDqProto::StatusIds::UNAVAILABLE));
-        }
-        AllocatedResources.clear();
-        for (auto& [k, v] : LiteralQueries) {
-            *v -= *v;
-        }
-
-        Become(&TGlobalWorkerManager::Follower);
+        TransitionToFollowerOfRemoteLeader();
     }
 
-    void UpdateLeaderInfo(THashMap<TString, NYT::TNode>& attributes) {
+    void UpdateLeaderInfo(const THashMap<TString, NYT::TNode>& attributes) {
         LeaderHost = attributes.at(NCommonAttrs::HOSTNAME_ATTR).AsString();
         LeaderPort = std::stoi(attributes.at(NCommonAttrs::GRPCPORT_ATTR).AsString().data());
+    }
+
+    void UpdateRemoteLeaderInfo(const THashMap<TString, NYT::TNode>& attributes) {
+        LeaderId = attributes.at(NCommonAttrs::ACTOR_NODEID_ATTR).AsUint64();
+        LeaderResolver->SetLeaderHostPort(
+            attributes.at(NCommonAttrs::HOSTNAME_ATTR).AsString() + ":" +
+            attributes.at(NCommonAttrs::GRPCPORT_ATTR).AsString());
+        if (attributes.contains(NCommonAttrs::REVISION_ATTR)) {
+            LeaderRevision = attributes.at(NCommonAttrs::REVISION_ATTR).AsString();
+        }
+        UpdateLeaderInfo(attributes);
+        YQL_CLOG(INFO, ProviderDq) << "Remote leader update: "
+            << LeaderHost << ":" << LeaderPort << " nodeId=" << LeaderId;
     }
 
     void Bootstrap(const TActorContext& ctx) {
@@ -737,6 +762,7 @@ private:
                 request.GetRevision(),
                 request.GetAddress(),
                 request.GetPid(),
+                request.GetStartTime(),
                 request.GetFilesOnNode());
         }
 
@@ -815,7 +841,14 @@ private:
             ScheduleWaitCount = 0U;
             DeadOperations.clear();
         } else if (Workers.FreeSlots() >= ScheduleWaitCount) {
+            size_t processed = 0;
+            bool hitLimit = false;
             Scheduler->Process(Workers.Capacity(), Workers.FreeSlots(), [&] (const auto& item) {
+                if (processed >= MaxRequestsPerTick) {
+                    hitLimit = true;
+                    return false; // keep in queue, process on next tick
+                }
+                ++processed;
                 auto maybeDead = DeadOperations.find(item.Request.GetResourceId());
                 if (maybeDead != DeadOperations.end()) {
                     DeadOperations.erase(maybeDead);
@@ -829,6 +862,14 @@ private:
             });
             ScheduleWaitCount = std::numeric_limits<size_t>::max();
             DeadOperations.clear();
+            if (hitLimit) {
+                // Remaining requests stay in queue — trigger processing on the next tick.
+                MarkDirty(0);
+                if (TryResumeThrottledCounter) {
+                    *TryResumeThrottledCounter += 1;
+                }
+                YQL_CLOG(DEBUG, ProviderDq) << "TryResume hit per-tick limit=" << MaxRequestsPerTick;
+            }
         }
     }
 
@@ -859,6 +900,7 @@ private:
         }
 
         MarkDirty(count);
+        TryResume();
     }
 
     void DecrLiteralQueries(const TString& clusterName) {
@@ -1064,6 +1106,7 @@ private:
             info->SetCount(item.Request.GetCount());
             info->SetOperationId(item.Request.GetTraceId());
             info->SetUserName(item.Request.GetUser());
+            info->SetEnqueueTime(item.StartTime.ToString());
 
             THashMap<TString, Yql::DqsProto::ClusterStatusResponse::File> files;
 
@@ -1102,6 +1145,7 @@ private:
             nodeInfo->SetNodeId(node.NodeId);
             nodeInfo->SetPid(node.Pid);
             nodeInfo->SetAddress(node.Address);
+            nodeInfo->SetStartTime(node.StartTime);
             nodeInfo->SetGuid(GetGuidAsString(guid));
             for (const auto& file : node.OrderedFiles) {
                 *nodeInfo->AddFile() = file;
@@ -1180,7 +1224,7 @@ private:
     }
 
     void FillCriticalFiles(TEvIsReady::TPtr& ev) {
-        if (FollowingMode) {
+        if (TerminatingMode) {
             return;
         }
         if (ev->Get()->Record.GetIsForwarded()) {
@@ -1206,7 +1250,7 @@ private:
         r.SetObjectId(Revision);
         files.push_back(r);
 
-        AllCriticalFiles.Add(TGUID(), SelfId().NodeId(), Revision, Address, Pid, files);
+        AllCriticalFiles.Add(TGUID(), SelfId().NodeId(), Revision, Address, Pid, TString(), files);
     }
 
     void OnIsReadyForward(TEvIsReady::TPtr& ev, const TActorContext& ctx) {
@@ -1215,7 +1259,7 @@ private:
             YQL_CLOG(WARN, ProviderDq) << "TEvIsReady error on upload: " << error;
         }
 
-        if (FollowingMode) {
+        if (TerminatingMode) {
             auto response = MakeHolder<TEvIsReadyResponse>();
             response->Record.SetIsReady(true);
             Send(ev->Sender, response.Release());
@@ -1312,6 +1356,9 @@ private:
         if (!WaitListSize) {
             WaitListSize = Metrics->GetSubgroup("component", "lists")->GetCounter("WaitListSize");
         }
+        if (!TryResumeThrottledCounter) {
+            TryResumeThrottledCounter = Metrics->GetSubgroup("component", "scheduler")->GetCounter("TryResumeThrottled", /*derivative=*/true);
+        }
         *WaitListSize = Scheduler->UpdateMetrics();
         Workers.UpdateMetrics();
     }
@@ -1339,14 +1386,16 @@ private:
     THashSet<ui64> DeadOperations;
 
     ui32 LeaderId = static_cast<ui32>(-1);
-    TString LeaderRevision = "";
-    TString LeaderHost = "";
+    TString LeaderRevision;
+    TString LeaderHost;
     ui32 LeaderPort = 0u;
 
-    ui32 LeaderEpoch;
+    ui32 LeaderEpoch = 0;
     TDqResourceId CurrentResourceId;
 
     const NDq::IScheduler::TPtr Scheduler;
+    // Max queued requests processed per TryResume call (from Scheduler.MaxRequestsPerTick).
+    const size_t MaxRequestsPerTick;
     const TString Revision;
 
     THashMap<TActorId, TVector<TString>> UploadProcesses; // actorId -> objects
@@ -1374,21 +1423,24 @@ private:
     THashMap<TString, TInstant> LastUploadCache;
 
     // Don't reschedule too frequently to avoid GWM hanging
-    TDuration ScheduleInterval = TDuration::MilliSeconds(100);
+    TDuration ScheduleInterval;
     size_t ScheduleWaitCount = std::numeric_limits<size_t>::max(); // max - no, 0 - any, > 0 count
     TInstant LastCleanTime;
     TDuration CleanInterval = TDuration::Seconds(2);
-    bool FollowingMode = false;
+    bool TerminatingMode = false;
     const TString Address = HostName();
     const ui32 Pid = GetPID();
+
+    TDynamicCounters::TCounterPtr TryResumeThrottledCounter;
 };
 
 NActors::IActor* CreateGlobalWorkerManager(
         const ICoordinationHelper::TPtr& coordinator,
         const TVector<TResourceManagerOptions>& resourceUploaderOptions,
         IMetricsRegistryPtr metricsRegistry,
-        const NProto::TDqConfig::TScheduler& schedulerConfig) {
-    return new TGlobalWorkerManager(coordinator, resourceUploaderOptions, std::move(metricsRegistry), schedulerConfig);
+        const NProto::TDqConfig::TScheduler& schedulerConfig,
+        TDuration scheduleInterval) {
+    return new TGlobalWorkerManager(coordinator, resourceUploaderOptions, std::move(metricsRegistry), schedulerConfig, scheduleInterval);
 }
 
 } // namespace NYql

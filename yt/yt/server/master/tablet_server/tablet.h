@@ -29,9 +29,9 @@
 #include <yt/yt/client/table_client/unversioned_row.h>
 
 #include <yt/yt/core/misc/aggregate_property.h>
-#include <yt/yt/core/misc/property.h>
 
 #include <library/cpp/yt/misc/enum.h>
+#include <library/cpp/yt/misc/property.h>
 
 #include <library/cpp/yt/memory/ref_tracked.h>
 
@@ -97,7 +97,10 @@ public:
     using TReplicaMap = THashMap<NObjectServer::TWeakObjectPtr<TTableReplica>, TTableReplicaInfo>;
     DEFINE_BYREF_RW_PROPERTY(TReplicaMap, Replicas);
 
-    DEFINE_BYVAL_RW_PROPERTY(NTransactionClient::TTimestamp, RetainedTimestamp);
+    DEFINE_BYVAL_RW_PROPERTY(
+        NTransactionClient::TTimestamp,
+        RetainedTimestamp,
+        NTransactionClient::MinTimestamp);
 
     // Timestamp used on tablet node to check conflicts with versions from removed stores.
     // More in NTabletNode::TTablet.

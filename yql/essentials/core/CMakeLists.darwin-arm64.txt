@@ -19,9 +19,10 @@ get_built_tool_path(
   enum_parser
 )
 
+add_subdirectory(langver)
+add_subdirectory(issue)
 add_subdirectory(pg_settings)
 add_subdirectory(sql_types)
-add_subdirectory(issue)
 add_subdirectory(url_lister)
 add_subdirectory(credentials)
 add_subdirectory(url_preprocessing)
@@ -29,7 +30,6 @@ add_subdirectory(cbo)
 add_subdirectory(qplayer)
 add_subdirectory(file_storage)
 add_subdirectory(layers)
-add_subdirectory(langver)
 add_subdirectory(minsketch)
 add_subdirectory(histogram)
 add_subdirectory(expr_nodes)
@@ -107,6 +107,7 @@ target_sources(yql-essentials-core PRIVATE
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_opt_utils.cpp
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_opt_window.cpp
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_opt_window_stream_transformers.cpp
+  ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_sql_combine_expander.cpp
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_statistics.cpp
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_type_annotation.cpp
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_type_helpers.cpp
@@ -142,6 +143,7 @@ target_sources(yql-essentials-core PRIVATE
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_opt_utils.h
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_opt_window.h
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_opt_window_stream_transformers.h
+  ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_sql_combine_expander.h
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_type_annotation.h
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_type_helpers.h
   ${PROJECT_SOURCE_DIR}/yql/essentials/core/yql_udf_index.h

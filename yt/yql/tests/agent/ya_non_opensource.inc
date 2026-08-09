@@ -1,4 +1,6 @@
 PEERDIR(
+    contrib/python/dirty-equals
+
     kikimr/public/sdk/python/ydb_v3_new_behavior
 
     library/python/ydb/federated_topic_client
@@ -7,7 +9,7 @@ PEERDIR(
 
     yt/yql/tests/common/test_framework
 
-    yt/yt/experiments/private/flow/yandex/extensions/monium/python
+    yt/yt/flow/yandex/extensions/monium/python
 )
 
 TEST_SRCS(
@@ -27,6 +29,7 @@ DEPENDS(
     yt/yql/tools/qtworker
     yql/essentials/tools/udf_resolver
     yql/essentials/tools/udf_dep_stub
+    yql/essentials/udfs/common/datetime2
 )
 
 DATA(

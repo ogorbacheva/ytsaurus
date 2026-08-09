@@ -784,9 +784,24 @@ public:
         return ParseStringLikeArray<arrow20::StringArray>();
     }
 
+    arrow20::Status Visit(const arrow20::LargeStringType& /*type*/) override
+    {
+        return ParseStringLikeArray<arrow20::LargeStringArray>();
+    }
+
     arrow20::Status Visit(const arrow20::BinaryType& /*type*/) override
     {
         return ParseStringLikeArray<arrow20::BinaryArray>();
+    }
+
+    arrow20::Status Visit(const arrow20::LargeBinaryType& /*type*/) override
+    {
+        return ParseStringLikeArray<arrow20::LargeBinaryArray>();
+    }
+
+    arrow20::Status Visit(const arrow20::FixedSizeBinaryType& /*type*/) override
+    {
+        return ParseStringLikeArray<arrow20::FixedSizeBinaryArray>();
     }
 
     // Boolean type.
@@ -1251,10 +1266,28 @@ public:
         return ParseStringLikeArray<arrow20::StringArray>();
     }
 
+    arrow20::Status Visit(const arrow20::LargeStringType& type) override
+    {
+        CheckArrowTypeMatch(YTType_->AsSimpleTypeRef().GetElement(), type.type_name(), Array_->type());
+        return ParseStringLikeArray<arrow20::LargeStringArray>();
+    }
+
     arrow20::Status Visit(const arrow20::BinaryType& type) override
     {
         CheckArrowTypeMatch(YTType_->AsSimpleTypeRef().GetElement(), type.type_name(), Array_->type());
         return ParseStringLikeArray<arrow20::BinaryArray>();
+    }
+
+    arrow20::Status Visit(const arrow20::LargeBinaryType& type) override
+    {
+        CheckArrowTypeMatch(YTType_->AsSimpleTypeRef().GetElement(), type.type_name(), Array_->type());
+        return ParseStringLikeArray<arrow20::LargeBinaryArray>();
+    }
+
+    arrow20::Status Visit(const arrow20::FixedSizeBinaryType& type) override
+    {
+        CheckArrowTypeMatch(YTType_->AsSimpleTypeRef().GetElement(), type.type_name(), Array_->type());
+        return ParseStringLikeArray<arrow20::FixedSizeBinaryArray>();
     }
 
     // Boolean types.
@@ -1855,13 +1888,22 @@ void PrepareArray(
     const std::shared_ptr<arrow20::Array>& column,
     const std::shared_ptr<arrow20::Field>& schemaField,
     TUnversionedRowValues& rowValues,
-    int columnId)
+    int columnId,
+    const std::optional<i64>& maxAllocationBytes)
 {
     if (column->type()->id() == arrow20::Type::DICTIONARY) {
         auto dictionaryArrayColumn = std::static_pointer_cast<arrow20::DictionaryArray>(column);
         auto dictionary = dictionaryArrayColumn->dictionary();
-        TUnversionedRowValues dictionaryValues(dictionary->length());
-        PrepareArray(denullifiedLogicalType, bufferForStringLikeValues, dictionary, schemaField, dictionaryValues, columnId);
+        auto dictionaryLength = dictionary->length();
+        if (maxAllocationBytes &&
+            static_cast<ui64>(dictionaryLength) * sizeof(TUnversionedValue) > static_cast<ui64>(*maxAllocationBytes))
+        {
+            THROW_ERROR_EXCEPTION("Arrow dictionary is too large: %v entries would allocate more than %v bytes",
+                dictionaryLength,
+                *maxAllocationBytes);
+        }
+        TUnversionedRowValues dictionaryValues(dictionaryLength);
+        PrepareArray(denullifiedLogicalType, bufferForStringLikeValues, dictionary, schemaField, dictionaryValues, columnId, maxAllocationBytes);
 
         for (int offset = 0; offset < std::ssize(rowValues); ++offset) {
             if (dictionaryArrayColumn->IsNull(offset)) {
@@ -1985,7 +2027,8 @@ public:
                     column,
                     batch->schema()->field(columnIndex),
                     rowsValues[columnIndex],
-                    columnId);
+                    columnId,
+                    Options_.MaxAllocationBytes);
             } catch (const std::exception& ex) {
                 THROW_ERROR_EXCEPTION("Failed to parse column %Qv", columnName)
                     << ex;
@@ -2148,6 +2191,7 @@ public:
 
     void Finish() override
     {
+        // TODO(dagorokhov): reject empty (0-byte) input (YT-28650)
         if (LastState_ == EListenerState::InProgress) {
             THROW_ERROR_EXCEPTION("Unexpected end of stream");
         }

@@ -10,8 +10,9 @@
 #include <yt/yt/core/rpc/response_keeper.h>
 #include <yt/yt/core/rpc/service.h>
 
-#include <yt/yt/core/misc/ring_queue.h>
 #include <yt/yt/core/misc/serialize.h>
+
+#include <library/cpp/yt/containers/ring_queue.h>
 
 #include <library/cpp/yt/farmhash/farm_hash.h>
 
@@ -276,7 +277,7 @@ public:
                 break;
             }
 
-            if (counter > maxResponseCountPerEvictionPass) {
+            if (counter >= maxResponseCountPerEvictionPass) {
                 YT_LOG_WARNING("Response keeper eviction pass interrupted (ResponseCount: %v, ResponsesLeft: %v, OccupiedSpace: %v)",
                     counter,
                     FinishedResponseCount_.load(std::memory_order::acquire),

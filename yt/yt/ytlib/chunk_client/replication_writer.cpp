@@ -10,6 +10,7 @@
 #include "deferred_chunk_meta.h"
 #include "dispatcher.h"
 #include "helpers.h"
+#include "job_io_meter.h"
 #include "private.h"
 #include "traffic_meter.h"
 
@@ -21,6 +22,12 @@
 #include <yt/yt/ytlib/journal_client/public.h>
 
 #include <yt/yt/ytlib/node_tracker_client/channel.h>
+
+#include <yt/yt/client/node_tracker_client/public.h>
+
+#include <yt/yt/ytlib/chunk_client/medium_directory.h>
+#include <yt/yt/ytlib/chunk_client/medium_descriptor.h>
+#include <yt/yt/ytlib/chunk_client/medium_directory_synchronizer.h>
 
 #include <yt/yt/client/rpc/helpers.h>
 
@@ -63,6 +70,30 @@ using NProto::TChunkInfo;
 using NProto::TDataStatistics;
 using NYT::FromProto;
 using NYT::ToProto;
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Reports the job's recently consumed I/O over #window to the data node via the
+// io_consumed request field. No-op when no meter is attached.
+template <class TRequestPtr>
+void SetRequestIoConsumed(const TRequestPtr& req, const TClientChunkWriteOptions& options, TDuration window)
+{
+    if (const auto& jobIoMeter = options.JobIoMeter) {
+        req->set_io_consumed(jobIoMeter->GetIoConsumedInWindow(window));
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Reports the configured I/O fair-share weight to the data node via the
+// io_fair_share_weight request field. No-op when the weight is not set.
+template <class TRequestPtr>
+void SetRequestIoFairShareWeight(const TRequestPtr& req, std::optional<double> weight)
+{
+    if (weight) {
+        req->set_io_fair_share_weight(*weight);
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -177,6 +208,9 @@ public:
 
     TFuture<void> StopPing()
     {
+        if (!PingExecutor_) {
+            return MakeFuture(TError());
+        }
         return PingExecutor_->Stop();
     }
 
@@ -352,7 +386,7 @@ public:
         , Throttler_(std::move(throttler))
         , BlockCache_(std::move(blockCache))
         , TrafficMeter_(std::move(trafficMeter))
-        , Logger(ChunkClientLogger().WithTag("ChunkId: %v", SessionId_))
+        , Logger(ChunkClientLogger().WithTag("ChunkId", SessionId_))
         , Networks_(Client_->GetNativeConnection()->GetNetworks())
         , WindowSlots_(New<TAsyncSemaphore>(Config_->SendWindowSize))
         , UploadReplicationFactor_(Config_->UploadReplicationFactor)
@@ -588,14 +622,49 @@ private:
         return result;
     }
 
+    bool ShouldUseSendBlocks() const
+    {
+        if (!Config_->UseSendBlocks) {
+            return false;
+        }
+        if (InitialTargets_.size() <= 1 && (UploadReplicationFactor_ == 1 || !Options_->AllowAllocatingNewTargetNodes)) {
+            return false;
+        }
+        return true;
+    }
+
     void DoOpen()
     {
         try {
-            bool disableSendBlocks = InitialTargets_.size() <= 1 && (UploadReplicationFactor_ == 1 || !Options_->AllowAllocatingNewTargetNodes);
-            StartSessions(InitialTargets_, disableSendBlocks);
+            auto targets = InitialTargets_;
+            int uploadReplicationFactor = UploadReplicationFactor_;
 
-            while (std::ssize(Nodes_) < UploadReplicationFactor_) {
-                StartSessions(AllocateTargets(), disableSendBlocks);
+            bool isOffshoreSession = false;
+            if (targets.empty()) {
+                const auto& connection = Client_->GetNativeConnection();
+                auto mediumDescriptor = connection->GetMediumDirectory()->FindByIndex(SessionId_.MediumIndex);
+                if (!mediumDescriptor) {
+                    WaitFor(connection->GetMediumDirectorySynchronizer()->NextSync(/*force*/ true))
+                        .ThrowOnError();
+                    mediumDescriptor = connection->GetMediumDirectory()->FindByIndex(SessionId_.MediumIndex);
+                }
+                // TODO(aleksandra-zh): Maybe check AllocateTargets for "Write targets allocation for offshore media is forbidden"
+                // and retry instead of sync.
+                if (mediumDescriptor && mediumDescriptor->IsOffshore()) {
+                    targets = {TChunkReplicaWithMedium(
+                        OffshoreNodeId,
+                        GenericChunkReplicaIndex,
+                        SessionId_.MediumIndex)};
+                    uploadReplicationFactor = 1;
+                    isOffshoreSession = true;
+                }
+            }
+
+            bool useSendBlocks = !isOffshoreSession && ShouldUseSendBlocks();
+            StartSessions(targets, !useSendBlocks);
+
+            while (std::ssize(Nodes_) < uploadReplicationFactor) {
+                StartSessions(AllocateTargets(), !useSendBlocks);
             }
 
             YT_LOG_INFO("Writer opened (Addresses: %v, PopulateCache: %v, Workload: %v, Networks: %v)",
@@ -860,6 +929,20 @@ private:
         }
     }
 
+    void HandleChunkWriterStatistics(
+        const IChunkWriter::TWriteBlocksOptions& options,
+        const NProto::TChunkWriterStatistics& protoChunkWriterStatistics)
+    {
+        UpdateFromProto(&options.ClientOptions.ChunkWriterStatistics, protoChunkWriterStatistics);
+
+        if (const auto& jobIoMeter = options.ClientOptions.JobIoMeter) {
+            auto bytesWrittenToDisk =
+                protoChunkWriterStatistics.data_bytes_written_to_disk() +
+                protoChunkWriterStatistics.meta_bytes_written_to_disk();
+            jobIoMeter->AccountWrite(bytesWrittenToDisk);
+        }
+    }
+
     void FlushBlocks(const IChunkWriter::TWriteBlocksOptions& options, const TNodePtr& node, int blockIndex)
     {
         YT_ASSERT_THREAD_AFFINITY(WriterThread);
@@ -897,7 +980,7 @@ private:
             DemandClose();
         }
 
-        UpdateFromProto(&options.ClientOptions.ChunkWriterStatistics, rsp->chunk_writer_statistics());
+        HandleChunkWriterStatistics(options, rsp->chunk_writer_statistics());
 
         if (CloseRequested_ && blockIndex + 1 == BlockCount_) {
             // We flushed the last block in chunk.
@@ -913,43 +996,58 @@ private:
         YT_ASSERT_THREAD_AFFINITY(WriterThread);
         YT_VERIFY(IsErasureChunkPartId(SessionId_.ChunkId) || target.GetReplicaIndex() == GenericChunkReplicaIndex);
 
-        const auto& nodeDirectory = Client_->GetNativeConnection()->GetNodeDirectory();
-        const auto& nodeDescriptor = nodeDirectory->GetDescriptor(target);
-        const auto& address = nodeDescriptor.GetAddressOrThrow(Networks_);
+        bool isOffshore = (target.GetNodeId() == OffshoreNodeId);
+
+        TNodeDescriptor nodeDescriptor;
+        std::string address;
+        if (isOffshore) {
+            address = OffshoreDataGatewayAddress;
+            nodeDescriptor = TNodeDescriptor(address);
+        } else {
+            const auto& nodeDirectory = Client_->GetNativeConnection()->GetNodeDirectory();
+            nodeDescriptor = nodeDirectory->GetDescriptor(target);
+            address = nodeDescriptor.GetAddressOrThrow(Networks_);
+        }
+
         YT_LOG_DEBUG("Starting write session (Address: %v)", address);
 
         auto node = New<TNode>(
             nodeDescriptor,
             target);
 
-        auto channel = CreateRetryingChannel(
-            Config_->NodeChannel,
-            Client_->GetChannelFactory()->CreateChannel(address),
-            BIND([weakNode = MakeWeak(node), weakThis = MakeWeak(this)] (const TError& error) {
-                auto node = weakNode.Lock();
-                auto this_ = weakThis.Lock();
+        IChannelPtr channel;
+        if (isOffshore) {
+            channel = Client_->GetNativeConnection()->GetStickyOffshoreDataGatewayChannel();
+        } else {
+            channel = CreateRetryingChannel(
+                Config_->NodeChannel,
+                Client_->GetChannelFactory()->CreateChannel(address),
+                BIND([weakNode = MakeWeak(node), weakThis = MakeWeak(this)] (const TError& error) {
+                    auto node = weakNode.Lock();
+                    auto this_ = weakThis.Lock();
 
-                if (!node || !this_ || !node->IsAlive()) {
-                    return false;
-                }
+                    if (!node || !this_ || !node->IsAlive()) {
+                        return false;
+                    }
 
-                auto innerError = error.FindMatching(NChunkClient::EErrorCode::WriteThrottlingActive);
+                    auto innerError = error.FindMatching(NChunkClient::EErrorCode::WriteThrottlingActive);
 
-                if (!innerError) {
-                    return false;
-                }
+                    if (!innerError) {
+                        return false;
+                    }
 
-                // TODO(don-dron): Come up with a more accurate solution.
-                auto address = innerError->Attributes().Find<std::string>("address");
-                auto needRetry = !address || std::count_if(
-                    this_->Nodes_.begin(),
-                    this_->Nodes_.end(),
-                    [&] (const auto& node) {
-                        return node->GetDefaultAddress() == address && !node->IsAlive();
-                    }) == 0;
+                    // TODO(don-dron): Come up with a more accurate solution.
+                    auto address = innerError->Attributes().Find<std::string>("address");
+                    auto needRetry = !address || std::count_if(
+                        this_->Nodes_.begin(),
+                        this_->Nodes_.end(),
+                        [&] (const auto& node) {
+                            return node->GetDefaultAddress() == address && !node->IsAlive();
+                        }) == 0;
 
-                return needRetry;
-            }));
+                    return needRetry;
+                }));
+        }
 
         RegisterCandidateNode(channel);
 
@@ -961,18 +1059,20 @@ private:
         req->set_sync_on_close(Config_->SyncOnClose);
         req->set_enable_direct_io(Config_->EnableDirectIO);
         req->set_disable_send_blocks(disableSendBlocks);
-        req->set_use_probe_put_blocks(Config_->UseProbePutBlocks);
-        req->set_preallocate_disk_space(Config_->PreallocateDiskSpace);
+        req->set_use_probe_put_blocks(isOffshore ? false : Config_->UseProbePutBlocks);
+        req->set_preallocate_disk_space(isOffshore ? false : Config_->PreallocateDiskSpace);
         ToProto(req->mutable_placement_id(), Options_->PlacementId);
 
         auto rspOrError = WaitFor(req->Invoke());
         if (!rspOrError.IsOK()) {
             UnregisterCandidateNode(channel);
+            if (isOffshore) {
+                rspOrError.ThrowOnError();
+            }
             if (Config_->BanFailedNodes) {
                 BannedNodeAddresses_.push_back(address);
             }
-            YT_LOG_WARNING(rspOrError, "Failed to start write session (Address: %v)",
-                address);
+            YT_LOG_WARNING(rspOrError, "Failed to start write session (Address: %v)", address);
             return;
         }
 
@@ -992,9 +1092,12 @@ private:
             targetLocationUuid,
             targetLocationIndex,
             rsp->use_probe_put_blocks());
-        node->StartPing(
-            BIND(&TReplicationWriter::SendPing, MakeWeak(this), MakeWeak(node)),
-            Config_->NodePingPeriod);
+
+        if (!isOffshore) {
+            node->StartPing(
+                BIND(&TReplicationWriter::SendPing, MakeWeak(this), MakeWeak(node)),
+                Config_->NodePingPeriod);
+        }
 
         Nodes_.push_back(node);
         ++AliveNodeCount_;
@@ -1103,7 +1206,7 @@ private:
             node->GetDefaultAddress(),
             chunkInfo.disk_space());
 
-        UpdateFromProto(&options.ClientOptions.ChunkWriterStatistics, rsp->chunk_writer_statistics());
+        HandleChunkWriterStatistics(options, rsp->chunk_writer_statistics());
 
         node->SetFinished();
         YT_UNUSED_FUTURE(node->StopPing());
@@ -1384,6 +1487,8 @@ void TGroup::PutGroup(const TReplicationWriterPtr& writer, const IChunkWriter::T
         req->set_first_block_index(FirstBlockIndex_);
         req->set_populate_cache(writer->Config_->PopulateCache);
         req->set_cumulative_block_size(CumulativeBlockSize_);
+        SetRequestIoConsumed(req, options.ClientOptions, writer->Config_->IoConsumedReportWindow);
+        SetRequestIoFairShareWeight(req, writer->Config_->IoFairShareWeight);
 
         SetRpcAttachedBlocks(req, Blocks_);
 
@@ -1453,6 +1558,7 @@ void TGroup::SendGroup(
     const std::vector<TNodePtr>& srcNodes)
 {
     YT_ASSERT_THREAD_AFFINITY(writer->WriterThread);
+    YT_VERIFY(writer->ShouldUseSendBlocks());
 
     std::vector<TNodePtr> dstNodes;
     for (int index = 0; index < std::ssize(SentTo_); ++index) {
@@ -1483,6 +1589,8 @@ void TGroup::SendGroup(
         req->set_first_block_index(FirstBlockIndex_);
         req->set_block_count(Blocks_.size());
         req->set_cumulative_block_size(CumulativeBlockSize_);
+        SetRequestIoConsumed(req, options.ClientOptions, writer->Config_->IoConsumedReportWindow);
+        SetRequestIoFairShareWeight(req, writer->Config_->IoFairShareWeight);
         ToProto(req->mutable_target_descriptor(), dstNode->GetDescriptor());
 
         sendBlocksFutures.push_back(req->Invoke());
@@ -1641,7 +1749,7 @@ void TGroup::Process(const IChunkWriter::TWriteBlocksOptions& options)
         }
         TDelayedExecutor::Submit(BIND(&TGroup::ScheduleProcess, MakeWeak(this), options),
             writer->Config_->NodePingPeriod);
-    } else if (nodesWithPossibleToSendBlocks.empty()) {
+    } else if (nodesWithPossibleToSendBlocks.empty() || !writer->ShouldUseSendBlocks()) {
         PutGroup(writer, options);
     } else {
         SendGroup(writer, options, nodesWithPossibleToSendBlocks);

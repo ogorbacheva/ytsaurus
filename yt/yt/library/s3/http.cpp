@@ -220,11 +220,7 @@ namespace {
 NYT::NCrypto::TSslContextPtr CreateSslContext(const NYT::NCrypto::TSslContextConfigPtr& config, NYT::NCrypto::TCertificatePathResolver pathResolver = nullptr)
 {
     auto sslContext = New<NYT::NCrypto::TSslContext>();
-    if (config) {
-        sslContext->ApplyConfig(config, std::move(pathResolver));
-    } else {
-        sslContext->UseBuiltinOpenSslX509Store();
-    }
+    sslContext->ApplyConfig(config, std::move(pathResolver));
     sslContext->Commit();
     return sslContext;
 }
@@ -310,8 +306,11 @@ private:
             headers,
             request.Payload,
         });
+
+        connection->SetWriteDeadline(TInstant::Now() + Config_->WriteIdleTimeout);
         WaitFor(connection->WriteV(TSharedRefArray(std::move(writeRefs), TSharedRefArray::TMoveParts{})))
             .ThrowOnError();
+        connection->SetWriteDeadline(std::nullopt);
 
         return input;
     }

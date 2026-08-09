@@ -53,6 +53,7 @@
 
 #include <yt/yt/core/misc/public.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/helpers.h>
 #include <yt/yt/core/ytree/virtual.h>
@@ -75,8 +76,8 @@ using namespace NYTree;
 using namespace NYson;
 using namespace NProfiling;
 
-using NYT::ToProto;
 using NYT::FromProto;
+using NYT::ToProto;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -117,7 +118,7 @@ public:
         , TimestampProvider_(std::move(timestampProvider))
         , ParticipantProviders_(std::move(participantProviders))
         , Authenticator_(std::move(authenticator))
-        , Logger(TransactionSupervisorLogger().WithTag("CellId: %v", SelfCellId_))
+        , Logger(TransactionSupervisorLogger().WithTag("CellId", SelfCellId_))
         , StrongOrderingManager_(Logger)
         , TransactionSupervisorService_(New<TTransactionSupervisorService>(this))
         , TransactionParticipantService_(New<TTransactionParticipantService>(this))
@@ -247,6 +248,16 @@ public:
         StrongOrderingManager_.OnProfiling(buffer);
     }
 
+    void SetArtificialParticipantCommitDelay(TDuration delay) override
+    {
+        auto oldDelay = ArtificialParticipantCommitDelay_.exchange(delay, std::memory_order::relaxed);
+        YT_LOG_DEBUG_IF(
+            delay != oldDelay,
+            "Artificial participant commit delay changed (OldDelay: %v, NewDelay: %v)",
+            oldDelay,
+            delay);
+    }
+
     TFuture<void> GetReadyToEnterReadOnlyMode() override
     {
         return StrongOrderingManager_.WaitUntilPreparedCommitsFinish();
@@ -264,6 +275,9 @@ private:
     const IAuthenticatorPtr Authenticator_;
 
     const NLogging::TLogger Logger;
+
+    // For testing purposes.
+    std::atomic<TDuration> ArtificialParticipantCommitDelay_ = TDuration::Zero();
 
     DECLARE_THREAD_AFFINITY_SLOT(AutomatonThread);
 
@@ -296,14 +310,15 @@ private:
                 NRpc::TDispatcher::Get()->GetLightInvoker(),
                 BIND(&TWrappedParticipant::OnProbation, MakeWeak(this)),
                 Config_->ParticipantProbationPeriod))
-            , Logger(logger.WithTag("ParticipantCellId: %v", CellId_))
+            , Logger(logger.WithTag("ParticipantCellId", CellId_))
         {
             ProbationExecutor_->Start();
         }
 
         ~TWrappedParticipant()
         {
-            // ProbationExecutor_ owns this instance via MakeWeak
+            // ProbationExecutor_ has weak reference to this instance,
+            // so stop it to prevent callback being fired after this instance destruction.
             YT_UNUSED_FUTURE(ProbationExecutor_->Stop());
         }
 
@@ -332,8 +347,10 @@ private:
             if (GetState() == ETransactionParticipantState::Unregistered) {
                 return true;
             }
-            if (LastTouched_ + ParticipantTtl < NProfiling::GetInstant() && PendingSenders_.empty()) {
-                return true;
+
+            if (LastTouched_ + ParticipantTtl < NProfiling::GetInstant()) {
+                auto guard = Guard(SpinLock_);
+                return PendingSenders_.empty();
             }
             return false;
         }
@@ -679,7 +696,7 @@ private:
                 return;
             }
 
-            YT_LOG_DEBUG("Checking participant availablitity");
+            YT_LOG_DEBUG("Checking participant availability");
             underlying->CheckAvailability().Subscribe(
                 BIND(&TWrappedParticipant::OnAvailabilityCheckResult, MakeWeak(this)));
         }
@@ -830,7 +847,7 @@ private:
             auto clockClusterTag = request->has_clock_cluster_tag()
                 ? FromProto<TCellTag>(request->clock_cluster_tag())
                 : InvalidCellTag;
-            auto maxAllowedCommitTimestamp = request->max_allowed_commit_timestamp();
+            auto maxAllowedCommitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->max_allowed_commit_timestamp());
 
             // COMPAT(h0pless): Remove this flag after 26.1.
             auto stronglyOrdered = request->strongly_ordered();
@@ -910,7 +927,7 @@ private:
             // order strongly ordered transactions are updated at the same time or before the master is.
             if (stronglyOrdered) {
                 YT_LOG_ALERT_IF(strongOrderingTags.empty(),
-                    "Transaction strong ordering mismatch detacted (TransactionId: %v, StronglyOrdered: %v, StrongOrderingTags: %v)",
+                    "Transaction strong ordering mismatch detected (TransactionId: %v, StronglyOrdered: %v, StrongOrderingTags: %v)",
                     transactionId,
                     stronglyOrdered,
                     strongOrderingTags);
@@ -1087,7 +1104,7 @@ private:
             ValidatePeer(EPeerKind::Leader);
 
             auto transactionId = FromProto<TTransactionId>(request->transaction_id());
-            auto prepareTimestamp = request->prepare_timestamp();
+            auto prepareTimestamp = FromProto<NTransactionClient::TTimestamp>(request->prepare_timestamp());
             auto prepareTimestampClusterTag = request->prepare_timestamp_cluster_tag();
             auto cellIdsToSyncWith = FromProto<std::vector<TCellId>>(request->cell_ids_to_sync_with());
             auto strongOrderingTags = FromProto<std::vector<std::string>>(request->strong_ordering_tags());
@@ -1115,7 +1132,7 @@ private:
 
             NTransactionSupervisor::NProto::TReqParticipantPrepareTransaction hydraRequest;
             ToProto(hydraRequest.mutable_transaction_id(), transactionId);
-            hydraRequest.set_prepare_timestamp(prepareTimestamp);
+            hydraRequest.set_prepare_timestamp(ToProto(prepareTimestamp));
             hydraRequest.set_prepare_timestamp_cluster_tag(prepareTimestampClusterTag);
             ToProto(hydraRequest.mutable_strong_ordering_tags(), strongOrderingTags);
             hydraRequest.set_expected_prepare_signature(expectedPrepareSignature);
@@ -1150,7 +1167,7 @@ private:
             ValidatePeer(EPeerKind::Leader);
 
             auto transactionId = FromProto<TTransactionId>(request->transaction_id());
-            auto commitTimestamp = request->commit_timestamp();
+            auto commitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->commit_timestamp());
             auto commitTimestampClusterTag = request->commit_timestamp_cluster_tag();
 
             context->SetRequestInfo("TransactionId: %v, CommitTimestamp: %v@%v",
@@ -1160,7 +1177,7 @@ private:
 
             NTransactionSupervisor::NProto::TReqParticipantMakeTransactionReadyToCommit hydraRequest;
             ToProto(hydraRequest.mutable_transaction_id(), transactionId);
-            hydraRequest.set_commit_timestamp(commitTimestamp);
+            hydraRequest.set_commit_timestamp(ToProto(commitTimestamp));
             hydraRequest.set_commit_timestamp_cluster_tag(commitTimestampClusterTag);
             NRpc::WriteAuthenticationIdentityToProto(&hydraRequest, NRpc::GetCurrentAuthenticationIdentity());
 
@@ -1175,7 +1192,7 @@ private:
             ValidatePeer(EPeerKind::Leader);
 
             auto transactionId = FromProto<TTransactionId>(request->transaction_id());
-            auto commitTimestamp = request->commit_timestamp();
+            auto commitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->commit_timestamp());
             auto commitTimestampClusterTag = request->commit_timestamp_cluster_tag();
             auto stronglyOrdered = request->strongly_ordered();
 
@@ -1187,12 +1204,21 @@ private:
 
             NTransactionSupervisor::NProto::TReqParticipantCommitTransaction hydraRequest;
             ToProto(hydraRequest.mutable_transaction_id(), transactionId);
-            hydraRequest.set_commit_timestamp(commitTimestamp);
+            hydraRequest.set_commit_timestamp(ToProto(commitTimestamp));
             hydraRequest.set_commit_timestamp_cluster_tag(commitTimestampClusterTag);
             hydraRequest.set_strongly_ordered(stronglyOrdered);
             NRpc::WriteAuthenticationIdentityToProto(&hydraRequest, NRpc::GetCurrentAuthenticationIdentity());
 
             auto owner = GetOwnerOrThrow();
+
+            auto commitDelay = owner->ArtificialParticipantCommitDelay_.load(std::memory_order::relaxed);
+            if (commitDelay != TDuration::Zero()) {
+                YT_LOG_DEBUG("Waiting for artificial delay before transaction commit on participant (TransactionId: %v, Delay: %v)",
+                    transactionId,
+                    commitDelay);
+                TDelayedExecutor::WaitForDuration(commitDelay);
+            }
+
             auto mutation = CreateMutation(owner->HydraManager_, hydraRequest);
             mutation->SetCurrentTraceContext();
             YT_UNUSED_FUTURE(mutation->CommitAndReply(context));
@@ -1335,7 +1361,7 @@ private:
         }
 
     private:
-        TWeakPtr<TTransactionSupervisor> Owner_;
+        const TWeakPtr<TTransactionSupervisor> Owner_;
     };
 
     const IYPathServicePtr OrchidService_;
@@ -1343,7 +1369,7 @@ private:
     IYPathServicePtr CreateOrchidService()
     {
         auto invoker = HydraManager_->CreateGuardedAutomatonInvoker(AutomatonInvoker_);
-        return New<TCompositeMapService>()
+        return CreateCompositeMapService()
             ->AddChild("transient_commits", New<TCommitOrchidService>(
                 MakeWeak(this),
                 &TTransactionSupervisor::TransientCommitMap_))
@@ -1477,7 +1503,7 @@ private:
         // 1) only active Sequoia transactions leads to stuck requests in
         //    read-only mode;
         // 2) read-only mode for tablet cell Hydra is unlikely to be used;
-        // 3) transaction supervisor knows only aboud a part of 2PC: it knows
+        // 3) transaction supervisor knows only about a part of 2PC: it knows
         //    nothing about foreign transactions. Therefore, to properly wait
         //    all 2PC in tablet cells would require some changes in tablet node
         //    transaction manager and it is not what we want to touch.
@@ -1511,9 +1537,9 @@ private:
             ToProto(entry->mutable_strong_ordering_tags(), tags);
         }
 
-        request.set_prepare_timestamp(prepareTimestamp);
+        request.set_prepare_timestamp(ToProto(prepareTimestamp));
         request.set_prepare_timestamp_cluster_tag(ToProto(SelfClockClusterTag_));
-        request.set_max_allowed_commit_timestamp(commit->GetMaxAllowedCommitTimestamp());
+        request.set_max_allowed_commit_timestamp(ToProto(commit->GetMaxAllowedCommitTimestamp()));
         WriteAuthenticationIdentityToProto(&request, commit->AuthenticationIdentity());
 
         auto mutation = CreateMutation(HydraManager_, request);
@@ -1551,6 +1577,8 @@ private:
                     return;
                 }
 
+                // Best effort to reduce duration of transient locks for
+                // transaction which will be unlikely to be committed.
                 SetCommitFailed(commit, errorOrResponse);
                 RemoveTransientCommit(commit);
             }).Via(EpochAutomatonInvoker_));
@@ -1735,9 +1763,9 @@ private:
         auto inheritCommitTimestamp = request->inherit_commit_timestamp();
         auto coordinatorCommitMode = FromProto<ETransactionCoordinatorCommitMode>(request->coordinator_commit_mode());
         auto coordinatorPrepareMode = FromProto<ETransactionCoordinatorPrepareMode>(request->coordinator_prepare_mode());
-        auto prepareTimestamp = request->prepare_timestamp();
+        auto prepareTimestamp = FromProto<NTransactionClient::TTimestamp>(request->prepare_timestamp());
         auto prepareTimestampClusterTag = FromProto<TClusterTag>(request->prepare_timestamp_cluster_tag());
-        auto maxAllowedCommitTimestamp = request->max_allowed_commit_timestamp();
+        auto maxAllowedCommitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->max_allowed_commit_timestamp());
 
         TStrongOrderingTagsMap strongOrderingTags;
         for (const auto& entry : request->strong_ordering_tags_map()) {
@@ -1796,15 +1824,16 @@ private:
                 maxAllowedCommitTimestamp,
                 identity);
         } catch (const std::exception& ex) {
-            if (auto commit = FindCommit(transactionId)) {
-                YT_VERIFY(!commit->GetPersistent());
-                SetCommitFailed(commit, ex);
-                RemoveTransientCommit(commit);
+            if (auto* existingCommit = FindCommit(transactionId)) {
+                YT_VERIFY(!existingCommit->GetPersistent());
+                SetCommitFailed(existingCommit, ex);
+                RemoveTransientCommit(existingCommit);
             }
+
             THROW_ERROR WrapHydraError(ex);
         }
 
-        if (commit && commit->GetPersistentState() != ECommitState::Start) {
+        if (commit->GetPersistentState() != ECommitState::Start) {
             YT_LOG_DEBUG(
                 "Requested to commit distributed transaction in wrong state; ignored (TransactionId: %v, State: %v)",
                 transactionId,
@@ -2106,7 +2135,7 @@ private:
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
         auto transactionId = FromProto<TTransactionId>(request->transaction_id());
-        auto prepareTimestamp = request->prepare_timestamp();
+        auto prepareTimestamp = FromProto<NTransactionClient::TTimestamp>(request->prepare_timestamp());
         auto prepareTimestampClusterTag = FromProto<TClusterTag>(request->prepare_timestamp_cluster_tag());
         auto strongOrderingTags = FromProto<std::vector<std::string>>(request->strong_ordering_tags());
         auto expectedPrepareSignature = request->has_expected_prepare_signature()
@@ -2173,7 +2202,7 @@ private:
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
         auto transactionId = FromProto<TTransactionId>(request->transaction_id());
-        auto commitTimestamp = request->commit_timestamp();
+        auto commitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->commit_timestamp());
         auto commitTimestampClusterTag = FromProto<TClusterTag>(request->commit_timestamp_cluster_tag());
 
         auto identity = NRpc::ParseAuthenticationIdentityFromProto(*request);
@@ -2220,7 +2249,7 @@ private:
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
         auto transactionId = FromProto<TTransactionId>(request->transaction_id());
-        auto commitTimestamp = request->commit_timestamp();
+        auto commitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->commit_timestamp());
         auto commitTimestampClusterTag = FromProto<TClusterTag>(request->commit_timestamp_cluster_tag());
         auto stronglyOrdered = request->strongly_ordered();
 
@@ -2255,7 +2284,7 @@ private:
                 StrongOrderingManager_.GetClockSourceClusterTag());
 
             YT_LOG_DEBUG("Committing strongly ordered transaction at participant (TransactionId: %v)",
-                    transactionId);
+                transactionId);
 
             auto transactionsToCommit = StrongOrderingManager_.OnCommitCommit(
                 transactionId,
@@ -2635,7 +2664,12 @@ private:
                 commit->GetPersistentState(),
                 NRpc::GetCurrentAuthenticationIdentity());
         } catch (const std::exception& ex) {
-            YT_LOG_ALERT(ex, "Coordinator failure; ignored (TransactionId: %v, State: %v, %v)",
+            auto stronglyOrdered = commit->IsStronglyOrderedForCell(SelfCellId_);
+            YT_LOG_EVENT(
+                Logger(),
+                stronglyOrdered ? NLogging::ELogLevel::Fatal : NLogging::ELogLevel::Alert,
+                ex,
+                "Coordinator failure (TransactionId: %v, State: %v, %v)",
                 transactionId,
                 commit->GetPersistentState(),
                 NRpc::GetCurrentAuthenticationIdentity());

@@ -3075,6 +3075,13 @@ public:
         AddStatisticsUpdateToGossipQueue(account);
     }
 
+    std::string GetAuthenticatedUserNameToForward() override
+    {
+        return GetDynamicConfig()->ForwardAuthenticatedUser
+            ? GetAuthenticatedUser()->GetName()
+            : std::string{};
+    }
+
 private:
     friend class TAccountTypeHandler;
     friend class TAccountResourceUsageLeaseTypeHandler;
@@ -4013,6 +4020,8 @@ private:
         }
 
         BackupSourceAccountsMap_.clear();
+
+        AccountsAwaitingGossipDispatch_.clear();
 
         RootUser_ = nullptr;
         GuestUser_ = nullptr;

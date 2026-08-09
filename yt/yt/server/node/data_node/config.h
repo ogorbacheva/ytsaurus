@@ -30,11 +30,11 @@
 
 #include <yt/yt/core/misc/arithmetic_formula.h>
 
+#include <yt/yt/core/ypath/public.h>
+
 #include <yt/yt/core/ytree/yson_struct.h>
 
 namespace NYT::NDataNode {
-
-using namespace NNode;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -83,7 +83,7 @@ DEFINE_REFCOUNTED_TYPE(TP2PConfig)
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TChunkLocationConfig
-    : public TChunkLocationConfigBase
+    : public NNode::TChunkLocationConfigBase
 {
     static constexpr bool EnableHazard = true;
 
@@ -339,7 +339,7 @@ struct TTmpfsLayerCacheConfig
     : public NYTree::TYsonStruct
 {
     i64 Capacity;
-    std::optional<TString> LayersDirectoryPath;
+    std::optional<NYPath::TYPath> LayersDirectoryPath;
     TDuration LayersUpdatePeriod;
 
     REGISTER_YSON_STRUCT(TTmpfsLayerCacheConfig);
@@ -866,6 +866,38 @@ DEFINE_REFCOUNTED_TYPE(TJobControllerDynamicConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TMediumAwareBlockCacheManagerConfig
+    : public NYTree::TYsonStruct
+{
+    bool Enable = false;
+    //! Fixed block cache capacity grouped by medium name.
+    THashMap<std::string, NChunkClient::TBlockCacheConfigPtr> BlockCacheConfigPerMedium;
+
+    REGISTER_YSON_STRUCT(TMediumAwareBlockCacheManagerConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TMediumAwareBlockCacheManagerConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TMediumAwareBlockCacheManagerDynamicConfig
+    : public NYTree::TYsonStruct
+{
+    std::optional<bool> Enable;
+    //! Fixed block cache capacity overrides grouped by medium name.
+    THashMap<std::string, NChunkClient::TBlockCacheDynamicConfigPtr> BlockCacheConfigPerMedium;
+
+    REGISTER_YSON_STRUCT(TMediumAwareBlockCacheManagerDynamicConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TMediumAwareBlockCacheManagerDynamicConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TDataNodeConfig
     : public TJournalManagerConfig
 {
@@ -911,8 +943,11 @@ struct TDataNodeConfig
     //! Cache for partition block metas.
     TSlruCacheConfigPtr BlockMetaCache;
 
-    //! Cache for all types of blocks.
+    //! Ordinary block cache configuration.
     NChunkClient::TBlockCacheConfigPtr BlockCache;
+
+    //! Medium-aware block cache manager configuration.
+    TMediumAwareBlockCacheManagerConfigPtr MediumAwareBlockCacheManager;
 
     //! Opened blob chunks cache.
     TSlruCacheConfigPtr BlobReaderCache;
@@ -952,6 +987,10 @@ struct TDataNodeConfig
 
     //! Smoothing interval for net out limit throttling.
     TDuration NetOutThrottlingDuration;
+
+    //! Write requests are throttled when the number of bytes queued at in_throttler exceeds this limit.
+    //! This is a global limit.
+    i64 NetInThrottlingLimit;
 
     //! If |true| data node will reply instantly when network is throttling.
     bool EnableSendBlocksNetThrottling;
@@ -1082,6 +1121,9 @@ struct TDataNodeDynamicConfig
     TSlruCacheDynamicConfigPtr BlocksExtCache;
     TSlruCacheDynamicConfigPtr BlockMetaCache;
     NChunkClient::TBlockCacheDynamicConfigPtr BlockCache;
+
+    TMediumAwareBlockCacheManagerDynamicConfigPtr MediumAwareBlockCacheManager;
+
     TSlruCacheDynamicConfigPtr BlobReaderCache;
     TSlruCacheDynamicConfigPtr ChangelogReaderCache;
     TTableSchemaCacheDynamicConfigPtr TableSchemaCache;
@@ -1111,8 +1153,8 @@ struct TDataNodeDynamicConfig
 
     bool UseDisableSendBlocks;
     bool UseProbePutBlocks;
+    bool EnableProbePutBlocksFairShare;
     bool PreallocateDiskSpace;
-    bool UseDirectIO;
 
     bool WaitPrecedingBlocksReceived;
 
@@ -1144,12 +1186,20 @@ struct TDataNodeDynamicConfig
 
     std::optional<i64> NetOutThrottlingLimit;
 
+    std::optional<i64> NetInThrottlingLimit;
+
     std::optional<i64> DiskWriteThrottlingLimit;
     std::optional<i64> DiskReadThrottlingLimit;
 
     std::optional<bool> ChooseLocationBasedOnIOWeight;
 
     std::optional<bool> SkipWriteThrottlingLocations;
+
+    //! If |true|, write throttling is reflected in CheckWritable / GetIOWeight.
+    std::optional<bool> EnableWriteThrottlingWritableCheck;
+
+    //! If |true|, network in_throttler queue size is checked on StartChunk and ProbePutBlocks.
+    std::optional<bool> EnableInThrottlerQueueWritableCheck;
 
     std::optional<bool> EnableSequentialIORequests;
 

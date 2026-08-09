@@ -8,7 +8,7 @@
 
 #include <library/cpp/yt/memory/chunked_memory_pool.h>
 
-#include <library/cpp/containers/absl_flat_hash/flat_hash_map.h>
+#include <library/cpp/containers/absl/flat_hash_map.h>
 
 #include <type_traits>
 
@@ -200,9 +200,7 @@ private:
 
     const TTraits Traits_;
 
-    // COMPAT(danilalexeev): YT-24017.
     static constexpr int AllEntitiesBatchEntityCount = -1;
-    static constexpr size_t BatchedFormatMarker = std::numeric_limits<ui32>::max();
 
     std::vector<TKey> LoadKeys_;
     std::vector<TValue*> LoadValues_;

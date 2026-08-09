@@ -37,14 +37,14 @@ TChunkListPool::TChunkListPool(
     IInvokerPoolPtr controllerInvokerPool,
     TOperationId operationId,
     TTransactionId transactionId,
-    bool isHunk)
+    EChunkListKind kind)
     : Config_(config)
     , Client_(client)
     , ControllerInvokerPool_(controllerInvokerPool)
     , OperationId_(operationId)
     , TransactionId_(transactionId)
-    , IsHunk_(isHunk)
-    , Logger(ControllerLogger().WithTag("OperationId: %v", operationId))
+    , Kind_(kind)
+    , Logger(ControllerLogger().WithTag("OperationId", operationId))
 {
     YT_VERIFY(Config_);
     YT_VERIFY(Client_);
@@ -124,7 +124,9 @@ void TChunkListPool::AllocateMore(TCellTag cellTag)
 
     ToProto(req->mutable_transaction_id(), TransactionId_);
     req->set_count(count);
-    if (IsHunk_) {
+    req->set_kind(ToProto(Kind_));
+    // COMPAT(babenko): a pre-"kind" master honors only this flag.
+    if (Kind_ == EChunkListKind::Hunk) {
         req->set_is_hunk_chunk_list(true);
     }
 

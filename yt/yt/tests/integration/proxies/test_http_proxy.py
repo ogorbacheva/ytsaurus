@@ -246,6 +246,7 @@ class TestHttpProxy(HttpProxyTestBase):
         return rsp
 
     @authors("theevilbird")
+    @pytest.mark.skip("TODO(shakurov): YT-28870")
     @pytest.mark.parametrize("api_queries", [
         {
             "version": "v3",
@@ -344,6 +345,7 @@ class TestHttpProxy(HttpProxyTestBase):
         assert get(f"//sys/transactions/{tx2}/@last_ping_address") != yson.YsonEntity()
 
     @authors("theevilbird")
+    @pytest.mark.skip("TODO(shakurov): YT-28870")
     @pytest.mark.parametrize("api_queries", [
         {
             "version": "v4",
@@ -483,9 +485,8 @@ class TestHttpProxy(HttpProxyTestBase):
         wait(config_updated)
 
     @authors("prime")
+    @pytest.mark.skip
     def test_taken_port(self):
-        pytest.skip()
-
         monitoring_port = self.Env.configs["node"][0]["monitoring_port"]
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

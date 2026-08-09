@@ -4,8 +4,6 @@
 
 #include <yt/yt/server/lib/misc/bootstrap.h>
 
-#include <yt/yt/server/lib/signature/components/public.h>
-
 #include <yt/yt/ytlib/api/native/public.h>
 
 #include <yt/yt/ytlib/misc/public.h>
@@ -19,6 +17,8 @@
 #include <yt/yt/library/containers/public.h>
 
 #include <yt/yt/library/tracing/jaeger/public.h>
+
+#include <yt/yt/library/signature/components/public.h>
 
 #include <yt/yt/core/bus/public.h>
 
@@ -72,6 +72,7 @@ private:
     NRpc::IServerPtr TvmOnlyRpcServer_;
     NRpc::IServerPtr GrpcServer_;
     NHttp::IServerPtr HttpServer_;
+    NHttp::IServerPtr HttpsServer_;
 
     NApi::NNative::IConnectionPtr Connection_;
     NRpc::IAuthenticatorPtr NativeAuthenticator_;

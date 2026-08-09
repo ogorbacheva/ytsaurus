@@ -104,7 +104,7 @@ TJoblet::TJoblet(
 
 TJobMetrics TJoblet::UpdateJobMetrics(const TJobSummary& jobSummary, bool isJobFinished)
 {
-    const auto Logger = ControllerLogger().WithTag("JobId: %v", JobId);
+    const auto Logger = ControllerLogger().WithTag("JobId", JobId);
 
     if (!jobSummary.Statistics) {
         // Return empty delta if job has no statistics.
@@ -162,8 +162,7 @@ TJobStatisticsTags TJoblet::GetAggregationTags(EJobState state)
     return {
         .JobState = statisticsState,
         .JobType = Task->GetVertexDescriptorForJoblet(MakeStrong(this)),
-        // TODO(babenko): migrate to std::string
-        .PoolTree = TString(TreeId),
+        .PoolTree = TreeId,
     };
 }
 

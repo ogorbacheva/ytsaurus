@@ -63,6 +63,8 @@ void TIOEngineConfigBase::Register(TRegistrar registrar)
 
     registrar.Parameter("use_direct_io_for_reads", &TThis::UseDirectIOForReads)
         .Default(EDirectIOPolicy::Never);
+    registrar.Parameter("use_direct_io_for_writes", &TThis::UseDirectIOForWrites)
+        .Default(EDirectIOPolicy::Never);
 
     registrar.Parameter("total_request_limit", &TThis::TotalRequestLimit)
         .Default(std::numeric_limits<i64>::max());
@@ -102,15 +104,15 @@ TInflightCounter TInflightCounter::Create(TProfiler& profiler, const std::string
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TIOEngineSensors::RegisterWrittenBytes(i64 count)
+void TIOEngineSensors::RegisterWrittenBytes(i64 count, EWorkloadCategory category)
 {
-    WrittenBytesCounter.Increment(count);
+    WrittenBytesCounter[category].Increment(count);
     TotalWrittenBytesCounter.fetch_add(count, std::memory_order::relaxed);
 }
 
-void TIOEngineSensors::RegisterReadBytes(i64 count)
+void TIOEngineSensors::RegisterReadBytes(i64 count, EWorkloadCategory category)
 {
-    ReadBytesCounter.Increment(count);
+    ReadBytesCounter[category].Increment(count);
     TotalReadBytesCounter.fetch_add(count, std::memory_order::relaxed);
 }
 
@@ -180,18 +182,21 @@ TRequestCounterGuard::TRequestCounterGuard()
     Engine_ = nullptr;
 }
 
-TRequestCounterGuard::TRequestCounterGuard(TIntrusivePtr<TIOEngineBase> engine, EIOEngineRequestType requestType)
+TRequestCounterGuard::TRequestCounterGuard(TIntrusivePtr<TIOEngineBase> engine, EIOEngineRequestType requestType, EWorkloadCategory category)
     : Engine_(std::move(engine))
     , RequestType_(requestType)
+    , Category_(category)
 {
     YT_VERIFY(Engine_);
 
     switch (RequestType_) {
         case EIOEngineRequestType::Read:
             Engine_->InFlightReadRequestCount_.fetch_add(1);
+            Engine_->Sensors_->InflightReadRequestSensors[category].Increment();
             break;
         case EIOEngineRequestType::Write:
             Engine_->InFlightWriteRequestCount_.fetch_add(1);
+            Engine_->Sensors_->InflightWriteRequestSensors[category].Increment();
             break;
         default:
             YT_ABORT();
@@ -223,9 +228,11 @@ void TRequestCounterGuard::Release()
         switch (RequestType_) {
             case EIOEngineRequestType::Read:
                 Engine_->InFlightReadRequestCount_.fetch_sub(1);
+                Engine_->Sensors_->InflightReadRequestSensors[Category_].Decrement();
                 break;
             case EIOEngineRequestType::Write:
                 Engine_->InFlightWriteRequestCount_.fetch_sub(1);
+                Engine_->Sensors_->InflightWriteRequestSensors[Category_].Decrement();
                 break;
             default:
                 YT_ABORT();
@@ -239,6 +246,7 @@ void TRequestCounterGuard::MoveFrom(TRequestCounterGuard&& other)
 {
     Engine_ = other.Engine_;
     RequestType_ = other.RequestType_;
+    Category_ = other.Category_;
 
     other.Engine_.Reset();
 }
@@ -256,7 +264,7 @@ TFuture<TCloseResponse>
 TIOEngineBase::Close(TCloseRequest request, EWorkloadCategory category)
 {
     auto invoker = (request.Flush || request.Size) ? FsyncInvoker_ : AuxInvoker_;
-    return BIND(&TIOEngineBase::DoClose, MakeStrong(this), std::move(request))
+    return BIND(&TIOEngineBase::DoClose, MakeStrong(this), std::move(request), category)
         .AsyncVia(NConcurrency::CreateFixedPriorityInvoker(invoker, GetBasicPriority(category)))
         .Run();
 }
@@ -313,6 +321,11 @@ i64 TIOEngineBase::GetTotalWrittenBytes() const
 EDirectIOPolicy TIOEngineBase::UseDirectIOForReads() const
 {
     return Config_.Acquire()->UseDirectIOForReads;
+}
+
+EDirectIOPolicy TIOEngineBase::UseDirectIOForWrites() const
+{
+    return Config_.Acquire()->UseDirectIOForWrites;
 }
 
 bool TIOEngineBase::IsInFlightRequestLimitExceeded() const
@@ -414,7 +427,7 @@ TFlushDirectoryResponse TIOEngineBase::DoFlushDirectory(const TFlushDirectoryReq
     return response;
 }
 
-TCloseResponse TIOEngineBase::DoClose(const TCloseRequest& request)
+TCloseResponse TIOEngineBase::DoClose(const TCloseRequest& request, EWorkloadCategory category)
 {
     TCloseResponse response;
 
@@ -425,7 +438,7 @@ TCloseResponse TIOEngineBase::DoClose(const TCloseRequest& request)
             request.Handle->Resize(*request.Size);
         }
         if (request.Flush && StaticConfig_->EnableSync) {
-            TRequestStatsGuard statsGuard(Sensors_->SyncSensors);
+            TRequestStatsGuard statsGuard(Sensors_->SyncSensors[category]);
             request.Handle->Flush();
             response.IOSyncRequests = 1;
         }
@@ -569,9 +582,9 @@ void TIOEngineBase::AddReadWaitTimeSample(TDuration duration)
     }
 }
 
-TRequestCounterGuard TIOEngineBase::CreateInFlightRequestGuard(EIOEngineRequestType requestType)
+TRequestCounterGuard TIOEngineBase::CreateInFlightRequestGuard(EIOEngineRequestType requestType, EWorkloadCategory category)
 {
-    return TRequestCounterGuard(MakeStrong(this), requestType);
+    return TRequestCounterGuard(MakeStrong(this), requestType, category);
 }
 
 void TIOEngineBase::Reconfigure(const NYTree::INodePtr& node)
@@ -595,17 +608,6 @@ void TIOEngineBase::InitProfilerSensors()
         return SicknessCounter_.load();
     });
 
-    Profiler.AddFuncGauge("/inflight_write_request_count", MakeStrong(this), [this] {
-        return GetInFlightWriteRequestCount();
-    });
-
-    Profiler.AddFuncGauge("/inflight_read_request_count", MakeStrong(this), [this] {
-        return GetInFlightReadRequestCount();
-    });
-
-    Sensors_->WrittenBytesCounter = Profiler.Counter("/written_bytes");
-    Sensors_->ReadBytesCounter = Profiler.Counter("/read_bytes");
-
     Sensors_->KernelWrittenBytesCounter = Profiler.Counter("/kernel_written_bytes");
     Sensors_->KernelReadBytesCounter = Profiler.Counter("/kernel_read_bytes");
 
@@ -620,11 +622,22 @@ void TIOEngineBase::InitProfilerSensors()
         return sensors;
     };
 
-    Sensors_->ReadSensors = makeRequestSensors(Profiler.WithPrefix("/read"));
-    Sensors_->WriteSensors = makeRequestSensors(Profiler.WithPrefix("/write"));
-    Sensors_->SyncSensors = makeRequestSensors(Profiler.WithPrefix("/sync"));
-    Sensors_->DataSyncSensors = makeRequestSensors(Profiler.WithPrefix("/datasync"));
     Sensors_->IOSubmitSensors = makeRequestSensors(Profiler.WithPrefix("/uring_io_submit"));
+
+    for (auto category : TEnumTraits<EWorkloadCategory>::GetDomainValues()) {
+        auto profilerCategory = Profiler.WithTag("category", FormatEnum(category));
+
+        Sensors_->InflightReadRequestSensors[category] = TInflightCounter::Create(profilerCategory, "/inflight_read_request_count");
+        Sensors_->InflightWriteRequestSensors[category] = TInflightCounter::Create(profilerCategory, "/inflight_write_request_count");
+
+        Sensors_->WrittenBytesCounter[category] = profilerCategory.Counter("/written_bytes");
+        Sensors_->ReadBytesCounter[category] = profilerCategory.Counter("/read_bytes");
+
+        Sensors_->ReadSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/read"));
+        Sensors_->WriteSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/write"));
+        Sensors_->SyncSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/sync"));
+        Sensors_->DataSyncSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/datasync"));
+    }
 }
 
 void TIOEngineBase::SetSickFlag(const TError& error)

@@ -129,6 +129,11 @@ private:
             options.ReadFrom = NApi::EMasterChannelKind::MasterSideCache;
             options.PopulateMediumDirectory = true;
 
+            // For tests.
+            if (Config_->Testing->BypassCache) {
+                options.ReadFrom = NApi::EMasterChannelKind::Follower;
+            }
+
             auto result = WaitFor(client->GetClusterMeta(options))
                 .ValueOrThrow();
 

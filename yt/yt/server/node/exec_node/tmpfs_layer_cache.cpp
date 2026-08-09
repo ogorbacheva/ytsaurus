@@ -51,7 +51,7 @@ TTmpfsLayerCache::TTmpfsLayerCache(
     TClusterNodeDynamicConfigManagerPtr dynamicConfigManager,
     IInvokerPtr controlInvoker,
     IMemoryUsageTrackerPtr memoryUsageTracker,
-    const TString& cacheName,
+    const std::string& cacheName,
     IPortoExecutorPtr portoExecutor,
     TAbsorbLayerCallback absorbLayer)
     : Config_(std::move(config))
@@ -247,7 +247,7 @@ void TTmpfsLayerCache::UpdateLayers()
 
     auto tag = TGuid::Create();
     auto Logger = ExecNodeLogger()
-        .WithTag("Tag: %v", tag);
+        .WithTag("Tag", tag);
 
     YT_LOG_INFO("Started updating tmpfs layers");
 

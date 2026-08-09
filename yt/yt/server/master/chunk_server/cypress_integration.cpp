@@ -193,7 +193,7 @@ private:
             maxChunks = std::ranges::min(std::ssize(GetOrCrash(chunksSample, cellTags.front())), limit);
         }
 
-        for (i64 i = 0; i < maxChunks; ++i) {
+        for (i64 index = 0; index < maxChunks; ++index) {
             for (auto cellTag : cellTags) {
                 if (limit == 0) {
                     return result;
@@ -201,11 +201,11 @@ private:
 
                 const auto& cellChunkIds = GetOrCrash(chunksSample, cellTag);
                 // Cell tags are descending sorted by the number of chunks.
-                if (std::ssize(cellChunkIds) <= i) {
+                if (std::ssize(cellChunkIds) <= index) {
                     break;
                 }
 
-                result[cellTag].push_back(cellChunkIds[i]);
+                result[cellTag].push_back(cellChunkIds[index]);
                 --limit;
             }
         }
@@ -495,6 +495,9 @@ private:
         } else {
             Bootstrap_->GetObjectService()->RequireLeader();
 
+            const auto& securityManager = Bootstrap_->GetSecurityManager();
+            auto userNameToForward = securityManager->GetAuthenticatedUserNameToForward();
+
             const auto& chunkManager = Bootstrap_->GetChunkManager();
             auto channels = chunkManager->GetChunkReplicatorChannels();
 
@@ -505,6 +508,7 @@ private:
                 // TODO(nadya02): Set the correct timeout here.
                 proxy.SetDefaultTimeout(NRpc::HugeDoNotUseRpcRequestTimeout);
                 auto batchReq = proxy.ExecuteBatch();
+                batchReq->SetUser(userNameToForward);
                 auto req = TCypressYPathProxy::Enumerate(GetWellKnownPath(GetLocalChunkMapType()));
                 req->set_limit(limit);
                 batchReq->AddRequest(req, "enumerate");
@@ -565,7 +569,7 @@ private:
 
             void Invoke(const IYPathServiceContextPtr& context) override
             {
-                GuardedInvoke(Invoker_,
+                Invoker_->Invoke(MakeGuardedCallback(
                     BIND([=, this, this_ = MakeStrong(this)] {
                         try {
                             if (!Map_->CheckChunkFilter(EphemeralChunk_)) {
@@ -585,7 +589,7 @@ private:
                     }),
                     BIND([=] {
                         THROW_ERROR_EXCEPTION(NRpc::EErrorCode::Unavailable, "Hydra peer is not active");
-                    }));
+                    })));
             }
 
             TResolveResult Resolve(
@@ -647,6 +651,9 @@ private:
             const auto& chunkManager = Bootstrap_->GetChunkManager();
             auto channels = chunkManager->GetChunkReplicatorChannels();
 
+            const auto& securityManager = Bootstrap_->GetSecurityManager();
+            auto userNameToForward = securityManager->GetAuthenticatedUserNameToForward();
+
             std::vector<TFuture<TIntrusivePtr<TObjectYPathProxy::TRspGet>>> responseFutures;
             responseFutures.reserve(channels.size());
             for (const auto& channel : channels) {
@@ -654,7 +661,7 @@ private:
                 // TODO(nadya02): Set the correct timeout here.
                 proxy.SetDefaultTimeout(NRpc::HugeDoNotUseRpcRequestTimeout);
                 auto req = TYPathProxy::Get(GetWellKnownPath(GetLocalChunkMapType()) + "/@count");
-                responseFutures.push_back(proxy.Execute(req));
+                responseFutures.push_back(proxy.ExecuteAs(userNameToForward, req));
             }
 
             return AllSucceeded(std::move(responseFutures))

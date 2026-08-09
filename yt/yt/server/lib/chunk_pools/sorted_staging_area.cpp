@@ -135,7 +135,7 @@ public:
 
 public:
     TPrimaryDomain(TStringBuf kind, TLogger logger, const TComparator& comparator)
-        : Logger(std::move(logger).WithTag("Domain: %v", kind))
+        : Logger(std::move(logger).WithTag("Domain", kind))
         , Comparator_(comparator)
     { }
 
@@ -447,7 +447,7 @@ private:
 
     std::vector<TLegacyDataSlicePtr> NonSolidMainDataSlices_;
 
-    TString GetStatisticsDebugString() const
+    std::string GetStatisticsDebugString() const
     {
         return Format(
             "{Main: %v, Buffer: %v, Solid: %v}",

@@ -153,9 +153,12 @@ enum ECascadingRemovalPolicy
     // When all descendants become removed, foreign object itself may be removed.
     // The system may try to remove it with last removed descendant.
     CRP_AWAIT_FOREIGN = 3;
-    // Clear links to descendants upon finalization (or removal, if finalizers are disabled).
-    // Inapplicable to parent-child references.
+    // Clears links to descendants during finalization, or during removal if finalizers are disabled.
+    // Does not block object removal. Not applicable to parent-child references.
     CRP_CLEAR = 4;
+    // Like `CRP_CLEAR`, but keeps the link through finalization and clears it only during removal.
+    // Useful when the link is needed after finalization, e.g. to add a foreign key to a watchlog event.
+    CRP_CLEAR_ON_REMOVAL = 5;
 }
 
 message TAttributeSensor
@@ -206,7 +209,7 @@ message TLocalAttributeMigration
     optional string old_lock_group = 4;
 }
 
-// Next field number 60.
+// Next field number 61.
 message TObjectTypeOption
 {
     reserved 6, 7, 15, 17, 20, 21, 28, 29, 34, 35, 37, 38, 46;
@@ -245,6 +248,9 @@ message TObjectTypeOption
     optional bool enable_finalizers = 51;
 
     optional EHashPolicy hash_policy = 24;
+
+    // Specifies expression for hash column (e.g. "farm_hash([meta.id])"). Mutually exclusive with hash_policy.
+    optional string hash_expression = 60;
     optional THistoryOptions history = 43;
     repeated TWatchLogOption watch_logs = 8;
 
@@ -352,6 +358,7 @@ message TIndexOption
         IM_DISABLED = 0;
         IM_REMOVE_ONLY = 3;
         IM_BUILDING = 1;
+        IM_SHRINKING = 5;
         IM_ENABLED = 2;
     }
 
@@ -464,6 +471,34 @@ message TEtcOptions
     optional string lock_group = 1;
     optional string data_group = 2;
     optional uint64 max_inline_hunk_size = 3;
+}
+
+// Options for options! Set an |edition_flag| field option on a boolean file option to have the flag
+// automatically flip on a future codegen run.
+// Marking a flag |deprecated| will ask clients to stop using it in codegen output.
+message TEditionFlagOptions
+{
+    // Edition at/after which the flag defaults to |edition_value|. Must be in [1, TRUNK_EDITION].
+    optional int32 at_edition = 1;
+    // Value applied at/after |at_edition| (the forward default). Usually true.
+    optional bool edition_value = 2 [default = true];
+    // Value applied below |at_edition| (the legacy baseline). Usually false.
+    optional bool initial_value = 3 [default = false];
+    // Human-readable summary for self-describing code and automated reports/nudges.
+    optional string description = 4;
+}
+
+// Options for options! Set a |project_flag| field option on a boolean file option to require each ORM
+// instance (project) to make an explicit decision about it. It is NOT tied to any codegen edition and
+// never auto-flips: while the flag is left unset codegen keeps using |default_value| and keeps asking,
+// in its report, for the project to choose. The moment the project sets the flag explicitly (to either
+// value), the decision is recorded and the report goes quiet.
+message TProjectFlagOptions
+{
+    // Value used until the client records an explicit decision by setting the flag.
+    optional bool default_value = 1 [default = false];
+    // Human-readable summary shown in the report until the client sets the option explicitly.
+    optional string description = 2;
 }
 
 // Next field 30062.
@@ -583,17 +618,32 @@ extend google.protobuf.FileOptions
     // If true, treats default value and field absence as equal.
     optional bool compare_absent_value_as_default = 30056;
 
-    // Exposes the /control/partition_objects method on the schema object. Off by default during
-    // rollout: the codegen drops the schema control field unless this is set.
-    optional bool enable_schema_partition_objects = 30062;
-    // Exposes the /control/watch_log_info method on the schema object. Off by default during
-    // rollout: the codegen drops the schema control field unless this is set.
-    optional bool enable_schema_watch_log_info = 30060;
+    // Exposes the /control/partition_objects method on the schema object. Edition flag: defaults on
+    // at edition 1+; an installation below edition 1 (or pinning it |= false|) keeps the control
+    // field dropped. The codegen drops the schema control field unless the effective value is set.
+    optional bool enable_schema_partition_objects = 30062 [(edition_flag) = {
+        at_edition: 1
+        description: "Expose /control/partition_objects on the schema object."
+    }];
+    // Exposes the /control/watch_log_info method on the schema object. Edition flag: defaults on at
+    // edition 1+; an installation below edition 1 (or pinning it |= false|) keeps the control field
+    // dropped. The codegen drops the schema control field unless the effective value is set.
+    optional bool enable_schema_watch_log_info = 30060 [(edition_flag) = {
+        at_edition: 1
+        description: "Expose /control/watch_log_info on the schema object."
+    }];
 
     // Enables the |multi_consumer| system table and native multi-consumer support.
     // When enabled, ORM generates the |multi_consumer| table and allows
     // registering/advancing/reading queue progress via a single shared consumer table.
     optional bool support_multi_consumer = 30061;
+
+    // Defaults applied by codegen to counter fields of counting references. Each is overridable per
+    // field (|field_lock_group| / |field_data_group| / |is_multiple_referenceable|). If unset, codegen
+    // uses the auto-registered "reference_counter" lock/data group and false, respectively.
+    optional string counter_field_lock_group = 30063;
+    optional string counter_field_data_group = 30064;
+    optional bool counter_is_multiple_referenceable = 30065;
 }
 
 enum EGenerationPolicy
@@ -679,7 +729,11 @@ message TReferenceOption
 
     message TCountingKeyStorageOption
     {
+        // Path to the counter field within this object. If the field does not exist it is generated
+        // with the proper options (sum-aggregated opaque int64 column); if it does, |field_number|
+        // (when set) must match its number.
         optional string counter_path = 1;
+        optional int32 field_number = 2;
     }
 
     message TReferenceViewOption
@@ -839,8 +893,8 @@ message TReferencesOption
         optional TReferenceOption.EDuplicatePolicy duplicate_policy = 26;
     }
 
-    optional TEndpoint first = 1;
-    optional TEndpoint second = 2;
+    optional TEndpoint left = 1;
+    optional TEndpoint right = 2;
     optional TReferenceOption.EReferenceMode mode = 3;
 }
 
@@ -877,18 +931,10 @@ message TJoinOption
     optional bool async = 4;
 }
 
-enum EFilterPlace
-{
-    FILTER_WHERE = 0;
-    FILTER_HAVING = 1;
-    FILTER_JOIN_PREDICATE = 2;
-}
-
 message TJoinedColumnOption
 {
-    reserved 1;
-    reserved "select_allowed";
-    optional EFilterPlace filter_place = 2;
+    reserved 1, 2;
+    reserved "select_allowed", "filter_place";
     // Field evaluation expression. Mutually exclusive with name and aggregation.
     optional string expression = 3;
     // Column name.
@@ -897,7 +943,7 @@ message TJoinedColumnOption
     optional string aggregation = 5;
 }
 
-// Next field 31062.
+// Next field 31064.
 extend google.protobuf.FieldOptions
 {
     optional bool column = 31001;
@@ -1012,6 +1058,12 @@ extend google.protobuf.FieldOptions
     repeated string add_tags = 31027;
     // Parent message tags to remove from the field.
     repeated string remove_tags = 31028;
+    // Tags to eliminate from all descendant fields recursively.
+    // Unlike |remove_tags|, which is applied before |add_tags| (and thus can be re-added
+    // by it) and only affects the field itself, these tags are eliminated from every nested
+    // field in the subtree after |add_tags|, overriding any tags they add back via
+    // |message_tags| or |add_tags|. The field itself keeps the tags.
+    repeated string eliminate_tags_from_descendants = 31062;
 
     optional EUpdatePolicy update_policy = 31032;
     optional bool not_updatable = 31004;
@@ -1065,11 +1117,23 @@ extend google.protobuf.FieldOptions
     optional bool referenced = 31056;
 
     // Allow to use the same counter in difference counting references.
-    optional bool is_multiple_referencable = 31058;
+    optional bool is_multiple_referenceable = 31058;
 
     // Saves the attribute value only within the transaction.
     // Triggers history and watch logs, if they are enabled for field's path.
     optional bool ephemeral = 31060;
+
+    // Marks the annotated FileOptions boolean flag as an edition flag: it gets flipped from
+    // |initial_value| to |edition_value| when codegen edition advances to the specified number.
+    // Set only on flag declarations in the FileOptions extension block above.
+    // Explicitly setting the flag in an ORM instance disables edition control over that flag.
+    optional TEditionFlagOptions edition_flag = 31063;
+
+    // Marks the annotated FileOptions boolean flag as a project flag: codegen asks each project, in its
+    // report, to make an explicit decision, and keeps asking until the flag is set explicitly (to either
+    // value). Not tied to any edition. Set only on flag declarations in the FileOptions extension block above.
+    optional TProjectFlagOptions project_flag = 31064;
+
 }
 
 // Next field 32017.

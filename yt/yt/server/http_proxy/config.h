@@ -11,8 +11,6 @@
 
 #include <yt/yt/server/lib/security_server/public.h>
 
-#include <yt/yt/server/lib/signature/components/public.h>
-
 #include <yt/yt/ytlib/api/native/public.h>
 
 #include <yt/yt/ytlib/cell_master_client/public.h>
@@ -27,13 +25,15 @@
 
 #include <yt/yt/library/auth_server/public.h>
 
-#include <yt/yt/library/tracing/jaeger/sampler.h>
+#include <yt/yt/library/tracing/jaeger/config.h>
 
 #include <yt/yt/library/profiling/solomon/proxy.h>
 
 #include <yt/yt/library/program/config.h>
 
 #include <yt/yt/library/server_program/config.h>
+
+#include <yt/yt/library/signature/components/public.h>
 
 #include <yt/yt/client/driver/public.h>
 

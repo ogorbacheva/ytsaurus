@@ -34,13 +34,14 @@ PY_SRCS(
     yt_dashboards/flow/distributed_throttler.py
     yt_dashboards/flow/event_time.py
     yt_dashboards/flow/general.py
+    yt_dashboards/flow/key_visitor.py
     yt_dashboards/flow/message_transfering.py
     yt_dashboards/flow/one_worker.py
     yt_dashboards/flow/state_cache.py
     yt_dashboards/flow/worker.py
     yt_dashboards/http_proxies.py
     yt_dashboards/key_filter.py
-    yt_dashboards/lsm.py
+    yt_dashboards/compaction.py
     yt_dashboards/master.py
     yt_dashboards/cypress_proxies.py
     yt_dashboards/scheduler_gpu.py
@@ -92,3 +93,7 @@ IF (NOT OPENSOURCE)
         yt_dashboards/flow/tests
     )
 ENDIF()
+
+RECURSE_FOR_TESTS(
+    yt_dashboards/tests_os
+)

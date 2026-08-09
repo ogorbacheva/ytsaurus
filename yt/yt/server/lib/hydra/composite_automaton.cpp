@@ -227,7 +227,7 @@ void TCompositeAutomatonPart::StopEpoch()
 TCompositeAutomaton::TCompositeAutomaton(
     IInvokerPtr asyncSnapshotInvoker,
     TCellId cellId)
-    : Logger(HydraLogger().WithTag("CellId: %v", cellId))
+    : Logger(HydraLogger().WithTag("CellId", cellId))
     , Profiler_(HydraProfiler().WithTag("cell_id", ToString(cellId)))
     , AsyncSnapshotInvoker_(asyncSnapshotInvoker)
     , MutationWaitTimer_(Profiler_.Timer("/mutation_wait_time"))
@@ -281,6 +281,7 @@ void TCompositeAutomaton::RegisterMethod(
         profiler.TimeCounter("/cumulative_mutation_time"),
         profiler.TimeCounter("/cumulative_mutation_execute_time"),
         profiler.TimeCounter("/cumulative_mutation_deserialize_time"),
+        profiler.Timer("/mutation_execute_time"),
         profiler.Counter("/mutation_count"),
         profiler.Gauge("/mutation_request_size"),
         New<TProfilerTag>("mutation_type", type),
@@ -297,7 +298,7 @@ TFuture<void> TCompositeAutomaton::SaveSnapshot(const TSnapshotSaveContext& cont
         writer,
         context.Logger,
         // NB: Do not yield in sync part.
-        EWaitForStrategy::Get,
+        EWaitForStrategy::BlockThread,
         [&] (TSaveContext& context) {
             using NYT::Save;
 
@@ -363,7 +364,7 @@ TFuture<void> TCompositeAutomaton::SaveSnapshot(const TSnapshotSaveContext& cont
                 writer,
                 context.Logger,
                 // NB: Can yield in async part.
-                EWaitForStrategy::WaitFor,
+                EWaitForStrategy::SuspendFiber,
                 [&] (TSaveContext& context) {
                     const auto& Logger = context.GetLogger();
                     for (int index = 0; index < std::ssize(asyncSavers); ++index) {
@@ -594,7 +595,7 @@ void TCompositeAutomaton::DoLoadSnapshot(
 {
     auto prefetchingReader = CreatePrefetchingAdapter(context.Reader, SnapshotPrefetchWindowSize);
     auto copyingReader = CreateCopyingAdapter(prefetchingReader);
-    auto syncReader = CreateSyncAdapter(copyingReader, EWaitForStrategy::Get);
+    auto syncReader = CreateSyncAdapter(copyingReader, EWaitForStrategy::BlockThread);
     TBufferedInput bufferedInput(syncReader.get(), SnapshotLoadBufferSize);
     auto checkpointableInput = CreateCheckpointableInputStream(&bufferedInput);
     auto persistenceContext = CreateLoadContext(checkpointableInput.get());

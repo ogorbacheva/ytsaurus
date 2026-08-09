@@ -70,6 +70,8 @@
 
 #include <yt/yt/core/http/public.h>
 
+#include <yt/yt/core/https/public.h>
+
 #include <yt/yt/core/misc/public.h>
 
 namespace NYT::NCellMaster {
@@ -110,6 +112,7 @@ public:
     const TDynamicClusterConfigPtr& GetDynamicConfig() const;
     const IMulticellManagerPtr& GetMulticellManager() const;
     const IMulticellStatisticsCollectorPtr& GetMulticellStatisticsCollector() const;
+    const NCypressServer::ISequoiaActionsExecutorPtr& GetSequoiaActionsExecutor() const;
     const NIncumbentServer::IIncumbentManagerPtr& GetIncumbentManager() const;
     const NRpc::IServerPtr& GetRpcServer() const;
     const NRpc::IChannelPtr& GetLocalRpcChannel() const;
@@ -154,6 +157,7 @@ public:
     const NTabletServer::IBackupManagerPtr& GetBackupManager() const;
     const NChaosServer::IChaosManagerPtr& GetChaosManager() const;
     const NSequoiaServer::ISequoiaManagerPtr& GetSequoiaManager() const;
+    const NSequoiaServer::IPrelockTrackerPtr& GetPrelockTracker() const;
     const NSequoiaServer::ICypressProxyTrackerPtr& GetCypressProxyTracker() const;
     const NSequoiaServer::IGroundUpdateQueueManagerPtr& GetGroundUpdateQueueManager() const;
     const NHiveServer::IHiveManagerPtr& GetHiveManager() const;
@@ -180,7 +184,7 @@ public:
         ESerializationDumpMode dumpMode,
         TSerializationDumpScopeFilter dumpScopeFilter,
         bool checkInvariants);
-    void ReplayChangelogs(std::vector<TString> changelogFileNames);
+    void ReplayChangelogs(std::vector<std::string> changelogFileNames);
     void FinishRecoveryDryRun();
     void BuildSnapshot();
     void FinishDryRun();
@@ -218,6 +222,7 @@ protected:
     NApi::NNative::IClientPtr RootClient_;
     NMonitoring::IMonitoringManagerPtr MonitoringManager_;
     NHttp::IServerPtr HttpServer_;
+    NHttp::IServerPtr HttpsServer_;
     NElection::TCellManagerPtr CellManager_;
     NHydra::IChangelogStoreFactoryPtr ChangelogStoreFactory_;
     NHydra::ISnapshotStorePtr SnapshotStore_;
@@ -262,6 +267,7 @@ protected:
     NTabletServer::IReplicatedTableTrackerStateProviderPtr ReplicatedTableTrackerStateProvider_;
     NChaosServer::IChaosManagerPtr ChaosManager_;
     NSequoiaServer::ISequoiaManagerPtr SequoiaManager_;
+    NSequoiaServer::IPrelockTrackerPtr PrelockTracker_;
     NSequoiaServer::ICypressProxyTrackerPtr CypressProxyTracker_;
     NSequoiaServer::IGroundUpdateQueueManagerPtr GroundUpdateQueueManager_;
     NHiveServer::IHiveManagerPtr HiveManager_;
@@ -289,7 +295,7 @@ protected:
         ESerializationDumpMode dumpMode,
         TSerializationDumpScopeFilter dumpScopeFilter,
         bool checkInvariants);
-    void DoReplayChangelogs(const std::vector<TString>& changelogFileNames);
+    void DoReplayChangelogs(const std::vector<std::string>& changelogFileNames);
     void DoFinishRecoveryDryRun();
     void DoBuildSnapshot();
     void DoFinishDryRun();

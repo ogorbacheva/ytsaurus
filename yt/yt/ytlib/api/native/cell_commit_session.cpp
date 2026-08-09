@@ -37,7 +37,7 @@ public:
                 ? std::make_unique<TUniformSignatureGenerator>()
                 : std::make_unique<TTransactionSignatureGenerator>(FinalTransactionSignature))
         , CommitSignatureGenerator_(/*targetSignature*/ FinalTransactionSignature)
-        , Logger(logger.WithTag("CellId: %v", cellId))
+        , Logger(logger.WithTag("CellId", cellId))
     { }
 
     TTransactionSignatureGenerator* GetPrepareSignatureGenerator() override
@@ -128,7 +128,7 @@ private:
     {
         auto req = RequestFactory_->CreateRegisterTransactionActionsTabletCellRequest(CellId_);
         ToProto(req->mutable_transaction_id(), owner->GetId());
-        req->set_transaction_start_timestamp(owner->GetStartTimestamp());
+        req->set_transaction_start_timestamp(ToProto(owner->GetStartTimestamp()));
         req->set_transaction_timeout(ToProto(owner->GetTimeout()));
         req->set_prepare_signature(PrepareSignatureGenerator_->GenerateSignature());
         req->set_commit_signature(CommitSignatureGenerator_.GenerateSignature());
@@ -148,7 +148,7 @@ private:
     {
         auto req = RequestFactory_->CreateRegisterTransactionActionsChaosCellRequest(CellId_);
         ToProto(req->mutable_transaction_id(), owner->GetId());
-        req->set_transaction_start_timestamp(owner->GetStartTimestamp());
+        req->set_transaction_start_timestamp(ToProto(owner->GetStartTimestamp()));
         req->set_transaction_timeout(ToProto(owner->GetTimeout()));
         req->set_signature(PrepareSignatureGenerator_->GenerateSignature());
         ToProto(req->mutable_actions(), Actions_);

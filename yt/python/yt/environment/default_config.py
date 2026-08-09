@@ -31,10 +31,6 @@ def get_master_config():
             "enable_local_read_busy_wait": False,
         },
 
-        "cell_manager": {
-            "create_virtual_cell_maps_by_default": True,
-        },
-
         "table_manager": {
             "make_schema_attribute_opaque": True,
         },
@@ -46,7 +42,6 @@ def get_master_config():
         },
 
         "hive_manager": {
-            "use_new": True,
             "ping_period": 1000,
             "idle_post_period": 1000,
         },
@@ -113,6 +108,7 @@ def get_dynamic_master_config():
                 "batch_incremental_heartbeat": True,
                 "batch_incremental_heartbeat_period": 300,
                 "max_requests_in_incremental_heartbeat_batch": 5,
+                "max_replicas_in_incremental_heartbeat_batch": 10,
             }
         },
 
@@ -146,6 +142,7 @@ def get_dynamic_master_config():
             "account_master_memory_usage_update_period": 500,
             "enable_delayed_membership_closure_recomputation": False,
             "allow_alter_without_full_read": "deny",
+            "forward_authenticated_user": True,
         },
 
         "cypress_manager": {
@@ -156,6 +153,8 @@ def get_dynamic_master_config():
             "virtual_map_read_offload_batch_size": 2,
             "enable_preserve_acl_during_move": False,
             "use_better_check_when_rewriting_path": True,
+            "enable_more_efficient_conflict_check": True,
+            "enable_even_more_efficient_conflict_check": True,
         },
 
         "transaction_manager": {
@@ -216,6 +215,9 @@ def get_dynamic_master_config():
             "enable_async_sequoia_transaction_start": True,
             "use_shared_write_locks_for_cypress_transactions": False,
             "coordinate_cypress_transaction_replication_on_cypress_transaction_coordinator": True,
+            "wrap_object_service_execute_into_sequoia_transaction": True,
+            "enable_sequoia_revisions": True,
+            "enable_prelock_tracker": True,
         },
 
         "cell_master": {
@@ -565,7 +567,6 @@ def get_node_config():
                 },
             },
             "hive_manager": {
-                "use_new": True,
                 "ping_period": 1000,
                 "idle_post_period": 1000,
             },
@@ -684,7 +685,6 @@ def get_chaos_node_config():
                                 "lock_transaction_timeout": 5000,
                             },
                             "hive_manager": {
-                                "use_new": True,
                                 "ping_period": 1000,
                                 "idle_post_period": 1000,
                             },
@@ -879,6 +879,16 @@ def get_queue_agent_config():
         "dynamic_config_manager": {
             "update_period": 100,
         },
+        "dynamic_state": {
+            # Retries should be enabled explicitly in tests.
+            "retry_backoff": {
+                "invocation_count": 0,
+                # Keep the backoffs negligible for tests that do enable retries.
+                "min_backoff": 1,
+                "max_backoff": 1,
+                "backoff_jitter": 0.0,
+            },
+        },
     }
 
 
@@ -910,6 +920,16 @@ def get_dynamic_queue_agent_config(yt_config):
             "clusters": [yt_config.cluster_name],
             "policy": "watching",
             "chaos_replicated_table_queue_agent_stage": "production",
+        },
+        "dynamic_state": {
+            # Retries should be enabled explicitly in tests.
+            "retry_backoff": {
+                "invocation_count": 0,
+                # Keep the backoffs negligible for tests that do enable retries.
+                "min_backoff": 1,
+                "max_backoff": 1,
+                "backoff_jitter": 0.0,
+            },
         },
     }
 

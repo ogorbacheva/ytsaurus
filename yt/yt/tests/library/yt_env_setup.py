@@ -270,6 +270,14 @@ def parametrize_external(func):
     return pytest.mark.parametrize("external", [False, True])(decorator.decorate(func, wrapper))
 
 
+def _adjust_footprint_memory_for_asan():
+    # A gift from Asanta Klaus.
+    return {
+        "footprint_memory": 1024 ** 3,
+        "exec_footprint_memory": 1024 ** 3,
+    } if is_asan_build() else {}
+
+
 class Checker(Thread):
     def __init__(self, check_function):
         super(Checker, self).__init__()
@@ -389,6 +397,7 @@ class YTEnvSetup(object):
     DELTA_CONTROLLER_AGENT_CONFIG = {}
     _DEFAULT_DELTA_CONTROLLER_AGENT_CONFIG = {
         "controller_agent": {
+            **_adjust_footprint_memory_for_asan(),
             "enable_table_column_renaming": True,
         },
     }
@@ -402,6 +411,7 @@ class YTEnvSetup(object):
     DELTA_CELL_BALANCER_CONFIG = {}
     DELTA_TABLET_BALANCER_CONFIG = {}
     DELTA_MASTER_CACHE_CONFIG = {}
+    DELTA_OFFSHORE_DATA_GATEWAY_CONFIG = {}
     DELTA_QUEUE_AGENT_CONFIG = {}
     DELTA_KAFKA_PROXY_CONFIG = {}
     DELTA_CYPRESS_PROXY_CONFIG = {}
@@ -478,7 +488,6 @@ class YTEnvSetup(object):
         return cls.NUM_SECONDARY_MASTER_CELLS
 
     # To be redefined in successors
-    # TODO(pavel-bash): add modify_offshore_data_gateway_config when needed.
     @classmethod
     def modify_master_config(cls, config, multidaemon_config, cell_index, cell_tag, peer_index, cluster_index):
         pass
@@ -537,6 +546,10 @@ class YTEnvSetup(object):
 
     @classmethod
     def modify_master_cache_config(cls, config):
+        pass
+
+    @classmethod
+    def modify_offshore_data_gateway_config(cls, config, cluster_index):
         pass
 
     @classmethod
@@ -1158,10 +1171,19 @@ class YTEnvSetup(object):
         assert ground_reign is not None
 
         with log_level_override(yt.logger.LOGGER, logging.ERROR):
-            yt_sequoia.initialization.initialize_ground(app, ground_reign)
+            for bundle in ("sequoia-cypress", "sequoia-chunks"):
+                yt_commands.create_tablet_cell_bundle(
+                    bundle,
+                    attributes=copy.deepcopy(yt_sequoia_helpers.CELL_BUNDLE_CONFIG),
+                    driver=ground_driver)
             ground_index = cluster_index + cls.get_ground_index_offset()
             cls._restore_sequoia_bundles_options(ground_index)
-            yt_commands.wait_for_cells(driver=ground_driver)
+            yt_sequoia.initialization.initialize_ground(app, ground_reign)
+            for bundle in ("sequoia-cypress", "sequoia-chunks"):
+                yt_commands.sync_create_cells(
+                    1,
+                    tablet_cell_bundle=bundle,
+                    driver=ground_driver)
             yt_sequoia.initialization.mount_tables(app, ground_reign)
 
     @classmethod
@@ -1214,7 +1236,6 @@ class YTEnvSetup(object):
         for cell_tag in cls.get_param("MASTER_CELL_DESCRIPTORS", cluster_index):
             assert cell_tag in cell_tags
 
-    # TODO(pavel-bash): use the modify_offshore_data_gateway_config when implemented.
     @classmethod
     def apply_config_patches(cls, configs, ytserver_version, cluster_index, cluster_path):
         multidaemon_config = configs["multi"]
@@ -1222,6 +1243,8 @@ class YTEnvSetup(object):
         for cell_index, cell_tag in enumerate([configs["master"]["primary_cell_tag"]] + configs["master"]["secondary_cell_tags"]):
             for peer_index, config in enumerate(configs["master"][cell_tag]):
                 cls._apply_effective_config_patch(config, "DELTA_MASTER_CONFIG", cluster_index)
+                if not cls.get_param("USE_SEQUOIA", cluster_index):
+                    config["skip_sequoia_initialization"] = True
                 cls.update_timestamp_provider_config(config, cluster_index)
                 cls.update_sequoia_connection_config(config, cluster_index)
                 cls.update_transaction_supervisor_config(config, cluster_index)
@@ -1281,6 +1304,12 @@ class YTEnvSetup(object):
             cls.update_timestamp_provider_config(config, cluster_index)
             cls.modify_master_cache_config(config)
             multidaemon_config["daemons"][f"master_cache_{index}"]["config"] = config
+
+        for index, config in enumerate(configs["offshore_data_gateway"]):
+            cls._apply_effective_config_patch(config, "DELTA_OFFSHORE_DATA_GATEWAY_CONFIG", cluster_index)
+            cls.update_timestamp_provider_config(config, cluster_index)
+            cls.modify_offshore_data_gateway_config(config, multidaemon_config)
+            multidaemon_config["daemons"][f"offshore_data_gateway_{index}"]["config"] = config
 
         for index, config in enumerate(configs["controller_agent"]):
             update_inplace(config, YTEnvSetup._DEFAULT_DELTA_CONTROLLER_AGENT_CONFIG)
@@ -1380,6 +1409,8 @@ class YTEnvSetup(object):
                 })
 
             cls._apply_effective_config_patch(config, "DELTA_CYPRESS_PROXY_CONFIG", cluster_index)
+            if not cls.get_param("USE_SEQUOIA", cluster_index):
+                config["skip_sequoia_initialization"] = True
             cls.update_timestamp_provider_config(config, cluster_index)
             cls.update_sequoia_connection_config(config, cluster_index)
             cls.modify_cypress_proxy_config(config, cluster_index)
@@ -2570,7 +2601,7 @@ class YTEnvSetup(object):
             for node, response in zip(exec_nodes, responses):
                 print("Node {}: {}".format(node, response), file=sys.stderr)
 
-        def check_resources_are_zero(resource_types):
+        def get_nonzero_resources(resource_types):
             requests = [
                 yt_commands.make_batch_request(
                     "get",
@@ -2581,18 +2612,24 @@ class YTEnvSetup(object):
             ]
 
             responses = yt_commands.execute_batch(requests, driver=driver, verbose=False)
+            nonzero = []
             for node, response in zip(exec_nodes, responses):
                 response = yt_commands.get_batch_output(response)
-
-                def verify_resources_are_zero(type):
-                    if not yt_commands.are_job_resources_are_zero(response[type]):
-                        yt_commands.print_debug(responses)
-                    assert yt_commands.are_job_resources_are_zero(response[type]), f"Node {node} has non-zero {type}: {response[type]}"
-
                 for type in resource_types:
-                    verify_resources_are_zero(type)
+                    if not yt_commands.are_job_resources_are_zero(response[type]):
+                        nonzero.append((node, type, response[type]))
+            return nonzero
 
-        check_resources_are_zero(["pending_resources", "acquired_resources"])
+        # Resource holders are released asynchronously after a job vanishes, so the
+        # resource manager may still report acquired resources right after the active
+        # job count drops to zero. Poll instead of checking once.
+        resource_types = ["pending_resources", "acquired_resources"]
+        try:
+            wait(lambda: not get_nonzero_resources(resource_types), iter=300)
+        except WaitFailed:
+            nonzero = get_nonzero_resources(resource_types)
+            assert not nonzero, "\n".join(
+                f"Node {node} has non-zero {type}: {value}" for node, type, value in nonzero)
 
     def spawn_additional_thread(self, target, name=None):
         assert \

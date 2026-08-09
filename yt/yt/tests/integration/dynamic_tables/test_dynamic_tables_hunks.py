@@ -1696,7 +1696,7 @@ class TestSortedDynamicTablesHunks(TestSortedDynamicTablesBase):
 
         sync_mount_table("//tmp/t")
         rows = [{"key": i, "value": "value" + str(i) + "x" * 20} for i in range(10)]
-        insert_rows("//tmp/t", rows)
+        self._insert_rows_with_hunk_storage("//tmp/t", rows)
 
         assert_items_equal(select_rows("* from [//tmp/t]"), rows)
         assert read_table("//tmp/t") == rows
@@ -2530,6 +2530,29 @@ class TestOrderedDynamicTablesHunks(TestSortedDynamicTablesBase):
 
         sync_unmount_table("//tmp/t")
         sync_mount_table("//tmp/t")
+        sync_unmount_table("//tmp/h")
+
+        root_chunk_list_id = get("//tmp/t/@chunk_list_id")
+        hunk_root_chunk_list_id = get("//tmp/t/@hunk_chunk_list_id")
+
+        statistics = get(f"#{root_chunk_list_id}/@statistics")
+        assert statistics["hunk_data_weight"] == 189
+        statistics = get(f"#{hunk_root_chunk_list_id}/@statistics")
+        assert statistics["referenced_regular_disk_space"] == 261
+        assert statistics["chunk_count"] == 2
+
+        hunk_tablet_chunk_list_ids = get(f"#{hunk_root_chunk_list_id}/@child_ids")
+        assert len(hunk_tablet_chunk_list_ids) == 4
+
+        assert get(f"#{hunk_tablet_chunk_list_ids[0]}/@statistics/chunk_count") == 2
+        assert get(f"#{hunk_tablet_chunk_list_ids[1]}/@statistics/chunk_count") == 2
+        assert get(f"#{hunk_tablet_chunk_list_ids[2]}/@statistics/chunk_count") == 1
+        assert get(f"#{hunk_tablet_chunk_list_ids[3]}/@statistics/chunk_count") == 2
+
+        assert get(f"#{hunk_tablet_chunk_list_ids[0]}/@statistics/referenced_regular_disk_space") == 261
+        assert get(f"#{hunk_tablet_chunk_list_ids[1]}/@statistics/referenced_regular_disk_space") == 261
+        assert get(f"#{hunk_tablet_chunk_list_ids[2]}/@statistics/referenced_regular_disk_space") == 116
+        assert get(f"#{hunk_tablet_chunk_list_ids[3]}/@statistics/referenced_regular_disk_space") == 261
 
     @authors("akozhikhov", "shakurov")
     def test_hunk_storage_force_unmount(self):
@@ -3823,7 +3846,11 @@ class TestDynamicTablesHunkMedia(YTEnvSetup):
 
     @authors("shakurov")
     def test_hunk_media_requisitions_multiple_tables(self):
-        self._init_sorted_dynamic_table("//tmp/t")
+        # Disable compaction so the per-flush hunk chunks are not merged into a
+        # single one before the assertion below.
+        self._init_sorted_dynamic_table(
+            "//tmp/t",
+            mount_config={"enable_compaction_and_partitioning": False})
 
         for i in range(5):
             rows = [{"key": 2 * i, "value": "a"}, {"key": 1 + 2 * i, "value": "b"*100}]
@@ -5550,6 +5577,29 @@ class TestHunksInStaticTable(TestSortedDynamicTablesBase):
         snapshot_statistics = get("//tmp/t/@snapshot_statistics")
         assert snapshot_statistics["chunk_count"] == 3
         assert snapshot_statistics["data_weight"] == 82
+
+    @authors("babenko")
+    def test_static_hunks_has_hunk_chunk_list(self):
+        create("table", "//tmp/t", attributes={"schema": self.SCHEMA})
+        assert not get("//tmp/t/@has_hunk_chunk_list")
+        assert get("//tmp/t/@hunk_chunk_list_id") == "0-0-0-0"
+
+        create("table", "//tmp/t_hunk", attributes={"schema": self.SCHEMA, "has_hunk_chunk_list": True})
+        assert get("//tmp/t_hunk/@has_hunk_chunk_list")
+        assert get("//tmp/t_hunk/@hunk_chunk_list_id") != "0-0-0-0"
+        assert "has_hunk_chunk_list" not in get("//tmp/t_hunk/@user_attribute_keys")
+
+        with raises_yt_error("Builtin attribute \"has_hunk_chunk_list\" cannot be set"):
+            set("//tmp/t/@has_hunk_chunk_list", True)
+        with raises_yt_error("Attribute \"has_hunk_chunk_list\" cannot be removed"):
+            remove("//tmp/t_hunk/@has_hunk_chunk_list")
+
+        with raises_yt_error("Cannot set \"has_hunk_chunk_list\" option for dynamic tables"):
+            create("table", "//tmp/t_dynamic", attributes={
+                "schema": self.SCHEMA,
+                "dynamic": True,
+                "has_hunk_chunk_list": True,
+            })
 
 
 class TestHunksInStaticTableMulticell(TestHunksInStaticTable):

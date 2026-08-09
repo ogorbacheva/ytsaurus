@@ -93,7 +93,7 @@
 #include <yt/yt/library/program/build_attributes.h>
 #include <yt/yt/library/program/helpers.h>
 
-#include <yt/yt/library/profiling/solomon/registry.h>
+#include <yt/yt/library/profiling/solomon/exporter.h>
 
 #include <yt/yt/library/monitoring/http_integration.h>
 #include <yt/yt/library/monitoring/monitoring_manager.h>
@@ -158,6 +158,8 @@
 #include <yt/yt/core/bus/tcp/dispatcher.h>
 
 #include <yt/yt/core/http/server.h>
+
+#include <yt/yt/core/https/server.h>
 
 #include <yt/yt/core/concurrency/action_queue.h>
 #include <yt/yt/core/concurrency/fair_share_thread_pool.h>
@@ -604,7 +606,7 @@ public:
     EJobEnvironmentType GetJobEnvironmentType() const override
     {
         const auto& slotManagerConfig = Config_->ExecNode->SlotManager;
-        return slotManagerConfig->JobEnvironment.GetCurrentType();
+        return slotManagerConfig->JobEnvironment.GetType();
     }
 
     const THashSet<ENodeFlavor>& GetFlavors() const override
@@ -696,6 +698,7 @@ private:
     NYT::NBus::NTcp::IBusServerPtr BusServer_;
     NRpc::IServerPtr RpcServer_;
     NHttp::IServerPtr HttpServer_;
+    NHttp::IServerPtr HttpsServer_;
 
     IMapNodePtr OrchidRoot_;
 
@@ -873,14 +876,14 @@ private:
             Config_->InThrottler->TotalLimit = GetNetworkThrottlerLimit(nullptr, {});
             InThrottler_ = CreateFairThrottler(
                 Config_->InThrottler,
-                ClusterNodeLogger().WithTag("Direction: %v", "In"),
+                ClusterNodeLogger().WithTag("Direction", "In"),
                 ClusterNodeProfiler().WithPrefix("/in_throttler"));
             DefaultInThrottler_ = CreateInThrottler("default");
 
             Config_->OutThrottler->TotalLimit = GetNetworkThrottlerLimit(nullptr, {});
             OutThrottler_ = CreateFairThrottler(
                 Config_->OutThrottler,
-                ClusterNodeLogger().WithTag("Direction: %v", "Out"),
+                ClusterNodeLogger().WithTag("Direction", "Out"),
                 ClusterNodeProfiler().WithPrefix("/out_throttler"));
             DefaultOutThrottler_ = CreateOutThrottler("default");
         } else {
@@ -1166,9 +1169,13 @@ private:
         auto localRpcAddresses = GetLocalAddresses(Config_->Addresses, Config_->RpcPort);
 
         HttpServer_ = NHttp::CreateServer(Config_->CreateMonitoringHttpServerConfig());
+        if (auto httpsConfig = Config_->CreateMonitoringHttpsServerConfig()) {
+            HttpsServer_ = NHttps::CreateServer(httpsConfig, /*pollerThreadCount*/ 1);
+        }
 
         NMonitoring::Initialize(
             HttpServer_,
+            HttpsServer_,
             ServiceLocator_->GetServiceOrThrow<TSolomonExporterPtr>(),
             &MonitoringManager_,
             &OrchidRoot_);
@@ -1296,6 +1303,10 @@ private:
 
         YT_LOG_INFO("Listening for HTTP requests (Port: %v)", Config_->MonitoringPort);
         HttpServer_->Start();
+        if (HttpsServer_) {
+            YT_LOG_INFO("Listening for HTTPS requests (Port: %v)", HttpsServer_->GetAddress().GetPort());
+            HttpsServer_->Start();
+        }
 
 #ifdef __linux__
         if (ContainerDevicesChecker_) {
@@ -1342,13 +1353,13 @@ private:
         }
     }
 
-    NConcurrency::IThroughputThrottlerPtr CreateInThrottler(const TString& bucket) override
+    NConcurrency::IThroughputThrottlerPtr CreateInThrottler(const std::string& bucket) override
     {
         EnabledInThrottlers_.insert(bucket);
         return InThrottler_->CreateBucketThrottler(bucket, Config_->InThrottlers[bucket]);
     }
 
-    NConcurrency::IThroughputThrottlerPtr CreateOutThrottler(const TString& bucket) override
+    NConcurrency::IThroughputThrottlerPtr CreateOutThrottler(const std::string& bucket) override
     {
         EnabledOutThrottlers_.insert(bucket);
         return OutThrottler_->CreateBucketThrottler(bucket, Config_->OutThrottlers[bucket]);
@@ -1496,6 +1507,8 @@ private:
 
         BusServer_->Reconfigure(newConfig->BusServer);
         RpcServer_->OnDynamicConfigChanged(newConfig->RpcServer);
+
+        ServiceLocator_->GetServiceOrThrow<TSolomonExporterPtr>()->Reconfigure(newConfig->SolomonExporter);
 
         ObjectServiceCache_->Reconfigure(newConfig->CachingObjectService);
         for (const auto& [_, service] : GetCachingObjectServices()) {

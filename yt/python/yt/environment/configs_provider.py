@@ -1173,7 +1173,7 @@ def _build_node_configs(multidaemon_config_output,
 
         set_at(config, "data_node/volume_manager/layer_locations", [layer_location_config])
 
-        # COMPAT
+        # COMPAT(ignat)
         log_name = "job_proxy-{0}-slot-%slot_index%".format(index) if yt_config.enable_legacy_logging_scheme else "job_proxy-{0}".format(index)
 
         set_at(
@@ -1197,14 +1197,14 @@ def _build_node_configs(multidaemon_config_output,
             use_name_in_writer_name=False,
         )
 
-        # COMPAT
+        # COMPAT(ignat)
         for key in config["exec_node"]["job_proxy"]["job_proxy_logging"]["log_manager_template"]:
             config["exec_node"]["job_proxy"]["job_proxy_logging"][key] = config["exec_node"]["job_proxy"]["job_proxy_logging"]["log_manager_template"][key]
 
         set_at(
             config,
             "exec_node/job_proxy/job_proxy_logging/executor_stderr_path",
-            # COMPAT
+            # COMPAT(ignat)
             os.path.join(logs_dir, "ytserver_exec-{0}-stderr-slot-%slot_index%".format(index))
             if yt_config.enable_legacy_logging_scheme
             else os.path.join(logs_dir, "ytserver_exec-{0}-stderr".format(index))
@@ -1671,7 +1671,8 @@ def _build_rpc_proxy_configs(multidaemon_config_output,
                 logs_dir,
                 "rpc-proxy-{}".format(index),
                 singletons_config.setdefault("logging", {}),
-                yt_config)
+                yt_config,
+                has_structured_logs=True)
 
         init_jaeger_collector(singletons_config, "rpc_proxy", {"rpc_proxy_index": str(index)})
 
@@ -2094,6 +2095,10 @@ def _build_offshore_data_gateway_configs(yt_config,
         config["rpc_port"] = next(ports_generator)
         config["monitoring_port"] = next(ports_generator)
 
+        multidaemon_config_output["daemons"][f"offshore_data_gateway_{index}"] = {
+            "type": "offshore_data_gateway",
+            "config": config,
+        }
         configs.append(config)
 
     return configs
@@ -2359,8 +2364,6 @@ def init_singletons(config, yt_config):
     set_at(config, "address_resolver/localhost_fqdn", yt_config.fqdn)
     set_at(config, "solomon_exporter/grid_step", 1000)
     set_at(config, "enable_ref_counted_tracker_profiling", yt_config.enable_resource_tracking)
-    # COMPAT(babenko): drop in 25.1
-    set_at(config, "enable_resource_tracker", yt_config.enable_resource_tracking)
     set_at(config, "resource_tracker/enable", yt_config.enable_resource_tracking)
     if yt_config.mock_tvm_id is not None:
         set_at(config, "native_authentication_manager", {

@@ -72,7 +72,7 @@ void TObjectServiceDynamicConfig::Register(TRegistrar registrar)
         .Default(true);
 
     registrar.Parameter("sync_ground_update_queue_on_every_request", &TThis::SyncGroundUpdateQueueOnEveryRequest)
-        .Default(true);
+        .Default(false);
 
     registrar.Postprocessor([] (TThis* config) {
         THROW_ERROR_EXCEPTION_IF(
@@ -143,6 +143,8 @@ void TCypressProxyDynamicConfig::Register(TRegistrar registrar)
         .Default(100);
     registrar.Parameter("vectorized_subbatch_size_overrides", &TThis::VectorizedSubbatchSizeOverrides)
         .Default();
+    registrar.Parameter("enable_access_log", &TThis::EnableAccessLog)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -848,7 +848,9 @@ class TestDryRunGpuSchedulingPolicy(DryRunGpuSchedulingPolicyTestBaseConfig):
 
         assignments_counter = profiler.gauge(prefix + "/assignments_count")
         planned_assignments_counter = profiler.counter(prefix + "/planned_assignments_count")
-        preempted_assignments_counter = profiler.counter(prefix + "/preempted_assignments_count")
+        planned_assignments_full_host_module_bound_counter = profiler.counter(prefix + "/planned_assignments_count", tags={"stage": "full_host_module_bound"})
+        planned_assignments_normal_counter = profiler.counter(prefix + "/planned_assignments_count", tags={"stage": "normal"})
+        preempted_assignments_counter = profiler.counter(prefix + "/preempted_assignments_count", tags={"stage": "normal"})
         enabled_operations_counter = profiler.gauge(prefix + "/enabled_operations_count")
         full_host_module_bound_operations_counter = profiler.gauge(prefix + "/full_host_module_bound_operations_count")
         assigned_gpu_counter = profiler.gauge(prefix + "/assigned_gpu_count")
@@ -869,10 +871,13 @@ class TestDryRunGpuSchedulingPolicy(DryRunGpuSchedulingPolicyTestBaseConfig):
 
         op = run_sleeping_vanilla(
             task_patch={"gpu_limit": 8, "enable_gpu_layers": False},
+            spec={"is_gang": True},
         )
 
         wait(lambda: assignments_counter.get() == 1)
         wait(lambda: planned_assignments_counter.get() == 1)
+        wait(lambda: planned_assignments_full_host_module_bound_counter.get() == 1)
+        wait(lambda: planned_assignments_normal_counter.get() == 0)
         wait(lambda: enabled_operations_counter.get() == 1)
         wait(lambda: full_host_module_bound_operations_counter.get() == 1)
         wait(lambda: assigned_gpu_counter.get() == 8)
@@ -1004,7 +1009,7 @@ class TestDryRunGpuSchedulingPolicy(DryRunGpuSchedulingPolicyTestBaseConfig):
     def test_preemptive_planning_limits(self):
         profiler = profiler_factory().at_scheduler(fixed_tags={"tree": "gpu"})
         prefix = "scheduler/gpu_policy"
-        preempted_assignments_counter = profiler.counter(prefix + "/preempted_assignments_count")
+        preempted_assignments_limits_check_counter = profiler.counter(prefix + "/preempted_assignments_count", tags={"stage": "limits_check"})
 
         create_pool("limited", pool_tree="gpu", attributes={"strong_guarantee_resources": {"gpu": 8}, "resource_limits": {"gpu": 8}})
         create_pool("guaranteed", pool_tree="gpu", parent_name="limited", attributes={"strong_guarantee_resources": {"gpu": 8}})
@@ -1035,7 +1040,7 @@ class TestDryRunGpuSchedulingPolicy(DryRunGpuSchedulingPolicyTestBaseConfig):
         wait_for_operations_in_gpu_policy_orchid(operation_count=3)
         wait_for_assignments_in_gpu_policy_orchid(bg_runner, assignment_count=1, exactly=True)
         wait_for_assignments_in_gpu_policy_orchid(will_replace, assignment_count=1, exactly=True)
-        wait(lambda: preempted_assignments_counter.get() == 1)
+        wait(lambda: preempted_assignments_limits_check_counter.get() == 1)
 
 
 ##################################################################
@@ -1055,7 +1060,7 @@ class TestGpuSchedulerPersistentState(DryRunGpuSchedulingPolicyTestBaseConfig):
         })
 
     def _get_persistent_state_path(self, tree="gpu", entity="node"):
-        return f"//sys/scheduler/strategy_state/tree_states/{tree}/gpu_scheduling_policy_state/{entity}_states"
+        return f"//sys/scheduler/strategy_state/tree_states/{tree}/dry_run_gpu_scheduling_policy_state/{entity}_states"
 
     def _get_node_address_to_node_state_map(self, tree="gpu"):
         result = {}
@@ -1313,7 +1318,7 @@ class TestGpuSchedulerPersistentState(DryRunGpuSchedulingPolicyTestBaseConfig):
         wait(lambda: len(op.get_running_jobs()) == 1)
 
         current_state_config = get("//sys/scheduler/strategy_state/tree_states/gpu")
-        current_state_config.pop("gpu_scheduling_policy_state")
+        current_state_config.pop("dry_run_gpu_scheduling_policy_state")
 
         with Restarter(self.Env, SCHEDULERS_SERVICE):
             set("//sys/scheduler/strategy_state/tree_states/gpu", current_state_config)
@@ -1518,7 +1523,7 @@ class TestDryRunGpuSchedulingPolicyMultiModule(YTEnvSetup):
     def test_specified_modules(self):
         op = run_sleeping_vanilla(
             task_patch={"gpu_limit": 8, "enable_gpu_layers": False},
-            spec={"scheduling_modules": ["VLA"]},
+            spec={"scheduling_modules": ["VLA"], "is_gang": True},
         )
 
         wait(lambda: len(op.get_running_jobs()) == 1)
@@ -1529,7 +1534,7 @@ class TestDryRunGpuSchedulingPolicyMultiModule(YTEnvSetup):
         operation = get_operation_from_gpu_policy_orchid(op)
         check_operation_from_gpu_policy_orchid(
             operation=operation,
-            is_gang=False,
+            is_gang=True,
             group_name="task",
             allocation_count=1,
             min_needed_gpu_per_allocation=8,

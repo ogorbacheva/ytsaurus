@@ -90,10 +90,9 @@ using namespace NScheduler;
 using namespace NApi;
 using namespace NLogging;
 
+using NChunkClient::NProto::TMiscExt;
 using NChunkClient::TDataSliceDescriptor;
 using NChunkClient::TReadRange;
-using NChunkClient::NProto::TMiscExt;
-
 using NYT::FromProto;
 using NYT::TRange;
 
@@ -203,7 +202,11 @@ std::vector<IReaderFactoryPtr> CreateReaderFactories(
                 /*profiler*/ {});
         }
 
-        auto wrapReader = [=] (ISchemalessChunkReaderPtr chunkReader) {
+        auto wrapReader = [=] (ISchemalessChunkReaderPtr chunkReader) -> ISchemalessChunkReaderPtr {
+            if (!options->DecodeHunks) {
+                return chunkReader;
+            }
+
             auto dictionaryCompressionFactory = CreateSimpleDictionaryCompressionFactory(
                 chunkFragmentReader,
                 config,
@@ -1138,7 +1141,7 @@ ISchemalessMultiChunkReaderPtr TSchemalessMergingMultiChunkReader::Create(
 
     auto Logger = TableClientLogger();
     if (chunkReadOptions.ReadSessionId) {
-        Logger.AddTag("ReadSessionId: %v", chunkReadOptions.ReadSessionId);
+        Logger.AddTag("ReadSessionId", chunkReadOptions.ReadSessionId);
     }
 
     const auto& dataSource = dataSourceDirectory->DataSources()[dataSliceDescriptor.GetDataSourceIndex()];
@@ -1334,15 +1337,15 @@ ISchemalessMultiChunkReaderPtr TSchemalessMergingMultiChunkReader::Create(
             .BlockCache = chunkReaderHost->BlockCache,
             .ChunkSpec = chunkSpec,
             .ChunkMeta = versionedChunkMeta,
-            .OverrideTimestamp = chunkSpec.has_override_timestamp() ? chunkSpec.override_timestamp() : NullTimestamp,
+            .OverrideTimestamp = FromProto<NTransactionClient::TTimestamp>(chunkSpec.override_timestamp()),
             .TableSchema = versionedReadSchema,
             .DataSource = dataSource,
         });
 
         auto effectiveTimestamp = timestamp;
         if (chunkSpec.has_max_clip_timestamp()) {
-            YT_ASSERT(chunkSpec.max_clip_timestamp() != NullTimestamp);
-            effectiveTimestamp = std::min(effectiveTimestamp, chunkSpec.max_clip_timestamp());
+            YT_ASSERT(FromProto<NTransactionClient::TTimestamp>(chunkSpec.max_clip_timestamp()) != NullTimestamp);
+            effectiveTimestamp = std::min(effectiveTimestamp, FromProto<NTransactionClient::TTimestamp>(chunkSpec.max_clip_timestamp()));
         }
 
         if (versionedChunkMeta->GetChunkFormat() == EChunkFormat::TableVersionedColumnar) {
@@ -1531,6 +1534,10 @@ ISchemalessMultiChunkReaderPtr CreateAppropriateSchemalessMultiChunkReader(
                 nameTable,
                 chunkReadOptions,
                 adjustedColumnFilter);
+
+            if (!options->DecodeHunks) {
+                return reader;
+            }
 
             auto chunkFragmentReader = CreateChunkFragmentReader(
                 config,

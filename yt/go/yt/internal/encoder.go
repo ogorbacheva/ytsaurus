@@ -683,6 +683,19 @@ func (e *Encoder) WriteTableRaw(
 	return
 }
 
+func (e *Encoder) WriteFileRaw(
+	ctx context.Context,
+	path ypath.YPath,
+	options *yt.WriteFileOptions,
+	body *bytes.Buffer,
+) (err error) {
+	call := e.newCall(NewWriteFileParams(path, options))
+	call.YSONValue = body.Bytes()
+	call.DisableRetries = true
+	err = e.do(ctx, call, noopResultDecoder)
+	return
+}
+
 func (e *Encoder) WriteTable(
 	ctx context.Context,
 	path ypath.YPath,
@@ -800,6 +813,30 @@ func (e *Encoder) ReadTable(
 	call := e.newCall(NewReadTableParams(path, options))
 	call.Format = format
 	call.TableSchema = tableSchema
+	return e.InvokeReadRow(ctx, call)
+}
+
+func (e *Encoder) PartitionTables(
+	ctx context.Context,
+	paths []ypath.YPath,
+	options *yt.PartitionTablesOptions,
+) (partitions yt.MultiTablePartitions, err error) {
+	call := e.newCall(NewPartitionTablesParams(paths, options))
+	err = e.do(ctx, call, newValueResultDecoder()(&partitions))
+	return partitions, err
+}
+
+func (e *Encoder) ReadTablePartition(
+	ctx context.Context,
+	cookie []byte,
+	options *yt.ReadTablePartitionOptions,
+) (r yt.TablePartitionReader, err error) {
+	var format any
+	if options != nil && options.Format != nil {
+		format = options.Format
+	}
+	call := e.newCall(NewReadTablePartitionParams(cookie, options))
+	call.Format = format
 	return e.InvokeReadRow(ctx, call)
 }
 

@@ -210,9 +210,10 @@ TFetchedArtifactKey FetchLayerArtifactKeyIfRevisionChanged(
     auto attributeDictionaryPtr = ConvertToAttributes(NYson::TYsonString(getAttributesRsp->value()));
     const auto& attributes = *attributeDictionaryPtr;
 
-    auto [accessMethod, filesystem] = GetAccessMethodAndFilesystemFromStrings(
-        attributes.Find<TString>("access_method").value_or(ToString(ELayerAccessMethod::Local)),
-        attributes.Find<TString>("filesystem").value_or(ToString(ELayerFilesystem::Archive)));
+    auto accessMethod = attributes.Find<ELayerAccessMethod>("access_method").value_or(ELayerAccessMethod::Local);
+    auto filesystem = attributes.Find<ELayerFilesystem>("filesystem").value_or(ELayerFilesystem::Archive);
+
+    ValidateCompatibility(accessMethod, filesystem);
 
     // Create artifact key.
     TArtifactKey layerKey;
@@ -325,27 +326,6 @@ void TControllerAgentAffiliationInfo::ResetControllerAgent()
 {
     Descriptor_ = {};
     DescriptorResetTime_ = TInstant::Now();
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-TClosure MakeJobInterrupter(TJobId jobId, const IBootstrap* bootstrap)
-{
-    // NB. It is all right to pass only bootstrap pointer since it outlives the closure.
-    return BIND_NO_PROPAGATE(
-        [
-            jobId,
-            bootstrap,
-            jobInterrupted = std::make_unique<std::atomic<bool>>(false)
-        ] () {
-            // Interrupt job only once.
-            if (!jobInterrupted->exchange(true)) {
-                bootstrap->GetJobController()->InterruptJob(
-                jobId,
-                EInterruptionReason::NbdDeviceStopping,
-                TDuration::Zero());
-            }
-    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////

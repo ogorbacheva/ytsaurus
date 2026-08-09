@@ -9,9 +9,7 @@
 
 #include <yt/chyt/client/query_service_proxy.h>
 
-#include <yt/yt/library/clickhouse_discovery/config.h>
 #include <yt/yt/library/clickhouse_discovery/discovery.h>
-#include <yt/yt/library/clickhouse_discovery/discovery_v2.h>
 #include <yt/yt/library/clickhouse_discovery/helpers.h>
 
 #include <yt/yt/ytlib/api/native/client.h>
@@ -229,10 +227,10 @@ private:
     {
         YT_LOG_DEBUG("Getting discovery");
 
-        auto config = New<TDiscoveryV2Config>();
+        auto config = New<TDiscoveryConfig>();
         config->GroupId = Format("/chyt/%v", Clique_);
         config->ReadQuorum = 1;
-        return CreateDiscoveryV2(
+        return NClickHouseServer::CreateDiscoveryFromNativeConnection(
             std::move(config),
             NativeConnection_,
             ChannelFactory_,

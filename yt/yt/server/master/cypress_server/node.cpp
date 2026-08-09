@@ -217,6 +217,14 @@ std::optional<NSecurityServer::TUserRawPtr> TCypressNode::GetExpirationTimeUser(
         });
 }
 
+std::optional<TInstant> TCypressNode::GetExpirationTimeArmingTime() const
+{
+    return TryGetExpirationTimeProperties()
+        .and_then([] (auto* expirationTimeProperties) {
+            return expirationTimeProperties->GetArmingTime();
+        });
+}
+
 std::optional<TInstant> TCypressNode::GetExpirationTimeLastResetTime() const
 {
     return TryGetExpirationTimeProperties()
@@ -246,6 +254,14 @@ std::optional<NSecurityServer::TUserRawPtr> TCypressNode::GetExpirationTimeoutUs
     return TryGetExpirationTimeoutProperties()
         .and_then([] (auto* expirationTimeoutProperties) {
             return expirationTimeoutProperties->GetUser();
+        });
+}
+
+std::optional<TInstant> TCypressNode::GetExpirationTimeoutArmingTime() const
+{
+    return TryGetExpirationTimeoutProperties()
+        .and_then([] (auto* expirationTimeoutProperties) {
+            return expirationTimeoutProperties->GetArmingTime();
         });
 }
 
@@ -292,6 +308,12 @@ TCypressNode* TCypressNode::GetEffectiveExpirationTimeoutNode()
 void TCypressNode::SetNativeContentRevision(NHydra::TRevision revision)
 {
     YT_VERIFY(IsForeign());
+
+    YT_LOG_DEBUG("Setting native content revision (NodeId: %v, OldRevision: %v, NewRevision: %v)",
+        GetVersionedId(),
+        NativeContentRevision_,
+        revision);
+
     NativeContentRevision_ = revision;
 }
 
@@ -403,7 +425,7 @@ void TCypressNode::Load(NCellMaster::TLoadContext& context)
         if (!expirationTime.IsNull()) {
             if (expirationTime.IsSet()) {
                 ExpirationTimeProperties_.Set(TClonableBuiltinAttributePtr<TExpirationTimeProperties>(
-                    std::in_place, TUserPtr{}, expirationTime.Unbox()));
+                    std::in_place, TUserPtr{}, expirationTime.Unbox(), TInstant::Zero()));
             } else {
                 ExpirationTimeProperties_.Remove();
             }
@@ -411,7 +433,7 @@ void TCypressNode::Load(NCellMaster::TLoadContext& context)
         if (!expirationTimeout.IsNull()) {
             if (expirationTimeout.IsSet()) {
                 ExpirationTimeoutProperties_.Set(TClonableBuiltinAttributePtr<TExpirationTimeoutProperties>(
-                    std::in_place, TUserPtr{}, expirationTimeout.Unbox()));
+                    std::in_place, TUserPtr{}, expirationTimeout.Unbox(), TInstant::Zero()));
             } else {
                 ExpirationTimeoutProperties_.Remove();
             }
@@ -507,4 +529,3 @@ TVersionedObjectId GetObjectId(const TCypressNode* object)
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace NYT::NCypressServer
-

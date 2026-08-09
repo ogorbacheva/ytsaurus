@@ -10,6 +10,7 @@
 #include "location.h"
 #include "location_manager.h"
 #include "master_connector.h"
+#include "medium_aware_block_cache_manager.h"
 #include "network_statistics.h"
 #include "offloaded_chunk_read_session.h"
 #include "p2p.h"
@@ -100,7 +101,6 @@ using namespace NTracing;
 using NChunkClient::TChunkReaderStatistics;
 using NYT::FromProto;
 using NYT::ToProto;
-
 using TRefCountedColumnarStatisticsSubresponse = TRefCountedProto<TRspGetColumnarStatistics::TSubresponse>;
 using TRefCountedColumnarStatisticsSubresponsePtr = TIntrusivePtr<TRefCountedColumnarStatisticsSubresponse>;
 
@@ -308,7 +308,7 @@ private:
         options.DisableSendBlocks = GetDynamicConfig()->UseDisableSendBlocks && request->disable_send_blocks();
         options.UseProbePutBlocks = GetDynamicConfig()->UseProbePutBlocks && request->use_probe_put_blocks();
         options.PreallocateDiskSpace = GetDynamicConfig()->PreallocateDiskSpace && request->preallocate_disk_space();
-        options.UseDirectIo = GetDynamicConfig()->UseDirectIO && request->use_direct_io();
+        options.UseDirectIo = request->use_direct_io();
 
         context->SetRequestInfo("SessionId: %v, Workload: %v, SyncOnClose: %v, EnableMultiplexing: %v, PlacementId: %v,"\
             "DisableSendBlocks: %v, UseProbePutBlocks: %v, PreallocateDiskSpace: %v, UseDirectIo: %v",
@@ -323,6 +323,8 @@ private:
             options.UseDirectIo);
 
         ValidateOnline();
+
+        ValidateNetInThrottling(context, options.WorkloadDescriptor);
 
         const auto& sessionManager = Bootstrap_->GetSessionManager();
         auto session = sessionManager->StartSession(sessionId, options);
@@ -450,7 +452,7 @@ private:
 
         if (session->ShouldUseProbePutBlocks()) {
             auto maxRequestedCumulativeBlockSize = session->GetMaxRequestedCumulativeBlockSize();
-            auto approvedCumulativeBlockSize = session->GetApprovedCumulativeBlockSize();
+            auto approvedCumulativeBlockSize = GetReportedApprovedCumulativeBlockSize(context, session);
 
             response->mutable_probe_put_blocks_state()->set_requested_cumulative_block_size(maxRequestedCumulativeBlockSize);
             response->mutable_probe_put_blocks_state()->set_approved_cumulative_block_size(approvedCumulativeBlockSize);
@@ -495,7 +497,7 @@ private:
         session->ProbePutBlocks(cumulativeBlockSize);
 
         auto maxRequestedCumulativeBlockSize = session->GetMaxRequestedCumulativeBlockSize();
-        auto approvedCumulativeBlockSize = session->GetApprovedCumulativeBlockSize();
+        auto approvedCumulativeBlockSize = GetReportedApprovedCumulativeBlockSize(context, session);
 
         response->mutable_probe_put_blocks_state()->set_requested_cumulative_block_size(maxRequestedCumulativeBlockSize);
         response->mutable_probe_put_blocks_state()->set_approved_cumulative_block_size(approvedCumulativeBlockSize);
@@ -516,6 +518,8 @@ private:
         bool populateCache = request->populate_cache();
         bool flushBlocks = request->flush_blocks();
         i64 cumulativeBlockSize = request->cumulative_block_size();
+        auto ioConsumed = YT_OPTIONAL_FROM_PROTO(*request, io_consumed);
+        auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
 
         ValidateOnline();
 
@@ -529,7 +533,7 @@ private:
         context->SetRequestInfo(
             "ChunkId: %v, Blocks: %v, PopulateCache: %v, "
             "FlushBlocks: %v, Medium: %v, "
-            "DisableSendBlocks: %v, CumulativeBlockSize: %v, BlocksWindowShifted: %v",
+            "DisableSendBlocks: %v, CumulativeBlockSize: %v, BlocksWindowShifted: %v, IoConsumed: %v, IoFairShareWeight: %v",
             chunkId,
             FormatBlocks(firstBlockIndex, lastBlockIndex),
             populateCache,
@@ -537,7 +541,9 @@ private:
             location->GetMediumName(),
             options.DisableSendBlocks,
             cumulativeBlockSize,
-            blocksWindowShifted);
+            blocksWindowShifted,
+            ioConsumed,
+            ioFairShareWeight);
 
         auto throttlingResult = location->CheckWriteThrottling(
             session->GetChunkId(),
@@ -618,13 +624,17 @@ private:
         int lastBlockIndex = firstBlockIndex + blockCount - 1;
         i64 cumulativeBlockSize = request->cumulative_block_size();
         auto targetDescriptor = FromProto<TNodeDescriptor>(request->target_descriptor());
+        auto ioConsumed = YT_OPTIONAL_FROM_PROTO(*request, io_consumed);
+        auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
 
         context->SetRequestInfo(
-            "ChunkId: %v, Blocks: %v, CumulativeBlockSize: %v, Target: %v",
+            "ChunkId: %v, Blocks: %v, CumulativeBlockSize: %v, Target: %v, IoConsumed: %v, IoFairShareWeight: %v",
             chunkId,
             FormatBlocks(firstBlockIndex, lastBlockIndex),
             cumulativeBlockSize,
-            targetDescriptor);
+            targetDescriptor,
+            ioConsumed,
+            ioFairShareWeight);
 
         ValidateOnline();
 
@@ -653,7 +663,7 @@ private:
 
         auto fraction = GetFallbackTimeoutFraction().value_or(1);
         auto timeout = *context->GetTimeout() * fraction;
-        context->ReplyFrom(session->SendBlocks(firstBlockIndex, blockCount, cumulativeBlockSize, timeout, enableSendBlocksNetThrottling, targetDescriptor)
+        context->ReplyFrom(session->SendBlocks(firstBlockIndex, blockCount, cumulativeBlockSize, ioConsumed, ioFairShareWeight, timeout, enableSendBlocksNetThrottling, targetDescriptor)
             .Apply(BIND([=] (const TErrorOr<ISession::TSendBlocksResult>& rspOrError) {
                 if (rspOrError.IsOK()) {
                     const auto& rsp = rspOrError.Value();
@@ -895,7 +905,7 @@ private:
             subresponse->set_disk_queue_size(diskThrottling.QueueSize);
 
             if (chunk) {
-                subresponse->set_medium_index(chunk->GetLocation()->GetMediumDescriptor()->GetIndex());
+                subresponse->set_medium_index(chunk->GetLocation()->GetMediumIndex());
             }
 
             YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), diskThrottling.Error);
@@ -946,11 +956,13 @@ private:
         bool enableP2P = request->enable_p2p();
         bool fetchNodeDescriptors = request->fetch_node_descriptors();
 
-        context->SetRequestInfo("ChunkId: %v, Blocks: %v, BlockCount: %v, Workload: %v",
+        context->SetRequestInfo("ChunkId: %v, Blocks: %v, BlockCount: %v, Workload: %v, IoConsumed: %v, IoFairShareWeight: %v",
             chunkId,
             MakeCompactIntervalView(blockIndexes),
             blockIndexes.size(),
-            workloadDescriptor);
+            workloadDescriptor,
+            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
@@ -971,7 +983,7 @@ private:
         response->set_disk_queue_size(diskThrottling.QueueSize);
 
         if (chunk) {
-            response->set_medium_index(chunk->GetLocation()->GetMediumDescriptor()->GetIndex());
+            response->set_medium_index(chunk->GetLocation()->GetMediumIndex());
         }
 
         YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), diskThrottling.Error);
@@ -1003,7 +1015,16 @@ private:
         auto cachedBlockSize = 0L;
 
         if (GetDynamicConfig()->PropagateCachedBlockInfosToProbing) {
-            auto cachedBlocks = Bootstrap_->GetBlockCache()->GetCachedBlocksByChunkId(chunkId, EBlockType::CompressedData);
+            THashSet<NChunkClient::TBlockInfo> cachedBlocks;
+            if (auto blockCache = Bootstrap_->GetBlockCache()) {
+                cachedBlocks = blockCache->GetCachedBlocksByChunkId(chunkId, EBlockType::CompressedData);
+            }
+            if (auto manager = Bootstrap_->GetMediumAwareBlockCacheManager()) {
+                auto perMediumCachedBlocks = manager->GetCachedBlocksByChunkId(
+                    chunkId,
+                    EBlockType::CompressedData);
+                cachedBlocks.insert(perMediumCachedBlocks.begin(), perMediumCachedBlocks.end());
+            }
             for (const auto& blockInfo : cachedBlocks) {
                 auto* protoBlockInfo = response->add_cached_blocks();
                 protoBlockInfo->set_block_index(blockInfo.BlockIndex);
@@ -1035,6 +1056,7 @@ private:
     TChunkReadOptions PrepareChunkReadOptions(
         const TIntrusivePtr<TContext>& context,
         const TRequest* request,
+        const IChunkPtr& chunk,
         bool fetchFromCache,
         bool fetchFromDisk,
         const TChunkReaderStatisticsPtr& chunkReaderStatistics)
@@ -1042,7 +1064,9 @@ private:
         TChunkReadOptions options;
         options.WorkloadDescriptor = GetRequestWorkloadDescriptor(context);
         options.PopulateCache = request->populate_cache();
-        options.BlockCache = Bootstrap_->GetBlockCache();
+        options.BlockCache = chunk
+            ? Bootstrap_->GetBlockCacheForMedium(chunk->GetLocation()->GetMediumIndex())
+            : Bootstrap_->GetBlockCache();
         options.FetchFromCache = fetchFromCache;
         options.FetchFromDisk = fetchFromDisk;
         options.EnableSequentialIORequests = GetDynamicConfig()->EnableSequentialIORequests.value_or(Config_->EnableSequentialIORequests);
@@ -1120,7 +1144,7 @@ private:
             "NetThrottling: %v, NetQueueSize: %v, "
             "DiskThrottling: %v, DiskQueueSize: %v, "
             "ThrottledLargeBlock: %v, "
-            "BlocksWithData: %v, BlocksSize: %v"
+            "BlocksWithData: %v, BlocksSize: %v, "
             "DataBytesReadFromDisk: %v, DataBytesReadFromCache: %v",
             responseTemplate.ChunkId,
             hasCompleteChunk,
@@ -1242,13 +1266,15 @@ private:
         context->SetRequestInfo(
             "ChunkId: %v, Blocks: %v, "
             "PopulateCache: %v, FetchFromCache: %v, "
-            "FetchFromDisk: %v, Workload: %v",
+            "FetchFromDisk: %v, Workload: %v, IoConsumed: %v, IoFairShareWeight: %v",
             chunkId,
             MakeCompactIntervalView(blockIndexes),
             populateCache,
             fetchFromCache,
             fetchFromDisk,
-            workloadDescriptor);
+            workloadDescriptor,
+            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
@@ -1292,6 +1318,7 @@ private:
                 auto options = PrepareChunkReadOptions(
                     context,
                     request,
+                    chunk,
                     fetchFromCache && !netThrottling.Enabled,
                     fetchFromDisk && !netThrottling.Enabled && !diskThrottling.Enabled,
                     chunkReaderStatistics);
@@ -1384,11 +1411,13 @@ private:
         bool populateCache = request->populate_cache();
 
         context->SetRequestInfo(
-            "ChunkId: %v, Blocks: %v, PopulateCache: %v, Workload: %v",
+            "ChunkId: %v, Blocks: %v, PopulateCache: %v, Workload: %v, IoConsumed: %v, IoFairShareWeight: %v",
             chunkId,
             FormatBlocks(firstBlockIndex, firstBlockIndex + blockCount - 1),
             populateCache,
-            workloadDescriptor);
+            workloadDescriptor,
+            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
@@ -1414,6 +1443,7 @@ private:
         auto options = PrepareChunkReadOptions(
             context,
             request,
+            chunk,
             !netThrottling.Enabled,
             !netThrottling.Enabled && !diskThrottling.Enabled,
             chunkReaderStatistics);
@@ -1499,7 +1529,8 @@ private:
             options.PopulateCache = true;
             options.FetchFromCache = true;
             options.FetchFromDisk = true;
-            options.BlockCache = Bootstrap_->GetBlockCache();
+            options.BlockCache = Bootstrap_->GetBlockCacheForMedium(
+                chunkWithBlockRequests.Chunk->GetLocation()->GetMediumIndex());
             options.EnableSequentialIORequests =
                 GetDynamicConfig()->EnableSequentialIORequests.value_or(Config_->EnableSequentialIORequests);
             options.ChunkReaderStatistics = chunkReaderStatistics;
@@ -1964,13 +1995,15 @@ private:
         const auto& schemaData = request->schema_data();
 
         context->SetRequestInfo("ChunkId: %v, ReadSessionId: %v, Workload: %v, "
-            "PopulateCache: %v, EnableHashChunkIndex: %v, ContainsSchema: %v",
+            "PopulateCache: %v, EnableHashChunkIndex: %v, ContainsSchema: %v, IoConsumed: %v, IoFairShareWeight: %v",
             chunkId,
             readSessionId,
             workloadDescriptor,
             populateCache,
             enableHashChunkIndex,
-            schemaData.has_schema());
+            schemaData.has_schema(),
+            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
@@ -2014,11 +2047,11 @@ private:
         response->set_net_throttling(netThrottling.Enabled);
         response->set_net_queue_size(netThrottling.QueueSize);
 
-        auto timestamp = request->timestamp();
+        auto timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
         auto columnFilter = FromProto<NTableClient::TColumnFilter>(request->column_filter());
         auto codecId = FromProto<NCompression::ECodec>(request->compression_codec());
         auto produceAllVersions = FromProto<bool>(request->produce_all_versions());
-        auto overrideTimestamp = request->has_override_timestamp() ? request->override_timestamp() : NullTimestamp;
+        auto overrideTimestamp = FromProto<NTransactionClient::TTimestamp>(request->override_timestamp());
         auto useDirectIO = request->use_direct_io();
 
         auto chunkReadSession = CreateOffloadedChunkReadSession(
@@ -2094,12 +2127,14 @@ private:
         bool enableThrottling = request->enable_throttling();
         auto supportedChunkFeatures = FromProto<NChunkClient::EChunkFeatures>(request->supported_chunk_features());
 
-        context->SetRequestInfo("ChunkId: %v, ExtensionTags: %v, PartitionTags: %v, Workload: %v, EnableThrottling: %v",
+        context->SetRequestInfo("ChunkId: %v, ExtensionTags: %v, PartitionTags: %v, Workload: %v, EnableThrottling: %v, IoConsumed: %v, IoFairShareWeight: %v",
             chunkId,
             extensionTags,
             partitionTags,
             workloadDescriptor,
-            enableThrottling);
+            enableThrottling,
+            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
@@ -2246,7 +2281,7 @@ private:
                         columnStableNames->reserve(chunkRequest.column_filter().indexes_size());
 
                         for (auto columnIndex : chunkRequest.column_filter().indexes()) {
-                            columnStableNames->push_back(TColumnStableName(TString{nameTable->GetName(columnIndex)}));
+                            columnStableNames->push_back(TColumnStableName(std::string(nameTable->GetName(columnIndex))));
                         }
                     }
 
@@ -2690,7 +2725,7 @@ private:
             std::vector<TColumnStableName> columnStableNames;
             columnStableNames.reserve(columnIds.size());
             for (auto id : columnIds) {
-                columnStableNames.emplace_back(TString(nameTable->GetNameOrThrow(id)));
+                columnStableNames.emplace_back(std::string(nameTable->GetNameOrThrow(id)));
             }
 
             auto options = BuildReadMetaOption(context);
@@ -2935,30 +2970,61 @@ private:
         }
     }
 
-    struct TNetThrottlingResult
+    template <class TContextPtr>
+    void ValidateNetInThrottling(
+        const TContextPtr& context,
+        const TWorkloadDescriptor& workloadDescriptor) const
     {
-        bool Enabled;
-        i64 QueueSize;
-    };
+        if (!GetDynamicConfig()->EnableInThrottlerQueueWritableCheck.value_or(false)) {
+            return;
+        }
+
+        auto netThrottling = CheckNetInThrottling(context, workloadDescriptor);
+        if (netThrottling.Enabled) {
+            THROW_ERROR_EXCEPTION(
+                NChunkClient::EErrorCode::WriteThrottlingActive,
+                "Pending network in throttling queue size exceeds throttling limit")
+                << TErrorAttribute("net_queue_size", netThrottling.QueueSize);
+        }
+    }
+
+    template <class TContextPtr>
+    i64 GetReportedApprovedCumulativeBlockSize(
+        const TContextPtr& context,
+        const ISessionPtr& session) const
+    {
+        const bool isNetInThrottling =
+            GetDynamicConfig()->EnableInThrottlerQueueWritableCheck.value_or(false) &&
+            CheckNetInThrottling(context, session->GetWorkloadDescriptor()).Enabled;
+
+        return isNetInThrottling
+            ? 0
+            : session->GetApprovedCumulativeBlockSize();
+    }
 
     template <class TContextPtr>
     TNetThrottlingResult CheckNetOutThrottling(
         const TContextPtr& context,
         const TWorkloadDescriptor& workloadDescriptor,
-        bool incrementCounter = true)
+        bool incrementCounter = true) const
     {
-        const auto& netThrottler = Bootstrap_->GetOutThrottler(workloadDescriptor);
-        auto netQueueSize =
-            netThrottler->GetQueueTotalAmount() +
-            context->GetBusNetworkStatistics().PendingOutBytes;
-        auto netQueueLimit = GetDynamicConfig()->NetOutThrottlingLimit.value_or(
-            Config_->NetOutThrottlingLimit);
-        bool throttle = netQueueSize > netQueueLimit;
-        if (throttle && incrementCounter) {
-            Bootstrap_->GetNetworkStatistics().IncrementReadThrottlingCounter(
-                context->GetEndpointAttributes().Get("network", DefaultNetworkName));
-        }
-        return TNetThrottlingResult{.Enabled = throttle, .QueueSize = netQueueSize};
+        return Bootstrap_->CheckNetOutThrottling(
+            context->GetBusNetworkStatistics().PendingOutBytes,
+            context->GetEndpointAttributes().Get("network", NBus::DefaultNetworkName),
+            workloadDescriptor,
+            incrementCounter);
+    }
+
+    template <class TContextPtr>
+    TNetThrottlingResult CheckNetInThrottling(
+        const TContextPtr& context,
+        const TWorkloadDescriptor& workloadDescriptor,
+        bool incrementCounter = true) const
+    {
+        return Bootstrap_->CheckNetInThrottling(
+            context->GetEndpointAttributes().Get("network", NBus::DefaultNetworkName),
+            workloadDescriptor,
+            incrementCounter);
     }
 };
 

@@ -7,6 +7,7 @@
 #include <yt/yt/ytlib/chunk_client/chunk_reader_statistics.h>
 #include <yt/yt/ytlib/chunk_client/data_node_service_proxy.h>
 #include <yt/yt/ytlib/chunk_client/helpers.h>
+#include <yt/yt/ytlib/chunk_client/job_io_meter.h>
 #include <yt/yt/ytlib/chunk_client/public.h>
 #include <yt/yt/ytlib/chunk_client/replication_reader.h>
 
@@ -165,6 +166,10 @@ public:
 
     DECLARE_RPC_SERVICE_METHOD(NChunkClient::NProto, ProbeBlockSet)
     {
+        if (request->has_io_fair_share_weight()) {
+            LastIoFairShareWeight_.store(request->io_fair_share_weight());
+        }
+
         if (PostponeProbingReply_.load()) {
             TDelayedExecutor::WaitForDuration(TDuration::Seconds(5));
         }
@@ -193,6 +198,10 @@ public:
     {
         SetCalled();
 
+        if (request->has_io_fair_share_weight()) {
+            LastIoFairShareWeight_.store(request->io_fair_share_weight());
+        }
+
         auto chunkId = FromProto<TChunkId>(request->chunk_id());
         response->set_has_complete_chunk(ChunkBlocks_.contains(chunkId));
 
@@ -212,6 +221,10 @@ public:
     DECLARE_RPC_SERVICE_METHOD(NChunkClient::NProto, GetBlockRange)
     {
         SetCalled();
+
+        if (request->has_io_fair_share_weight()) {
+            LastIoFairShareWeight_.store(request->io_fair_share_weight());
+        }
 
         auto chunkId = FromProto<TChunkId>(request->chunk_id());
         response->set_has_complete_chunk(ChunkBlocks_.contains(chunkId));
@@ -250,7 +263,7 @@ public:
         auto metaIt = ChunkMetas_.find(chunkId);
 
         if (metaIt.IsEnd()) {
-            THROW_ERROR_EXCEPTION("Chunk meta not found (ChunkId: %v)", chunkId);
+            THROW_ERROR_EXCEPTION("Chunk meta not found for chunk %v", chunkId);
         }
 
         *response->mutable_chunk_meta() = metaIt->second;
@@ -311,6 +324,11 @@ public:
         return PeerCalled_;
     }
 
+    double GetLastIoFairShareWeight() const
+    {
+        return LastIoFairShareWeight_.load();
+    }
+
 private:
     THashMap<TChunkId, THashMap<int, TSharedRef>> ChunkBlocks_;
     THashMap<TChunkId, NProto::TChunkMeta> ChunkMetas_;
@@ -321,6 +339,7 @@ private:
     std::atomic<bool> PostponeProbingReply_ = false;
     std::optional<TProbeStatistics> ProbeStatistics_;
     bool PeerCalled_ = false;
+    std::atomic<double> LastIoFairShareWeight_ = -1;
 
     TRandomGenerator Generator_{42};
 
@@ -530,6 +549,7 @@ TEST_P(TReplicationReaderTest, ReadTest)
     config->MaxBackoffTime = TDuration::MilliSeconds(1);
     config->BlockSetSubrequestThreshold = testCase.BlockSetSubrequestThreshold;
     config->PartialPeerProbingTimeouts = testCase.PartialPeerProbingTimeouts;
+    config->IoFairShareWeight = 2.5;
     config->Postprocess();
 
     auto reader = CreateReplicationReader(
@@ -544,6 +564,8 @@ TEST_P(TReplicationReaderTest, ReadTest)
     std::vector<bool> requestedBlockMask(blockCount);
 
     IChunkReader::TReadBlocksOptions readBlockOptions;
+    auto jobIoMeter = New<TJobIoMeter>(TDuration::Hours(1));
+    readBlockOptions.ClientOptions.JobIoMeter = jobIoMeter;
     for (int batchIndex = 0; batchIndex < batchCount; batchIndex++) {
         std::vector<TFuture<std::vector<TBlock>>> futures;
 
@@ -609,6 +631,23 @@ TEST_P(TReplicationReaderTest, ReadTest)
 
     EXPECT_GE(statistics->DataBytesReadFromDisk, minBytesToRead);
     EXPECT_LE(statistics->DataBytesReadFromDisk, maxBytesToRead);
+
+    // The job I/O meter accounts disk-read bytes in the same place chunk reader
+    // statistics are handled; since the mock reports only data_bytes_read_from_disk,
+    // the meter must match DataBytesReadFromDisk exactly.
+    EXPECT_EQ(jobIoMeter->GetIoConsumedInWindow(TDuration::Hours(1)), statistics->DataBytesReadFromDisk.load());
+
+    // Every node that served a read request must have observed the configured
+    // io_fair_share_weight, forwarded via the request field.
+    bool anyIoFairShareWeightObserved = false;
+    for (const auto& service : services) {
+        auto weight = service->GetLastIoFairShareWeight();
+        if (weight != -1) {
+            EXPECT_EQ(weight, 2.5);
+            anyIoFairShareWeightObserved = true;
+        }
+    }
+    EXPECT_TRUE(anyIoFairShareWeightObserved);
 
     pool->Shutdown();
     memoryTracker->ClearTrackers();

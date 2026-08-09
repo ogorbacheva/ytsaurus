@@ -38,6 +38,7 @@ bool IsRetryableFirstBatchError(const TError& error)
     static const THashSet<TErrorCode> retryableCodes = {
         NTabletClient::EErrorCode::NoSuchTablet,
         NTabletClient::EErrorCode::TabletNotMounted,
+        NTabletClient::EErrorCode::TabletServantIsNotActive,
         NTabletClient::EErrorCode::TestingFailureBeforeWrite,
         NTabletClient::EErrorCode::ReadOnlySmoothMovementStage,
         NRpc::EErrorCode::NoSuchService,
@@ -70,7 +71,7 @@ public:
         , Options_(std::move(options))
         , Transaction_(std::move(transaction))
         , CellCommitSessionProvider_(std::move(cellCommitSessionProvider))
-        , Logger(logger.WithTag("TabletId: %v", tabletInfo->TabletId))
+        , Logger(logger.WithTag("TabletId", tabletInfo->TabletId))
         , CellCommitSession_(CellCommitSessionProvider_->GetOrCreateCellCommitSession(tabletInfo->CellId))
         , TabletInfo_(std::move(tabletInfo))
         , TableInfo_(std::move(tableInfo))
@@ -258,7 +259,7 @@ private:
 
         ToProto(req->mutable_transaction_id(), transaction->GetId());
         if (transaction->GetAtomicity() == EAtomicity::Full) {
-            req->set_transaction_start_timestamp(transaction->GetStartTimestamp());
+            req->set_transaction_start_timestamp(ToProto(transaction->GetStartTimestamp()));
             req->set_transaction_timeout(ToProto(transaction->GetTimeout()));
         }
         ToProto(req->mutable_tablet_id(), TabletInfo_->TabletId);
@@ -342,7 +343,8 @@ private:
                 /*profilingInfo*/ nullptr,
                 Logger,
                 firstBatchError,
-                &commitContext->LocalRetryIndex);
+                &commitContext->LocalRetryIndex,
+                /*tabletIdHint*/ TabletInfo_->TabletId);
 
             if (delay) {
                 return TDelayedExecutor::MakeDelayed(delay);
@@ -376,9 +378,9 @@ private:
         }
 
         auto updateMountInfo = [&] (auto&& tabletInfo, auto&& tableInfo, bool cellChanged) {
-            YT_LOG_DEBUG("Retrying sending transaction rows after %v "
+            YT_LOG_DEBUG("Retrying sending transaction rows%v "
                 "(LogicalMountRevision: %x, OldMountRevision: %x, NewMountRevision: %x%v)",
-                cellChanged ? "tablet moved to a different cell" : "mount revision changed",
+                cellChanged ? " after tablet moved to a different cell" : "",
                 TabletInfo_->LogicalMountRevision,
                 TabletInfo_->MountRevision,
                 newTabletInfo->MountRevision,
@@ -530,7 +532,10 @@ private:
                 << TErrorAttribute("cell_id", TabletInfo_->CellId)
                 << TErrorAttribute("batch_index", commitContext->BatchIndex)
                 << error;
-            Client_->GetTableMountCache()->InvalidateOnError(wrappedError, /*forceRetry*/ true);
+            Client_->GetTableMountCache()->InvalidateOnError(
+                wrappedError,
+                /*forceRetry*/ true,
+                /*tabletIdHint*/ TabletInfo_->TabletId);
             commitContext->CommitPromise.Set(wrappedError);
             return;
         } else if (commitContext->LocalRetryIndex > 0 && commitContext->BatchIndex == 0) {

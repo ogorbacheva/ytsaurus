@@ -4,7 +4,7 @@
 
 #include <yt/yt/library/stockpile/config.h>
 
-#include <util/system/env.h>
+#include <library/cpp/yt/system/env.h>
 
 namespace NYT::NJobProxy {
 
@@ -137,10 +137,10 @@ void TEnvironmentVariableConfig::Register(TRegistrar registrar)
     });
 }
 
-TString TEnvironmentVariableConfig::LoadValue() const
+std::string TEnvironmentVariableConfig::LoadValue() const
 {
     if (EnvironmentVariable) {
-        if (auto value = TryGetEnv(*EnvironmentVariable)) {
+        if (auto value = TryGetEnvValue(*EnvironmentVariable)) {
             return *std::move(value);
         }
     }
@@ -148,7 +148,8 @@ TString TEnvironmentVariableConfig::LoadValue() const
         return *Value;
     }
     if (FileName) {
-        return TFileInput(*FileName).ReadAll();
+        // TODO(babenko): migrate to std::string
+        return TFileInput(TString(*FileName)).ReadAll();
     }
     THROW_ERROR_EXCEPTION("Cannot load environment variable %Qv", EnvironmentVariable);
 }
@@ -275,9 +276,9 @@ void TCriJobEnvironmentConfig::Register(TRegistrar registrar)
         .Default();
 
     registrar.Parameter("pod_descriptor", &TThis::PodDescriptor)
-        .DefaultNew();
+        .Default();
     registrar.Parameter("pod_spec", &TThis::PodSpec)
-        .DefaultNew();
+        .Default();
     registrar.Parameter("gpu_config", &TThis::GpuConfig)
         .Default();
 }
@@ -341,6 +342,9 @@ void TJobProxyInternalConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("input_pipe_blinker_period", &TThis::InputPipeBlinkerPeriod)
         .Default(TDuration::Seconds(1));
+
+    registrar.Parameter("job_io_meter_max_history_duration", &TThis::JobIoMeterMaxHistoryDuration)
+        .Default(TDuration::Hours(1));
 
     registrar.Parameter("job_environment", &TThis::JobEnvironment);
 

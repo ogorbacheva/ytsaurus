@@ -14,6 +14,7 @@
 
 #include <yt/yt/core/misc/protobuf_helpers.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
 #include <yt/yt/core/ytree/ypath_service.h>
@@ -195,10 +196,9 @@ TAllocation::TAllocation(
     , Bootstrap_(bootstrap)
     , Id_(id)
     , OperationId_(operationId)
-    , Logger(ExecNodeLogger().WithTag(
-        "AllocationId: %v, OperationId: %v",
-        id,
-        operationId))
+    , Logger(ExecNodeLogger()
+        .WithTag("AllocationId", id)
+        .WithTag("OperationId", operationId))
     , RequestedGpu_(resourceDemand.Gpu)
     , RequestedCpu_(resourceDemand.Cpu)
     , RequestedMemory_(resourceDemand.UserMemory)
@@ -417,7 +417,7 @@ void TAllocation::Complete(EAllocationFinishReason finishReason)
 
 void TAllocation::Preempt(
     TDuration timeout,
-    TString preemptionReason,
+    std::string preemptionReason,
     const std::optional<NScheduler::TPreemptedFor>& preemptedFor)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -681,7 +681,7 @@ IYPathServicePtr TAllocation::GetOrchidService()
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
-    auto jobService =  New<TCompositeMapService>();
+    auto jobService =  CreateCompositeMapService();
 
     if (Job_) {
         jobService->AddChild("job", Job_->GetOrchidService());

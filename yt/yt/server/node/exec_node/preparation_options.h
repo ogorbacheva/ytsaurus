@@ -6,6 +6,7 @@
 
 #include <yt/yt/server/lib/nbd/config.h>
 #include <yt/yt/server/lib/nbd/public.h>
+#include <yt/yt/server/lib/nbd/image/public.h>
 
 #include <yt/yt/ytlib/exec_node/public.h>
 
@@ -21,9 +22,9 @@ namespace NYT::NExecNode {
 
 struct TVirtualSandboxData
 {
-    TString NbdDeviceId;
+    std::string NbdDeviceId;
     TArtifactKey ArtifactKey;
-    NNbd::IImageReaderPtr Reader;
+    NNbd::NImage::IImageReaderPtr Reader;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -31,7 +32,7 @@ struct TVirtualSandboxData
 struct TOverlayLayerPreparationOptions
 {
     TArtifactKey ArtifactKey;
-    NNbd::IImageReaderPtr ImageReader;
+    NNbd::NImage::IImageReaderPtr ImageReader;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -40,7 +41,7 @@ struct TOverlayLayerPreparationOptions
 struct TSandboxNbdRootVolumeData
 {
     //! Identifier of NBD disk within NBD server.
-    TString DeviceId;
+    std::string DeviceId;
 
     //! Volume params.
     i64 Size = 0;

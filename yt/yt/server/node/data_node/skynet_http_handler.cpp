@@ -5,6 +5,7 @@
 #include "chunk.h"
 #include "chunk_store.h"
 #include "chunk_meta_manager.h"
+#include "location.h"
 
 #include <yt/yt/server/node/cluster_node/config.h>
 
@@ -137,7 +138,7 @@ public:
             }
 
             rsp->SetStatus(EStatusCode::InternalServerError);
-            WaitFor(rsp->WriteBody(TSharedRef::FromString(ex.what())))
+            WaitFor(rsp->WriteBody(TSharedRef::FromString(std::string(ex.what()))))
                 .ThrowOnError();
 
             throw;
@@ -202,15 +203,16 @@ private:
                 << TErrorAttribute("row_count", miscExt.row_count());
         }
 
+        auto blockCache = Bootstrap_->GetBlockCacheForMedium(chunk->GetLocation()->GetMediumIndex());
         auto readerConfig = New<TReplicationReaderConfig>();
         auto chunkReader = CreateLocalChunkReader(
             readerConfig,
             chunk,
-            Bootstrap_->GetBlockCache(),
+            blockCache,
             Bootstrap_->GetDataNodeBootstrap()->GetChunkMetaManager()->GetBlockMetaCache());
 
         auto chunkState = New<TChunkState>(TChunkState{
-            .BlockCache = Bootstrap_->GetBlockCache(),
+            .BlockCache = blockCache,
             .TableSchema = New<TTableSchema>(),
         });
 

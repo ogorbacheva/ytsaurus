@@ -23,7 +23,9 @@ TS3UploadSessionBase::TS3UploadSessionBase(
     const NLogging::TLogger& logger)
     : Client_(std::move(client))
     , ObjectPlacement_(std::move(objectPlacement))
-    , Logger(logger.WithTag("Bucket: %v, Key: %v", ObjectPlacement_.Bucket, ObjectPlacement_.Key))
+    , Logger(logger
+        .WithTag("Bucket", ObjectPlacement_.Bucket)
+        .WithTag("Key", ObjectPlacement_.Key))
     , UnderlyingInvoker_(std::move(invoker))
     , UploadSessionCancelableContext_(New<TCancelableContext>())
 {
@@ -408,7 +410,9 @@ void TS3MultiPartUploadSession::DoAbortIncompleteUpload()
     }
 
     // Accessing UploadId_ is fine, since the value is read-only after the upload is started.
-    YT_VERIFY(!UploadId_.empty());
+    if (UploadId_.empty()) {
+        return;
+    }
 
     YT_LOG_DEBUG("Aborting incomplete multi-part upload to S3 (UploadId: %v)", UploadId_);
     WaitFor(Client_->AbortMultipartUpload(TAbortMultipartUploadRequest{

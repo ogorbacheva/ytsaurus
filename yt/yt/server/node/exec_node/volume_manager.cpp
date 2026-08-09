@@ -243,7 +243,17 @@ private:
             /*Cypress path*/ "n/a");
         TEventTimerGuard volumeCreateTimeGuard(TVolumeProfilerCounters::Get()->GetTimer(tagSet, "/create_time"));
 
-        auto path = NFS::GetRealPath(NFS::CombinePaths(sandboxPath, mountPath.Path().string()));
+        // mountPath is the path inside the user job container (e.g. "/sandbox/tmpfs"), rooted at
+        // the container sandbox. Re-root it onto the host slot sandbox so the tmpfs is created
+        // inside the slot.
+        std::filesystem::path relativeMountPath;
+        for (const char* sandboxRoot : {"/slot/sandbox", "/sandbox"}) {
+            if (mountPath.Path().native().starts_with(sandboxRoot)) {
+                relativeMountPath = mountPath.Path().lexically_relative(sandboxRoot);
+                break;
+            }
+        }
+        auto path = NFS::GetRealPath(NFS::CombinePaths(sandboxPath, relativeMountPath.string()));
 
         auto config = New<TMountTmpfsConfig>();
         config->Path = path;
@@ -406,7 +416,7 @@ public:
                     ExecNodeProfiler().WithPrefix("/location_layers/porto").WithTag("location_id", id)),
                 CreatePortoExecutor(
                     dynamicConfig->LayerCache->LayerPortoExecutor,
-                    Format("FastLayerExecutor%v", index),
+                    Format("fast_layer%v", index),
                     ExecNodeProfiler().WithPrefix("/location_fast_layers/porto").WithTag("location_id", id)),
                 id);
             initLocationResults.push_back(location->Initialize());
@@ -482,6 +492,16 @@ public:
             jobId,
             layerOptions.size());
 
+        if (DynamicConfig_.Acquire()->ThrowOnPrepareLayers) {
+            std::vector<TFuture<TOverlayData>> errorFutures;
+            errorFutures.reserve(layerOptions.size());
+            for (const auto& layerOption : layerOptions) {
+                errorFutures.push_back(MakeFuture<TOverlayData>(TError("Throw on prepare layers")
+                    << TErrorAttribute("artifact_key", ToString(layerOption.ArtifactKey))));
+            }
+            return errorFutures;
+        }
+
         std::vector<TFuture<TOverlayData>> overlayDataFutures;
         overlayDataFutures.reserve(layerOptions.size());
 
@@ -527,10 +547,9 @@ public:
         auto userSandboxOptions = options.UserSandboxOptions;
 
         auto Logger = ExecNodeLogger()
-            .WithTag("Tag: %v, JobId: %v, LayerCount: %v",
-                tag,
-                options.JobId,
-                overlayDataArray.size());
+            .WithTag("Tag", tag)
+            .WithTag("JobId", options.JobId)
+            .WithTag("LayerCount", overlayDataArray.size());
 
         YT_LOG_DEBUG("Preparing root volume");
 
@@ -651,7 +670,7 @@ public:
                             return MakeFuture(result);
                         }
 
-                        auto placePath = NFS::JoinPaths(result->Volume->GetPath(), "place");
+                        auto placePath = "//" + NFS::JoinPaths(result->Volume->GetPath(), "place");
                         // TODO If an exception is thrown here, then all volumes must be properly cleaned up.
                         return DoCreateOverlayVolume(
                             tag,
@@ -691,6 +710,7 @@ public:
             future = future
                 .Apply(
                     BIND([tag, volume, target] {
+                        NFS::MakeDirRecursive(target);
                         return volume->Volume->Link(tag, target);
                     })
                     .AsyncVia(GetCurrentInvoker())
@@ -935,10 +955,9 @@ private:
         TEventTimerGuard volumeCreateTimeGuard(TVolumeProfilerCounters::Get()->GetTimer(tagSet, "/create_time"));
 
         auto Logger = ExecNodeLogger()
-            .WithTag("Tag: %v, JobId: %v, OverlayDataArraySize: %v",
-                tag,
-                jobId,
-                overlayDataArray.size());
+            .WithTag("Tag", tag)
+            .WithTag("JobId", jobId)
+            .WithTag("OverlayDataArraySize", overlayDataArray.size());
 
         YT_LOG_DEBUG("Creating overlay volume");
 

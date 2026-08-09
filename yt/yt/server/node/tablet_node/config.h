@@ -132,6 +132,10 @@ struct TTabletManagerDynamicConfig
     //! snapshots with redirection hint may be evicted.
     std::optional<TDuration> ExtendedSnapshotEvictionTimeout;
 
+    //! Timeout for waiting on a smooth movement stage change when a write
+    //! arrives at a tablet that is temporarily in read-only stage.
+    TDuration WaitOnReadOnlySmoothMovementStageTimeout;
+
     bool YieldBeforeBuildingLsmActions;
 
     REGISTER_YSON_STRUCT(TTabletManagerDynamicConfig);
@@ -551,6 +555,7 @@ struct TRowCacheControllerDynamicConfig
     i64 MemoryLimitGapInBytes;
     double MemoryLimitGapFraction;
     double RotationMemoryThreshold;
+    bool AllowFillingAvailableMemory;
 
     REGISTER_YSON_STRUCT(TRowCacheControllerDynamicConfig);
 
@@ -755,6 +760,8 @@ struct TTabletNodeDynamicConfig
 
     NChaosClient::TChaosReplicationCardUpdatesBatcherDynamicConfigPtr ChaosReplicationCardUpdatesBatcher;
 
+    TSlruCacheDynamicConfigPtr ClientCache;
+
     TTestingTabletNodeDynamicConfig Testing;
 
     REGISTER_YSON_STRUCT(TTabletNodeDynamicConfig);
@@ -844,6 +851,8 @@ struct TTabletNodeConfig
     //! Used for local mode. If false, node will crash when recovering
     //! a tablet cell from the different reign.
     bool AllowReignChange;
+
+    TSlruCacheConfigPtr ClientCache;
 
     REGISTER_YSON_STRUCT(TTabletNodeConfig);
 

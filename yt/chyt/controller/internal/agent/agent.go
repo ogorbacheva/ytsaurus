@@ -47,9 +47,11 @@ type Agent struct {
 
 	opletInfoBatchCh chan []strawberry.OpletInfoForScaler
 	scalingTargetCh  chan []scalingRequest
+
+	metrics *AgentMetrics
 }
 
-func NewAgent(proxy, token string, ytc yt.Client, l log.Logger, controller strawberry.Controller, config *Config) *Agent {
+func NewAgent(proxy, token string, ytc yt.Client, l log.Logger, controller strawberry.Controller, config *Config, metrics *AgentMetrics) *Agent {
 	hostname, err := os.Hostname()
 	if err != nil {
 		l.Fatal("error getting hostname", log.Error(err))
@@ -71,6 +73,7 @@ func NewAgent(proxy, token string, ytc yt.Client, l log.Logger, controller straw
 			time.Duration(tf*float64(config.PassPeriodOrDefault())),
 			time.Duration(tf*float64(config.RevisionCollectPeriodOrDefault())),
 			time.Duration(tf*float64(config.CollectOperationsPeriodOrDefault()))),
+		metrics: metrics,
 	}
 }
 
@@ -245,6 +248,7 @@ func (a *Agent) processOplets() {
 				_ = oplet.Pass(a.ctx, false /*checkOpLiveness*/)
 
 				passDur := time.Since(start)
+				a.metrics.RecordOpletPassDuration(passDur)
 				workerPassDur[idx] += passDur
 				if passDur > workerMaxPassDur[idx].dur {
 					workerMaxPassDur[idx].dur = passDur
@@ -294,7 +298,9 @@ func (a *Agent) pass() {
 
 	a.l.Info("starting pass", log.Int("oplet_count", len(a.aliasToOp)))
 	defer func() {
+		a.metrics.RecordPassDuration(time.Since(startedAt))
 		if passErr != nil {
+			a.metrics.RecordPassError()
 			a.l.Info("pass failed", log.Error(passErr))
 			a.healthState.SetPassState(passErr)
 		} else {
@@ -314,17 +320,32 @@ func (a *Agent) pass() {
 	}
 
 	a.processOplets()
+
+	opletCount := 0
+	failedCount := 0
+	brokenOpletCount := 0
+
 	for _, oplet := range a.aliasToOp {
 		if oplet.Broken() {
-			a.l.Info("unregistering oplet: it is broken",
+			a.l.Info("oplet is broken",
 				log.String("alias", oplet.Alias()),
 				log.String("reason", oplet.BrokenReason()))
-			a.unregisterOplet(oplet)
-		} else if oplet.Inappropriate() {
+			brokenOpletCount++
+		}
+		if oplet.Inappropriate() {
 			a.l.Info("unregistering oplet: it is inappropriate", log.String("alias", oplet.Alias()))
 			a.unregisterOplet(oplet)
+			continue
+		}
+		opletCount++
+		if h, _ := oplet.Health(); h == strawberry.OpletHealthFailed {
+			failedCount++
 		}
 	}
+
+	a.metrics.SetOpletCount(opletCount)
+	a.metrics.SetBrokenOpletCount(brokenOpletCount)
+	a.metrics.SetFailedOpletCount(failedCount)
 
 	// Sanity check.
 	for alias, oplet := range a.aliasToOp {
@@ -474,17 +495,19 @@ func (a *Agent) GetAgentInfo() strawberry.AgentInfo {
 	}
 
 	return strawberry.AgentInfo{
-		StrawberryRoot:           a.root,
-		Hostname:                 a.hostname,
-		Stage:                    a.config.Stage,
-		Proxy:                    a.proxy,
-		ServiceToken:             a.token,
-		Family:                   a.family,
-		OperationNamespace:       a.OperationNamespace(),
-		RobotUsername:            a.config.RobotUsername,
-		DefaultNetworkProject:    a.config.DefaultNetworkProject,
-		ClusterURL:               strawberry.ExecuteTemplate(a.config.ClusterURLTemplate, clusterURLTemplateData),
-		UseFamilyPrefixInOpAlias: a.config.UseFamilyPrefixInOpAlias,
+		StrawberryRoot:                         a.root,
+		Hostname:                               a.hostname,
+		Stage:                                  a.config.Stage,
+		Proxy:                                  a.proxy,
+		ServiceToken:                           a.token,
+		Family:                                 a.family,
+		OperationNamespace:                     a.OperationNamespace(),
+		RobotUsername:                          a.config.RobotUsername,
+		DefaultNetworkProject:                  a.config.DefaultNetworkProject,
+		ClusterURL:                             strawberry.ExecuteTemplate(a.config.ClusterURLTemplate, clusterURLTemplateData),
+		UseFamilyPrefixInOpAlias:               a.config.UseFamilyPrefixInOpAlias,
+		BrokenStateSignalErrorCodes:            a.config.BrokenStateSignalErrorCodesOrDefault(),
+		MaxConsecutiveBrokenStateSignalRetries: a.config.MaxConsecutiveBrokenStateSignalRetriesOrDefault(),
 	}
 }
 
@@ -635,6 +658,8 @@ func (a *Agent) Stop() {
 	a.l.Info("stopping agent")
 	a.cancelCtx()
 	<-a.backgroundStopCh
+
+	a.metrics.Reset()
 
 	a.ctx = nil
 	a.aliasToOp = nil

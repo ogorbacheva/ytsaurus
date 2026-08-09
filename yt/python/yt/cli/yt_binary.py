@@ -15,6 +15,7 @@ from yt.wrapper.cli_helpers import (
     YT_STRUCTURED_DATA_FORMAT, YT_ARGUMENTS_FORMAT, OUTPUT_FORMATS)
 from yt.wrapper.constants import DOC_ROOT_URL, TUTORIAL_DOC_URL
 from yt.wrapper.default_config import get_config_from_env, get_default_config, RemotePatchableValueBase
+from yt.wrapper.devtools import add_devtools_parser
 from yt.wrapper.driver import get_commands_description
 from yt.wrapper.admin_commands import add_switch_leader_parser
 from yt.wrapper.dirtable_commands import add_dirtable_parsers
@@ -993,6 +994,7 @@ def add_reshard_table_parser(add_parser):
     parser.add_argument("--uniform", action="store_true")
     parser.add_argument("--slicing-accuracy", type=float)
     parser.add_argument("--trimmed-row-counts", type=int, nargs="+")
+    parser.add_argument("--cumulative-data-weights", type=int, nargs="+")
     enable_slicing_parser = parser.add_mutually_exclusive_group(required=False)
     enable_slicing_parser.add_argument(
         "--enable-slicing", dest="enable_slicing", default=None, action="store_true")
@@ -2723,6 +2725,15 @@ def add_chyt_parser(root_subparsers):
         add_strawberry_ctl_parser(add_clickhouse_subparser, "chyt")
 
 
+def add_dq_parser(root_subparsers):
+    parser = populate_argument_help(root_subparsers.add_parser(
+        "dq", description="DQ clique commands"))
+
+    dq_subparsers = parser.add_subparsers(metavar="dq_command", **SUBPARSER_KWARGS)
+    add_dq_subparser = add_subparser(dq_subparsers, params_argument=False)
+    add_strawberry_ctl_parser(add_dq_subparser, "dq")
+
+
 def add_jupyt_parser(root_subparsers):
     parser = populate_argument_help(root_subparsers.add_parser(
         "jupyt", description="Jupyter over YT commands"))
@@ -2941,7 +2952,10 @@ def show_flow_describe_result(**kwargs):
     """Execute YT Flow describe-pipeline command
 
     :param pipeline_path: path to pipeline.
+    :param status_only: describe only the pipeline status and its messages.
     """
+    if kwargs.pop("status_only"):
+        kwargs["flow_argument"] = {"status_only": True}
     result = yt.flow_execute(**kwargs, flow_command="describe-pipeline")
     if kwargs["output_format"] is None:
         result = dump_data(result)
@@ -2952,6 +2966,8 @@ def add_flow_describe_parser(add_parser):
     parser = add_parser("describe-pipeline", show_flow_describe_result,
                         help="Execute YT Flow describe command")
     add_ypath_argument(parser, "pipeline_path", hybrid=True)
+    parser.add_argument("--status-only", action="store_true",
+                        help="Describe only the pipeline status and its messages")
     add_structured_format_argument(parser, "--output-format")
 
 
@@ -3334,6 +3350,7 @@ def _prepare_parser():
     add_run_command_with_lock_parser(add_parser)
 
     add_chyt_parser(subparsers)
+    add_dq_parser(subparsers)
     add_jupyt_parser(subparsers)
     add_spark_parser(subparsers)
     add_flow_parser(subparsers)
@@ -3344,6 +3361,8 @@ def _prepare_parser():
     add_maintenance_request_parsers(add_parser)
 
     add_admin_parser(subparsers)
+
+    add_devtools_parser(subparsers)
 
     add_dirtable_parser(subparsers)
 

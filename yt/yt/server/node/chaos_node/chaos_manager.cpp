@@ -17,7 +17,7 @@
 #include "transaction.h"
 #include "transaction_manager.h"
 
-#include <yt/server/node/chaos_node/chaos_manager.pb.h>
+#include <yt/yt/server/node/chaos_node/chaos_manager.pb.h>
 
 #include <yt/yt/server/lib/hydra/entity_map.h>
 
@@ -45,6 +45,7 @@
 
 #include <yt/yt/client/transaction_client/timestamp_provider.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/convert.h>
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/virtual.h>
@@ -149,20 +150,20 @@ public:
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateCoordinatorCells, Unretained(this)));
         RegisterMethod(
             BIND_NO_PROPAGATE(&TChaosManager::HydraCreateTableReplica, Unretained(this)),
-            /*alases*/ {},
+            /*aliases*/ {},
             /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveTableReplica, Unretained(this)));
         RegisterMethod(
             BIND_NO_PROPAGATE(&TChaosManager::HydraAlterTableReplica, Unretained(this)),
-            /*alases*/ {},
+            /*aliases*/ {},
             /*exceptionsAreNormal*/ true);
         RegisterMethod(
             BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateTableReplicaProgress, Unretained(this)),
-            /*alases*/ {},
+            /*aliases*/ {},
             /*exceptionsAreNormal*/ true);
         RegisterMethod(
             BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateTableProgress, Unretained(this)),
-            /*alases*/ {},
+            /*aliases*/ {},
             /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraUpdateMultipleTableProgresses, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraCommenceNewReplicationEra, Unretained(this)));
@@ -173,19 +174,19 @@ public:
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraResumeCoordinator, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveExpiredReplicaHistory, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraMigrateReplicationCards, Unretained(this)),
-            /*alases*/ {},
+            /*aliases*/ {},
             /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraResumeChaosCell, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraChaosNodeMigrateReplicationCards, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraChaosNodeConfirmReplicationCardMigration, Unretained(this)));
         RegisterMethod(
             BIND_NO_PROPAGATE(&TChaosManager::HydraCreateReplicationCardCollocation, Unretained(this)),
-            /*alases*/ {},
+            /*aliases*/ {},
             /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraChaosNodeRemoveMigratedReplicationCards, Unretained(this)));
         RegisterMethod(
             BIND_NO_PROPAGATE(&TChaosManager::HydraForsakeCoordinator, Unretained(this)),
-            /*alases*/ {},
+            /*aliases*/ {},
             /*exceptionsAreNormal*/ true);
         RegisterMethod(BIND_NO_PROPAGATE(&TChaosManager::HydraRemoveCellMailbox, Unretained(this)));
     }
@@ -426,7 +427,9 @@ public:
     {
         auto* collocation = FindReplicationCardCollocation(collocationId);
         if (!collocation) {
-            THROW_ERROR_EXCEPTION(NChaosClient::EErrorCode::ReplicationCardNotKnown, "No such replication card collocation")
+            THROW_ERROR_EXCEPTION(
+                NChaosClient::EErrorCode::ReplicationCollocationNotKnown,
+                "No such replication card collocation")
                 << TErrorAttribute("replication_card_collocation_id", collocationId);
         }
 
@@ -591,6 +594,8 @@ private:
     THashMap<TReplicaId, TReplicaCounters> ReplicaCounters_;
     bool Suspended_ = false;
 
+    THashSet<TReplicationCardId> BlockedByAlterCardIds_;
+
     // COMPAT(gryzlov-ad)
     bool MoveChaosLeasesToChaosLeaseManager_ = false;
 
@@ -620,6 +625,7 @@ private:
         Save(context, CoordinatorCellIds_);
         Save(context, SuspendedCoordinators_);
         Save(context, Suspended_);
+        Save(context, BlockedByAlterCardIds_);
         MigratedReplicationCardRemover_->Save(context);
     }
 
@@ -651,6 +657,15 @@ private:
         Load(context, CoordinatorCellIds_);
         Load(context, SuspendedCoordinators_);
         Load(context, Suspended_);
+        // COMPAT(osidorkin)
+        if (auto contextVersion = context.GetVersion();
+            contextVersion >= EChaosReign::BlockCardPropagationOnAlter ||
+            (contextVersion >= EChaosReign::BlockCardPropagationOnAlter_26_1 && contextVersion < EChaosReign::Start_26_2) ||
+            (contextVersion >= EChaosReign::BlockCardPropagationOnAlter_25_4 && contextVersion < EChaosReign::Start_26_1))
+        {
+            Load(context, BlockedByAlterCardIds_);
+        }
+
         MigratedReplicationCardRemover_->Load(context);
 
         // COMPAT(gryzlov-ad)
@@ -668,6 +683,7 @@ private:
         ChaosLeaseMap_.Clear();
         CoordinatorCellIds_.clear();
         SuspendedCoordinators_.clear();
+        BlockedByAlterCardIds_.clear();
         MigratedReplicationCardRemover_->Clear();
     }
 
@@ -887,6 +903,15 @@ private:
         auto collocationOptions = request->has_collocation_options()
             ? std::make_optional(ConvertTo<TReplicationCollocationOptionsPtr>(TYsonString(request->collocation_options())))
             : std::nullopt;
+        auto createSecondaryIndex = request->has_create_secondary_index()
+            ? ConvertTo<NApi::TCreateSecondaryIndexPtr>(TYsonString(request->create_secondary_index()))
+            : NApi::TCreateSecondaryIndexPtr();
+        auto destroySecondaryIndex = request->has_destroy_secondary_index()
+            ? FromProto<TReplicationCardId>(request->destroy_secondary_index())
+            : TReplicationCardId();
+        auto progressSecondaryIndexCorrespondence = request->has_progress_secondary_index_correspondence()
+            ? ConvertTo<NApi::TProgressSecondaryIndexCorrespondencePtr>(TYsonString(request->progress_secondary_index_correspondence()))
+            : NApi::TProgressSecondaryIndexCorrespondencePtr();
 
         if (options && enableTracker) {
             THROW_ERROR_EXCEPTION(
@@ -894,6 +919,18 @@ private:
                 "and \"enable_replicated_table_tracker\" could be specified",
                 replicationCardId);
         }
+
+        int secondaryIndexAlterationCount =
+            (createSecondaryIndex ? 1 : 0) +
+            (destroySecondaryIndex ? 1 : 0) +
+            (progressSecondaryIndexCorrespondence ? 1 : 0);
+
+        THROW_ERROR_EXCEPTION_UNLESS(secondaryIndexAlterationCount <= 1,
+            "Not more than one alteration to secondary indices is allowed at a time, got %v",
+            secondaryIndexAlterationCount);
+
+        THROW_ERROR_EXCEPTION_IF(collocationId.has_value() && secondaryIndexAlterationCount > 0,
+            "Cannot simultaneously alter collocation and secondary indices");
 
         auto replicationCard = GetReplicationCardOrThrow(replicationCardId);
         replicationCard->ValidateCollocationNotMigrating();
@@ -912,13 +949,14 @@ private:
         }
 
         YT_LOG_DEBUG(
-            "Alter replication card "
-            "(ReplicationCardId: %v, ReplicatedTableOptions: %v, EnableReplicatedTableTracker: %v)",
+            "Alter replication card (ReplicationCardId: %v, ReplicatedTableOptions: %v, "
+            "EnableReplicatedTableTracker: %v, HasSecondaryIndexAlteration: %v)",
             replicationCardId,
             options
-                ? TStringBuf("null")
-                : ConvertToYsonString(options, EYsonFormat::Text).AsStringBuf(),
-            enableTracker);
+                ? ConvertToYsonString(options, EYsonFormat::Text).AsStringBuf()
+                : TStringBuf("null"),
+            enableTracker,
+            secondaryIndexAlterationCount > 0);
 
         if (options) {
             replicationCard->SetReplicatedTableOptions(options);
@@ -946,6 +984,15 @@ private:
 
             collocation->Options() = std::move(*collocationOptions);
             FireReplicationCardCollocationUpdated(collocation);
+        }
+        if (createSecondaryIndex) {
+            CreateSecondaryIndex(replicationCard, createSecondaryIndex.Get());
+        }
+        if (destroySecondaryIndex) {
+            RemoveSecondaryIndex(replicationCard, destroySecondaryIndex);
+        }
+        if (progressSecondaryIndexCorrespondence) {
+            ProgressSecondaryIndexCorrespondence(replicationCard, progressSecondaryIndexCorrespondence.Get());
         }
     }
 
@@ -989,7 +1036,7 @@ private:
             collocation->SetState(EReplicationCardCollocationState::Immigrating);
             collocation->SetSize(collocation->GetSize() + 1);
         } else {
-            THROW_ERROR_EXCEPTION("Unexpected chaos cell: neigther replication card nor collocation")
+            THROW_ERROR_EXCEPTION("Unexpected chaos cell: neither replication card nor collocation")
                 << TErrorAttribute("replication_card_cell_id", replicationCardCellId)
                 << TErrorAttribute("replication_card_collocation_cell_id", collocationCellId)
                 << TErrorAttribute("chaos_cell_id", Slot_->GetCellId());
@@ -1528,14 +1575,16 @@ private:
                 continue;
             }
 
-            if (auto it = chaosObject->Coordinators().find(coordinatorCellId); !it || it->second.State != EShortcutState::Granting) {
+            if (auto it = chaosObject->Coordinators().find(coordinatorCellId);
+                it == chaosObject->Coordinators().end() || it->second.State != EShortcutState::Granting)
+            {
                 YT_LOG_WARNING("Got grant shortcut response but shortcut is not waiting for it "
                     "(ChaosObjectId: %v, Type: %v, Era: %v, CoordinatorCellId: %v, ShortcutState: %v)",
                     chaosObjectId,
                     TypeFromId(chaosObjectId),
                     era,
                     coordinatorCellId,
-                    it ? std::make_optional(it->second.State) : std::nullopt);
+                    it != chaosObject->Coordinators().end() ? std::make_optional(it->second.State) : std::nullopt);
 
                 continue;
             }
@@ -1614,9 +1663,21 @@ private:
                 continue;
             }
 
-            if (auto it = chaosObject->Coordinators().find(coordinatorCellId); it && it->second.State != EShortcutState::Revoking) {
+            auto it = chaosObject->Coordinators().find(coordinatorCellId);
+            if (it == chaosObject->Coordinators().end()) {
+                YT_LOG_WARNING("Got revoke shortcut response but no shortcut is found "
+                    "(ChaosObjectId: %v, Type: %v, Era: %v, CoordinatorCellId: %v)",
+                    chaosObjectId,
+                    TypeFromId(chaosObjectId),
+                    chaosObject->GetEra(),
+                    coordinatorCellId);
+
+                continue;
+            }
+
+            if (it->second.State != EShortcutState::Revoking) {
                 YT_LOG_WARNING("Got revoke shortcut response but shortcut is not waiting for it "
-                    "(ChaosObjectId: %v, Type: %v, Era: %v CoordinatorCellId: %v, ShortcutState: %v)",
+                    "(ChaosObjectId: %v, Type: %v, Era: %v, CoordinatorCellId: %v, ShortcutState: %v)",
                     chaosObjectId,
                     TypeFromId(chaosObjectId),
                     chaosObject->GetEra(),
@@ -1668,7 +1729,7 @@ private:
             for (auto [cellId, coordinator] : coordinators) {
                 if (coordinator->State == EShortcutState::Revoking) {
                     YT_LOG_DEBUG("Will not revoke shortcut since it already is revoking "
-                        "(ChaosObjectId: %v, Type: %v, Era: %v CoordinatorCellId: %v)",
+                        "(ChaosObjectId: %v, Type: %v, Era: %v, CoordinatorCellId: %v)",
                         chaosObject->GetId(),
                         TypeFromId(chaosObject->GetId()),
                         chaosObject->GetEra(),
@@ -1688,7 +1749,7 @@ private:
                 ToProto(shortcut->mutable_chaos_object_id(), chaosObject->GetId());
                 shortcut->set_era(chaosObject->GetEra());
 
-                YT_LOG_DEBUG("Preparing to revoke shortcut (ChaosObjectId: %v, Type: %v, Era: %v CoordinatorCellId: %v)",
+                YT_LOG_DEBUG("Preparing to revoke shortcut (ChaosObjectId: %v, Type: %v, Era: %v, CoordinatorCellId: %v)",
                     chaosObject->GetId(),
                     TypeFromId(chaosObject->GetId()),
                     chaosObject->GetEra(),
@@ -1764,7 +1825,7 @@ private:
             auto mailbox = hiveManager->GetOrCreateCellMailbox(cellId);
             hiveManager->PostMessage(mailbox, req);
 
-            YT_LOG_DEBUG("Granting shortcut to coordinator (ChaosObjectId: %v, Type: %v, Era: %v, CoordinatorCellId: %v",
+            YT_LOG_DEBUG("Granting shortcut to coordinator (ChaosObjectId: %v, Type: %v, Era: %v, CoordinatorCellId: %v)",
                 chaosObject->GetId(),
                 TypeFromId(chaosObject->GetId()),
                 chaosObject->GetEra(),
@@ -2033,6 +2094,16 @@ private:
                 EmplaceOrCrash(replicationCard->Replicas(), replicaId, replicaInfo);
             }
 
+            replicationCard->SecondaryIndices().clear();
+            for (const auto& protoSecondaryIndex : protoReplicationCard.secondary_indices()) {
+                TIndexInfo indexInfo;
+                FromProto(&indexInfo, protoSecondaryIndex);
+                replicationCard->SecondaryIndices().emplace_back(std::move(indexInfo));
+            }
+            if (protoMigrationCard.has_secondary_index_pending_transition()) {
+                FromProto(&replicationCard->SecondaryIndexPendingTransition(), protoMigrationCard.secondary_index_pending_transition());
+            }
+
             auto& migration = replicationCard->Migration();
             if (IsDomesticReplicationCard(replicationCardId)) {
                 migration.ImmigratedToCellId = TCellId();
@@ -2115,7 +2186,6 @@ private:
         ReplicationCardWatcher_->OnReplicationCardMigrated(replicationCardIds);
     }
 
-
     void MigrateReplicationCard(TReplicationCard* replicationCard)
     {
         YT_VERIFY(HasMutationContext());
@@ -2156,6 +2226,10 @@ private:
                 ConvertToYsonString(collocation->Options()).ToString());
         } else if (replicationCard->GetAwaitingCollocationId()) {
             ToProto(protoReplicationCard->mutable_replication_card_collocation_id(), replicationCard->GetAwaitingCollocationId());
+        }
+
+        if (replicationCard->SecondaryIndexPendingTransition()) {
+            ToProto(protoMigrationCard->mutable_secondary_index_pending_transition(), replicationCard->SecondaryIndexPendingTransition());
         }
 
         TReplicationCardFetchOptions fetchOptions{
@@ -2271,14 +2345,18 @@ private:
             timestamp);
 
         NChaosNode::NProto::TReqPropagateCurrentTimestamp request;
-        request.set_timestamp(timestamp);
-        YT_UNUSED_FUTURE(CreateMutation(HydraManager_, request)
+        request.set_timestamp(ToProto(timestamp));
+        auto result = WaitFor(CreateMutation(HydraManager_, request)
             ->CommitAndLog(Logger));
+
+        if (!result.IsOK()) {
+            YT_LOG_DEBUG(result, "Error propagating current timestamp");
+        }
     }
 
     void HydraPropagateCurrentTimestamps(NChaosNode::NProto::TReqPropagateCurrentTimestamp* request)
     {
-        auto timestamp = request->timestamp();
+        auto timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
 
         YT_LOG_DEBUG("Started periodic current timestamp propagation (Timestamp: %v)",
             timestamp);
@@ -2288,7 +2366,24 @@ private:
                 continue;
             }
 
+            if (replicationCard->GetState() == EReplicationCardState::GeneratingTimestampForNewEra &&
+                BlockedByAlterCardIds_.contains(replicationCard->GetId()))
+            {
+                YT_LOG_DEBUG("Replication card is blocked by alter, skipping timestamp propagation "
+                    "(ReplicationCardId: %v, State: %v)",
+                    replicationCard->GetId(),
+                    replicationCard->GetState());
+
+                continue;
+            }
+
             MaybeCommenceNewReplicationEra(replicationCard, timestamp);
+        }
+
+        if (!BlockedByAlterCardIds_.empty()) {
+            // Cleanup with releasing all allocated memory
+            // because it can contain all card ids during cluster switch however these switches are rare.
+            BlockedByAlterCardIds_ = {};
         }
 
         YT_LOG_DEBUG("Finished periodic current timestamp propagation (Timestamp: %v)",
@@ -2360,6 +2455,14 @@ private:
 
     void GenerateTimestampForNewEra(TReplicationCard* replicationCard)
     {
+        auto replicationCardId = replicationCard->GetId();
+        // Timestamp for current propagation might have been generated already and waiting for mutation to apply
+        // so block propagation for two iterations to guarantee that propagation timestamp affecting current card
+        // is greater than timestamp requested for era change here.
+        // Timestamp provider call can fail so we can not just block propagation forever.
+        // Multiple insertions are ok.
+        BlockedByAlterCardIds_.insert(replicationCardId);
+
         if (!IsLeader()) {
             return;
         }
@@ -2368,7 +2471,7 @@ private:
             .Subscribe(BIND(
                 &TChaosManager::OnNewReplicationEraTimestampGenerated,
                 MakeWeak(this),
-                replicationCard->GetId(),
+                replicationCardId,
                 replicationCard->GetEra())
                 .Via(AutomatonInvoker_));
     }
@@ -2397,7 +2500,7 @@ private:
 
         NChaosNode::NProto::TReqCommenceNewReplicationEra request;
         ToProto(request.mutable_replication_card_id(), replicationCardId);
-        request.set_timestamp(timestamp);
+        request.set_timestamp(ToProto(timestamp));
         request.set_replication_era(era);
         YT_UNUSED_FUTURE(CreateMutation(HydraManager_, request)
             ->CommitAndLog(Logger));
@@ -2408,6 +2511,8 @@ private:
         auto timestamp = static_cast<TTimestamp>(request->timestamp());
         auto replicationCardId = FromProto<NChaosClient::TReplicationCardId>(request->replication_card_id());
         auto era = static_cast<TReplicationEra>(request->replication_era());
+
+        BlockedByAlterCardIds_.erase(replicationCardId);
 
         auto* replicationCard = FindReplicationCard(replicationCardId);
         if (!replicationCard) {
@@ -2426,9 +2531,9 @@ private:
         if (replicationCard->GetEra() != era) {
             YT_LOG_DEBUG("Will not commence new replication card era because of era mismatch "
                 "(ReplicationCardId: %v, ExpectedEra: %v, ActualEra: %v)",
+                replicationCardId,
                 era,
-                replicationCard->GetEra(),
-                replicationCardId);
+                replicationCard->GetEra());
             return;
         }
 
@@ -2440,11 +2545,12 @@ private:
         YT_VERIFY(HasMutationContext());
 
         bool willUpdate = timestamp > replicationCard->GetCurrentTimestamp();
+        auto replicationCardState = replicationCard->GetState();
         YT_LOG_DEBUG("Updating replication card current timestamp "
             "(ReplicationCardId: %v, Era: %v, State: %v, CurrentTimestamp: %v, NewTimestamp: %v, WillUpdate: %v)",
             replicationCard->GetId(),
             replicationCard->GetEra(),
-            replicationCard->GetState(),
+            replicationCardState,
             replicationCard->GetCurrentTimestamp(),
             timestamp,
             willUpdate);
@@ -2455,7 +2561,7 @@ private:
 
         replicationCard->SetCurrentTimestamp(timestamp);
 
-        if (replicationCard->GetState() != EReplicationCardState::GeneratingTimestampForNewEra) {
+        if (replicationCardState != EReplicationCardState::GeneratingTimestampForNewEra) {
             return;
         }
 
@@ -2478,6 +2584,8 @@ private:
 
         auto newEra = replicationCard->GetEra() + 1;
         replicationCard->SetEra(newEra);
+
+        MaybeApplyPendingSecondaryIndexAlteration(replicationCard, timestamp);
 
         for (auto& [replicaId, replicaInfo] : replicationCard->Replicas()) {
             bool updated = false;
@@ -2739,6 +2847,8 @@ private:
                     "(ReplicationCardId: %v, ReplicaId: %v)",
                     replicationCardProgressUpdate.ReplicationCardId,
                     replicaProgressUpdate.ReplicaId);
+
+                continue;
             }
 
             if (replicaInfo->History.empty()) {
@@ -2911,6 +3021,207 @@ private:
         }
     }
 
+    static void ValidateInNormalState(const TReplicationCard* replicationCard)
+    {
+        THROW_ERROR_EXCEPTION_IF(replicationCard->GetState() != EReplicationCardState::Normal,
+            "Replication card %v is not in %Qlv state",
+            replicationCard->GetId(),
+            EReplicationCardState::Normal);
+    }
+
+    void CreateSecondaryIndex(
+        TReplicationCard* replicationCard,
+        NApi::TCreateSecondaryIndex* alteration)
+    {
+        THROW_ERROR_EXCEPTION_IF(alteration->IndexReplicationCardId == replicationCard->GetId(),
+            "Cannot create index to itself");
+
+        auto* indexTableReplicationCard = GetReplicationCardOrThrow(alteration->IndexReplicationCardId);
+
+        const auto* tableCollocation = replicationCard->GetCollocation();
+        const auto* indexTableCollocation = indexTableReplicationCard->GetCollocation();
+        THROW_ERROR_EXCEPTION_UNLESS(tableCollocation == indexTableCollocation && tableCollocation,
+            "Table and index table must belong to the same non-null collocation, found %v and %v",
+            tableCollocation ? tableCollocation->GetId() : NullObjectId,
+            indexTableCollocation ? indexTableCollocation->GetId() : NullObjectId);
+
+        tableCollocation->ValidateNotMigrating();
+        ValidateInNormalState(replicationCard);
+        ValidateInNormalState(indexTableReplicationCard);
+        replicationCard->ValidateNoPendingSecondaryIndexChanges();
+        indexTableReplicationCard->ValidateNoPendingSecondaryIndexChanges();
+
+        THROW_ERROR_EXCEPTION_UNLESS(indexTableReplicationCard->SecondaryIndices().empty(),
+            "Cannot use a table with indices as an index");
+        THROW_ERROR_EXCEPTION_IF(indexTableReplicationCard->IndexTo(),
+            "Index cannot have multiple primary tables");
+        THROW_ERROR_EXCEPTION_IF(replicationCard->IndexTo(),
+            "Cannot create secondary index for a secondary index");
+
+        // NB(sabdenovch): No schemas => no schema validation.
+
+        auto it = replicationCard->FindSecondaryIndex(alteration->IndexReplicationCardId);
+        THROW_ERROR_EXCEPTION_UNLESS(it == replicationCard->SecondaryIndices().end(),
+            "Replication card %v is already indexed by replication card %v",
+            replicationCard->GetId(),
+            alteration->IndexReplicationCardId);
+
+        TIndexInfo secondaryIndexInfo;
+        secondaryIndexInfo.Kind = alteration->Kind;
+        secondaryIndexInfo.IndexObjectId = alteration->IndexReplicationCardId;
+        secondaryIndexInfo.Correspondence = alteration->Correspondence;
+        secondaryIndexInfo.Predicate = std::move(alteration->Predicate);
+        secondaryIndexInfo.UnfoldedColumns = std::move(alteration->UnfoldedColumns);
+        secondaryIndexInfo.EvaluatedColumnsSchema = std::move(alteration->EvaluatedColumnsSchema);
+
+        YT_LOG_DEBUG("Creating secondary index (ReplicationCardId: %v, Index: %v)",
+            replicationCard->GetId(),
+            ConvertToYsonString(secondaryIndexInfo, EYsonFormat::Text).AsStringBuf());
+
+        replicationCard->SecondaryIndices().emplace_back(std::move(secondaryIndexInfo));
+
+        indexTableReplicationCard->IndexTo() = replicationCard->GetId();
+
+        auto pending = New<TSecondaryIndexPendingTransition>();
+        pending->IndexReplicationCardId = alteration->IndexReplicationCardId;
+        pending->State = ESecondaryIndexTransitionState::PendingCreation;
+        replicationCard->SecondaryIndexPendingTransition() = std::move(pending);
+
+        UpdateReplicationCardState(replicationCard, EReplicationCardState::RevokingShortcutsForAlter);
+    }
+
+    void ProgressSecondaryIndexCorrespondence(
+        TReplicationCard* replicationCard,
+        NApi::TProgressSecondaryIndexCorrespondence* alteration)
+    {
+        replicationCard->ValidateCollocationNotMigrating();
+        ValidateInNormalState(replicationCard);
+        replicationCard->ValidateNoPendingSecondaryIndexChanges();
+
+        auto secondaryIndexIt = replicationCard->FindSecondaryIndex(alteration->IndexReplicationCardId);
+
+        THROW_ERROR_EXCEPTION_IF(secondaryIndexIt == replicationCard->SecondaryIndices().end(),
+            "Replication card %v has no secondary index to %v",
+            replicationCard->GetId(),
+            alteration->IndexReplicationCardId);
+
+        YT_LOG_DEBUG("Staging secondary index correspondence progress, to be applied once the new era "
+            "commences (ReplicationCardId: %v, IndexReplicationCardId: %v, OldCorrespondence: %Qlv, "
+            "NewCorrespondence: %Qlv)",
+            replicationCard->GetId(),
+            alteration->IndexReplicationCardId,
+            secondaryIndexIt->Correspondence,
+            alteration->NewCorrespondence);
+
+        auto pending = New<TSecondaryIndexPendingTransition>();
+        pending->IndexReplicationCardId = alteration->IndexReplicationCardId;
+        pending->State = ESecondaryIndexTransitionState::PendingCorrespondenceChange;
+        pending->NewCorrespondence = alteration->NewCorrespondence;
+        replicationCard->SecondaryIndexPendingTransition() = std::move(pending);
+
+        UpdateReplicationCardState(replicationCard, EReplicationCardState::RevokingShortcutsForAlter);
+    }
+
+    void RemoveSecondaryIndex(
+        TReplicationCard* replicationCard,
+        TReplicationCardId indexReplicationCardId)
+    {
+        replicationCard->ValidateCollocationNotMigrating();
+        replicationCard->ValidateNoPendingSecondaryIndexChanges();
+
+        auto secondaryIndexIt = replicationCard->FindSecondaryIndex(indexReplicationCardId);
+
+        THROW_ERROR_EXCEPTION_IF(secondaryIndexIt == replicationCard->SecondaryIndices().end(),
+            "Replication card %v has no secondary index to %v",
+            replicationCard->GetId(),
+            indexReplicationCardId);
+
+        ValidateInNormalState(replicationCard);
+
+        auto* indexTableReplicationCard = FindReplicationCard(indexReplicationCardId);
+        if (!indexTableReplicationCard) {
+            YT_LOG_DEBUG("Index replication card is missing during secondary index removal, proceeding "
+                "(ReplicationCardId: %v, IndexReplicationCardId: %v)",
+                replicationCard->GetId(),
+                indexReplicationCardId);
+        } else {
+            indexTableReplicationCard->ValidateCollocationNotMigrating();
+            ValidateInNormalState(indexTableReplicationCard);
+        }
+
+        YT_LOG_DEBUG("Staging secondary index removal, to be applied once the new era commences "
+            "(ReplicationCardId: %v, IndexReplicationCardId: %v)",
+            replicationCard->GetId(),
+            indexReplicationCardId);
+
+        auto pending = New<TSecondaryIndexPendingTransition>();
+        pending->IndexReplicationCardId = indexReplicationCardId;
+        pending->State = ESecondaryIndexTransitionState::PendingRemoval;
+        replicationCard->SecondaryIndexPendingTransition() = std::move(pending);
+
+        UpdateReplicationCardState(replicationCard, EReplicationCardState::RevokingShortcutsForAlter);
+    }
+
+    void MaybeApplyPendingSecondaryIndexAlteration(TReplicationCard* replicationCard, TTimestamp eraTimestamp)
+    {
+        auto& pending = replicationCard->SecondaryIndexPendingTransition();
+        if (!pending) {
+            return;
+        }
+
+        auto it = replicationCard->FindSecondaryIndex(pending->IndexReplicationCardId);
+        if (it == replicationCard->SecondaryIndices().end()) {
+            YT_LOG_ALERT("Pending secondary index alteration target is missing "
+                "(ReplicationCardId: %v, MissingIndexReplicationCardId: %v, Alteration: %Qlv)",
+                replicationCard->GetId(),
+                pending->IndexReplicationCardId,
+                pending->State);
+
+            pending.Reset();
+
+            return;
+        }
+
+        switch (pending->State) {
+            case ESecondaryIndexTransitionState::PendingCreation: {
+                it->BackfillTimestamp = eraTimestamp;
+                // Only need to clear pending transition marker now, index is already in the list.
+                break;
+            }
+
+            case ESecondaryIndexTransitionState::PendingCorrespondenceChange: {
+                it->Correspondence = *pending->NewCorrespondence;
+                break;
+            }
+
+            case ESecondaryIndexTransitionState::PendingRemoval: {
+                replicationCard->SecondaryIndices().erase(it);
+
+                if (auto* indexTableReplicationCard = FindReplicationCard(pending->IndexReplicationCardId)) {
+                    auto& indexTo = indexTableReplicationCard->IndexTo();
+                    if (indexTo == replicationCard->GetId()) {
+                        indexTo = NullObjectId;
+                    } else {
+                        YT_LOG_ALERT("Encountered broken index replication card state during secondary "
+                            "index removal (ReplicationCardId: %v, ExpectedIndexReplicationCardId: %v, "
+                            "EncounteredReplicationCardId: %v)",
+                            replicationCard->GetId(),
+                            pending->IndexReplicationCardId,
+                            indexTo);
+                    }
+                } else {
+                    YT_LOG_DEBUG("Index replication card is missing during secondary "
+                        "index removal (ReplicationCardId: %v, IndexReplicationCardId: %v)",
+                        replicationCard->GetId(),
+                        pending->IndexReplicationCardId);
+                }
+                break;
+            }
+        }
+
+        pending.Reset();
+    }
+
     void UpdateReplicationCardCollocation(
         TReplicationCard* replicationCard,
         TReplicationCardCollocation* collocation,
@@ -2919,6 +3230,16 @@ private:
         if (collocation == replicationCard->GetCollocation()) {
             return;
         }
+
+        THROW_ERROR_EXCEPTION_IF(
+            replicationCard->IndexTo() ||
+            !replicationCard->SecondaryIndices().empty() ||
+            replicationCard->SecondaryIndexPendingTransition(),
+            "Cannot update replication card collocation, because replication card has present or pending secondary indices "
+            "(ReplicationCardId: %v, CollocationId: %v, Migration: %v)",
+            replicationCard->GetId(),
+            collocation ? collocation->GetId() : NullObjectId,
+            migration);
 
         auto* oldCollocation = replicationCard->GetCollocation();
 
@@ -3091,9 +3412,9 @@ private:
         return counts;
     }
 
-    TCompositeMapServicePtr CreateOrchidService()
+    ICompositeMapServicePtr CreateOrchidService()
     {
-        return New<TCompositeMapService>()
+        return CreateCompositeMapService()
             ->AddAttribute(EInternedAttributeKey::Opaque, BIND([] (IYsonConsumer* consumer) {
                     BuildYsonFluently(consumer)
                         .Value(true);
@@ -3214,6 +3535,19 @@ private:
                     ? card->GetCollocation()->GetId()
                     : TReplicationCardCollocationId())
                 .Item("awaiting_replication_card_collocation_id").Value(card->GetAwaitingCollocationId())
+                .DoIf(!card->SecondaryIndices().empty(), [&] (TFluentMap fluent) {
+                    fluent
+                        .Item("secondary_indices").DoMapFor(
+                            card->SecondaryIndices(),
+                            [&] (TFluentMap fluent, const TIndexInfo& secondaryIndex) {
+                                fluent
+                                    .Item(ToString(secondaryIndex.IndexObjectId)).Value(secondaryIndex);
+                            });
+                })
+                .DoIf(static_cast<bool>(card->SecondaryIndexPendingTransition()), [&] (TFluentMap fluent) {
+                    fluent
+                        .Item("secondary_index_pending_transition").Value(card->SecondaryIndexPendingTransition());
+                })
             .EndMap();
     }
 
@@ -3313,7 +3647,7 @@ private:
             if (IsReplicationCardMigrated(replicationCard)) {
                 YT_LOG_DEBUG("Replication card migrated (ReplicationCardId: %v)",
                     replicationCardId);
-                return;
+                continue;
             }
 
             auto cardTimestamp = std::max(timestamp, replicationCard->GetCurrentTimestamp());

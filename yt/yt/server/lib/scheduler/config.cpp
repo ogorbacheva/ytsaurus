@@ -375,6 +375,9 @@ void TTreeTestingOptions::Register(TRegistrar registrar)
     registrar.Parameter("delay_inside_pool_permissions_validation", &TThis::DelayInsidePoolPermissionsValidation)
         .Default();
 
+    registrar.Parameter("sync_delay_inside_process_allocation_updates", &TThis::SyncDelayInsideProcessAllocationUpdates)
+        .Default();
+
     registrar.Parameter("resource_tree_initialize_resource_usage_delay", &TThis::ResourceTreeInitializeResourceUsageDelay)
         .Default();
     registrar.Parameter("resource_tree_release_resource_random_delay", &TThis::ResourceTreeReleaseResourcesRandomDelay)
@@ -433,8 +436,7 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
         .Default(true);
 
     registrar.Parameter("default_parent_pool", &TThis::DefaultParentPool)
-        // TODO(babenko): migrate to std::string
-        .Default(TString(RootPoolName));
+        .Default(RootPoolName);
 
     registrar.Parameter("forbid_immediate_operations_in_root", &TThis::ForbidImmediateOperationsInRoot)
         .Default(true);
@@ -683,6 +685,9 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
     registrar.Parameter("min_node_resource_limits_check_period", &TThis::MinNodeResourceLimitsCheckPeriod)
         .Default(TDuration::Minutes(1));
 
+    registrar.Parameter("min_node_resource_limits_violation_grace_period", &TThis::MinNodeResourceLimitsViolationTimeout)
+        .Default(TDuration::Minutes(30));
+
     registrar.Parameter("allow_gang_operations_only_in_fifo_pools", &TThis::AllowGangOperationsOnlyInFifoPools)
         .Default(false);
 
@@ -702,6 +707,9 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
         .Default(true);
 
     registrar.Parameter("use_precommit_for_preemption", &TThis::UsePrecommitForPreemption)
+        .Default(false);
+
+    registrar.Parameter("enable_infinite_resource_limits_overcommit", &TThis::EnableInfiniteResourceLimitsOvercommit)
         .Default(false);
 
     registrar.Parameter("gpu_scheduling_policy", &TThis::GpuSchedulingPolicy)
@@ -728,6 +736,9 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
             THROW_ERROR_EXCEPTION("Aggressive starvation timeout must be greater than starvation timeout")
                 << TErrorAttribute("aggressive_timeout", config->FairShareAggressiveStarvationTimeout)
                 << TErrorAttribute("timeout", config->FairShareStarvationTimeout);
+        }
+        if (config->EnableInfiniteResourceLimitsOvercommit && !config->UsePrecommitForPreemption) {
+            THROW_ERROR_EXCEPTION("Infinite resource limits overcommit requires precommit for preemption to be enabled");
         }
     });
 
@@ -1373,7 +1384,7 @@ void TSchedulerConfig::Register(TRegistrar registrar)
         .Default(true);
 
     registrar.Parameter("min_required_archive_version", &TThis::MinRequiredArchiveVersion)
-        .Default(67);
+        .Default(68);
 
     registrar.Parameter("rpc_server", &TThis::RpcServer)
         .DefaultNew();

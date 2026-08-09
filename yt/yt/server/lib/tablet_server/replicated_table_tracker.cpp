@@ -21,6 +21,7 @@
 #include <yt/yt/core/yson/string.h>
 #include <yt/yt/core/yson/protobuf_helpers.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/ypath_client.h>
 #include <yt/yt/core/ytree/virtual.h>
 
@@ -246,7 +247,7 @@ public:
         : TAsyncExpiringCache(
             std::move(config),
             NRpc::TDispatcher::Get()->GetHeavyInvoker(),
-            Logger().WithTag("Cache: ClusterLivenessCheck"))
+            Logger().WithTag("Cache", "ClusterLivenessCheck"))
         , ClusterClientCache_(std::move(clusterClientCache))
     { }
 
@@ -291,7 +292,7 @@ public:
         : TAsyncExpiringCache(
             std::move(config),
             NRpc::TDispatcher::Get()->GetHeavyInvoker(),
-            Logger().WithTag("Cache: ClusterIncomingReplicationCheck"))
+            Logger().WithTag("Cache", "ClusterIncomingReplicationCheck"))
         , ClusterClientCache_(std::move(clusterClientCache))
     { }
 
@@ -344,7 +345,7 @@ public:
         : TAsyncExpiringCache(
             std::move(config),
             NRpc::TDispatcher::Get()->GetHeavyInvoker(),
-            Logger().WithTag("Cache: ClusterSafeModeCheck"))
+            Logger().WithTag("Cache", "ClusterSafeModeCheck"))
         , ClusterClientCache_(std::move(clusterClientCache))
     { }
 
@@ -391,7 +392,7 @@ public:
         : TAsyncExpiringCache(
             std::move(config),
             NRpc::TDispatcher::Get()->GetHeavyInvoker(),
-            Logger().WithTag("Cache: HydraReadOnlyCheck"))
+            Logger().WithTag("Cache", "HydraReadOnlyCheck"))
         , ClusterClientCache_(std::move(clusterClientCache))
     { }
 
@@ -466,7 +467,7 @@ public:
         : TAsyncExpiringCache(
             std::move(config),
             NRpc::TDispatcher::Get()->GetHeavyInvoker(),
-            Logger().WithTag("Cache: BundleHealth"))
+            Logger().WithTag("Cache", "BundleHealth"))
         , ClusterClientCache_(std::move(clusterClientCache))
     { }
 
@@ -1209,7 +1210,7 @@ private:
     const TActionQueuePtr RttThread_;
     const IInvokerPtr RttInvoker_;
     const TProfiler Profiler_;
-    const TCompositeMapServicePtr OrchidService_;
+    const ICompositeMapServicePtr OrchidService_;
 
     std::atomic<bool> Initialized_ = false;
     std::atomic<bool> TrackingEnabled_ = false;
@@ -1966,9 +1967,9 @@ private:
         return OrchidService_;
     }
 
-    TCompositeMapServicePtr CreateOrchidService()
+    ICompositeMapServicePtr CreateOrchidService()
     {
-        return New<TCompositeMapService>()
+        return CreateCompositeMapService()
             ->AddAttribute(EInternedAttributeKey::Opaque, BIND([] (IYsonConsumer* consumer) {
                     BuildYsonFluently(consumer)
                         .Value(true);

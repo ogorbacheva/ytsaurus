@@ -59,14 +59,14 @@ using namespace NYPath;
 using namespace NYTree;
 using namespace NYson;
 
-using NYT::FromProto;
-using NYT::ToProto;
-using NCrypto::TMD5Hash;
-using NProfiling::TWallTimer;
+using NControllerAgent::NProto::TJobResultExt;
 using NControllerAgent::NProto::TJobSpec;
 using NControllerAgent::NProto::TJobSpecExt;
-using NControllerAgent::NProto::TJobResultExt;
 using NControllerAgent::NProto::TTableInputSpec;
+using NCrypto::TMD5Hash;
+using NProfiling::TWallTimer;
+using NYT::FromProto;
+using NYT::ToProto;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -123,7 +123,7 @@ void TTask::SetInputStreamDescriptors(std::vector<TInputStreamDescriptorPtr> str
 
 void TTask::Initialize()
 {
-    Logger.AddTag("Task: %v", GetTitle());
+    Logger.AddTag("Task", GetTitle());
 
     SetupCallbacks();
 
@@ -661,7 +661,7 @@ std::optional<EScheduleFailReason> TTask::TryScheduleJob(
     std::optional<TJobId> previousJobId,
     bool treeIsTentative)
 {
-    auto Logger = this->Logger.WithTag("AllocationId: %v", context.GetAllocationId());
+    auto Logger = this->Logger.WithTag("AllocationId", context.GetAllocationId());
     if (auto failReason = GetScheduleFailReason(context)) {
         return failReason;
     }
@@ -833,7 +833,7 @@ std::expected<NScheduler::TJobResourcesWithQuota, EScheduleFailReason> TTask::Tr
 
             auto diskQuota = CreateDiskQuota(diskRequest, TaskHost_->GetMediumDirectory());
             // Do not set needed resources in case of NBD disk since we do not need these resources on exe nodes.
-            if (volume->DiskRequest->GetCurrentType() != NExecNode::EVolumeType::Nbd) {
+            if (volume->DiskRequest->GetType() != NExecNode::EVolumeType::Nbd) {
                 neededResources.DiskQuota() = diskQuota;
             }
             joblet->DiskRequestAccount = diskRequest->Account;
@@ -1029,7 +1029,7 @@ bool TTask::TryRegisterSpeculativeJob(const TJobletPtr& joblet)
 
 void TTask::BuildTaskYson(TFluentMap fluent) const
 {
-    static const std::vector<TString> JobManagerNames = {"speculative", "probing", "experiment", "distributed"};
+    static const std::vector<std::string> JobManagerNames = {"speculative", "probing", "experiment", "distributed"};
     YT_VERIFY(JobManagerNames.size() == JobManagers_.size());
 
     fluent
@@ -1668,14 +1668,19 @@ IDigest* TTask::GetUserJobMemoryDigest() const
     return UserJobMemoryDigest_.Get();
 }
 
+const TLogDigestConfigPtr& TTask::GetJobProxyMemoryDigestConfig() const
+{
+    const auto& userJobSpec = GetUserJobSpec();
+    if (userJobSpec && userJobSpec->JobProxyMemoryDigest) {
+        return userJobSpec->JobProxyMemoryDigest;
+    }
+    return TaskHost_->GetSpec()->JobProxyMemoryDigest;
+}
+
 IDigest* TTask::GetJobProxyMemoryDigest() const
 {
     if (!JobProxyMemoryDigest_) {
-        if (const auto& userJobSpec = GetUserJobSpec(); userJobSpec && userJobSpec->JobProxyMemoryDigest) {
-            JobProxyMemoryDigest_ = CreateLogDigest(userJobSpec->JobProxyMemoryDigest);
-        } else {
-            JobProxyMemoryDigest_ = CreateLogDigest(TaskHost_->GetSpec()->JobProxyMemoryDigest);
-        }
+        JobProxyMemoryDigest_ = CreateLogDigest(GetJobProxyMemoryDigestConfig());
     }
 
     return JobProxyMemoryDigest_.Get();
@@ -1861,7 +1866,7 @@ void TTask::AddOutputTableSpecs(
         ToProto(outputSpec->mutable_schema_id(), schemaId);
         ToProto(outputSpec->mutable_chunk_list_id(), joblet->ChunkListIds[index]);
         if (streamDescriptor->Timestamp != NullTimestamp) {
-            outputSpec->set_timestamp(streamDescriptor->Timestamp);
+            outputSpec->set_timestamp(ToProto(streamDescriptor->Timestamp));
         }
         outputSpec->set_dynamic(streamDescriptor->IsOutputTableDynamic);
         for (const auto& streamSchema : streamDescriptor->StreamSchemas) {
@@ -1967,7 +1972,7 @@ TJobResources TTask::ApplyMemoryReserve(
 void TTask::OnJobResourceOverdraft(TJobletPtr joblet, const TAbortedJobSummary& jobSummary)
 {
     auto Logger = this->Logger
-        .WithTag("JobId: %v", joblet->JobId);
+        .WithTag("JobId", joblet->JobId);
 
     auto& state = ResourceOverdraftedOutputCookieToState_[joblet->OutputCookie];
     const auto& userJobSpec = GetUserJobSpec();
@@ -1975,13 +1980,16 @@ void TTask::OnJobResourceOverdraft(TJobletPtr joblet, const TAbortedJobSummary& 
     state.LastJobId = joblet->JobId;
 
     double userJobMemoryReserveUpperBound = 1.0;
-    double jobProxyMemoryReserveUpperBound = TaskHost_->GetSpec()->JobProxyMemoryDigest->UpperBound;
+    double jobProxyMemoryReserveUpperBound = GetJobProxyMemoryDigestConfig()->UpperBound;
 
     auto jobProxyMaxMemory = FindNumericValue(*jobSummary.Statistics, "/job_proxy/max_memory"_SP).value_or(0);
     auto jobProxyDedicatedMemory = joblet->EstimatedResourceUsage.GetJobProxyMemory() * joblet->JobProxyMemoryReserveFactor.value();
     bool hasJobProxyMemoryOverdraft = jobProxyMaxMemory > jobProxyDedicatedMemory;
 
     i64 userJobMaxMemory = FindNumericValue(*jobSummary.Statistics, "/user_job/max_memory"_SP).value_or(0);
+    // NB(apollo1321): tmpfs is not accounted in max_memory.
+    userJobMaxMemory += FindNumericValue(*jobSummary.Statistics, "/user_job/tmpfs_max_usage"_SP).value_or(0);
+
     bool hasUserJobMemoryOverdraft = userJobSpec
         ? userJobMaxMemory > joblet->UserJobMemoryReserve
         : false;
@@ -2033,7 +2041,8 @@ void TTask::OnJobResourceOverdraft(TJobletPtr joblet, const TAbortedJobSummary& 
     YT_LOG_DEBUG(
         "Job was aborted with resource overdraft "
         "(HasUserJobMemoryOverdraft: %v, HasJobProxyMemoryOverdraft: %v, UserJobOverdraftStatus: %v, JobProxyOverdraftStatus: %v, "
-        "DedicatedUserJobMemoryReserveFactor: %v, DedicatedJobProxyMemoryReserveFactor: %v, UserJobMemoryMultiplier: %v, JobProxyMemoryMultiplier: %v)",
+        "DedicatedUserJobMemoryReserveFactor: %v, DedicatedJobProxyMemoryReserveFactor: %v, UserJobMemoryMultiplier: %v, JobProxyMemoryMultiplier: %v, "
+        "JobProxyMaxMemory: %v, JobProxyDedicatedMemory: %v, UserJobMaxMemory: %v)",
         hasUserJobMemoryOverdraft,
         hasJobProxyMemoryOverdraft,
         state.UserJobStatus,
@@ -2041,7 +2050,10 @@ void TTask::OnJobResourceOverdraft(TJobletPtr joblet, const TAbortedJobSummary& 
         state.DedicatedUserJobMemoryReserveFactor,
         state.DedicatedJobProxyMemoryReserveFactor,
         UserJobMemoryMultiplier_,
-        JobProxyMemoryMultiplier_);
+        JobProxyMemoryMultiplier_,
+        jobProxyMaxMemory,
+        jobProxyDedicatedMemory,
+        userJobMaxMemory);
 }
 
 void TTask::UpdateMaximumUsedTmpfsSizes(const TStatistics& statistics)
@@ -2194,7 +2206,7 @@ void TTask::AddFootprintAndUserJobResources(TExtendedJobResources& jobResources)
     jobResources.SetFootprintMemory(TaskHost_->GetConfig()->FootprintMemory.value_or(GetFootprintMemorySize()));
     auto userJobSpec = GetUserJobSpec();
     if (userJobSpec) {
-        jobResources.SetUserJobMemory(userJobSpec->MemoryLimit);
+        jobResources.SetUserJobMemory(userJobSpec->MemoryLimit + TaskHost_->GetConfig()->ExecFootprintMemory.value_or(0L));
         jobResources.SetGpu(userJobSpec->GpuLimit);
     }
 }

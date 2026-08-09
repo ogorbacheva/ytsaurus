@@ -129,8 +129,8 @@ using namespace NYTree;
 using namespace NQueryClient;
 
 using NChunkClient::TChunkReaderStatistics;
-using NYT::ToProto;
 using NYT::FromProto;
+using NYT::ToProto;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -145,10 +145,9 @@ TMasterJobBase::TMasterJobBase(
     , JobId_(jobId)
     , JobSpec_(jobSpec)
     , JobTrackerAddress_(jobTrackerAddress)
-    , Logger(DataNodeLogger().WithTag(
-        "JobId: %v, JobType: %v",
-        jobId,
-        FromProto<EJobType>(jobSpec.type())))
+    , Logger(DataNodeLogger()
+        .WithTag("JobId", jobId)
+        .WithTag("JobType", FromProto<EJobType>(jobSpec.type())))
     , ResourceHolder_(TResourceHolder::CreateResourceHolder(
         jobId.Underlying(),
         bootstrap->GetJobResourceManager().Get(),
@@ -424,7 +423,7 @@ public:
         , ChunkId_(FromProto<TChunkId>(JobSpecExt_.chunk_id()))
         , DynamicConfig_(Bootstrap_->GetDynamicConfigManager()->GetConfig()->DataNode->RemoveChunkJob)
     {
-        Logger.AddTag("ChunkId: %v", ChunkId_);
+        Logger.AddTag("ChunkId", ChunkId_);
     }
 
 private:
@@ -514,7 +513,7 @@ public:
         , ChunkId_(FromProto<TChunkId>(JobSpecExt_.chunk_id()))
         , DynamicConfig_(Bootstrap_->GetDynamicConfigManager()->GetConfig()->DataNode->ReplicateChunkJob)
     {
-        Logger.AddTag("ChunkId: %v", ChunkId_);
+        Logger.AddTag("ChunkId", ChunkId_);
     }
 
 private:
@@ -562,7 +561,9 @@ private:
 
         TChunkReadOptions chunkReadOptions;
         chunkReadOptions.WorkloadDescriptor = workloadDescriptor;
-        chunkReadOptions.BlockCache = DynamicConfig_->UseBlockCache ? Bootstrap_->GetBlockCache() : GetNullBlockCache();
+        chunkReadOptions.BlockCache = DynamicConfig_->UseBlockCache
+            ? Bootstrap_->GetBlockCacheForMedium(chunk->GetLocation()->GetMediumIndex())
+            : GetNullBlockCache();
         chunkReadOptions.ChunkReaderStatistics = New<TChunkReaderStatistics>();
         chunkReadOptions.MemoryUsageTracker = Bootstrap_->GetSystemJobsMemoryUsageTracker();
 
@@ -774,7 +775,7 @@ public:
         , Sensors_(std::move(sensors))
         , DynamicConfig_(Bootstrap_->GetDynamicConfigManager()->GetConfig()->DataNode->RepairChunkJob)
     {
-        Logger.AddTag("ChunkId: %v", ChunkId_);
+        Logger.AddTag("ChunkId", ChunkId_);
     }
 
 private:
@@ -1096,7 +1097,7 @@ public:
         , ChunkId_(FromProto<TChunkId>(JobSpecExt_.chunk_id()))
         , DynamicConfig_(Bootstrap_->GetDynamicConfigManager()->GetConfig()->DataNode->SealChunkJob)
     {
-        Logger.AddTag("ChunkId: %v", ChunkId_);
+        Logger.AddTag("ChunkId", ChunkId_);
     }
 
 private:
@@ -1738,11 +1739,11 @@ private:
         for (const auto& context : InputChunkReadContexts_) {
             auto miscExt = GetProtoExtension<TMiscExt>(context.Meta->extensions());
             if (miscExt.has_min_timestamp()) {
-                auto currentMinTs = miscExt.min_timestamp();
+                auto currentMinTs = FromProto<NTransactionClient::TTimestamp>(miscExt.min_timestamp());
                 minTs = minTs == NullTimestamp ? currentMinTs : std::min(minTs, currentMinTs);
             }
             if (miscExt.has_max_timestamp()) {
-                auto currentMaxTs = miscExt.max_timestamp();
+                auto currentMaxTs = FromProto<NTransactionClient::TTimestamp>(miscExt.max_timestamp());
                 maxTs = maxTs == NullTimestamp ? currentMaxTs : std::max(maxTs, currentMaxTs);
             }
         }
@@ -2370,10 +2371,10 @@ private:
         TChunkTimestamps chunkTimestamps;
         if (auto misc = GetChunkMiscExt(oldChunkMeta)) {
             if (misc->has_min_timestamp()) {
-                chunkTimestamps.MinTimestamp = misc->min_timestamp();
+                chunkTimestamps.MinTimestamp = FromProto<NTransactionClient::TTimestamp>(misc->min_timestamp());
             }
             if (misc->has_max_timestamp()) {
-                chunkTimestamps.MaxTimestamp = misc->max_timestamp();
+                chunkTimestamps.MaxTimestamp = FromProto<NTransactionClient::TTimestamp>(misc->max_timestamp());
             }
         }
 
@@ -2891,9 +2892,8 @@ private:
 
             auto future = BIND([&, index, jobLogger = Logger] {
                 auto Logger = jobLogger
-                    .WithTag("TailChunkId: %v, WriterIndex: %v",
-                        TailChunkId_,
-                        index);
+                    .WithTag("TailChunkId", TailChunkId_)
+                    .WithTag("WriterIndex", index);
 
                 auto& chunkWriter = writer.ChunkWriter;
 

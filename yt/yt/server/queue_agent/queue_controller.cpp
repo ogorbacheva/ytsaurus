@@ -661,7 +661,6 @@ private:
                         QueuePath_,
                         std::move(exportConfig),
                         queueExporterConfig,
-                        ClientDirectory_->GetUnderlyingClientDirectory(),
                         Invoker_,
                         QueueExportManager_,
                         CreateAlertCollector(AlertManager_.Acquire()),
@@ -777,7 +776,7 @@ private:
 
         auto error = TError("Static export config check failed");
         for (const auto& directory : duplicateDirectories) {
-            error <<= TError("Duplicate directory in config (Value: %v)", directory);
+            error <<= TError("Duplicate directory %v in config", directory);
         }
         return error;
     }
@@ -964,6 +963,13 @@ private:
             auto replicaSnapshot = ObjectStore_->FindQueueSnapshot(replicaPath);
             if (!replicaSnapshot) {
                 THROW_ERROR_EXCEPTION("Trimming iteration skipped due to missing replica snapshot %v", replicaPath);
+            }
+            if (replicaSnapshot->PartitionCount != queueSnapshot->PartitionCount) {
+                THROW_ERROR_EXCEPTION(
+                    "Trimming iteration skipped due to mismatch between partition count of the queue and its replica %v",
+                    replicaPath)
+                    << TErrorAttribute("queue_partition_count", queueSnapshot->PartitionCount)
+                    << TErrorAttribute("queue_replica_partition_count", replicaSnapshot->PartitionCount);
             }
             replicaContexts.emplace_back(replicaPath, replicaSnapshot);
         }
@@ -1228,7 +1234,9 @@ private:
             , Client(std::move(client))
             , AggregatedQueueExportsProgress(std::move(aggregatedQueueExportsProgress))
             , ObjectStore(objectStore)
-            , Logger(logger.WithTag("Replica: %v, ObjectPath: %v", Context.Path, Context.ObjectPath))
+            , Logger(logger
+                .WithTag("Replica", Context.Path)
+                .WithTag("ObjectPath", Context.ObjectPath))
         { }
 
         TFuture<void> Run()
@@ -1597,7 +1605,9 @@ bool UpdateQueueController(
     // Recreating an error controller on each iteration seems ok as it does
     // not have any state. By doing so we make sure that the error of a queue controller
     // is not stale.
-    const auto Logger = QueueControllerLogger().WithTag("Queue: %v, Leading: %v", row.Path, leading);
+    const auto Logger = QueueControllerLogger()
+        .WithTag("Queue", row.Path)
+        .WithTag("Leading", leading);
 
     if (row.SynchronizationError && !row.SynchronizationError->IsOK()) {
         auto snapshot = New<TQueueSnapshot>(row);

@@ -1,6 +1,11 @@
-#include <yt/yt/server/lib/nbd/chunk_block_device.h>
+#include <yt/yt/server/lib/nbd/block_device.h>
 #include <yt/yt/server/lib/nbd/config.h>
 #include <yt/yt/server/lib/nbd/server.h>
+
+#include <yt/yt/server/lib/nbd/chunk/chunk_block_device.h>
+#include <yt/yt/server/lib/nbd/chunk/config.h>
+
+#include <yt/yt/ytlib/chunk_client/session_id.h>
 
 #include <yt/yt/core/concurrency/thread_pool.h>
 #include <yt/yt/core/concurrency/thread_pool_poller.h>
@@ -22,6 +27,8 @@
 
 namespace NYT::NNbd {
 
+using namespace NNbd::NChunk;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 DECLARE_REFCOUNTED_STRUCT(TConfig)
@@ -30,7 +37,7 @@ struct TConfig
     : public NYTree::TYsonStruct
 {
     TNbdServerConfigPtr NbdServer;
-    THashMap<TString, TChunkBlockDeviceConfigPtr> NbdChunkBlockDevices;
+    THashMap<std::string, TChunkBlockDeviceConfigPtr> NbdChunkBlockDevices;
     std::string DataNodeNbdServiceAddress;
     int ThreadCount;
 
@@ -67,7 +74,8 @@ protected:
     {
         //NLogging::TLogManager::Get()->Configure(NLogging::TLogManagerConfig::CreateStderrLogger(NLogging::ELogLevel::Debug));
 
-        auto config = NYTree::ConvertTo<NNbd::TConfigPtr>(NYson::TYsonString(TFileInput(ConfigPath_).ReadAll()));
+        // TODO(babenko): drop TString cast once TFileInput accepts std::string.
+        auto config = NYTree::ConvertTo<NNbd::TConfigPtr>(NYson::TYsonString(TFileInput(TString(ConfigPath_)).ReadAll()));
 
         auto poller = NConcurrency::CreateThreadPoolPoller(config->ThreadCount, "Poller");
         auto threadPool = NConcurrency::CreateThreadPool(config->ThreadCount, "Nbd");
@@ -101,7 +109,7 @@ protected:
     }
 
 private:
-    TString ConfigPath_;
+    std::string ConfigPath_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

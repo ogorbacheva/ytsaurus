@@ -123,6 +123,9 @@ DEFINE_ENUM(ESnapshotVersion,
     ((BumpTo_26_2)                           (302300))
     ((PersistVanillaJobCounts)               (302301))
     ((DropLegacySortedPool)                  (302302))
+    ((HighThreadCountJobThreshold)           (302303))
+    ((SamplingSeed)                          (302304))
+    ((SerializableLoggerTagPayload)          (302305))
 );
 
 ////////////////////////////////////////////////////////////////////////////////

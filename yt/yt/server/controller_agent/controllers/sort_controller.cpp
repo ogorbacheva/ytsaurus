@@ -880,6 +880,10 @@ protected:
                 nextPartitionTask->FinishInput();
                 Controller_->UpdateTask(nextPartitionTask.Get());
             } else {
+                YT_VERIFY(Controller_->FinalSortTask_);
+                YT_VERIFY(Controller_->IntermediateSortTask_);
+                YT_VERIFY(Controller_->SortedMergeTask_);
+
                 Controller_->FinalSortTask_->Finalize();
                 Controller_->FinalSortTask_->FinishInput();
 
@@ -1355,7 +1359,7 @@ protected:
                 TUnorderedChunkPoolOptions{
                     .JobSizeConstraints = std::move(jobSizeConstraints),
                     .RowBuffer = controller->RowBuffer_,
-                    .Logger = Logger().WithTag("Name: SimpleSort"),
+                    .Logger = Logger().WithTag("Name", "SimpleSort"),
                     // Build the first job from finished input to reliably determine the total job count.
                     // This prevents incorrect strategy selection caused by the unordered chunk pool's
                     // unpredictable behavior, which could otherwise cause job count estimates to
@@ -1881,7 +1885,13 @@ protected:
     {
         YT_VERIFY(!SimpleSortTask_);
 
-        if (Spec_->PartitionCount.has_value()) {
+        if (!Spec_->EnableFinalPartitionsMerging.value_or(Options_->EnableFinalPartitionsMergingByDefault)) {
+            return std::nullopt;
+        }
+
+        // Explicit pivot keys define exact partition boundaries that must be
+        // preserved, so final partitions merging must not collapse them.
+        if (Spec_->PartitionCount.has_value() || !Spec_->PivotKeys.empty()) {
             return std::nullopt;
         } else if (Spec_->PartitionDataWeightForMerging.has_value()) {
             return Spec_->PartitionDataWeightForMerging;
@@ -1915,8 +1925,9 @@ protected:
 
             return MergeChunkPoolOutputs(
                 std::move(physicalPartitionsToMerge),
-                Logger().WithTag(
-                    "Name: PartitionsMerger[%v][%v][%v]",
+                Logger().WithTagFormat(
+                    "Name",
+                    "PartitionsMerger[%v][%v][%v]",
                     intermediatePartition->GetLevel(),
                     intermediatePartition->GetIndex(),
                     physicalPartitionIndices[0]));
@@ -2052,7 +2063,7 @@ protected:
             i64 dataSliceCount = chunkPoolOutput->GetDataSliceCounter()->GetTotal();
             i64 rowCount = chunkPoolOutput->GetRowCounter()->GetTotal();
 
-            if (!Spec_->EnableFinalPartitionsMerging ||
+            if (!partitionDataWeightForMerging.has_value() ||
                 !isAllDataCollected ||
                 IsPartitionOversized(
                     accumulatedDataWeight + dataWeight,
@@ -2133,6 +2144,19 @@ protected:
                 MakeWeak(this),
                 MakeWeak(partition)));
         }
+    }
+
+    void FinishRootPartitionTaskInput()
+    {
+        YT_VERIFY(!SimpleSortTask_);
+
+        ProcessInputs(PartitionTasks_.front(), RootPartitionPoolJobSizeConstraints_);
+
+        // NB(apollo1321): Partition task input must be finished only after all tasks are
+        // prepared: if the partition pool ends up empty (e.g. the whole input is sampled out),
+        // the partition task completes synchronously right here, and its completion handler
+        // requires the sort and merge tasks to be initialized.
+        FinishTaskInput(PartitionTasks_.front());
     }
 
     IMultiChunkPoolOutputPtr CreateLevelMultiChunkPoolOutput(int level) const
@@ -2339,7 +2363,7 @@ protected:
                     .JobSizeConstraints = RootPartitionPoolJobSizeConstraints_,
                     .EnablePeriodicYielder = true,
                     .ShouldSliceByRowIndices = true,
-                    .Logger = Logger().WithTag("Name: RootPartition"),
+                    .Logger = Logger().WithTag("Name", "RootPartition"),
                     .JobSizeAdjusterConfig = std::move(jobSizeAdjusterConfig),
                 },
                 IntermediateInputStreamDirectory);
@@ -2350,7 +2374,7 @@ protected:
                 .JobSizeAdjusterConfig = std::move(jobSizeAdjusterConfig),
                 .JobSizeConstraints = RootPartitionPoolJobSizeConstraints_,
                 .RowBuffer = RowBuffer_,
-                .Logger = Logger().WithTag("Name: RootPartition"),
+                .Logger = Logger().WithTag("Name", "RootPartition"),
             },
             GetInputStreamDirectory());
     }
@@ -2763,7 +2787,7 @@ protected:
         return streamDescriptor;
     }
 
-    IPersistentChunkPoolPtr CreateSortedMergeChunkPool(TString name)
+    IPersistentChunkPoolPtr CreateSortedMergeChunkPool(std::string name)
     {
         TSortedChunkPoolOptions chunkPoolOptions;
         TSortedJobOptions jobOptions;
@@ -2783,7 +2807,7 @@ protected:
             Options_,
             GetOutputTablePaths().size(),
             ExpectedPartitionCount_);
-        chunkPoolOptions.Logger = Logger().WithTag("Name: %v", name);
+        chunkPoolOptions.Logger = Logger().WithTag("Name", name);
         if (Config_->EnableSortedMergeInSortJobSizeAdjustment) {
             chunkPoolOptions.JobSizeAdjusterConfig = Options_->SortedMergeJobSizeAdjuster;
         }
@@ -3435,6 +3459,10 @@ private:
         PrepareSortedMergeTask();
 
         InitJobSpecTemplates();
+
+        if (!SimpleSortTask_) {
+            FinishRootPartitionTaskInput();
+        }
     }
 
     void PreparePartitionTasks()
@@ -3484,9 +3512,6 @@ private:
             partitionTask->SetInputVertex(PartitionTasks_[partitionTaskLevel - 1]->GetVertexDescriptor());
             partitionTask->RegisterInGraph();
         }
-
-        ProcessInputs(PartitionTasks_.front(), RootPartitionPoolJobSizeConstraints_);
-        FinishTaskInput(PartitionTasks_.front());
 
         YT_LOG_INFO(
             "Sorting with partitioning (ExpectedPartitionCount: %v, PartitionJobCount: %v, DataWeightPerPartitionJob: %v)",
@@ -3910,7 +3935,7 @@ private:
 
     // Progress reporting.
 
-    TString GetLoggingProgress() const override
+    std::string GetLoggingProgress() const override
     {
         return Format(
             "{"
@@ -4395,6 +4420,8 @@ private:
         InitJobSpecTemplates();
 
         SetupPartitioningCompletedCallbacks();
+
+        FinishRootPartitionTaskInput();
     }
 
     void PreparePartitionTasks()
@@ -4464,9 +4491,6 @@ private:
             partitionTask->SetInputVertex(PartitionTasks_[partitionTaskLevel - 1]->GetVertexDescriptor());
             partitionTask->RegisterInGraph();
         }
-
-        ProcessInputs(PartitionTasks_[0], RootPartitionPoolJobSizeConstraints_);
-        FinishTaskInput(PartitionTasks_[0]);
 
         YT_LOG_INFO("Map-reducing with partitioning (ExpectedPartitionCount: %v, PartitionJobCount: %v, PartitionDataWeightPerJob: %v)",
             ExpectedPartitionCount_,
@@ -4878,7 +4902,7 @@ private:
 
     // Progress reporting.
 
-    TString GetLoggingProgress() const override
+    std::string GetLoggingProgress() const override
     {
         return Format(
             "{"

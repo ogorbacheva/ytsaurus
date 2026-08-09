@@ -459,6 +459,7 @@ bool IsSupportedSequoiaType(EObjectType type)
         IsScalarType(type) ||
         IsChunkOwnerType(type) ||
         type == EObjectType::SequoiaLink ||
+        type == EObjectType::ChaosReplicatedTable ||
         type == EObjectType::Document ||
         type == EObjectType::Orchid;
 }
@@ -571,28 +572,6 @@ void FromProto(
 {
     subrequest->AttributeKey = protoSubrequest.attribute();
     subrequest->Value = NYson::TYsonString(protoSubrequest.value());
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-TFuture<IAttributeDictionaryPtr> FetchSingleObjectAttributes(
-   const NNative::IClientPtr& client,
-   NCypressClient::TVersionedObjectId objectId,
-   const TAttributeFilter& attributeFilter)
-{
-   auto requestTemplate = TYPathProxy::Get("&/@");
-   if (attributeFilter) {
-       ToProto(requestTemplate->mutable_attributes(), attributeFilter);
-   }
-
-   SetSuppressAccessTracking(requestTemplate, true);
-   SetSuppressExpirationTimeoutRenewal(requestTemplate, true);
-
-   auto batcher = TMasterYPathProxy::CreateGetBatcher(client, requestTemplate, {objectId.ObjectId}, objectId.TransactionId);
-   return batcher.Invoke().Apply(BIND([=] (const TMasterYPathProxy::TVectorizedGetBatcher::TVectorizedResponse& rsp) {
-        const auto& value = GetOrCrash(rsp, objectId.ObjectId).ValueOrThrow();
-        return ConvertToAttributes(NYson::TYsonString(value->value()));
-   }));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -1,5 +1,7 @@
 #include "progress_merger.h"
 
+#include <library/cpp/yt/string/format.h>
+
 namespace NYT::NYqlPlugin {
 
 //////////////////////////////////////////////////////////////////////////////
@@ -16,6 +18,9 @@ void TNodeProgress::Serialize(::NYson::TYsonWriter& writer) const
 
         writer.OnKeyedItem("remoteId");
         writer.OnStringScalar(Progress_.RemoteId);
+
+        writer.OnKeyedItem("waitingRemoteId");
+        writer.OnStringScalar(Progress_.WaitingRemoteId);
 
         writer.OnKeyedItem("remoteData");
         writer.OnBeginMap();

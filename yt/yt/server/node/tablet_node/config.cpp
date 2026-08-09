@@ -125,6 +125,9 @@ void TTabletManagerDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("extended_snapshot_eviction_timeout", &TThis::ExtendedSnapshotEvictionTimeout)
         .Default(TDuration::Minutes(3));
 
+    registrar.Parameter("wait_on_read_only_smooth_movement_stage_timeout", &TThis::WaitOnReadOnlySmoothMovementStageTimeout)
+        .Default(TDuration::MilliSeconds(500));
+
     registrar.Parameter("yield_before_building_lsm_actions", &TThis::YieldBeforeBuildingLsmActions)
         .Default(false);
 }
@@ -611,6 +614,8 @@ void TRowCacheControllerDynamicConfig::Register(TRegistrar registrar)
         .Default(0.95)
         .GreaterThanOrEqual(0)
         .LessThanOrEqual(1);
+    registrar.Parameter("allow_filling_available_memory", &TThis::AllowFillingAvailableMemory)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -754,6 +759,9 @@ void TTabletNodeDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("testing", &TThis::Testing)
         .Default();
 
+    registrar.Parameter("client_cache", &TThis::ClientCache)
+        .DefaultNew();
+
     registrar.Postprocessor([] (TThis* config) {
         // Instantiate default distributed throttler configs.
         for (auto kind : TEnumTraits<ETabletDistributedThrottlerKind>::GetDomainValues()) {
@@ -853,6 +861,9 @@ void TTabletNodeConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("allow_reign_change", &TThis::AllowReignChange)
         .Default(true);
+
+    registrar.Parameter("client_cache", &TThis::ClientCache)
+        .DefaultNew();
 
     registrar.Preprocessor([] (TThis* config) {
         config->VersionedChunkMetaCache->Capacity = 10_GB;

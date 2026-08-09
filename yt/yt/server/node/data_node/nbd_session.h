@@ -29,8 +29,19 @@ struct TNbdSession
     //! Read size bytes from NBD chunk at offset.
     TFuture<NChunkClient::TBlock> Read(i64 offset, i64 size, ui64 cookie);
 
+    //! Read multiple non-contiguous ranges from NBD chunk in a single IO call.
+    TFuture<std::vector<NChunkClient::TBlock>> ReadBatch(
+        const std::vector<TNbdReadSubrequest>& subrequests,
+        ui64 cookie);
+
     //! Write buffer to NBD chunk at offset.
     TFuture<NIO::TIOCounters> Write(i64 offset, const NChunkClient::TBlock& block, ui64 cookie);
+
+    //! Flush dirty data to disk (fsync).
+    TFuture<void> Flush(ui64 cookie);
+
+    //! Flush a specific range of data to disk (sync_file_range).
+    TFuture<void> FlushRange(i64 offset, i64 size);
 
     //! Create NBD chunk and make filesystem on it.
     TFuture<void> Create();
@@ -84,6 +95,8 @@ struct TNbdSession
         int startBlockIndex,
         int blockCount,
         i64 cumulativeBlockSize,
+        std::optional<i64> ioConsumed,
+        std::optional<double> ioFairShareWeight,
         TDuration requestTimeout,
         bool instantReplyOnThrottling,
         const NNodeTrackerClient::TNodeDescriptor& target) override;

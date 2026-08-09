@@ -298,7 +298,7 @@ class TestPortals(YTEnvSetup):
             attributes={"account": "a", "external": True, "external_cell_tag": 12},
         )
         wait(lambda: get("//sys/accounts/a/@resource_usage/master_memory/total") > 0)
-        with raises_yt_error("Cannot remove an account .* because its usage is not zero"):
+        with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove("//sys/accounts/a")
         assert get("//sys/accounts/a/@life_stage") == "creation_committed"
         wait(lambda: get("//sys/accounts/a/@life_stage", driver=get_driver(1)) == "creation_committed")
@@ -2029,9 +2029,7 @@ class TestCrossCellCopy(YTEnvSetup):
                 administer_permission,
             ])
 
-            # ACLs are not supported in Sequoia yet.
-            if not self.USE_SEQUOIA:
-                wait(lambda: administer_permission in get(f"{self.DST}/@acl"))
+            wait(lambda: administer_permission in get(f"{self.DST}/@acl"))
 
             # In order to preserve account user has to have "use" permission for the account.
             for account in self.AVAILABLE_ACCOUNTS:
@@ -2365,7 +2363,7 @@ class TestCrossCellCopy(YTEnvSetup):
         self.create_file(src_path)
         account = get(f"{src_path}/@account")
         wait(lambda: get(f"//sys/accounts/{account}/@resource_usage/master_memory/total") > 0)
-        with raises_yt_error(f"Cannot remove an account \"{account}\" because its usage is not zero"):
+        with raises_yt_error(f"Cannot remove account \"{account}\" because its usage is not zero"):
             remove(f"//sys/accounts/{account}")
         assert get(f"//sys/accounts/{account}/@life_stage") == "creation_committed"
 

@@ -12,7 +12,7 @@ __all__ = (
     "cachedmethod",
 )
 
-__version__ = "7.1.4"
+__version__ = "7.1.6"
 
 import collections
 import collections.abc
@@ -53,8 +53,8 @@ class Cache(collections.abc.MutableMapping):
         if getsizeof:
             self.getsizeof = getsizeof
         if self.getsizeof is not Cache.getsizeof:
-            self.__size = dict()
-        self.__data = dict()
+            self.__size = {}
+        self.__data = {}
         self.__currsize = 0
         self.__maxsize = maxsize
 
@@ -75,6 +75,8 @@ class Cache(collections.abc.MutableMapping):
     def __setitem__(self, key, value):
         maxsize = self.__maxsize
         size = self.getsizeof(value)
+        if size < 0:
+            raise ValueError("value size must be non-negative")
         if size > maxsize:
             raise ValueError("value too large")
         if key not in self.__data or self.__size[key] < size:
@@ -445,7 +447,7 @@ class TTLCache(_TimedCache):
     """LRU Cache implementation with per-item time-to-live (TTL) value."""
 
     class _Link:
-        __slots__ = ("key", "expires", "next", "prev")
+        __slots__ = ("expires", "key", "next", "prev")
 
         def __init__(self, key=None, expires=None):
             self.key = key
@@ -589,7 +591,7 @@ class TLRUCache(_TimedCache):
 
     @functools.total_ordering
     class _Item:
-        __slots__ = ("key", "expires", "removed")
+        __slots__ = ("expires", "key", "removed")
 
         def __init__(self, key=None, expires=None):
             self.key = key
@@ -625,10 +627,26 @@ class TLRUCache(_TimedCache):
         else:
             return cache_getitem(self, key)
 
-    def __setitem__(self, key, value, cache_setitem=Cache.__setitem__):
+    def __setitem__(
+        self,
+        key,
+        value,
+        cache_setitem=Cache.__setitem__,
+        cache_delitem=Cache.__delitem__,
+    ):
         with self.timer as time:
             expires = self.__ttu(key, value, time)
             if not (time < expires):
+                # The new value is already expired, so it is not stored.
+                # If the key still holds a previous (possibly still valid)
+                # value, drop it as well -- otherwise the assignment would
+                # be silently ignored and the stale value would persist.
+                try:
+                    self.__items.pop(key).removed = True
+                except KeyError:
+                    pass
+                else:
+                    cache_delitem(self, key)
                 return  # skip expired items
             self.expire(time)
             cache_setitem(self, key, value)

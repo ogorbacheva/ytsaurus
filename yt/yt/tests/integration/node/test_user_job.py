@@ -71,6 +71,66 @@ def find_operation_by_mutation_id(mutation_id):
 ##################################################################
 
 
+class TestSandboxPath(YTEnvSetup):
+    NUM_MASTERS = 1
+    NUM_NODES = 1
+    NUM_SCHEDULERS = 1
+    USE_PORTO = True
+
+    DELTA_DYNAMIC_MASTER_CONFIG = {
+        "cypress_manager": {
+            "default_table_replication_factor": 1,
+            "default_file_replication_factor": 1,
+        }
+    }
+
+    DELTA_NODE_CONFIG = {
+        "exec_node": {
+            "job_proxy": {
+                "test_root_fs": False,
+            },
+        },
+    }
+
+    def setup_files(self):
+        create("file", "//tmp/exec.tar.gz", attributes={"replication_factor": 1})
+        write_file("//tmp/exec.tar.gz", open("rootfs/exec.tar.gz", "rb").read())
+        create("file", "//tmp/rootfs.tar.gz", attributes={"replication_factor": 1})
+        write_file("//tmp/rootfs.tar.gz", open("rootfs/rootfs.tar.gz", "rb").read())
+
+    @authors("krasovav")
+    @pytest.mark.parametrize("has_root_fs", [False, True])
+    def test_sandbox_path(self, has_root_fs):
+        self.setup_files()
+        create("table", "//tmp/t_input")
+        create("table", "//tmp/t_output")
+        write_table("//tmp/t_input", {"foo": "bar"})
+
+        op = map(
+            command="[ -d tmpfs ] && findmnt -o FSTYPE -T tmpfs | grep tmpfs >&2",
+            in_="//tmp/t_input",
+            out="//tmp/t_output",
+            spec={
+                "mapper": {
+                    "tmpfs_size": 1024 * 1024,
+                    "tmpfs_path": "tmpfs",
+                    "layer_paths": ["//tmp/exec.tar.gz", "//tmp/rootfs.tar.gz"] if has_root_fs else [],
+                },
+                "max_failed_job_count": 1,
+            },
+        )
+
+        job_ids = op.list_jobs()
+        assert len(job_ids) == 1
+        content = op.read_stderr(job_ids[0]).decode("ascii")
+
+        words = content.strip().split()
+        assert ["tmpfs"] == words
+
+
+##################################################################
+
+
 class TestSandboxTmpfs(YTEnvSetup):
     NUM_MASTERS = 1
     NUM_NODES = 1
@@ -1034,32 +1094,79 @@ class TestSandboxTmpfsOverflow(YTEnvSetup):
 ##################################################################
 
 
-class TestDisabledSandboxTmpfs(YTEnvSetup):
+class TestFakeNonRootVolumes(YTEnvSetup):
     NUM_MASTERS = 1
     NUM_NODES = 3
     NUM_SCHEDULERS = 1
 
-    DELTA_CONTROLLER_AGENT_CONFIG = {"controller_agent": {"enable_tmpfs": False}}
+    DELTA_NODE_CONFIG = {"exec_node": {"slot_manager": {"enable_non_root_volumes": False}}}
 
-    @authors("ignat")
+    @authors("krasovav")
     def test_simple(self):
         create("table", "//tmp/t_input")
         create("table", "//tmp/t_output")
         write_table("//tmp/t_input", {"foo": "bar"})
 
-        with raises_yt_error("Tmpfs creation is disabled on this cluster. The operation cannot be started because tmpfs is requested in its specification"):
+        op = map(
+            command="[ -d tmpfs ]",
+            in_="//tmp/t_input",
+            out="//tmp/t_output",
+            track=True,
+            spec={
+                "mapper": {
+                    "tmpfs_size": 1024 * 1024,
+                    "tmpfs_path": "tmpfs",
+                }
+            },
+        )
+
+        op.track()
+
+
+class TestPortoFakeNonRootVolumes(TestFakeNonRootVolumes):
+    USE_PORTO = True
+
+    def setup_files(self):
+        create("file", "//tmp/layer1")
+        write_file("//tmp/layer1", open("layers/static-bin.tar", "rb").read())
+
+    @authors("krasovav")
+    def test_layers(self):
+        self.setup_files()
+        create("table", "//tmp/t_input")
+        create("table", "//tmp/t_output")
+        write_table("//tmp/t_input", {"foo": "bar"})
+
+        with raises_yt_error("Cannot create fake non-root volume 1 since it contains a layer"):
             map(
-                command="[ -d tmpfs ] || echo -n 'Success' >&2",
+                command="[ -d tmpfs ]",
                 in_="//tmp/t_input",
                 out="//tmp/t_output",
+                track=True,
                 spec={
                     "mapper": {
-                        "tmpfs_size": 1024 * 1024,
-                        "tmpfs_path": "tmpfs",
+                        "volumes": {
+                            "1": {
+                                "layers": [
+                                    {
+                                        "path": "//tmp/layer1",
+                                    },
+                                ],
+                                "disk_request": {
+                                    "type": "tmpfs",
+                                    "disk_space": 1024 * 1024
+                                }
+                            }
+                        },
+                        "job_volumes_mounts": [
+                            {
+                                "volume_id": "1",
+                                "mount_path": "/sandbox"
+                            }
+                        ],
                     }
                 },
             )
-
 
 ##################################################################
 
@@ -1242,7 +1349,7 @@ class TestArtifactCacheBypass(YTEnvSetup):
         create("file", "//tmp/file")
         write_file("//tmp/file", b"A" * 10 ** 7)
 
-        with raises_yt_error(code=yt_error_codes.TmpfsOverflow):
+        with raises_yt_error(code=yt_error_codes.VolumeSizeLimitExceeded):
             map(
                 command="cat table",
                 in_="//tmp/t_input",
@@ -1260,14 +1367,16 @@ class TestArtifactCacheBypass(YTEnvSetup):
         # In tests we crash if slot location is disabled.
         # Thus, if this test passed successfully, location was not disabled.
 
-    @authors("yuryalekseev")
-    def test_insufficient_tmpfs_for_files(self):
+    @authors("yuryalekseev", "krasovav")
+    @pytest.mark.parametrize("volume_type", ["tmpfs", "local_disk"])
+    @pytest.mark.parametrize("has_root_volume", [True, False])
+    def test_insufficient_non_root_volume_for_files(self, has_root_volume, volume_type):
         """
-        Test that map operation fails when tmpfs size is insufficient
+        Test that map operation fails when non-root volume size is insufficient
         for copying files from file_paths with copy_files=true.
 
         This test verifies the fix for the issue where files were copied
-        to tmpfs without checking if there's enough space, potentially
+        to a non-root volume without checking if there's enough space, potentially
         causing slot location to be disabled.
         """
         # Create input and output tables
@@ -1275,17 +1384,39 @@ class TestArtifactCacheBypass(YTEnvSetup):
         create("table", "//tmp/t_output")
         write_table("//tmp/t_input", {"foo": "bar"})
 
-        # Create a file that's larger than the tmpfs we'll allocate.
+        # Create a file that's larger than the non-root volume we'll allocate.
         # File size: 20 MB
         file_size = 20 * 1024 * 1024
         create("file", "//tmp/large_file")
         write_file("//tmp/large_file", b"A" * file_size)
 
-        # Try to run map operation with tmpfs size smaller than the file size.
-        # The operation should fail with TmpfsOverflow error.
-        tmpfs_size = file_size // 2
+        # Try to run map operation with non-root volume size smaller than the file size.
+        # The operation should fail with VolumeSizeLimitExceeded error.
+        non_root_volume_size = file_size // 2
 
-        with raises_yt_error(code=yt_error_codes.TmpfsOverflow):
+        non_root_path = "/slot/sandbox" if has_root_volume else "/sandbox"
+
+        volumes = {
+            "non-root": {
+                "disk_request": {
+                    "type": volume_type,
+                    "disk_space": non_root_volume_size,
+                },
+            },
+        }
+
+        job_volume_mounts = [{"volume_id": "non-root", "mount_path": non_root_path}]
+
+        if has_root_volume:
+            create("file", "//tmp/exec.tar.gz")
+            write_file("//tmp/exec.tar.gz", open("rootfs/exec.tar.gz", "rb").read())
+            create("file", "//tmp/rootfs.tar.gz")
+            write_file("//tmp/rootfs.tar.gz", open("rootfs/rootfs.tar.gz", "rb").read())
+
+            volumes["root"] = {"layers": [{"path": "//tmp/rootfs.tar.gz"}, {"path": "//tmp/exec.tar.gz"}]}
+            job_volume_mounts.append({"volume_id": "root", "mount_path": "/"})
+
+        with raises_yt_error(code=yt_error_codes.VolumeSizeLimitExceeded):
             map(
                 command="cat",
                 in_="//tmp/t_input",
@@ -1293,9 +1424,9 @@ class TestArtifactCacheBypass(YTEnvSetup):
                 spec={
                     "mapper": {
                         "copy_files": True,
+                        "volumes": volumes,
+                        "job_volume_mounts": job_volume_mounts,
                         "file_paths": ["//tmp/large_file"],
-                        "tmpfs_path": ".",
-                        "tmpfs_size": tmpfs_size,
                     },
                     "max_failed_job_count": 1,
                 }
@@ -1369,14 +1500,11 @@ class TestSpliceArtifact(TestIOTrackingBase):
     NUM_NODES = 1
     NUM_SCHEDULERS = 1
 
-    _PIPE_SIZE = 65536
-
     DELTA_DYNAMIC_NODE_CONFIG = {
         "%true": {
             "exec_node": {
                 "slot_manager": {
                     "enable_async_artifact_copy": True,
-                    "artifact_pipe_size": _PIPE_SIZE,
                 },
             },
         },
@@ -1457,7 +1585,7 @@ assert hashlib.sha256(data.encode()).hexdigest() == '{hash_}'
         )
 
         # One pipe's worth of data was transferred.
-        assert all(event['bytes'] == self._PIPE_SIZE for event in raw_events)
+        assert all(event['bytes'] == 65536 for event in raw_events)
 
 
 class TestUserJobIsolation(YTEnvSetup):
@@ -1485,8 +1613,7 @@ class TestUserJobIsolation(YTEnvSetup):
             "vanilla_operation_options": {
                 # NB: ytserver-exec requires many threads on start.
                 "user_job_options": {
-                    "thread_limit_multiplier": 5,
-                    "initial_thread_limit": 100,
+                    "thread_limit_formula": "100 + 5 * cpu",
                 },
             },
         },

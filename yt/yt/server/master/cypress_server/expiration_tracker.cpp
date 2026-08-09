@@ -196,14 +196,14 @@ public:
         // that created it. In this case the node might end up unregistered from the expiration maps.
         // See TExpirationTracker::OnNodeRemovalFailed().
         if (expirationTimeProperties) {
-            const auto& [user, expirationTime] = *expirationTimeProperties;
+            const auto& [user, expirationTime, armingTime] = *expirationTimeProperties;
 
             YT_LOG_DEBUG("Node expiration time set (NodeId: %v, ExpirationTime: %v)",
                 trunkNode->GetId(),
                 expirationTime);
             RegisterNodeExpirationTime(trunkNode, expirationTime);
             if (oldExpirationTimeProperties) {
-                auto oldUser = oldExpirationTimeProperties->first;
+                auto oldUser = std::get<TUserRawPtr>(*oldExpirationTimeProperties);
                 if (user != oldUser) {
                     FailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
                     PersistentFailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
@@ -213,7 +213,7 @@ public:
             YT_LOG_DEBUG("Node expiration time reset (NodeId: %v)",
                 trunkNode->GetId());
 
-            auto oldUser = oldExpirationTimeProperties->first;
+            auto oldUser = std::get<TUserRawPtr>(*oldExpirationTimeProperties);
             FailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
             PersistentFailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
         }
@@ -242,7 +242,7 @@ public:
 
         // See TExpirationTracker::OnNodeExpirationTimeUpdated().
         if (expirationTimeoutProperties) {
-            const auto& [user, expirationTimeout] = *expirationTimeoutProperties;
+            const auto& [user, expirationTimeout, armingTime] = *expirationTimeoutProperties;
 
             YT_LOG_DEBUG("Node expiration timeout set (NodeId: %v, ExpirationTimeout: %v)",
                 trunkNode->GetId(),
@@ -252,7 +252,7 @@ public:
             }
 
             if (oldExpirationTimeoutProperties) {
-                auto oldUser = oldExpirationTimeoutProperties->first;
+                auto oldUser = std::get<TUserRawPtr>(*oldExpirationTimeoutProperties);
                 if (user != oldUser) {
                     FailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
                     PersistentFailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
@@ -262,7 +262,7 @@ public:
             YT_LOG_DEBUG("Node expiration timeout reset (NodeId: %v)",
                 trunkNode->GetId());
 
-            auto oldUser = oldExpirationTimeoutProperties->first;
+            auto oldUser = std::get<TUserRawPtr>(*oldExpirationTimeoutProperties);
             FailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
             PersistentFailedExpirationAttempts_.erase(TFailedAttemptDescriptorView(trunkNode, oldUser));
         }
@@ -503,8 +503,6 @@ private:
         std::vector<TCypressNodeRawPtr> expiredTrunkNodes;
 
         auto maxExpiredNodesRemovalsPerCommit = GetDynamicConfig()->MaxExpiredNodesRemovalsPerCommit;
-        std::optional<bool> isSequoia;
-
         while (!ExpirationMap_.empty() &&
             std::ssize(expiredTrunkNodes) < maxExpiredNodesRemovalsPerCommit)
         {
@@ -517,16 +515,6 @@ private:
 
             // See comment for ExpirationMap.
             if (!ScheduledForRemovalNodes_.contains(trunkNode)) {
-                if (!isSequoia.has_value()) {
-                    isSequoia = trunkNode->IsSequoia();
-                }
-
-                // Sequoia and Cypress nodes are not expected to be living at
-                // the same cell, so this check is just a precaution.
-                if (isSequoia != trunkNode->IsSequoia()) {
-                    break;
-                }
-
                 if (IsObjectAlive(trunkNode)) {
                     InsertOrCrash(ScheduledForRemovalNodes_, trunkNode);
                     expiredTrunkNodes.push_back(trunkNode);
@@ -546,8 +534,7 @@ private:
             return;
         }
 
-        YT_LOG_DEBUG("Starting removal of expired %v nodes (Count: %v)",
-            *isSequoia ? "Sequoia" : "Cypress",
+        YT_LOG_DEBUG("Starting removal of expired nodes (Count: %v)",
             std::ssize(expiredTrunkNodes));
 
         std::vector<TEphemeralObjectPtr<TCypressNode>> trunkNodes;
@@ -610,7 +597,6 @@ private:
             prerequisiteRevision->set_path(targetPath);
             prerequisiteRevision->set_revision(revisions.back().Underlying());
 
-            // TODO(danilalexeev): YT-24752. Support TExpirationExt in Sequoia.
             SetCausedByNodeExpiration(&req->Header(), true);
 
             batchReq->AddRequest(req);

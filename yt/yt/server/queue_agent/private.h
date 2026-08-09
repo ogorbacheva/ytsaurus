@@ -6,9 +6,9 @@
 
 #include <yt/yt/client/queue_client/common.h>
 
-#include <yt/yt/core/logging/log.h>
-
 #include <yt/yt/library/profiling/sensor.h>
+
+#include <yt/yt/core/logging/log.h>
 
 namespace NYT::NQueueAgent {
 
@@ -24,6 +24,7 @@ YT_DEFINE_GLOBAL(const NLogging::TLogger, QueueStaticTableExporterLogger, "Queue
 YT_DEFINE_GLOBAL(const NLogging::TLogger, QueueExportManagerLogger, "QueueExportManager");
 YT_DEFINE_GLOBAL(const NLogging::TLogger, QueueAgentShardingManagerLogger, "QueueAgentShardingManager");
 YT_DEFINE_GLOBAL(const NLogging::TLogger, CypressSynchronizerLogger, "CypressSynchronizer");
+YT_DEFINE_GLOBAL(const NLogging::TLogger, MultiConsumerNamesGarbageCollectorLogger, "MultiConsumerNamesGarbageCollector");
 
 YT_DEFINE_GLOBAL(const NProfiling::TProfiler, QueueAgentProfiler, "/queue_agent");
 YT_DEFINE_GLOBAL(const NProfiling::TProfiler, QueueAgentProfilerGlobal, QueueAgentProfiler().WithGlobal());
@@ -50,6 +51,8 @@ YT_DEFINE_ERROR_ENUM(
     ((QueueAgentShardingManagerPassFailed)                          (3050))
 
     ((QueueAgentMultiConsumerControllerPassFailed)                  (3060))
+
+    ((QueueAgentMultiConsumerNamesGarbageCollectorPassFailed)       (3070))
 );
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -59,6 +62,7 @@ YT_DEFINE_ERROR_ENUM(
 ////////////////////////////////////////////////////////////////////////////////
 
 DECLARE_REFCOUNTED_CLASS(TQueueAgent)
+DECLARE_REFCOUNTED_STRUCT(TQueueExportManagerConfig)
 DECLARE_REFCOUNTED_STRUCT(TQueueAgentConfig)
 DECLARE_REFCOUNTED_STRUCT(TQueueControllerDynamicConfig)
 DECLARE_REFCOUNTED_STRUCT(TQueueExportManagerDynamicConfig)
@@ -68,6 +72,9 @@ DECLARE_REFCOUNTED_STRUCT(ICypressSynchronizer)
 DECLARE_REFCOUNTED_CLASS(TCypressSynchronizer)
 DECLARE_REFCOUNTED_STRUCT(TCypressSynchronizerConfig)
 DECLARE_REFCOUNTED_STRUCT(TCypressSynchronizerDynamicConfig)
+
+DECLARE_REFCOUNTED_STRUCT(IMultiConsumerNamesGarbageCollector)
+DECLARE_REFCOUNTED_STRUCT(TMultiConsumerNamesGarbageCollectorDynamicConfig)
 
 DECLARE_REFCOUNTED_STRUCT(IQueueAgentShardingManager)
 DECLARE_REFCOUNTED_STRUCT(TQueueAgentShardingManagerDynamicConfig)
@@ -94,6 +101,8 @@ DECLARE_REFCOUNTED_STRUCT(IObjectStore)
 DECLARE_REFCOUNTED_STRUCT(IObjectController)
 DECLARE_REFCOUNTED_STRUCT(IQueueController)
 DECLARE_REFCOUNTED_CLASS(TQueueAgentClientDirectory)
+
+DECLARE_REFCOUNTED_CLASS(TVirtualMapPartBase)
 
 ////////////////////////////////////////////////////////////////////////////////
 

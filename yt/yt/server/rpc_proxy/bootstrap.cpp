@@ -12,8 +12,6 @@
 #include <yt/yt/server/lib/rpc_proxy/private.h>
 #include <yt/yt/server/lib/rpc_proxy/proxy_coordinator.h>
 
-#include <yt/yt/server/lib/signature/components/components.h>
-
 #include <yt/yt/server/lib/shuffle_server/shuffle_service.h>
 
 #include <yt/yt/server/lib/admin/admin_service.h>
@@ -60,12 +58,16 @@
 
 #include <yt/yt/library/fusion/service_locator.h>
 
+#include <yt/yt/library/signature/components/components.h>
+
 #include <yt/yt/client/logging/dynamic_table_log_writer.h>
 
 #include <yt/yt/core/rpc/grpc/config.h>
 #include <yt/yt/core/rpc/grpc/server.h>
 
 #include <yt/yt/core/http/server.h>
+
+#include <yt/yt/core/https/server.h>
 
 #include <yt/yt/core/bus/public.h>
 #include <yt/yt/core/bus/server.h>
@@ -288,6 +290,9 @@ void TBootstrap::DoInitialize()
     BundleDynamicConfigManager_->SubscribeBeforeConfigChanged(BIND_NO_PROPAGATE(&TBootstrap::OnBundleDynamicConfigChanged, MakeStrong(this)));
 
     HttpServer_ = NHttp::CreateServer(Config_->CreateMonitoringHttpServerConfig());
+    if (auto httpsConfig = Config_->CreateMonitoringHttpsServerConfig()) {
+        HttpsServer_ = NHttps::CreateServer(httpsConfig, /*pollerThreadCount*/ 1);
+    }
 }
 
 void TBootstrap::DoStart()
@@ -295,6 +300,7 @@ void TBootstrap::DoStart()
     NYTree::IMapNodePtr orchidRoot;
     NMonitoring::Initialize(
         HttpServer_,
+        HttpsServer_,
         ServiceLocator_->GetServiceOrThrow<NProfiling::TSolomonExporterPtr>(),
         &MonitoringManager_,
         &orchidRoot);
@@ -454,6 +460,10 @@ void TBootstrap::DoStart()
 
     YT_LOG_INFO("Listening for HTTP requests on port %v", Config_->MonitoringPort);
     HttpServer_->Start();
+    if (HttpsServer_) {
+        YT_LOG_INFO("Listening for HTTPS requests (Port: %v)", HttpsServer_->GetAddress().GetPort());
+        HttpsServer_->Start();
+    }
 
     YT_LOG_INFO("Listening for RPC requests on port %v", Config_->RpcPort);
     RpcServer_->Start();

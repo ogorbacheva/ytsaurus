@@ -44,6 +44,7 @@
 
 #include <yt/yt/core/ypath/tokenizer.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/virtual.h>
 
 #include <yt/yt/core/yson/protobuf_helpers.h>
@@ -294,7 +295,7 @@ public:
         , ConfigNode_(ConvertToNode(Config_))
         , ControllerConfig_(std::move(controllerConfig))
         , TreeId_(std::move(treeId))
-        , Logger(StrategyLogger().WithTag("TreeId: %v", TreeId_))
+        , Logger(StrategyLogger().WithTag("TreeId", TreeId_))
         , Host_(host)
         , StrategyHost_(strategyHost)
         , ResourceTree_(New<TResourceTree>(Config_, feasibleInvokers))
@@ -975,8 +976,7 @@ public:
         }
 
         for (const auto& poolName : uniquePoolNames) {
-            // TODO(babenko): migrate to std::string
-            if (!FindPool(TString(poolName))) {
+            if (!FindPool(poolName)) {
                 return TError(
                     "User default parent pool %Qv is missing in pool tree %Qv",
                     poolName,
@@ -1084,7 +1084,7 @@ public:
         }
 
         result->SchedulingPolicyState = SchedulingPolicy_->BuildPersistentState();
-        result->GpuSchedulingPolicyState = DryRunGpuSchedulingPolicy_->BuildPersistentState();
+        result->DryRunGpuSchedulingPolicyState = DryRunGpuSchedulingPolicy_->BuildPersistentState();
 
         return result;
     }
@@ -1111,7 +1111,7 @@ public:
         }
 
         SchedulingPolicy_->InitPersistentState(persistentState->SchedulingPolicyState);
-        DryRunGpuSchedulingPolicy_->InitPersistentState(persistentState->GpuSchedulingPolicyState);
+        DryRunGpuSchedulingPolicy_->InitPersistentState(persistentState->DryRunGpuSchedulingPolicyState);
     }
 
     TError OnOperationMaterialized(TOperationId operationId, bool revivedFromSnapshot) override
@@ -1244,7 +1244,7 @@ public:
     }
 
     static IYPathServicePtr FromProducer(
-        TExtendedYsonProducer<const TFieldFilter&> producer)
+        TParametricYsonProducer<const TFieldFilter&> producer)
     {
         return IYPathService::FromProducer(BIND(
             [producer{std::move(producer)}] (IYsonConsumer* consumer, const IAttributeDictionaryPtr& options) {
@@ -1257,7 +1257,7 @@ public:
     {
         YT_ASSERT_INVOKERS_AFFINITY(FeasibleInvokers_);
 
-        auto dynamicOrchidService = New<TCompositeMapService>();
+        auto dynamicOrchidService = CreateCompositeMapService();
 
         dynamicOrchidService->AddChild("operations_by_pool", New<TOperationsByPoolOrchidService>(MakeStrong(this))
             ->Via(StrategyHost_->GetOrchidWorkerInvoker()));
@@ -1268,62 +1268,38 @@ public:
         dynamicOrchidService->AddChild("child_pools_by_pool", New<TChildPoolsByPoolOrchidService>(MakeStrong(this))
             ->Via(StrategyHost_->GetOrchidWorkerInvoker()));
 
-        dynamicOrchidService->AddChild("operations", IYPathService::FromProducer(BIND([this_ = MakeStrong(this), this] (IYsonConsumer* consumer) {
-            auto treeSnapshot = GetTreeSnapshotForOrchid();
-
-            const auto buildOperationInfo = [&] (TFluentMap fluent, const TPoolTreeOperationElement* const operation) {
-                fluent
-                    .Item(operation->GetId()).BeginMap()
-                        .Do(BIND(
-                            &TPoolTree::DoBuildOperationProgress,
-                            ConstRef(treeSnapshot),
-                            Unretained(operation),
-                            StrategyHost_))
-                    .EndMap();
-            };
-
-            BuildYsonFluently(consumer).BeginMap()
-                    .Do([&] (TFluentMap fluent) {
-                        for (const auto& [operationId, operation] : treeSnapshot->EnabledOperationMap()) {
-                            buildOperationInfo(fluent, operation);
-                        }
-
-                        for (const auto& [operationId, operation] : treeSnapshot->DisabledOperationMap()) {
-                            buildOperationInfo(fluent, operation);
-                        }
-                    })
-                .EndMap();
-        })))->Via(StrategyHost_->GetOrchidWorkerInvoker());
+        dynamicOrchidService->AddChild("operations", New<TOperationsOrchidService>(MakeStrong(this))
+            ->Via(StrategyHost_->GetOrchidWorkerInvoker()));
 
         dynamicOrchidService->AddChild("config", IYPathService::FromProducer(BIND([this_ = MakeStrong(this), this] (IYsonConsumer* consumer) {
             auto treeSnapshot = GetTreeSnapshotForOrchid();
 
             BuildYsonFluently(consumer).Value(treeSnapshot->TreeConfig());
-        })))->Via(StrategyHost_->GetOrchidWorkerInvoker());
+        }))->Via(StrategyHost_->GetOrchidWorkerInvoker()));
 
         dynamicOrchidService->AddChild("resource_usage", IYPathService::FromProducer(BIND([this_ = MakeStrong(this), this] (IYsonConsumer* consumer) {
             auto treeSnapshot = GetTreeSnapshotForOrchid();
 
             BuildYsonFluently(consumer).Value(treeSnapshot->ResourceUsage());
-        })))->Via(StrategyHost_->GetOrchidWorkerInvoker());
+        }))->Via(StrategyHost_->GetOrchidWorkerInvoker()));
 
         dynamicOrchidService->AddChild("resource_limits", IYPathService::FromProducer(BIND([this_ = MakeStrong(this), this] (IYsonConsumer* consumer) {
             auto treeSnapshot = GetTreeSnapshotForOrchid();
 
             BuildYsonFluently(consumer).Value(treeSnapshot->ResourceLimits());
-        })))->Via(StrategyHost_->GetOrchidWorkerInvoker());
+        }))->Via(StrategyHost_->GetOrchidWorkerInvoker()));
 
         dynamicOrchidService->AddChild("node_count", IYPathService::FromProducer(BIND([this_ = MakeStrong(this), this] (IYsonConsumer* consumer) {
             auto treeSnapshot = GetTreeSnapshotForOrchid();
 
             BuildYsonFluently(consumer).Value(std::ssize(treeSnapshot->NodeAddresses()));
-        })))->Via(StrategyHost_->GetOrchidWorkerInvoker());
+        }))->Via(StrategyHost_->GetOrchidWorkerInvoker()));
 
         dynamicOrchidService->AddChild("node_addresses", IYPathService::FromProducer(BIND([this_ = MakeStrong(this), this] (IYsonConsumer* consumer) {
             auto treeSnapshot = GetTreeSnapshotForOrchid();
 
             BuildYsonFluently(consumer).Value(GetValues(treeSnapshot->NodeAddresses()));
-        })))->Via(StrategyHost_->GetOrchidWorkerInvoker());
+        }))->Via(StrategyHost_->GetOrchidWorkerInvoker()));
 
         // TODO(eshcherbin): Why not use tree snapshot here as well?
         dynamicOrchidService->AddChild("pool_count", IYPathService::FromProducer(BIND([this_ = MakeStrong(this), this] (IYsonConsumer* consumer) {
@@ -1747,7 +1723,102 @@ private:
         TIntrusivePtr<const TPoolTree> PoolTree_;
     };
 
+    class TOperationsOrchidService
+        : public TVirtualMapBase
+    {
+    public:
+        explicit TOperationsOrchidService(TIntrusivePtr<const TPoolTree> tree)
+            : PoolTree_(std::move(tree))
+        { }
+
+        i64 GetSize() const final
+        {
+            YT_ASSERT_INVOKER_AFFINITY(PoolTree_->StrategyHost_->GetOrchidWorkerInvoker());
+
+            const auto treeSnapshot = PoolTree_->GetTreeSnapshotForOrchid();
+
+            return std::ssize(treeSnapshot->EnabledOperationMap()) + std::ssize(treeSnapshot->DisabledOperationMap());
+        }
+
+        std::vector<std::string> GetKeys(const i64 limit) const final
+        {
+            YT_ASSERT_INVOKER_AFFINITY(PoolTree_->StrategyHost_->GetOrchidWorkerInvoker());
+
+            if (!limit) {
+                return {};
+            }
+
+            const auto treeSnapshot = PoolTree_->GetTreeSnapshotForOrchid();
+
+            std::vector<std::string> result;
+            result.reserve(std::min(
+                limit,
+                std::ssize(treeSnapshot->EnabledOperationMap()) + std::ssize(treeSnapshot->DisabledOperationMap())));
+
+            const auto appendOperationIds = [&] (const TNonOwningOperationElementMap& operationMap) {
+                for (const auto& [operationId, _] : operationMap) {
+                    if (std::ssize(result) >= limit) {
+                        break;
+                    }
+                    result.push_back(ToString(operationId));
+                }
+            };
+            appendOperationIds(treeSnapshot->EnabledOperationMap());
+            appendOperationIds(treeSnapshot->DisabledOperationMap());
+
+            return result;
+        }
+
+        IYPathServicePtr FindItemService(const std::string& key) const final
+        {
+            YT_ASSERT_INVOKER_AFFINITY(PoolTree_->StrategyHost_->GetOrchidWorkerInvoker());
+
+            auto treeSnapshot = PoolTree_->GetTreeSnapshotForOrchid();
+
+            TGuid operationGuid;
+            if (!TGuid::FromString(key, &operationGuid)) {
+                return nullptr;
+            }
+            const auto operationId = TOperationId(operationGuid);
+
+            const auto findOperationElement = [&] () -> const TPoolTreeOperationElement* {
+                if (const auto it = treeSnapshot->EnabledOperationMap().find(operationId); it != std::cend(treeSnapshot->EnabledOperationMap())) {
+                    return it->second;
+                }
+                if (const auto it = treeSnapshot->DisabledOperationMap().find(operationId); it != std::cend(treeSnapshot->DisabledOperationMap())) {
+                    return it->second;
+                }
+                return nullptr;
+            };
+
+            const auto* operation = findOperationElement();
+            if (!operation) {
+                return nullptr;
+            }
+
+            return IYPathService::FromProducer(BIND([
+                treeSnapshot = std::move(treeSnapshot),
+                operation,
+                strategyHost = PoolTree_->StrategyHost_
+            ] (IYsonConsumer* consumer) {
+                BuildYsonFluently(consumer)
+                    .BeginMap()
+                        .Do(std::bind(
+                            &TPoolTree::DoBuildOperationProgress,
+                            std::cref(treeSnapshot),
+                            operation,
+                            strategyHost,
+                            std::placeholders::_1))
+                    .EndMap();
+            }));
+        }
+
+    private:
+        TIntrusivePtr<const TPoolTree> PoolTree_;
+    };
+
     friend class TOperationsByPoolOrchidService;
+    friend class TOperationsOrchidService;
 
     // Thread affinity: Control.
     TPoolTreeSnapshotPtr TreeSnapshot_;
@@ -1869,7 +1940,7 @@ private:
                     TFairShareUpdateExecutor updateExecutor(
                         rootElement,
                         &fairShareUpdateContext,
-                        /*loggingTag*/ Format("TreeId: %v", treeId));
+                        /*loggingTags*/ NLogging::TLoggingTagList().With("TreeId", treeId));
                     updateExecutor.Run();
                     fairShareUpdateResult.Errors = std::move(fairShareUpdateContext.Errors);
 
@@ -2373,7 +2444,7 @@ private:
     {
         YT_ASSERT_INVOKERS_AFFINITY(FeasibleInvokers_);
 
-        auto tryGetValidPool = [&] (const TString& poolName, const char* poolCaption, const std::string& loggedAttributes) -> TPoolTreeCompositeElementPtr {
+        auto tryGetValidPool = [&] (const std::string& poolName, const char* poolCaption, const std::string& loggedAttributes) -> TPoolTreeCompositeElementPtr {
             auto pool = FindPool(poolName);
             if (pool) {
                 if (pool->GetMode() != ESchedulingMode::Fifo) {
@@ -2392,8 +2463,7 @@ private:
             auto it = userToDefaultPoolMap.find(userName);
             if (it != userToDefaultPoolMap.end()) {
                 auto loggedAttributes = Format("(PoolName: %v, UserName: %v)", it->second, userName);
-                // TODO(babenko): migrate to std::string
-                if (auto pool = tryGetValidPool(TString(it->second), "User default parent pool", loggedAttributes)) {
+                if (auto pool = tryGetValidPool(it->second, "User default parent pool", loggedAttributes)) {
                     return pool;
                 }
             }
@@ -2424,8 +2494,7 @@ private:
                 auto it = userToDefaultPoolMap.find(poolName);
                 if (it != userToDefaultPoolMap.end() && it->second != actualParentName) {
                     const auto& configuredParentName = it->second;
-                    // TODO(babenko): migrate to std::string
-                    auto newParent = FindPool(TString(configuredParentName));
+                    auto newParent = FindPool(configuredParentName);
                     if (!newParent) {
                         YT_LOG_DEBUG(
                             "Configured parent of ephemeral pool not found; skipping (Pool: %v, ActualParent: %v, ConfiguredParent: %v)",
@@ -2730,21 +2799,15 @@ private:
 
         YT_VERIFY(treeSnapshot);
 
-        GetCurrentInvoker()->Invoke(BIND(
-            &NPolicy::ISchedulingPolicy::ProcessSchedulingHeartbeat,
-            DryRunGpuSchedulingPolicy_,
+        Y_UNUSED(DryRunGpuSchedulingPolicy_->ProcessSchedulingHeartbeat(
             schedulingHeartbeatContext,
             treeSnapshot,
             skipScheduleAllocations));
 
-        auto processSchedulingHeartbeatFuture = BIND(
-            &NPolicy::ISchedulingPolicy::ProcessSchedulingHeartbeat,
-            SchedulingPolicy_,
+        auto processSchedulingHeartbeatFuture = SchedulingPolicy_->ProcessSchedulingHeartbeat(
             schedulingHeartbeatContext,
             treeSnapshot,
-            skipScheduleAllocations)
-            .AsyncVia(GetCurrentInvoker())
-            .Run();
+            skipScheduleAllocations);
 
         return processSchedulingHeartbeatFuture
             .Apply(BIND(
@@ -3061,7 +3124,7 @@ private:
 
     void LogOperationsInfo(const TPoolTreeSnapshotPtr& treeSnapshot) const
     {
-        auto Logger = this->Logger().WithTag("TreeSnapshotId: %v", treeSnapshot->GetId());
+        auto Logger = this->Logger().WithTag("TreeSnapshotId", treeSnapshot->GetId());
 
         auto doLogOperationsInfo = [&] (const auto& operationIdToElement) {
             for (const auto& [operationId, element] : operationIdToElement) {
@@ -3078,7 +3141,7 @@ private:
 
     void LogPoolsInfo(const TPoolTreeSnapshotPtr& treeSnapshot) const
     {
-        auto Logger = this->Logger().WithTag("TreeSnapshotId: %v", treeSnapshot->GetId());
+        auto Logger = this->Logger().WithTag("TreeSnapshotId", treeSnapshot->GetId());
 
         for (const auto& [poolName, element] : treeSnapshot->PoolMap()) {
             YT_LOG_DEBUG("FairShareInfo: %v (Pool: %v)",

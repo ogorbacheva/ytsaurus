@@ -8,10 +8,12 @@
 #include <yt/yt/ytlib/chunk_client/replication_writer.h>
 #include <yt/yt/ytlib/chunk_client/chunk_writer.h>
 #include <yt/yt/ytlib/chunk_client/deferred_chunk_meta.h>
+#include <yt/yt/ytlib/chunk_client/job_io_meter.h>
 
 #include <yt/yt/ytlib/api/native/config.h>
 
 #include <yt/yt/ytlib/chunk_client/proto/data_node_service.pb.h>
+#include <yt/yt/ytlib/chunk_client/proto/chunk_writer_statistics.pb.h>
 
 #include <yt/yt/ytlib/misc/memory_usage_tracker.h>
 
@@ -158,6 +160,8 @@ public:
         UseProbePutBlocks_ = request->use_probe_put_blocks();
         response->set_use_probe_put_blocks(request->use_probe_put_blocks());
 
+        UseSendBlocks_ = !request->disable_send_blocks();
+
         context->Reply();
     }
 
@@ -178,6 +182,9 @@ public:
         SessionId_ = std::nullopt;
 
         *response->mutable_chunk_info() = {};
+        if (ReportChunkWriterStatistics_) {
+            FillChunkWriterStatistics(response->mutable_chunk_writer_statistics(), /*dataBytes*/ 0, MetaBytesPerFinish_);
+        }
         context->Reply();
     }
 
@@ -209,6 +216,12 @@ public:
         bool populateCache = request->populate_cache();
         bool flushBlocks = request->flush_blocks();
         i64 cumulativeBlockSize = request->cumulative_block_size();
+
+        if (request->has_io_fair_share_weight()) {
+            LastIoFairShareWeight_.store(request->io_fair_share_weight());
+        } else {
+            LastIoFairShareWeight_.store(-1);
+        }
 
         if (UseProbePutBlocks_) {
             YT_VERIFY(MaxCumulativeBlockSize_ >= cumulativeBlockSize);
@@ -249,6 +262,8 @@ public:
         YT_VERIFY(SessionId_.has_value());
         YT_VERIFY(*SessionId_ == FromProto<TSessionId>(request->session_id()));
 
+        ++SendBlocksCounter_;
+
         auto chunkId = FromProto<TSessionId>(request->session_id()).ChunkId;
         int firstBlockIndex = request->first_block_index();
         int blockCount = request->block_count();
@@ -287,6 +302,9 @@ public:
         ToProto(req->mutable_session_id(), *SessionId_);
         req->set_first_block_index(firstBlockIndex);
         req->set_cumulative_block_size(cumulativeBlockSize);
+        if (request->has_io_fair_share_weight()) {
+            req->set_io_fair_share_weight(request->io_fair_share_weight());
+        }
 
         std::vector<TBlock> blocks;
         blocks.reserve(blockCount);
@@ -326,6 +344,10 @@ public:
             it->second = true;
         }
 
+        if (ReportChunkWriterStatistics_) {
+            FillChunkWriterStatistics(response->mutable_chunk_writer_statistics(), DataBytesPerFlush_, /*metaBytes*/ 0);
+        }
+
         context->Reply();
     }
 
@@ -357,12 +379,42 @@ public:
     {
         return SessionStarted_;
     }
+
+    bool GetUseSendBlocks() const
+    {
+        return UseSendBlocks_;
+    }
+
+    int GetSendBlocksCount() const
+    {
+        return SendBlocksCounter_;
+    }
+
+    void SetReportChunkWriterStatistics(i64 dataBytesPerFlush, i64 metaBytesPerFinish)
+    {
+        ReportChunkWriterStatistics_ = true;
+        DataBytesPerFlush_ = dataBytesPerFlush;
+        MetaBytesPerFinish_ = metaBytesPerFinish;
+    }
+
+    i64 GetReportedWriterBytes() const
+    {
+        return ReportedWriterBytes_.load();
+    }
+
+    double GetLastIoFairShareWeight() const
+    {
+        return LastIoFairShareWeight_.load();
+    }
+
 private:
     const int ThrottledBlockCount_;
     const bool AlwaysFail_;
     const bool NetThrottling_;
 
     int PutBlocksCounter_ = 0;
+    int SendBlocksCounter_ = 0;
+    bool UseSendBlocks_ = true;
 
     std::optional<TSessionId> SessionId_;
     bool SessionStarted_ = false;
@@ -371,10 +423,26 @@ private:
     bool UseErrorOnNetThrottling_ = true;
     i64 MaxCumulativeBlockSize_ = 0;
 
+    bool ReportChunkWriterStatistics_ = false;
+    i64 DataBytesPerFlush_ = 0;
+    i64 MetaBytesPerFinish_ = 0;
+    std::atomic<i64> ReportedWriterBytes_ = 0;
+    std::atomic<double> LastIoFairShareWeight_ = -1;
+
     // Weak Pointer because of circular dependency
     TWeakPtr<IChannelFactory> ChannelFactory_ = nullptr;
     THashMap<int, TBlock> LocalBlocks_;
     THashMap<int, bool> IsBlockFlushed_;
+
+    void FillChunkWriterStatistics(NProto::TChunkWriterStatistics* statistics, i64 dataBytes, i64 metaBytes)
+    {
+        statistics->set_data_bytes_written_to_disk(dataBytes);
+        statistics->set_data_io_write_requests(0);
+        statistics->set_meta_bytes_written_to_disk(metaBytes);
+        statistics->set_meta_io_write_requests(0);
+        statistics->set_meta_io_sync_requests(0);
+        ReportedWriterBytes_.fetch_add(dataBytes + metaBytes);
+    }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -382,6 +450,7 @@ private:
 struct TWriterTestCase
 {
     bool UseProbePutBlocks = false;
+    bool UseSendBlocks = true;
     int ReplicationFactor = 3;
     int NodeCount = 3;
     int BlockCount = 10;
@@ -389,6 +458,7 @@ struct TWriterTestCase
     std::set<int> NetThrottlingNodes;
     std::set<int> ThrottlingNodes;
     std::set<int> FailedNodes;
+    std::optional<double> IoFairShareWeight;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -495,6 +565,8 @@ public:
         config->UseProbePutBlocks = useProbePutBlocks;
         config->MinUploadReplicationFactor = replicationFactor;
         config->UploadReplicationFactor = nodeCount;
+        config->UseSendBlocks = testCase.UseSendBlocks;
+        config->IoFairShareWeight = testCase.IoFairShareWeight;
         config->NodeChannel = New<TRetryingChannelConfig>();
         config->NodeChannel->RetryAttempts = 5;
 
@@ -682,6 +754,169 @@ INSTANTIATE_TEST_SUITE_P(
         //     .FailedNodes = {2, 3, 4},
         // }
     ));
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TUseSendBlocksWriterTest
+    : public TReplicationWriterTest
+{ };
+
+TEST_P(TUseSendBlocksWriterTest, WriteTest)
+{
+    auto blockChecksums = BlocksToChecksums(GeneratedBlocks);
+
+    IChunkWriter::TWriteBlocksOptions writeOptions;
+    TWorkloadDescriptor workloadDescriptor;
+
+    Writer->Open()
+        .Apply(BIND([&] {
+            EXPECT_TRUE(Writer->WriteBlocks(writeOptions, workloadDescriptor, GeneratedBlocks));
+            return Writer->GetReadyEvent();
+        }))
+        .Apply(BIND([&] {
+            auto deferredMeta = New<TDeferredChunkMeta>();
+            deferredMeta->set_type(0);
+            deferredMeta->set_format(0);
+            *deferredMeta->mutable_extensions() = {};
+            return Writer->Close({}, {}, deferredMeta);
+        }))
+        .BlockingWait(TDuration::Seconds(120));
+
+    for (const auto& service : Services) {
+        EXPECT_FALSE(service->GetUseSendBlocks())
+            << "use_send_blocks=false must be propagated to every node session via StartChunk RPC";
+        EXPECT_EQ(service->GetSendBlocksCount(), 0)
+            << "SendBlocks must not be called when UseSendBlocks is false";
+        EXPECT_EQ(service->GetBlockChecksums(), blockChecksums)
+            << "all blocks must be delivered correctly via PutBlocks";
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TUseSendBlocksWriterTest,
+    TUseSendBlocksWriterTest,
+    ::testing::Values(
+        TWriterTestCase{
+            .UseSendBlocks = false,
+            .ReplicationFactor = 3,
+            .NodeCount = 3,
+            .BlockCount = 1024,
+        },
+        TWriterTestCase{
+            .UseSendBlocks = false,
+            .ReplicationFactor = 1,
+            .NodeCount = 1,
+            .BlockCount = 1024,
+        }
+    ));
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TJobIoMeterWriterTest
+    : public TReplicationWriterTest
+{ };
+
+TEST_P(TJobIoMeterWriterTest, AccountsWrittenBytes)
+{
+    constexpr i64 DataBytesPerFlush = 100;
+    constexpr i64 MetaBytesPerFinish = 50;
+
+    for (const auto& service : Services) {
+        service->SetReportChunkWriterStatistics(DataBytesPerFlush, MetaBytesPerFinish);
+    }
+
+    auto jobIoMeter = New<TJobIoMeter>(TDuration::Hours(1));
+
+    IChunkWriter::TWriteBlocksOptions writeOptions;
+    writeOptions.ClientOptions.JobIoMeter = jobIoMeter;
+    TWorkloadDescriptor workloadDescriptor;
+
+    Writer->Open()
+        .Apply(BIND([&] {
+            EXPECT_TRUE(Writer->WriteBlocks(writeOptions, workloadDescriptor, GeneratedBlocks));
+            return Writer->GetReadyEvent();
+        }))
+        .Apply(BIND([&] {
+            auto deferredMeta = New<TDeferredChunkMeta>();
+            deferredMeta->set_type(0);
+            deferredMeta->set_format(0);
+            *deferredMeta->mutable_extensions() = {};
+            return Writer->Close(writeOptions, {}, deferredMeta);
+        }))
+        .BlockingWait(TDuration::Seconds(120));
+
+    // The meter must accumulate exactly the disk-write bytes reported by the data
+    // nodes across all FlushBlocks (data) and FinishChunk (meta) responses.
+    i64 expectedBytes = 0;
+    for (const auto& service : Services) {
+        expectedBytes += service->GetReportedWriterBytes();
+    }
+
+    EXPECT_GT(expectedBytes, 0);
+    EXPECT_EQ(jobIoMeter->GetIoConsumedInWindow(TDuration::Hours(1)), expectedBytes);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TJobIoMeterWriterTest,
+    TJobIoMeterWriterTest,
+    ::testing::Values(
+        TWriterTestCase{
+            .ReplicationFactor = 1,
+            .NodeCount = 1,
+            .BlockCount = 16,
+        },
+        TWriterTestCase{
+            .ReplicationFactor = 3,
+            .NodeCount = 3,
+            .BlockCount = 16,
+        }));
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TIoFairShareWeightWriterTest
+    : public TReplicationWriterTest
+{ };
+
+TEST_P(TIoFairShareWeightWriterTest, ReportsIoFairShareWeight)
+{
+    IChunkWriter::TWriteBlocksOptions writeOptions;
+    TWorkloadDescriptor workloadDescriptor;
+
+    Writer->Open()
+        .Apply(BIND([&] {
+            EXPECT_TRUE(Writer->WriteBlocks(writeOptions, workloadDescriptor, GeneratedBlocks));
+            return Writer->GetReadyEvent();
+        }))
+        .Apply(BIND([&] {
+            auto deferredMeta = New<TDeferredChunkMeta>();
+            deferredMeta->set_type(0);
+            deferredMeta->set_format(0);
+            *deferredMeta->mutable_extensions() = {};
+            return Writer->Close(writeOptions, {}, deferredMeta);
+        }))
+        .BlockingWait(TDuration::Seconds(120));
+
+    for (const auto& service : Services) {
+        EXPECT_EQ(service->GetLastIoFairShareWeight(), 2.5);
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    TIoFairShareWeightWriterTest,
+    TIoFairShareWeightWriterTest,
+    ::testing::Values(
+        TWriterTestCase{
+            .ReplicationFactor = 1,
+            .NodeCount = 1,
+            .BlockCount = 16,
+            .IoFairShareWeight = 2.5,
+        },
+        TWriterTestCase{
+            .ReplicationFactor = 3,
+            .NodeCount = 3,
+            .BlockCount = 16,
+            .IoFairShareWeight = 2.5,
+        }));
 
 ////////////////////////////////////////////////////////////////////////////////
 

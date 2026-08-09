@@ -69,21 +69,27 @@ TDriverResponseHolder::~TDriverResponseHolder()
         return;
     }
 
+    // Unregister first so that OnBeforePythonFinalize can never observe a dying holder;
+    // the lock also orders this destructor with an in-flight Destroy() from its loop.
+    {
+        auto guard = Guard(AliveDriverResponseHoldersLock);
+        YT_VERIFY(AliveDriverResponseHolders.erase(this) == 1);
+    }
+
     if (!Destroyed_) {
         auto guard = Guard(DestructionSpinLock_);
-        if (ShuttingDown_) {
-            return;
-        }
-
-        {
+        if (!ShuttingDown_) {
             TGilGuard gilGuard;
             Destroy();
         }
     }
 
-    {
-        auto guard = Guard(AliveDriverResponseHoldersLock);
-        YT_VERIFY(AliveDriverResponseHolders.erase(this) == 1);
+    // Streams may still be alive here: either ShuttingDown_ was observed above,
+    // or they were attached after OnBeforePythonFinalize had already destroyed this holder.
+    // Prevent possible Py_DECREF off-GIL by leaking pointers. Safe since driver process is shutting down.
+    if (ShuttingDown_) {
+        Y_UNUSED(InputStream_.release());
+        Y_UNUSED(OutputStream_.release());
     }
 }
 
@@ -147,7 +153,7 @@ void TDriverResponseHolder::HoldOutputStream(std::unique_ptr<IOutputStream>& out
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TString TDriverResponse::TypeName_;
+std::string TDriverResponse::TypeName_;
 
 TDriverResponse::TDriverResponse(Py::PythonClassInstance *self, Py::Tuple& args, Py::Dict& kwargs)
     : Py::PythonClass<TDriverResponse>::PythonClass(self, args, kwargs)
@@ -239,7 +245,7 @@ TDriverResponse::~TDriverResponse()
     GetFinalizerInvoker()->Invoke(BIND([holder = Holder_.Release()] { Unref(holder); }));
 }
 
-void TDriverResponse::InitType(const TString& moduleName)
+void TDriverResponse::InitType(const std::string& moduleName)
 {
     static std::once_flag flag;
     std::call_once(flag, [&] {

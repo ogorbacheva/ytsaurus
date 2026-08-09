@@ -13,6 +13,7 @@
 #include <yt/yt/server/node/data_node/public.h>
 
 #include <yt/yt/server/lib/nbd/public.h>
+#include <yt/yt/server/lib/nbd/image/public.h>
 
 #include <yt/yt/ytlib/chunk_client/public.h>
 #include <yt/yt/ytlib/chunk_client/session_id.h>
@@ -129,16 +130,16 @@ DECLARE_REFCOUNTED_CLASS(TNbdVolumeFactory)
 
 //! This class creates NBD volumes.
 class TNbdVolumeFactory
-    : public TVolumeCacheBase<TString>
+    : public TVolumeCacheBase<std::string>
 {
 public:
-    using TVolume = TCachedVolume<TString>;
+    using TVolume = TCachedVolume<std::string>;
     using TVolumePtr = TIntrusivePtr<TVolume>;
     using TVolumeFactory = TExtendedCallback<IVolumePtr(
         NProfiling::TTagSet tagSet,
         TVolumeMeta volumeMeta,
         TLayerLocationPtr layerLocation,
-        TString nbdDeviceId,
+        std::string nbdDeviceId,
         NNbd::INbdServerPtr nbdServer)>;
 
     TNbdVolumeFactory(
@@ -163,14 +164,7 @@ private:
     static void ValidatePrepareRONbdVolumeOptions(const TPrepareRONbdVolumeOptions& options);
     static void ValidatePrepareRWNbdVolumeOptions(const TPrepareRWNbdVolumeOptions& options);
 
-    TInsertCookie GetInsertCookie(const TString& deviceId, const NNbd::INbdServerPtr& nbdServer);
-
-    //! Make callback that subscribes job for NBD device errors.
-    TExtendedCallback<TVolumePtr(const TErrorOr<TVolumePtr>&)> MakeJobSubscriberForDeviceErrors(
-        TJobId jobId,
-        const TString& deviceId,
-        const NNbd::INbdServerPtr& nbdServer,
-        const NLogging::TLogger& Logger);
+    TInsertCookie GetInsertCookie(const std::string& deviceId, const NNbd::INbdServerPtr& nbdServer);
 
     TFuture<NNbd::IBlockDevicePtr> InitializeNbdDevice(
         const NNbd::IBlockDevicePtr& device,
@@ -192,7 +186,7 @@ private:
 
     // RO volumes start here.
 
-    NNbd::IImageReaderPtr CreateArtifactReader(
+    NNbd::NImage::IImageReaderPtr CreateArtifactReader(
         const NLogging::TLogger& Logger,
         const TArtifactKey& artifactKey);
 

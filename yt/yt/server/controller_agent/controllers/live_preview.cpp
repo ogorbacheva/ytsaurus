@@ -21,7 +21,7 @@ TLivePreview::TLivePreview(
     TNodeDirectoryPtr nodeDirectory,
     TLogger logger,
     TOperationId operationId,
-    TString name,
+    std::string name,
     TYPath path)
     : Schema_(std::move(schema))
     , NodeDirectory_(std::move(nodeDirectory))
@@ -70,7 +70,7 @@ void TLivePreview::RegisterMetadata(auto&& registrar)
     PHOENIX_REGISTER_FIELD(7, Logger,
         .SinceVersion(ESnapshotVersion::ValidateLivePreviewChunks)
         .WhenMissing([] (TThis* this_, auto& /*context*/) {
-            this_->Logger = ControllerLogger().WithTag("OperationId: %v", this_->OperationId_);
+            this_->Logger = ControllerLogger().WithTag("OperationId", this_->OperationId_);
         }));
     registrar.AfterLoad([] (TThis* this_, auto& /*context*/) {
         this_->ValidateChunks();

@@ -126,6 +126,18 @@ TLockMask GetLocks(const TRowModification& modification)
         });
 }
 
+void ValidateChaosLeaseType(const TTransactionId& prerequisiteId, const std::string& path)
+{
+    auto prerequisiteType = TypeFromId(prerequisiteId);
+    if (!IsChaosLeaseType(prerequisiteType)) {
+        THROW_ERROR_EXCEPTION(
+            "Transaction commit affects chaos tables, only chaos leases allowed as prerequisite ids")
+            << TErrorAttribute("prerequisite_id", prerequisiteId)
+            << TErrorAttribute("prerequisite_type", prerequisiteType)
+            << TErrorAttribute("table_path", path);
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace
@@ -156,9 +168,9 @@ public:
         NLogging::TLogger logger)
         : Client_(std::move(client))
         , Transaction_(std::move(transaction))
-        , Logger(logger.WithTag("TransactionId: %v, ClusterTag: %v",
-            GetId(),
-            Client_->GetConnection()->GetClusterTag()))
+        , Logger(logger
+            .WithTag("TransactionId", GetId())
+            .WithTag("ClusterTag", Client_->GetConnection()->GetClusterTag()))
         , Counters_(Client_->GetCounters().TransactionCounters)
         , SerializedInvoker_(CreateSerializedInvoker(
             Client_->GetConnection()->GetInvoker()))
@@ -352,7 +364,7 @@ public:
         }
 
         YT_LOG_DEBUG("Alien transaction registered (AlienConnectionId: %v)",
-            transaction->GetConnection()->GetLoggingTag());
+            transaction->GetConnection()->GetLoggingTags());
     }
 
 
@@ -1306,7 +1318,7 @@ private:
             : Transaction_(transaction)
             , UpstreamReplicaId_(upstreamReplicaId)
             , ReplicationCard_(std::move(replicationCard))
-            , Logger(transaction->Logger().WithTag("Path: %v", path))
+            , Logger(transaction->Logger().WithTag("Path", path))
         {
             const auto& tableMountCache = transaction->Client_->GetTableMountCache();
             auto tableInfoFuture = tableMountCache->GetTableInfo(path);
@@ -2118,10 +2130,12 @@ private:
             std::vector<TFuture<TTableMountInfoPtr>> indexTableInfoFutures;
             indexTableInfoFutures.reserve(mountInfo->Indices.size());
             for (const auto& indexInfo : mountInfo->Indices) {
+                YT_ASSERT(IsTableType(TypeFromId(indexInfo.IndexObjectId)));
+
                 indexTableInfoFutures.push_back(Client_
                     ->GetNativeConnection()
                     ->GetTableMountCache()
-                    ->GetTableInfo(FromObjectId(indexInfo.TableId)));
+                    ->GetTableInfo(FromObjectId(indexInfo.IndexObjectId)));
             }
 
             auto indexTableInfos = WaitFor(AllSucceeded(indexTableInfoFutures).AsUnique())
@@ -2254,10 +2268,17 @@ private:
         CommitOptions_ = options;
 
         // NB: Include prerequisite ids which have been set during start_transaction call.
-        auto prerequisiteIds = Transaction_->GetPrerequisiteTransactionIds();
-        for (const auto& prerequisiteId : CommitOptions_.PrerequisiteTransactionIds) {
-            prerequisiteIds.push_back(prerequisiteId);
-        }
+        std::vector<TTransactionId> prerequisiteIds;
+        prerequisiteIds.reserve(
+            Transaction_->GetPrerequisiteTransactionIds().size() +
+            CommitOptions_.PrerequisiteTransactionIds.size());
+        prerequisiteIds.insert(prerequisiteIds.end(),
+            Transaction_->GetPrerequisiteTransactionIds().begin(),
+            Transaction_->GetPrerequisiteTransactionIds().end());
+        prerequisiteIds.insert(prerequisiteIds.end(),
+            CommitOptions_.PrerequisiteTransactionIds.begin(),
+            CommitOptions_.PrerequisiteTransactionIds.end());
+        SortUnique(prerequisiteIds);
 
         THashSet<NObjectClient::TCellId> selectedCellIds;
         THashSet<NChaosClient::TReplicationCardId> requestedReplicationCardIds;
@@ -2316,7 +2337,8 @@ private:
                     }
                 }
 
-                if (!coordinatorCellId) {
+                bool isNewCoordinator = !coordinatorCellId;
+                if (isNewCoordinator) {
                     const auto& downedCellTracker = Client_->GetNativeConnection()->GetDownedCellTracker();
                     coordinatorCellId = downedCellTracker->ChooseOne(coordinatorCellIds);
                     selectedCellIds.insert(coordinatorCellId);
@@ -2326,17 +2348,12 @@ private:
                 NChaosClient::NProto::TReqReplicatedCommit request;
                 ToProto(request.mutable_replication_card_id(), replicationCardId);
                 request.set_replication_era(session->GetReplicationCard()->Era);
-                for (const auto& prerequisiteId : prerequisiteIds) {
-                    auto prerequisiteType = TypeFromId(prerequisiteId);
-                    if (!IsChaosLeaseType(prerequisiteType)) {
-                        THROW_ERROR_EXCEPTION(
-                            "Transaction commit affects chaos tables, only chaos leases allowed as prerequisite ids")
-                            << TErrorAttribute("prerequisite_id", prerequisiteId)
-                            << TErrorAttribute("prerequisite_type", prerequisiteType)
-                            << TErrorAttribute("table_path", path);
+                if (isNewCoordinator && !prerequisiteIds.empty()) {
+                    request.mutable_prerequisite_ids()->Reserve(prerequisiteIds.size());
+                    for (const auto& prerequisiteId : prerequisiteIds) {
+                        ValidateChaosLeaseType(prerequisiteId, path);
+                        ToProto(request.add_prerequisite_ids(), prerequisiteId);
                     }
-
-                    ToProto(request.add_prerequisite_ids(), prerequisiteId);
                 }
 
                 DoAddAction(coordinatorCellId, MakeTransactionActionData(request));

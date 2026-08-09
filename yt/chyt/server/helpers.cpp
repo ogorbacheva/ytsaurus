@@ -402,7 +402,7 @@ TQuerySettingsPtr ParseCustomSettings(
         }
 
         YT_LOG_TRACE("Patch node (Node: %v)", ConvertToYsonString(patchNode, EYsonFormat::Text));
-        SetNodeByYPath(node, ypath, patchNode);
+        SetNodeByYPath(node, ypath, patchNode, /*force*/ true);
     }
 
     YT_LOG_TRACE("Resulting node (Node: %v)", ConvertToYsonString(node, EYsonFormat::Text));
@@ -470,7 +470,7 @@ int GetQueryProcessingStageRank(DB::QueryProcessingStage::Enum stage)
             return 3;
 
         default:
-            THROW_ERROR_EXCEPTION("Unexpected query processing stage (Stage: %v)",
+            THROW_ERROR_EXCEPTION("Unexpected query processing stage %Qv",
                 toString(stage));
     }
 }
@@ -619,7 +619,7 @@ namespace DB {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TString ToString(const NameSet& nameSet)
+std::string ToString(const NameSet& nameSet)
 {
     return NYT::Format("%v", std::vector<TString>(nameSet.begin(), nameSet.end()));
 }
@@ -650,12 +650,12 @@ void Serialize(const ProcessListForUserInfo& processListForUserInfo, NYT::NYson:
         .EndMap();
 }
 
-TString ToString(const Field& field)
+std::string ToString(const Field& field)
 {
     return EscapeC(TString(field.dump()));
 }
 
-TString ToString(const Block& block)
+std::string ToString(const Block& block)
 {
     NYT::TStringBuilder content;
     const auto& columns = block.getColumns();

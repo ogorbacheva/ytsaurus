@@ -95,7 +95,7 @@ struct ISchedulingPolicy
 
     //! Scheduling.
     //! Thread affinity: Any.
-    virtual void ProcessSchedulingHeartbeat(
+    virtual TFuture<void> ProcessSchedulingHeartbeat(
         const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
         const TPoolTreeSnapshotPtr& treeSnapshot,
         bool skipScheduleAllocations) = 0;
@@ -148,7 +148,7 @@ struct ISchedulingPolicy
         TDelimitedStringBuilderWrapper& delimitedBuilder) const = 0;
 
     //! Thread affinity: Control.
-    virtual void PopulateOrchidService(const NYTree::TCompositeMapServicePtr& orchidService) const = 0;
+    virtual void PopulateOrchidService(const NYTree::ICompositeMapServicePtr& orchidService) const = 0;
 
     //! Thread affinity: Profiler thread.
     virtual void ProfileOperation(

@@ -60,7 +60,11 @@ bool HasParent(const TChunkTree* chunkTree, TChunkList* potentialParent);
 
 void AttachToChunkList(
     TChunkList* chunkList,
-    TRange<TChunkTreeRawPtr> children);
+    TRange<TChunkTreeRawPtr> children,
+    bool updateChunkListStatistics = true);
+
+EChunkDetachPolicy DeriveChunkTreeDetachPolicy(const TChunkList* chunkList);
+
 void DetachFromChunkList(
     TChunkList* chunkList,
     TRange<TChunkTreeRawPtr> children,
@@ -91,7 +95,11 @@ void AccumulateUniqueAncestorsStatistics(
     const TChunkTreeStatistics& statisticsDelta);
 void AccumulateHunkStatisticsInUniqueAncestors(
     TChunkList* parent,
-    TChunkTree* child);
+    TChunkTree* child,
+    bool updateChunkListStatistics);
+bool IsHunkChunkUniquelyPresentInChunkList(
+    TChunkList* chunkList,
+    TChunkTree* chunkTree);
 
 //! Iterates over all ancestors of |hunkChunk|, calling |functor(parent, firstOccurrence)| for all of them.
 //! All parents are expected to be of hunk-related chunk list kind. Maximum two generations are expected.
@@ -201,6 +209,12 @@ EChunkReplicaState GetAddedChunkReplicaState(
         TChunkId chunkId,
         const NChunkClient::NProto::TChunkAddInfo& chunkAddInfo);
 
+bool IsSealNeeded(const TChunk* chunk);
+
+NLogging::ELogLevel GetChunkLogLevel(
+    const TChunk* chunk,
+    const IChunkManagerPtr& chunkManager);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TChunkSequoiaConfig
@@ -218,14 +232,22 @@ struct TChunkSequoiaConfig
 
 TChunkSequoiaConfig GetChunkSequoiaConfig(TChunkId chunkId, const TDynamicSequoiaChunkReplicasConfigPtr& config);
 
-bool IsHunkRelatedChunkList(const TChunkList* chunkList);
-bool IsHunkRootChunkList(const TChunkList* chunkList);
-
 bool IsHunkChunkFormat(NChunkClient::EChunkFormat chunkFormat);
 
 i64 ComputeDiskSpaceFromDataSize(i64 dataSize, NErasure::ECodec erasureCodec);
 
 void AccumulateNewlyReferencedHunkStatistics(TChunk* hunkChunk, i64 dataWeightDelta, i64 dataSizeDelta);
+
+////////////////////////////////////////////////////////////////////////////////
+
+bool IsReplicaDecommissioned(TChunkLocation* replica);
+bool IsReplicaOnPendingRestartNode(TChunkLocation* replica);
+
+////////////////////////////////////////////////////////////////////////////////
+
+#define YT_VERBOSE_LOG_CHUNK_EVENT(chunk, ...)                      YT_LOG_EVENT(Logger(), GetChunkLogLevel(chunk, Bootstrap_->GetChunkManager()), __VA_ARGS__)
+#define YT_VERBOSE_LOG_CHUNK_EVENT_IF(condition, chunk, ...)        if (condition)    YT_VERBOSE_LOG_CHUNK_EVENT(__VA_ARGS__)
+#define YT_VERBOSE_LOG_CHUNK_EVENT_UNLESS(condition, chunk, ...)    if (!(condition)) YT_VERBOSE_LOG_CHUNK_EVENT(__VA_ARGS__)
 
 ////////////////////////////////////////////////////////////////////////////////
 

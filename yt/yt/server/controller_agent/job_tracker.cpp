@@ -20,6 +20,7 @@
 #include <yt/yt/core/concurrency/scheduler_api.h>
 #include <yt/yt/core/concurrency/thread_pool.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
 
@@ -728,7 +729,7 @@ TJobTracker::TInBarrier::TInBarrier(const TOutBarrier& outBarrier)
     , OutBarrierCreationTime_(outBarrier.CreatedAt_)
 { }
 
-template <CInvocable<void(const TError&)> TCallback>
+template <NMpl::CInvocable<void(const TError&)> TCallback>
 void TJobTracker::TInBarrier::Wait(TCallback&& onCanceled) const
 {
     if (Future_.IsSet()) {
@@ -1123,10 +1124,9 @@ void TJobTracker::ProcessHeartbeat(const TJobTracker::TCtxHeartbeatPtr& context)
 
     THeartbeatProcessingContext heartbeatProcessingContext{
         .RpcContext = context,
-        .Logger = NControllerAgent::Logger().WithTag(
-            "NodeId: %v, NodeAddress: %v",
-            nodeId,
-            nodeDescriptor.GetDefaultAddress()),
+        .Logger = NControllerAgent::Logger()
+            .WithTag("NodeId", nodeId)
+            .WithTag("NodeAddress", nodeDescriptor.GetDefaultAddress()),
         .NodeAddress = nodeDescriptor.GetDefaultAddress(),
         .NodeId = nodeId,
         .IncarnationId = incarnationId,
@@ -1186,13 +1186,12 @@ void TJobTracker::SettleJob(const TJobTracker::TCtxSettleJobPtr& context)
         NControllerAgent::EErrorCode::AgentDisconnected,
         "Controller agent disconnected");
 
-    auto Logger = NControllerAgent::Logger().WithTag(
-        "NodeId: %v, NodeAddress: %v, OperationId: %v, AllocationId: %v, LastJobId: %v",
-        nodeId,
-        nodeDescriptor.GetDefaultAddress(),
-        operationId,
-        allocationId,
-        lastJobId);
+    auto Logger = NControllerAgent::Logger()
+        .WithTag("NodeId", nodeId)
+        .WithTag("NodeAddress", nodeDescriptor.GetDefaultAddress())
+        .WithTag("OperationId", operationId)
+        .WithTag("AllocationId", allocationId)
+        .WithTag("LastJobId", lastJobId);
 
     TErrorOr<TJobStartInfo> jobInfoOrError;
 
@@ -1558,7 +1557,7 @@ NYTree::IYPathServicePtr TJobTracker::CreateOrchidService() const
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
-    auto service = New<TCompositeMapService>();
+    auto service = CreateCompositeMapService();
 
     service->AddChild("nodes", New<TJobTrackerNodeOrchidService>(this));
 
@@ -1832,9 +1831,7 @@ void TJobTracker::DoProcessJobInfosInHeartbeat(
                 continue;
             }
 
-            auto Logger = operationUpdatesProcessingContext.OperationLogger.WithTag(
-                "JobId: %v",
-                jobId);
+            auto Logger = operationUpdatesProcessingContext.OperationLogger.WithTag("JobId", jobId);
 
             const auto newJobStage = JobStageFromJobState(jobSummary.JobSummary->State);
 
@@ -2168,9 +2165,7 @@ TJobTracker::TOperationUpdatesProcessingContext& TJobTracker::AddOperationUpdate
         return operationUpdatesProcessingContext;
     }
 
-    operationUpdatesProcessingContext.OperationLogger = heartbeatProcessingContext->Logger.WithTag(
-        "OperationId: %v",
-        operationId);
+    operationUpdatesProcessingContext.OperationLogger = heartbeatProcessingContext->Logger.WithTag("OperationId", operationId);
 
     const auto& Logger = operationUpdatesProcessingContext.OperationLogger;
 
@@ -2768,7 +2763,7 @@ void TJobTracker::DoReleaseJobs(
     }
 
     TOperationUpdatesProcessingContext context{.OperationId = operationId,};
-    context.OperationLogger = Logger().WithTag("OperationId: %v", operationId);
+    context.OperationLogger = Logger().WithTag("OperationId", operationId);
     context.OperationInfo = &GetOrCrash(RegisteredOperations_, operationId);
     context.OperationController = context.OperationInfo->OperationController.Lock();
 
@@ -2853,7 +2848,7 @@ void TJobTracker::RequestJobAbortion(
     const auto& nodeAddress = nodeInfo->NodeAddress;
 
     TOperationUpdatesProcessingContext context{.OperationId = operationId,};
-    context.OperationLogger = Logger().WithTag("OperationId: %v", operationId);
+    context.OperationLogger = Logger().WithTag("OperationId", operationId);
     context.OperationInfo = &GetOrCrash(RegisteredOperations_, operationId);
     context.OperationController = context.OperationInfo->OperationController.Lock();
 
@@ -3263,7 +3258,7 @@ void TJobTracker::UnregisterNode(TNodeId nodeId, const std::string& nodeAddress,
             if (inserted) {
                 auto& context = it->second;
                 context.OperationInfo = &GetOrCrash(RegisteredOperations_, allocation.OperationId);
-                context.OperationLogger = Logger().WithTag("OperationId: %v", allocation.OperationId);
+                context.OperationLogger = Logger().WithTag("OperationId", allocation.OperationId);
                 context.OperationController = context.OperationInfo->OperationController.Lock();
             }
 
@@ -3362,7 +3357,7 @@ void TJobTracker::ProcessAllocationEvents(
     }
 
     TOperationUpdatesProcessingContext context{.OperationId = operationId};
-    context.OperationLogger = NControllerAgent::Logger().WithTag("OperationId: %v", operationId);
+    context.OperationLogger = NControllerAgent::Logger().WithTag("OperationId", operationId);
     const auto& Logger = context.OperationLogger;
 
     auto logOperationIsNotRunningEvent = [&] (const auto& operationStatus) {
@@ -3419,7 +3414,7 @@ void TJobTracker::ProcessAllocationEvents(
 
 template <
     class TAllocationEvent,
-    CInvocable<void(
+    NMpl::CInvocable<void(
         TStringBuf reason,
         TAllocationEvent event,
         TJobTracker::TNodeInfo* nodeInfo,
@@ -3620,7 +3615,7 @@ void TJobTracker::AbortUnconfirmedJobs(TOperationId operationId, std::vector<TJo
             auto& context = it->second;
             if (inserted) {
                 context.OperationInfo = &GetOrCrash(RegisteredOperations_, allocation.OperationId);
-                context.OperationLogger = Logger().WithTag("OperationId: %v", allocation.OperationId);
+                context.OperationLogger = Logger().WithTag("OperationId", allocation.OperationId);
                 context.OperationController = context.OperationInfo->OperationController.Lock();
             }
 

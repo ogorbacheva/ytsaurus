@@ -50,7 +50,7 @@ public:
         : FileName_(std::move(fileName))
         , SnapshotId_(snapshotId)
         , IOInvoker_(std::move(ioInvoker))
-        , Logger(HydraLogger().WithTag("Path: %v", fileName))
+        , Logger(HydraLogger().WithTag("Path", fileName))
     { }
 
     int GetSnapshotId() const
@@ -134,8 +134,8 @@ private:
                 THROW_ERROR_EXCEPTION(
                     "Invalid compressed length in header of %v: expected %v, got %v",
                     FileName_,
-                    File_->GetLength(),
-                    Header_.CompressedLength);
+                    Header_.CompressedLength,
+                    File_->GetLength());
             }
 
             auto serializedMeta = TSharedMutableRef::Allocate<TLocalSnapshotReaderTag>(
@@ -216,7 +216,7 @@ public:
         , SnapshotId_(snapshotId)
         , Meta_(std::move(meta))
         , IOInvoker_(std::move(ioInvoker))
-        , Logger(HydraLogger().WithTag("Path: %v", FileName_))
+        , Logger(HydraLogger().WithTag("Path", FileName_))
     {
         SerializedMeta_ = SerializeProtoToRef(Meta_);
     }
@@ -423,7 +423,7 @@ public:
         : FileName_(std::move(fileName))
         , Meta_(std::move(meta))
         , IOInvoker_(std::move(ioInvoker))
-        , Logger(HydraLogger().WithTag("Path: %v", FileName_))
+        , Logger(HydraLogger().WithTag("Path", FileName_))
     { }
 
     TFuture<void> Open() override
@@ -514,7 +514,7 @@ public:
         IInvokerPtr ioInvoker)
         : FileName_(std::move(fileName))
         , IOInvoker_(std::move(ioInvoker))
-        , Logger(HydraLogger().WithTag("Path: %v", FileName_))
+        , Logger(HydraLogger().WithTag("Path", FileName_))
     { }
 
     ~TUncompressedHeaderlessLocalSnapshotWriter()
@@ -643,7 +643,7 @@ public:
         IInvokerPtr ioInvoker)
         : Config_(std::move(config))
         , IOInvoker_(std::move(ioInvoker))
-        , Logger(HydraLogger().WithTag("Path: %v", Config_->Path))
+        , Logger(HydraLogger().WithTag("Path", Config_->Path))
     { }
 
     TFuture<void> Initialize()

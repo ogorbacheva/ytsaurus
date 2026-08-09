@@ -43,6 +43,7 @@
 #include <yt/yt/core/actions/cancelable_context.h>
 
 #include <yt/yt/core/concurrency/delayed_executor.h>
+#include <yt/yt/core/concurrency/periodic_executor.h>
 #include <yt/yt/core/concurrency/throughput_throttler.h>
 
 #include <yt/yt/core/misc/finally.h>
@@ -75,7 +76,7 @@ DEFINE_ENUM(EPullerErrorKind,
 ////////////////////////////////////////////////////////////////////////////////
 
 inline static constexpr int TabletRowsPerRead = 1000;
-static const TString PullerErrorKindAttribute = "puller_error_kind";
+static const std::string PullerErrorKindAttribute = "puller_error_kind";
 
 inline static constexpr int PreviousIterationDurationSmoothingWeight = 4;
 inline static constexpr int CurrentIterationDurationSmoothingWeight = 1;
@@ -159,9 +160,8 @@ public:
         , PivotKey_(tablet->GetPivotKey())
         , NextPivotKey_(tablet->GetNextPivotKey())
         , Logger(TabletNodeLogger()
-            .WithTag("%v, UpstreamReplicaId: %v",
-                tablet->GetLoggingTag(),
-                ReplicaId_))
+            .WithTags(tablet->GetLoggingTags())
+            .WithTag("UpstreamReplicaId", ReplicaId_))
         , ReplicationThrottler_(CreateReconfigurableThroughputThrottler(MountConfig_->ReplicationThrottler, Logger))
         , Throttler_(CreateCombinedThrottler(std::vector<IThroughputThrottlerPtr>{
             std::move(nodeInThrottler),
@@ -188,20 +188,25 @@ public:
     {
         Disable();
 
-        FiberFuture_ = BIND(&TTablePuller::FiberMain, MakeWeak(this))
-            .AsyncVia(Slot_->GetHydraManager()->GetAutomatonCancelableContext()->CreateInvoker(WorkerInvoker_))
-            .Run();
+        ReplicationExecutor_ = New<TPeriodicExecutor>(
+            Slot_->GetHydraManager()->GetAutomatonCancelableContext()->CreateInvoker(WorkerInvoker_),
+            BIND(&TTablePuller::OnReplicationTick, MakeWeak(this)),
+            TPeriodicExecutorOptions{
+                .Period = MountConfig_->ReplicationTickPeriod,
+                .DelayMode = EPeriodicExecutorDelayMode::FromPreviousStart,
+            });
+        ReplicationExecutor_->Start();
 
-        YT_LOG_INFO("Puller fiber started");
+        YT_LOG_INFO("Table puller enabled");
     }
 
     void Disable() override
     {
-        if (FiberFuture_) {
-            FiberFuture_.Cancel(TError("Puller disabled"));
-            YT_LOG_INFO("Puller fiber stopped");
+        if (auto executor = std::exchange(ReplicationExecutor_, nullptr)) {
+            YT_UNUSED_FUTURE(executor->Stop());
         }
-        FiberFuture_.Reset();
+
+        YT_LOG_INFO("Table puller disabled");
     }
 
     void BuildOrchidYson(NYTree::TFluentMap fluent) override
@@ -249,17 +254,7 @@ private:
     TPerFiberClusterClientCache ReplicatorClientCache_;
     TIterationTimeTracker ReplicationIterationTimeTracker_;
 
-    TFuture<void> FiberFuture_;
-
-    void FiberMain()
-    {
-        while (true) {
-            TTraceContextGuard traceContextGuard(TTraceContext::NewRoot("TablePuller"));
-            NProfiling::TWallTimer timer;
-            FiberIteration();
-            TDelayedExecutor::WaitForDuration(MountConfig_->ReplicationTickPeriod - timer.GetElapsedTime());
-        }
-    }
+    TPeriodicExecutorPtr ReplicationExecutor_;
 
     void UpdatePullerErrors(TTabletErrors& tabletErrors, TError currentPullError)
     {
@@ -298,8 +293,10 @@ private:
         tabletErrors.BackgroundErrors[ETabletBackgroundActivity::Pull].Store(combinedError);
     }
 
-    void FiberIteration()
+    void OnReplicationTick()
     {
+        TTraceContextGuard traceContextGuard(TTraceContext::NewRoot("TablePuller"));
+
         TTabletSnapshotPtr tabletSnapshot;
 
         try {
@@ -653,12 +650,15 @@ private:
             const auto& progress = result.ReplicationProgress;
             const auto& nameTable = result.Rowset->GetNameTable();
 
+            bool updateProgress = !IsReplicationProgressGreaterOrEqual(*replicationProgress, progress);
+
             YT_LOG_DEBUG("Pulled rows "
-                "(RowCount: %v, DataWeight: %v, NewProgress: %v, EndReplicationRowIndexes: %v, "
+                "(RowCount: %v, DataWeight: %v, NewProgress: %v, UpdateProgress: %v, EndReplicationRowIndexes: %v, "
                 "ThrottleTime: %v, RelativeThrottleTime: %v)",
                 rowCount,
                 dataWeight,
                 progress,
+                updateProgress,
                 endReplicationRowIndexes,
                 throttlingTimes.ThrottleTime,
                 throttlingTimes.RelativeThrottleTime);
@@ -719,7 +719,7 @@ private:
                             *timestampColumnIndex);
                     }
 
-                    auto rowTimestamp = row[*timestampColumnIndex].Data.Uint64;
+                    auto rowTimestamp = TTimestamp(row[*timestampColumnIndex].Data.Uint64);
 
                     if (progressTimestamp >= rowTimestamp || previousTimestamp > rowTimestamp) {
                         counters->FatalErrorCount.Increment();
@@ -747,7 +747,10 @@ private:
                         << HardErrorAttribute;
                 }
 
-                if (MountConfig_->ValidateRowIndexInChaosReplication && !endReplicationRowIndexes.empty()) {
+                if (MountConfig_->ValidateRowIndexInChaosReplication &&
+                    updateProgress &&
+                    !endReplicationRowIndexes.empty())
+                {
                     i64 currentRowCount = tabletSnapshot->TabletRuntimeData->TotalRowCount.load();
                     i64 endReplicationRowIndex = endReplicationRowIndexes.begin()->second;
                     if (currentRowCount + rowCount != endReplicationRowIndex) {
@@ -771,13 +774,13 @@ private:
                 }
             }
 
-            // Update progress even if no rows pulled.
-            if (IsReplicationProgressGreaterOrEqual(*replicationProgress, progress)) {
+            if (!updateProgress) {
                 YT_VERIFY(resultRows.empty());
                 UpdatePullerErrors(tabletSnapshot->TabletRuntimeData->Errors, TError());
                 return;
             }
 
+            // Newer progress must be set even there are no rows to write.
             {
                 TEventTimerGuard timerGuard(counters->WriteTime);
 

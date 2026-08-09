@@ -742,10 +742,16 @@ TExpressionBuilderV1::ResolveNestedTypesResult TExpressionBuilderV1::ResolveNest
     nestedStructOrTupleItemAccessor.Reserve(std::ssize(reference.CompositeTypeAccessor.NestedStructOrTupleItemAccessor));
 
     TLogicalTypePtr current = type;
+    bool optional = false;
 
     for (const auto& item : reference.CompositeTypeAccessor.NestedStructOrTupleItemAccessor) {
         Visit(item,
             [&] (const TStructMemberAccessor& structMember) {
+                if (current->GetMetatype() == ELogicalMetatype::Optional) {
+                    current = current->GetElement();
+                    optional = true;
+                }
+
                 if (current->GetMetatype() != ELogicalMetatype::Struct) {
                     THROW_ERROR_EXCEPTION("Member %Qv is not found", structMember)
                         << TErrorAttribute("source", NAst::FormatReference(reference));
@@ -764,6 +770,11 @@ TExpressionBuilderV1::ResolveNestedTypesResult TExpressionBuilderV1::ResolveNest
                     << TErrorAttribute("source", NAst::FormatReference(reference));
             },
             [&] (const TTupleItemIndexAccessor& itemIndex) {
+                if (current->GetMetatype() == ELogicalMetatype::Optional) {
+                    current = current->GetElement();
+                    optional = true;
+                }
+
                 if (current->GetMetatype() != ELogicalMetatype::Tuple) {
                     THROW_ERROR_EXCEPTION("Member %Qv is not found", itemIndex)
                         << TErrorAttribute("source", NAst::FormatReference(reference));
@@ -785,6 +796,11 @@ TExpressionBuilderV1::ResolveNestedTypesResult TExpressionBuilderV1::ResolveNest
     auto resultType = current;
 
     if (reference.CompositeTypeAccessor.DictOrListItemAccessor) {
+        if (current->GetMetatype() == ELogicalMetatype::Optional) {
+            current = current->GetElement();
+            optional = true;
+        }
+
         if (current->GetMetatype() == ELogicalMetatype::List) {
             resultType = current->GetElement();
         } else if (current->GetMetatype() == ELogicalMetatype::Dict) {
@@ -799,6 +815,10 @@ TExpressionBuilderV1::ResolveNestedTypesResult TExpressionBuilderV1::ResolveNest
             THROW_ERROR_EXCEPTION("Incorrect nested item accessor")
                 << TErrorAttribute("source", NAst::FormatReference(reference));
         }
+    }
+
+    if (optional) {
+        resultType = MakeOptionalIfNot(std::move(resultType));
     }
 
     return {std::move(nestedStructOrTupleItemAccessor), std::move(intermediateType), std::move(resultType)};
@@ -868,7 +888,7 @@ TUntypedExpression TExpressionBuilderV1::UnwrapCompositeMemberAccessor(
     auto listOrDictItemAccessor = UnwrapListOrDictItemAccessor(reference, resolved.IntermediateType->GetMetatype());
 
     auto memberAccessor = New<TCompositeMemberAccessorExpression>(
-        resolved.ResultType,
+        MakeOptionalIfNot(resolved.ResultType),
         columnReference,
         std::move(resolved.NestedStructOrTupleItemAccessor),
         listOrDictItemAccessor);
@@ -925,6 +945,12 @@ TUntypedExpression TExpressionBuilderV1::OnReference(const NAst::TReference& ref
     if (!AfterGroupBy_) {
         if (auto type = ResolveColumn(reference)) {
             return UnwrapCompositeMemberAccessor(reference, type);
+        }
+
+        if (auto reinterpreted = TryReinterpretAsMemberAccess(reference);
+            reinterpreted && ResolveColumn(*reinterpreted))
+        {
+            return OnReference(*reinterpreted);
         }
     }
 
@@ -1110,6 +1136,22 @@ TUntypedExpression TExpressionBuilderV1::OnUnaryOp(const NAst::TUnaryOpExpressio
     return TUntypedExpression{.FeasibleTypes = resultTypes, .Generator = std::move(generator), .IsConstant = false};
 }
 
+void ThrowOnCompositeScalarMismatch(
+    EBinaryOp op,
+    const TConstExpressionPtr& lhsExpr,
+    const TConstExpressionPtr& rhsExpr,
+    TStringBuf lhsSource,
+    TStringBuf rhsSource)
+{
+    if (IsRelationalBinaryOp(op) &&
+        (IsV3Composite(lhsExpr->LogicalType) ^ IsV3Composite(rhsExpr->LogicalType)))
+    {
+        THROW_ERROR_EXCEPTION("Type mismatch in expression %Qv", op)
+            << TErrorAttribute("lhs_source", lhsSource)
+            << TErrorAttribute("rhs_source", rhsSource);
+    }
+}
+
 TUntypedExpression TExpressionBuilderV1::MakeBinaryExpr(
     const NAst::TBinaryOpExpression* binaryExpr,
     EBinaryOp op,
@@ -1162,11 +1204,12 @@ TUntypedExpression TExpressionBuilderV1::MakeBinaryExpr(
             rhsSource,
             source);
 
-        return New<TBinaryOpExpression>(
-            type,
-            op,
-            lhs.Generator(argTypes.first),
-            rhs.Generator(argTypes.second));
+        auto lhsExpr = lhs.Generator(argTypes.first);
+        auto rhsExpr = rhs.Generator(argTypes.second);
+
+        ThrowOnCompositeScalarMismatch(op, lhsExpr, rhsExpr, lhsSource, rhsSource);
+
+        return New<TBinaryOpExpression>(type, op, lhsExpr, rhsExpr);
     };
     return TUntypedExpression{resultTypes, std::move(generator), /*IsConstant*/ false};
 }

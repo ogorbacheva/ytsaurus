@@ -136,8 +136,12 @@ private:
                     // NB: In multiplexing writer, there are multiple value consumers pointing to the same writer.
                     // That's why we have to double-check writer's readiness to avoid writing to it concurrently
                     // with another value consumer waiting writer to become ready.
-                    while (!writer->GetReadyEvent().IsSet() || !writer->GetReadyEvent().GetOrCrash().IsOK()) {
-                        WaitFor(writer->GetReadyEvent())
+                    while (true) {
+                        auto readyEvent = writer->GetReadyEvent();
+                        if (auto readyResult = readyEvent.TryGet(); readyResult && readyResult->IsOK()) {
+                            break;
+                        }
+                        WaitFor(readyEvent)
                             .ThrowOnError();
                     }
 
@@ -250,6 +254,12 @@ void TUserJobWriteController::Init(TCpuInstant ioStartTime)
         DeserializeFromWireProto(&schema, outputSpec.table_schema());
         auto schemaId = FromProto<TMasterTableSchemaId>(outputSpec.schema_id());
 
+        auto& writeBlocksOptions = OutputWriteBlocksOptions_.emplace_back(
+            TClientChunkWriteOptions{
+                .ChunkWriterStatistics = New<NChunkClient::TChunkWriterStatistics>(),
+                .JobIoMeter = Host_->GetJobIoMeter(),
+            });
+
         // ToDo(psushin): open writers in parallel.
         auto writer = userJobIOFactory->CreateWriter(
             Host_->GetClient(),
@@ -261,7 +271,7 @@ void TUserJobWriteController::Init(TCpuInstant ioStartTime)
             schemaId,
             TChunkTimestamps{timestamp, timestamp},
             dataSink,
-            OutputWriteBlocksOptions_.emplace_back());
+            writeBlocksOptions);
 
         Writers_.push_back(CreateProfilingMultiChunkWriter(std::move(writer), ioStartTime));
 

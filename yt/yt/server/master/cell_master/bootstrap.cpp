@@ -89,6 +89,7 @@
 #include <yt/yt/server/master/sequoia_server/cypress_proxy_tracker.h>
 #include <yt/yt/server/master/sequoia_server/cypress_proxy_tracker_service.h>
 #include <yt/yt/server/master/sequoia_server/ground_update_queue_manager.h>
+#include <yt/yt/server/master/sequoia_server/prelock_tracker.h>
 #include <yt/yt/server/master/sequoia_server/sequoia_manager.h>
 #include <yt/yt/server/master/sequoia_server/sequoia_transaction_service.h>
 
@@ -152,9 +153,11 @@
 #include <yt/yt/library/monitoring/http_integration.h>
 #include <yt/yt/library/monitoring/monitoring_manager.h>
 
+#include <yt/yt/core/https/server.h>
+
 #include <yt/yt/library/profiling/solomon/exporter.h>
 
-#include <yt/yt/ytlib/discovery_client/config.h>
+#include <yt/yt/library/discovery_client/config.h>
 
 #include <yt/yt/library/orchid/orchid_service.h>
 
@@ -356,6 +359,11 @@ const IMulticellManagerPtr& TBootstrap::GetMulticellManager() const
 const IMulticellStatisticsCollectorPtr& TBootstrap::GetMulticellStatisticsCollector() const
 {
     return MulticellStatisticsCollector_;
+}
+
+const ISequoiaActionsExecutorPtr& TBootstrap::GetSequoiaActionsExecutor() const
+{
+    return SequoiaActionsExecutor_;
 }
 
 const IIncumbentManagerPtr& TBootstrap::GetIncumbentManager() const
@@ -583,6 +591,11 @@ const ISequoiaManagerPtr& TBootstrap::GetSequoiaManager() const
     return SequoiaManager_;
 }
 
+const IPrelockTrackerPtr& TBootstrap::GetPrelockTracker() const
+{
+    return PrelockTracker_;
+}
+
 const ICypressProxyTrackerPtr& TBootstrap::GetCypressProxyTracker() const
 {
     return CypressProxyTracker_;
@@ -678,7 +691,7 @@ void TBootstrap::LoadSnapshot(
         .ThrowOnError();
 }
 
-void TBootstrap::ReplayChangelogs(std::vector<TString> changelogFileNames)
+void TBootstrap::ReplayChangelogs(std::vector<std::string> changelogFileNames)
 {
     BIND(&TBootstrap::DoReplayChangelogs, MakeStrong(this), Passed(std::move(changelogFileNames)))
         .AsyncVia(GetControlInvoker())
@@ -730,7 +743,9 @@ void TBootstrap::DoRun()
 
 void TBootstrap::DoInitialize()
 {
-    ITableDescriptor::ScheduleInitialization();
+    if (!Config_->SkipSequoiaInitialization) {
+        ITableDescriptor::ScheduleInitialization();
+    }
 
     Config_->PrimaryMaster->ValidateAllPeersPresent();
     for (auto cellConfig : Config_->SecondaryMasters) {
@@ -970,6 +985,8 @@ void TBootstrap::DoInitialize()
 
     SequoiaManager_ = CreateSequoiaManager(this);
 
+    PrelockTracker_ = CreatePrelockTracker(this);
+
     CypressProxyTracker_ = CreateCypressProxyTracker(this, ChannelFactory_);
 
     ReplicatedTableTracker_ = CreateMasterReplicatedTableTracker(Config_->ReplicatedTableTracker, this);
@@ -1021,6 +1038,7 @@ void TBootstrap::DoInitialize()
     ExecNodeTracker_->Initialize();
     CellarNodeTracker_->Initialize();
     TabletNodeTracker_->Initialize();
+    PrelockTracker_->Initialize();
     CypressManager_->Initialize();
     PortalManager_->Initialize();
     ChunkManager_->Initialize();
@@ -1172,10 +1190,14 @@ void TBootstrap::DoStart()
 
     YT_LOG_INFO("Listening for HTTP requests (Port: %v)", Config_->MonitoringPort);
     HttpServer_ = NHttp::CreateServer(Config_->CreateMonitoringHttpServerConfig());
+    if (auto httpsConfig = Config_->CreateMonitoringHttpsServerConfig()) {
+        HttpsServer_ = NHttps::CreateServer(httpsConfig, /*pollerThreadCount*/ 1);
+    }
 
     NYTree::IMapNodePtr orchidRoot;
     NMonitoring::Initialize(
         HttpServer_,
+        HttpsServer_,
         ServiceLocator_->GetServiceOrThrow<TSolomonExporterPtr>(),
         &MonitoringManager_,
         &orchidRoot);
@@ -1227,6 +1249,10 @@ void TBootstrap::DoStart()
         CreateVirtualNode(GroundUpdateQueueManager_->GetOrchidService()));
     SetNodeByYPath(
         orchidRoot,
+        "/multicell_manager",
+        CreateVirtualNode(MulticellManager_->GetOrchidService()));
+    SetNodeByYPath(
+        orchidRoot,
         "/reign",
         ConvertTo<INodePtr>(GetCurrentReign()));
     SetNodeByYPath(
@@ -1242,6 +1268,10 @@ void TBootstrap::DoStart()
         "master");
 
     HttpServer_->Start();
+    if (HttpsServer_) {
+        YT_LOG_INFO("Listening for HTTPS requests (Port: %v)", HttpsServer_->GetAddress().GetPort());
+        HttpsServer_->Start();
+    }
 
     YT_LOG_INFO("Listening for RPC requests (Port: %v)", Config_->RpcPort);
     RpcServer_->RegisterService(CreateOrchidService(orchidRoot, GetControlInvoker(), NativeAuthenticator_));
@@ -1281,7 +1311,7 @@ void TBootstrap::DoLoadSnapshot(
     }
 }
 
-void TBootstrap::DoReplayChangelogs(const std::vector<TString>& changelogFileNames)
+void TBootstrap::DoReplayChangelogs(const std::vector<std::string>& changelogFileNames)
 {
     const auto& hydraManager = HydraFacade_->GetHydraManager();
     auto dryRunHydraManager = StaticPointerCast<IDryRunHydraManager>(hydraManager);

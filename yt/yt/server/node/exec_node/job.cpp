@@ -46,12 +46,11 @@
 #include <yt/yt/server/lib/misc/cluster_throttlers_config.h>
 #include <yt/yt/server/lib/misc/job_reporter.h>
 
-#include <yt/yt/server/lib/signature/components/config.h>
-
 #include <yt/yt/server/lib/nbd/block_device.h>
-#include <yt/yt/server/lib/nbd/image_reader.h>
 #include <yt/yt/server/lib/nbd/profiler.h>
-#include <yt/yt/server/lib/nbd/random_access_file_reader.h>
+
+#include <yt/yt/server/lib/nbd/image/image_reader.h>
+#include <yt/yt/server/lib/nbd/image/random_access_file_reader.h>
 
 #include <yt/yt/server/lib/squash_fs/squash_fs_layout_builder.h>
 
@@ -110,11 +109,14 @@
 
 #include <yt/yt/core/ypath/helpers.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
 
 #include <yt/yt/library/profiling/producer.h>
 #include <yt/yt/library/profiling/sensor.h>
+
+#include <yt/yt/library/signature/components/config.h>
 
 #include <yt/yt_proto/yt/client/chunk_client/proto/chunk_spec.pb.h>
 
@@ -160,6 +162,7 @@ using namespace NTransactionClient;
 using namespace NObjectClient;
 using namespace NStatisticPath;
 using namespace NNbd;
+using namespace NNbd::NImage;
 using namespace NSquashFS;
 using namespace NServer;
 
@@ -183,28 +186,28 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static const TString GpuUtilizationGpuSensorName = "gpu/utilization_gpu";
-static const TString GpuUtilizationMemorySensorName = "gpu/utilization_memory";
-static const TString GpuUtilizationPowerSensorName = "gpu/utilization_power";
-static const TString GpuSMClocksSensorName = "gpu/sm_clocks";
-static const TString GpuSMUtilizationSensorName = "gpu/sm_utilization";
-static const TString GpuSMOccupancySensorName = "gpu/sm_occupancy";
-static const TString GpuMemorySensorName = "gpu/memory";
-static const TString GpuPowerSensorName = "gpu/power";
-static const TString GpuNvlinkRxBytesSensorName = "gpu/nvlink/rx_bytes";
-static const TString GpuNvlinkTxBytesSensorName = "gpu/nvlink/tx_bytes";
-static const TString GpuPcieRxBytesSensorName = "gpu/pcie/rx_bytes";
-static const TString GpuPcieTxBytesSensorName = "gpu/pcie/tx_bytes";
-static const TString GpuStuckSensorName = "gpu/stuck";
-static const TString GpuRdmaRxBytesSensorName = "gpu/rdma/rx_bytes";
-static const TString GpuRdmaTxBytesSensorName = "gpu/rdma/tx_bytes";
-static const TString GpuTensorActivitySensorName = "gpu/tensor_activity";
-static const TString GpuDramActivitySensorName = "gpu/dram_activity";
-static const TString GpuSlowdownSensorName = "gpu/slowdown";
+static const std::string GpuUtilizationGpuSensorName = "gpu/utilization_gpu";
+static const std::string GpuUtilizationMemorySensorName = "gpu/utilization_memory";
+static const std::string GpuUtilizationPowerSensorName = "gpu/utilization_power";
+static const std::string GpuSMClocksSensorName = "gpu/sm_clocks";
+static const std::string GpuSMUtilizationSensorName = "gpu/sm_utilization";
+static const std::string GpuSMOccupancySensorName = "gpu/sm_occupancy";
+static const std::string GpuMemorySensorName = "gpu/memory";
+static const std::string GpuPowerSensorName = "gpu/power";
+static const std::string GpuNvlinkRxBytesSensorName = "gpu/nvlink/rx_bytes";
+static const std::string GpuNvlinkTxBytesSensorName = "gpu/nvlink/tx_bytes";
+static const std::string GpuPcieRxBytesSensorName = "gpu/pcie/rx_bytes";
+static const std::string GpuPcieTxBytesSensorName = "gpu/pcie/tx_bytes";
+static const std::string GpuStuckSensorName = "gpu/stuck";
+static const std::string GpuRdmaRxBytesSensorName = "gpu/rdma/rx_bytes";
+static const std::string GpuRdmaTxBytesSensorName = "gpu/rdma/tx_bytes";
+static const std::string GpuTensorActivitySensorName = "gpu/tensor_activity";
+static const std::string GpuDramActivitySensorName = "gpu/dram_activity";
+static const std::string GpuSlowdownSensorName = "gpu/slowdown";
 
-const THashMap<TString, TUserJobSensorPtr>& GetSupportedGpuMonitoringSensors()
+const THashMap<std::string, TUserJobSensorPtr>& GetSupportedGpuMonitoringSensors()
 {
-    static const auto SupportedGpuMonitoringSensors = ConvertTo<THashMap<TString, TUserJobSensorPtr>>(BuildYsonStringFluently()
+    static const auto SupportedGpuMonitoringSensors = ConvertTo<THashMap<std::string, TUserJobSensorPtr>>(BuildYsonStringFluently()
         .BeginMap()
             .Item(GpuUtilizationGpuSensorName).BeginMap()
                 .Item("type").Value("gauge")
@@ -327,11 +330,10 @@ TJob::TJob(
     , OperationId_(operationId)
     , Type_(EJobType(jobSpec.type()))
     , Bootstrap_(bootstrap)
-    , Logger(ExecNodeLogger().WithTag(
-        "JobId: %v, OperationId: %v, JobType: %v",
-        jobId,
-        operationId,
-        Type_))
+    , Logger(ExecNodeLogger()
+        .WithTag("JobId", jobId)
+        .WithTag("OperationId", operationId)
+        .WithTag("JobType", Type_))
     , Allocation_(std::move(allocation))
     , ResourceHolder_(Allocation_->GetResourceHolder())
     , InitialResourceDemand_(ResourceHolder_->GetInitialResourceDemand())
@@ -618,7 +620,7 @@ void TJob::OnJobProxySpawned()
 }
 
 void TJob::PrepareArtifact(
-    const TString& artifactName,
+    const std::string& artifactName,
     const TString& pipePath)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -641,17 +643,9 @@ void TJob::PrepareArtifact(
                     << TError::FromSystem();
             }
 
-            if (auto pipeSize = Bootstrap_->GetDynamicConfig()->ExecNode->SlotManager->ArtifactPipeSize) {
-                fcntlResult = HandleEintr(::fcntl, pipeFd, F_SETPIPE_SZ, *pipeSize);
-                if (fcntlResult < 0) {
-                    THROW_ERROR_EXCEPTION("Failed to increase artifact pipe size")
-                        << TError::FromSystem();
-                }
-            }
-
             ValidateJobPhase(EJobPhase::PreparingArtifacts);
 
-            const auto& artifact = FSSecretary_->GetUserArtifact(artifactName);
+            const auto& artifact = FSSecretary_->GetUserArtifactDescriptor(artifactName);
 
             YT_VERIFY(artifact.BypassArtifactCache || artifact.CopyFile);
 
@@ -683,7 +677,7 @@ void TJob::PrepareArtifact(
                         producer,
                         pipe));
             } else if (artifact.CopyFile) {
-                YT_VERIFY(artifact.Artifact);
+                const auto& preparedArtifact = FSSecretary_->GetArtifactByName(artifact.Name);
 
                 YT_LOG_INFO(
                     "Copy artifact (FileName: %v, Executable: %v, SandboxKind: %v, CompressedDataSize: %v)",
@@ -697,16 +691,16 @@ void TJob::PrepareArtifact(
                         Id_,
                         artifact.Name,
                         artifact.SandboxKind,
-                        TString(artifact.Artifact->GetFileName()),
+                        TString(preparedArtifact->GetFileName()),
                         pipe,
-                        artifact.Artifact->GetLocation()));
+                        preparedArtifact->GetLocation()));
             }
         });
 }
 
 void TJob::OnArtifactPreparationFailed(
-    const TString& artifactName,
-    const TString& artifactPath,
+    const std::string& artifactName,
+    const std::string& artifactPath,
     const TError& error)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -759,6 +753,7 @@ void TJob::OnJobPrepared()
             YT_LOG_INFO("Job prepared");
 
             ValidateJobPhase(EJobPhase::PreparingJob);
+            SubscribeJobToNbdDevices();
             SetJobPhase(EJobPhase::Running);
         });
 }
@@ -1023,7 +1018,7 @@ void TJob::OnResultReceived(TJobResult jobResult)
                             if (nbdError.IsOK()) {
                                 nbdError = std::move(error);
                                 nbdError <<= TErrorAttribute("abort_reason", EAbortReason::NbdError);
-                                nbdError <<= TErrorAttribute("debug_info", device->DebugString());
+                                nbdError <<= TErrorAttribute("device_description", device->GetDescription());
                                 // Save job error as well.
                                 if (auto jobError = FromProto<TError>(jobResult.error()); !jobError.IsOK()) {
                                     nbdError <<= jobError;
@@ -1199,6 +1194,7 @@ NJobAgent::TTimeStatistics TJob::GetTimeStatistics() const
         .PrepareDuration = sumOptionals(getDuration(PreparationStartTime_, ExecStartTime_), fakePrepareDuration),
         .ArtifactsCachingDuration = getDuration(ArtifactsDownloadStartTime_, ArtifactsDownloadedTime_),
         .PrepareLayersDuration = getDuration(PrepareLayersStartTime_, PrepareLayersFinishTime_),
+        .PrepareRootFSDuration = getDuration(PrepareRootVolumeStartTime_, PrepareRootVolumeFinishTime_),
         .PrepareNonRootVolumesDuration = getDuration(PrepareNonRootVolumesStartTime_, PrepareNonRootVolumesFinishTime_),
         .LinkVolumesDuration = getDuration(LinkVolumesStartTime_, LinkVolumesFinishTime_),
         .PrepareGpuCheckFSDuration = getDuration(PrepareGpuCheckVolumeStartTime_, PrepareGpuCheckVolumeFinishTime_),
@@ -1346,14 +1342,14 @@ void TJob::SetStderrSize(i64 value)
     }
 }
 
-void TJob::SetStderr(const TString& value)
+void TJob::SetStderr(const std::string& value)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
     Stderr_ = value;
 }
 
-void TJob::SetFailContext(const TString& value)
+void TJob::SetFailContext(const std::string& value)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
@@ -1604,7 +1600,7 @@ IYPathServicePtr TJob::CreateDynamicOrchidService()
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
-    return New<TCompositeMapService>()
+    return CreateCompositeMapService()
         ->AddChild("job_proxy", CreateJobProxyOrchidService())
         ->AddChild("testing", CreateTestingOrchidService());
 }
@@ -1694,7 +1690,7 @@ std::optional<TGetJobStderrResponse> TJob::GetStderr(const TGetJobStderrOptions&
     return std::nullopt;
 }
 
-std::optional<TString> TJob::GetFailContext()
+std::optional<std::string> TJob::GetFailContext()
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
@@ -1738,7 +1734,7 @@ void TJob::HandleJobReport(TNodeJobReport&& jobReport)
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
     Bootstrap_->GetJobReporter()->HandleJobReport(
-        jobReport
+        std::move(jobReport)
             .OperationId(GetOperationId())
             .JobId(GetId())
             .Address(Bootstrap_->GetLocalDescriptor().GetDefaultAddress())
@@ -1825,7 +1821,7 @@ void TJob::AbortJobAfterInterruptionCallFailed(TError internalError)
 void TJob::DoInterrupt(
     TDuration timeout,
     EInterruptionReason interruptionReason,
-    std::optional<TString> preemptionReason,
+    std::optional<std::string> preemptionReason,
     const std::optional<NScheduler::TPreemptedFor>& preemptedFor)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -1905,6 +1901,9 @@ void TJob::DoInterrupt(
     try {
         if (!InterruptionRequested_) {
             AddJobEvent(interruptionReason);
+
+            ReportJobInterruptionInfo(now, timeout, interruptionReason, preemptionReason, preemptedFor);
+
             GetJobProbeOrThrow()->Interrupt();
         }
 
@@ -1923,8 +1922,6 @@ void TJob::DoInterrupt(
                 Bootstrap_->GetJobInvoker());
             InterruptionDeadline_ = now + timeout;
         }
-
-        ReportJobInterruptionInfo(now, timeout, interruptionReason, preemptionReason, preemptedFor);
     } catch (const std::exception& ex) {
         YT_LOG_INFO(ex, "Failed to interrupt job via job prober service; graceful job phase check scheduled (Tmeout: %v)", timeout);
 
@@ -2090,7 +2087,7 @@ bool TJob::IsInterruptible() const noexcept
 void TJob::OnJobInterruptionTimeout(
     EInterruptionReason interruptionReason,
     TDuration interruptionTimeout,
-    const std::optional<TString>& preemptionReason)
+    const std::optional<std::string>& preemptionReason)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
@@ -2119,7 +2116,7 @@ TControllerAgentConnectorPool::TControllerAgentConnectorPtr TJob::GetControllerA
 void TJob::Interrupt(
     TDuration timeout,
     EInterruptionReason interruptionReason,
-    std::optional<TString> preemptionReason,
+    std::optional<std::string> preemptionReason,
     const std::optional<NScheduler::TPreemptedFor>& preemptedFor)
 {
     YT_LOG_INFO(
@@ -2223,7 +2220,7 @@ void TJob::StartUserJobMonitoring()
         return;
     }
 
-    RequestedMonitoringSensors_ = FromProto<THashSet<TString>>(monitoringConfig.sensor_names());
+    RequestedMonitoringSensors_ = FromProto<THashSet<std::string>>(monitoringConfig.sensor_names());
 
     const auto& supportedStatisticSensors = CommonConfig_->UserJobMonitoring->StatisticSensors;
     const auto& supportedGpuSensors = GetSupportedGpuMonitoringSensors();
@@ -2254,7 +2251,7 @@ void TJob::ReportJobInterruptionInfo(
     TInstant time,
     TDuration timeout,
     NScheduler::EInterruptionReason interruptionReason,
-    const std::optional<TString>& preemptionReason,
+    const std::optional<std::string>& preemptionReason,
     const std::optional<NScheduler::TPreemptedFor>& preemptedFor)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -3093,25 +3090,60 @@ void TJob::Cleanup()
     YT_LOG_INFO("Job finished (JobState: %v)", GetState());
 }
 
+void TJob::SubscribeJobToNbdDevices()
+{
+    YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+    auto nbdServer = Bootstrap_->GetNbdServer();
+    if (!nbdServer) {
+        return;
+    }
+
+    YT_VERIFY(!NbdErrorInterrupter_);
+    NbdErrorInterrupter_ = BIND_NO_PROPAGATE(
+        [
+            jobId = Id_,
+            bootstrap = Bootstrap_,
+            jobInterrupted = std::make_unique<std::atomic<bool>>(false)
+        ] (const TError& /*error*/) {
+            // Try interrupting the job only once.
+            if (!jobInterrupted->exchange(true)) {
+                bootstrap->GetJobController()->InterruptJob(
+                    jobId,
+                    EInterruptionReason::NbdDeviceStopping,
+                    TDuration::Zero());
+            }
+        });
+
+    for (const auto& deviceId : FSSecretary_->GetNbdDeviceIds()) {
+        if (auto device = nbdServer->FindDevice(deviceId)) {
+            YT_LOG_DEBUG(
+                "Subscribing job to NBD device errors (DeviceId: %v)",
+                deviceId);
+            device->SubscribeError(NbdErrorInterrupter_);
+        } else {
+            YT_LOG_DEBUG(
+                "Failed to subscribe job to NBD device errors; device not found (DeviceId: %v)",
+                deviceId);
+        }
+    }
+}
+
 void TJob::UnsubscribeJobFromNbdDevices()
 {
+    YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+    if (!NbdErrorInterrupter_) {
+        return;
+    }
+
     if (auto nbdServer = Bootstrap_->GetNbdServer()) {
         for (const auto& deviceId : FSSecretary_->ReleaseNbdDeviceIds()) {
-            YT_LOG_DEBUG(
-                "Unsubscribing job from NBD device errors (DeviceId: %v)",
-                deviceId);
-
             if (auto device = nbdServer->FindDevice(deviceId)) {
-                auto res = device->UnsubscribeFromErrors(Id_.Underlying());
-                if (!res) {
-                    YT_LOG_WARNING(
-                        "Failed to unsubscribe job from NBD device errors (DeviceId: %v)",
-                        deviceId);
-                } else {
-                    YT_LOG_DEBUG(
-                        "Unsubscribed job from NBD device errors (DeviceId: %v)",
-                        deviceId);
-                }
+                YT_LOG_DEBUG(
+                    "Unsubscribing job from NBD device errors (DeviceId: %v)",
+                    deviceId);
+                device->UnsubscribeError(NbdErrorInterrupter_);
             } else {
                 YT_LOG_DEBUG(
                     "Failed to unsubscribe job from NBD device errors; device not found (DeviceId: %v)",
@@ -3119,6 +3151,8 @@ void TJob::UnsubscribeJobFromNbdDevices()
             }
         }
     }
+
+    NbdErrorInterrupter_.Reset();
 }
 
 TFuture<void> TJob::GetCleanupFinishedEvent()
@@ -3211,7 +3245,7 @@ std::unique_ptr<NNodeTrackerClient::NProto::TNodeDirectory> TJob::PrepareNodeDir
         validateTableSpecs(jobSpecExt.foreign_input_table_specs());
 
         // NB: No need to add these descriptors to the input node directory.
-        for (const auto& artifact : FSSecretary_->GetArtifacts()) {
+        for (const auto& artifact : FSSecretary_->GetArtifactDescriptors()) {
             validateNodeIds(artifact.Key.chunk_specs(), nodeDirectory);
         }
 
@@ -3370,17 +3404,21 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
         proxyInternalConfig->RootPath = FSSecretary_->GetRootVolume()->GetPath();
     } else {
         // Pass docker image if root volume is not materialized yet.
-        proxyInternalConfig->DockerImage = FSSecretary_->GetDockerImage();
-        proxyInternalConfig->DockerImageId = FSSecretary_->GetDockerImageId();
+        if (const auto& dockerImage = FSSecretary_->GetDockerImage()) {
+            proxyInternalConfig->DockerImage = *dockerImage;
+        }
+        if (const auto& dockerImageId = FSSecretary_->GetDockerImageId()) {
+            proxyInternalConfig->DockerImageId = *dockerImageId;
+        }
     }
 
     if (FSSecretary_->GetRootVolume() || FSSecretary_->GetDockerImage()) {
         proxyInternalConfig->Binds = GetRootFSBindConfigs();
 
-        for (const auto& artifact : FSSecretary_->GetArtifacts()) {
+        for (const auto& artifact : FSSecretary_->GetArtifactDescriptors()) {
             // Artifact is passed into the job via bind.
             if (artifact.AccessedViaBind) {
-                YT_VERIFY(artifact.Artifact);
+                const auto& preparedArtifact = FSSecretary_->GetArtifactByName(artifact.Name);
 
                 YT_LOG_INFO(
                     "Make bind for artifact (FileName: %v, Executable: %v, "
@@ -3394,7 +3432,7 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
                 auto targetPath = NFS::CombinePaths(sandboxPath, artifact.Name);
 
                 auto bind = New<TBindConfig>();
-                bind->ExternalPath = artifact.Artifact->GetFileName();
+                bind->ExternalPath = preparedArtifact->GetFileName();
                 bind->InternalPath = targetPath;
                 bind->ReadOnly = true;
 
@@ -3418,8 +3456,7 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
             const auto& jobProxyLogManager = Bootstrap_->GetJobProxyLogManager();
             YT_VERIFY(jobProxyLogManager);
 
-            // TODO(babenko): migrate to std::string
-            fileLogWriterConfig->FileName = jobProxyLogManager->AdjustLogPath(Id_, TString(fileLogWriterConfig->FileName));
+            fileLogWriterConfig->FileName = jobProxyLogManager->AdjustLogPath(Id_, fileLogWriterConfig->FileName);
         }
 
         return ConvertTo<IMapNodePtr>(fileLogWriterConfig);
@@ -3559,7 +3596,7 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
 NCri::TCriAuthConfigPtr TJob::BuildDockerAuthConfig()
 {
     if (UserJobSpec_ && UserJobSpec_->environment_size()) {
-        TString prefix = Format("%s_%s=", SecureVaultEnvPrefix, DockerAuthEnv);
+        std::string prefix = Format("%s_%s=", SecureVaultEnvPrefix, DockerAuthEnv);
         for (const auto& var : UserJobSpec_->environment()) {
             if (var.StartsWith(prefix)) {
                 auto ysonConfig = TYsonString(var.substr(prefix.length()));
@@ -3588,7 +3625,7 @@ void TJob::BuildVirtualSandbox()
 
     std::vector<TArtifactMountOptions> mountOptions;
 
-    for (const auto& artifact : FSSecretary_->GetArtifacts()) {
+    for (const auto& artifact : FSSecretary_->GetArtifactDescriptors()) {
         if (!artifact.AccessedViaVirtualSandbox) {
             continue;
         }
@@ -3649,7 +3686,7 @@ TArtifactDownloadOptions TJob::MakeArtifactDownloadOptions() const
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
-    std::vector<TString> workloadDescriptorAnnotations = {
+    std::vector<std::string> workloadDescriptorAnnotations = {
         Format("OperationId: %v", OperationId_),
         Format("JobId: %v", Id_),
         Format("AuthenticatedUser: %v", JobSpecExt_.authenticated_user()),
@@ -3670,7 +3707,7 @@ TFuture<std::vector<TArtifactPtr>> TJob::DownloadArtifacts()
     const auto& artifactCache = Bootstrap_->GetArtifactCache();
 
     // Account for bypassed artifacts.
-    for (const auto& artifact : FSSecretary_->GetArtifacts()) {
+    for (const auto& artifact : FSSecretary_->GetArtifactDescriptors()) {
         if (artifact.BypassArtifactCache) {
             ArtifactCacheStatistics_.CacheBypassedArtifactsSize += artifact.Key.GetCompressedDataSize();
         }
@@ -3864,6 +3901,10 @@ std::optional<EAbortReason> TJob::DeduceAbortReason()
         return EAbortReason::RootVolumePreparationFailed;
     }
 
+    if (resultError.FindMatching(NExecNode::EErrorCode::OverlayLayerPreparationFailed)) {
+        return EAbortReason::OverlayLayerPreparationFailed;
+    }
+
     if (resultError.FindMatching(NJobProxy::EErrorCode::UserJobPortoApiError)) {
         return EAbortReason::Other;
     }
@@ -3947,7 +3988,7 @@ bool TJob::IsFatalError(const TError& error)
         error.FindMatching(NExecNode::EErrorCode::SetupCommandFailed) ||
         error.FindMatching(NExecNode::EErrorCode::GpuJobWithoutLayers) ||
         error.FindMatching(NExecNode::EErrorCode::GpuCheckCommandPreparationFailed) ||
-        error.FindMatching(NExecNode::EErrorCode::TmpfsOverflow) ||
+        error.FindMatching(NExecNode::EErrorCode::VolumeSizeLimitExceeded) ||
         error.FindMatching(NExecNode::EErrorCode::FatalJobPreparationTimeout) ||
         error.FindMatching(NFormats::EErrorCode::InvalidFormat);
 }
@@ -4145,8 +4186,7 @@ void TJob::UpdateIOStatistics(const TStatistics& statistics)
                     },
                     /*tags*/ {
                         {FormatIOTag(EAggregateIOTag::Direction), direction},
-                        // TODO(babenko): switch to std::string
-                        {FormatIOTag(EAggregateIOTag::User), ToString(GetCurrentAuthenticationIdentity().User)},
+                        {FormatIOTag(EAggregateIOTag::User), GetCurrentAuthenticationIdentity().User},
                         {FormatIOTag(EAggregateIOTag::JobIoKind), "user_job"},
                     });
             }
@@ -4233,26 +4273,25 @@ TNodeJobReport TJob::MakeDefaultJobReport()
         .CoreInfos(CoreInfos_)
         .ExecAttributes(ConvertToYsonString(ExecAttributes_));
     if (FinishTime_) {
-        report.SetFinishTime(*FinishTime_);
+        report.FinishTime(*FinishTime_);
     }
     if (JobSpecExt_.has_job_competition_id()) {
-        report.SetJobCompetitionId(FromProto<TJobId>(JobSpecExt_.job_competition_id()));
+        report.JobCompetitionId(FromProto<TJobId>(JobSpecExt_.job_competition_id()));
     }
     if (JobSpecExt_.has_probing_job_competition_id()) {
-        report.SetProbingJobCompetitionId(FromProto<TJobId>(JobSpecExt_.probing_job_competition_id()));
+        report.ProbingJobCompetitionId(FromProto<TJobId>(JobSpecExt_.probing_job_competition_id()));
     }
     if (JobSpecExt_.has_task_name()) {
-        report.SetTaskName(JobSpecExt_.task_name());
+        report.TaskName(JobSpecExt_.task_name());
     }
     if (UserJobSpec_ &&
         UserJobSpec_->has_archive_ttl())
     {
-        report.SetTtl(FromProto<TDuration>(UserJobSpec_->archive_ttl()));
+        report.Ttl(FromProto<TDuration>(UserJobSpec_->archive_ttl()));
     }
 
     return report;
 }
-
 
 void TJob::InitializeJobProbe()
 {
@@ -4407,7 +4446,7 @@ void TJob::CollectSensorsFromGpuAndRdmaDeviceInfo(ISensorWriter* writer)
         return;
     }
 
-    auto profileSensorIfNeeded = [&] (const TString& name, auto value) {
+    auto profileSensorIfNeeded = [&] (const std::string& name, auto value) {
         if (RequestedMonitoringSensors_.contains(name)) {
             const auto& sensor = GetOrCrash(GetSupportedGpuMonitoringSensors(), name);
             ProfileSensor(writer, sensor, value);

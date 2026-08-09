@@ -7,6 +7,7 @@
 
 #include <yt/yt/server/lib/nbd/config.h>
 #include <yt/yt/server/lib/nbd/public.h>
+#include <yt/yt/server/lib/nbd/image/public.h>
 
 #include <yt/yt/ytlib/exec_node/public.h>
 
@@ -22,9 +23,16 @@ namespace NYT::NExecNode {
 struct TCreateNbdVolumeOptions
 {
     TJobId JobId;
-    TString DeviceId;
-    TString Filesystem;
+
+    std::string DeviceId;
+    std::string Filesystem;
+
     bool IsReadOnly = true;
+
+    //! Block size (I/O alignment) reported to Porto so it configures the kernel NBD device's logical
+    //! block size accordingly (Porto defaults to 512 otherwise). For a block-granular backend this is
+    //! its block size, so the kernel aligns I/O and does any sub-block read-modify-write itself.
+    i64 BlockSize = 512;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -33,7 +41,7 @@ struct TPrepareRONbdVolumeOptions
 {
     TJobId JobId;
     TArtifactKey ArtifactKey;
-    NNbd::IImageReaderPtr ImageReader;
+    NNbd::NImage::IImageReaderPtr ImageReader;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -45,7 +53,7 @@ struct TPrepareRWNbdVolumeOptions
     i64 Size = 0;
     int MediumIndex = 0;
     NNbd::EFilesystemType Filesystem = NNbd::EFilesystemType::Unknown;
-    TString DeviceId;
+    std::string DeviceId;
     NRpc::IChannelPtr DataNodeChannel;
     NChunkClient::TSessionId SessionId;
 

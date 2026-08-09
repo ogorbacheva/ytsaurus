@@ -475,6 +475,101 @@ class TestMemoryReserveMultiplier(YTEnvSetup):
         assert user_job_memory_reserves[1] <= user_job_memory_reserves[0]
         assert user_job_memory_reserves[2] <= user_job_memory_reserves[0]
 
+    @authors("apollo1321")
+    def test_tmpfs_resource_overdraft_memory_multiplier(self):
+        update_controller_agent_config("user_job_resource_overdraft_memory_multiplier", 1.5)
+
+        memory_limit = 512 * 1024 * 1024
+        tmpfs_size = 300 * 1024 * 1024
+
+        controller_agent_address = ls("//sys/controller_agents/instances")[0]
+        from_barrier = write_log_barrier(controller_agent_address)
+
+        create("table", "//tmp/in", attributes={"replication_factor": 1})
+        create("table", "//tmp/out", attributes={"replication_factor": 1})
+        write_table("//tmp/in", [{"key": string.ascii_letters + str(value)} for value in range(5 * 1000 * 1000)])
+
+        create("file", "//tmp/mapper.py", attributes={"replication_factor": 1, "executable": True})
+        write_file("//tmp/mapper.py", b"""#!/usr/bin/env python3
+import time
+
+chunk = bytes(1024 * 1024)
+with open("tmpfs/blob", "wb") as blob:
+    for _ in range(280):
+        blob.write(chunk)
+    blob.flush()
+
+# Allocate anon memory well below the reserve; anon + tmpfs exceed it.
+anon = bytearray(60 * 1024 * 1024)
+for offset in range(0, len(anon), 4096):
+    anon[offset] = 1
+
+# Stay alive briefly so the overdraft is detected when the reserve is not large enough.
+time.sleep(5)
+""")
+
+        op = map(
+            track=False,
+            command="python3 mapper.py",
+            in_="//tmp/in",
+            out="//tmp/out",
+            spec={
+                "job_count": 1,
+                "mapper": {
+                    "memory_limit": memory_limit,
+                    "tmpfs_size": tmpfs_size,
+                    "tmpfs_path": "tmpfs",
+                    "user_job_memory_digest_default_value": 0.6,
+                    "job_proxy_memory_digest": {
+                        "default_value": 1.0,
+                        "lower_bound": 1.0,
+                        "upper_bound": 1.0,
+                    },
+                    "file_paths": ["//tmp/mapper.py"],
+                },
+            })
+
+        wait(lambda: op.get_state() in ("completed", "failed", "aborted"), timeout=120)
+        assert op.get_state() == "completed"
+
+        to_barrier = write_log_barrier(controller_agent_address)
+
+        structured_log = read_structured_log(
+            self.path_to_run + "/logs/controller-agent-0.json.log",
+            from_barrier=from_barrier,
+            to_barrier=to_barrier,
+            row_filter=lambda e: "event_type" in e)
+
+        user_job_memory_reserves = []
+        last_job_id = None
+        for event in structured_log:
+            if event["event_type"] in ("job_aborted", "job_completed") and event["operation_id"] == op.id:
+                assert "user_job" in event["statistics"]
+                print_debug(
+                    event["job_id"],
+                    event.get("predecessor_type"),
+                    event.get("predecessor_job_id"),
+                    event["statistics"]["user_job"]["memory_reserve"]["sum"],
+                    event["statistics"]["user_job"]["max_memory"]["sum"],
+                )
+
+                if last_job_id is not None:
+                    assert last_job_id == event["predecessor_job_id"]
+                    assert event["predecessor_type"] == "resource_overdraft"
+                last_job_id = event["job_id"]
+
+                user_job_memory_reserves.append(int(event["statistics"]["user_job"]["memory_reserve"]["sum"]))
+
+        assert len(user_job_memory_reserves) >= 2
+
+        assert 280 * 1024 * 1024 <= user_job_memory_reserves[0] <= 340 * 1024 * 1024
+
+        # The overdraft is caused by tmpfs, which is user-job memory, so the controller
+        # must attribute it to the user job and apply the resource-overdraft memory
+        # multiplier (1.5) to the user-job reserve on the retry.
+        assert user_job_memory_reserves[1] >= user_job_memory_reserves[0] * 1.4
+
+
 ###############################################################################################
 
 
@@ -1048,9 +1143,11 @@ class TestPorts(YTEnvSetup):
     NUM_SCHEDULERS = 1
     NUM_NODES = 1
 
+    # NB: start_port is intentionally not hard-coded; the harness allocates the job
+    # port range above the dynamic port pool, so it cannot collide with daemon ports.
+    # The tests read the actually-assigned range via _get_job_port_range.
     DELTA_NODE_CONFIG = {
         "job_resource_manager": {
-            "start_port": 20000,
             "port_count": 3,
             "resource_limits": {"user_slots": 2, "cpu": 2},
         },
@@ -1066,8 +1163,15 @@ class TestPorts(YTEnvSetup):
         },
     }
 
+    def _get_job_port_range(self):
+        job_resource_manager = self.Env.configs["node"][0]["job_resource_manager"]
+        start_port = job_resource_manager["start_port"]
+        return start_port, start_port + job_resource_manager["port_count"]
+
     @authors("ignat")
     def test_simple(self):
+        start_port, end_port = self._get_job_port_range()
+
         create("table", "//tmp/t_in", attributes={"replication_factor": 1})
         write_table("//tmp/t_in", [{"a": 0}])
 
@@ -1116,7 +1220,7 @@ class TestPorts(YTEnvSetup):
         assert len(ports) == 2
         assert ports[0] != ports[1]
 
-        assert all(port >= 20000 and port < 20003 for port in ports)
+        assert all(start_port <= port < end_port for port in ports)
 
         map(
             in_="//tmp/t_in",
@@ -1139,10 +1243,12 @@ class TestPorts(YTEnvSetup):
         assert len(ports) == 2
         assert ports[0] != ports[1]
 
-        assert all(port >= 20000 and port < 20003 for port in ports)
+        assert all(start_port <= port < end_port for port in ports)
 
     @authors("max42")
     def test_preliminary_bind(self):
+        start_port, _ = self._get_job_port_range()
+
         create("table", "//tmp/t_in", attributes={"replication_factor": 1})
         create("table", "//tmp/t_out", attributes={"replication_factor": 1})
         write_table("//tmp/t_in", [{"a": 1}])
@@ -1151,19 +1257,19 @@ class TestPorts(YTEnvSetup):
         try:
             try:
                 server_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-                server_socket.bind(("::1", 20001))
+                server_socket.bind(("::1", start_port + 1))
             except Exception as err:
-                pytest.skip("Caught following exception while trying to bind to port 20001: {}".format(err))
+                pytest.skip("Caught following exception while trying to bind to port {}: {}".format(start_port + 1, err))
                 return
 
             # We run test several times to make sure that ports did not stuck inside node.
             for iteration in range(3):
                 if iteration in [0, 1]:
-                    expected_ports = [{"port": 20000}, {"port": 20002}]
+                    expected_ports = [{"port": start_port}, {"port": start_port + 2}]
                 else:
                     server_socket.close()
                     server_socket = None
-                    expected_ports = [{"port": 20000}, {"port": 20001}]
+                    expected_ports = [{"port": start_port}, {"port": start_port + 1}]
 
                 map(
                     in_="//tmp/t_in",

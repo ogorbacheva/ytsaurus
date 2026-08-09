@@ -159,7 +159,7 @@ class TStatisticsReporter
 public:
     explicit TStatisticsReporter(IBootstrap* const bootstrap)
         : Bootstrap_(bootstrap)
-        , Logger(TabletNodeLogger().WithTag(StatisticsReporterTag.data()))
+        , Logger(TabletNodeLogger().WithTag("Component", StatisticsReporterTag))
         , LoadContext_("/statistics_reporter/load", "Load")
         , ReportContext_("/statistics_reporter/report", "Report")
         , Config_(bootstrap->GetTabletNodeDynamicConfig()->StatisticsReporter)
@@ -395,7 +395,7 @@ private:
         }
 
         auto timestampColumnIndex = schema->GetColumnIndexOrThrow(TimestampColumnPrefix + name);
-        auto measuringTime = TimestampToInstant(row[timestampColumnIndex].Data.Uint64).first;
+        auto measuringTime = TimestampToInstant(NTransactionClient::TTimestamp(row[timestampColumnIndex].Data.Uint64)).first;
 
         auto valueColumnIndex = schema->GetColumnIndexOrThrow(name);
 

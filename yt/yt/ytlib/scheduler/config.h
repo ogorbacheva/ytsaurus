@@ -62,7 +62,7 @@ public:
 
     static const char Delimiter;
 
-    TString ToString() const;
+    std::string ToString() const;
     static TPoolName FromString(const std::string& value);
 
     const std::string& GetPool() const;
@@ -372,6 +372,10 @@ struct TSamplingConfig
 {
     //! The probability for each particular row to remain in the output.
     std::optional<double> SamplingRate;
+
+    //! A seed for the random generator used for sampling.
+    //! Makes the set of sampled chunks deterministic for a fixed input.
+    std::optional<ui64> SamplingSeed;
 
     //! An option regulating the total data slice count during the sampling job creation procedure.
     //! It should not be used normally and left only for manual setup in marginal cases.
@@ -947,7 +951,7 @@ struct TJobExperimentConfig
     : public NYTree::TYsonStruct
 {
     //! The base layer used in the treatment jobs of the experiment.
-    std::optional<std::string> BaseLayerPath;
+    std::optional<NYPath::TYPath> BaseLayerPath;
 
     //! The network project used in the treatment jobs of the experiment.
     std::optional<std::string> NetworkProject;
@@ -1286,7 +1290,7 @@ struct TOperationSpecBase
     std::vector<TJobProfilerSpecPtr> Profilers;
 
     //! Default base layer used if no other layers are requested.
-    std::optional<std::string> DefaultBaseLayerPath;
+    std::optional<NYPath::TYPath> DefaultBaseLayerPath;
 
     //! The setup for the experimental jobs.
     TJobExperimentConfigPtr JobExperiment;
@@ -1301,8 +1305,12 @@ struct TOperationSpecBase
     //! If explicitly true, allow remote copy of tables with hunk columns.
     std::optional<bool> BypassHunkRemoteCopyProhibition;
 
+    //! If true, allow best-effort remote copy of dynamic input tables whose
+    //! tablets are neither frozen nor unmounted.
+    bool AllowUnfrozenInputTables;
+
     //! Options for cuda profiler.
-    std::optional<std::string> CudaProfilerLayerPath;
+    std::optional<NYPath::TYPath> CudaProfilerLayerPath;
 
     THashMap<std::string, std::string> CudaProfilerEnvironmentVariables;
     // COMPAT(omgronnny)
@@ -1679,7 +1687,7 @@ struct TUserJobSpec
     //! Describes user job monitoring settings.
     TUserJobMonitoringConfigPtr Monitoring;
 
-    std::optional<std::string> SystemLayerPath;
+    std::optional<NYPath::TYPath> SystemLayerPath;
 
     //! The docker image to use in the operation.
     std::optional<std::string> DockerImage;
@@ -2151,6 +2159,11 @@ struct TSortOperationSpecBase
 
     std::optional<int> PartitionJobCount;
 
+    //! Hard limit on the number of partition jobs (map jobs in map-reduce).
+    //! Unlike |PartitionJobCount|, which pins the exact job count,
+    //! this option only caps the job count inferred from data size heuristics.
+    std::optional<int> MaxPartitionJobCount;
+
     //! Data size per shuffle job.
     i64 DataWeightPerShuffleJob;
 
@@ -2215,7 +2228,7 @@ struct TSortOperationSpecBase
     // This option is used for partition/partition_map and sorted_reduce/sorted_merge jobs.
     bool ForceJobSizeAdjuster;
 
-    bool EnableFinalPartitionsMerging;
+    std::optional<bool> EnableFinalPartitionsMerging;
 
     REGISTER_YSON_STRUCT(TSortOperationSpecBase);
 

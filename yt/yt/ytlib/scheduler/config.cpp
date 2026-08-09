@@ -211,16 +211,14 @@ TPoolName TPoolName::FromString(const std::string& value)
     }
 }
 
-TString TPoolName::ToString() const
+std::string TPoolName::ToString() const
 {
-    // TODO(babenko): migrate to std::string
-    return TString(Pool_);
+    return Pool_;
 }
 
 void Deserialize(TPoolName& value, INodePtr node)
 {
-    // TODO(babenko): migrate to std::string
-    value = TPoolName::FromString(std::string(node->AsString()->GetValue()));
+    value = TPoolName::FromString(node->AsString()->GetValue());
 }
 
 void Deserialize(TPoolName& value, TYsonPullParserCursor* cursor)
@@ -545,6 +543,9 @@ void TSamplingConfig::Register(TRegistrar registrar)
     registrar.Parameter("io_block_size", &TThis::IOBlockSize)
         .Default(16_MB);
 
+    registrar.Parameter("sampling_seed", &TThis::SamplingSeed)
+        .Default();
+
     registrar.Postprocessor([] (TSamplingConfig* config) {
         if (config->SamplingRate && (*config->SamplingRate < 0.0 || *config->SamplingRate > 1.0)) {
             THROW_ERROR_EXCEPTION("Sampling rate should be in range [0.0, 1.0]")
@@ -754,7 +755,7 @@ void TJobFailsTolerance::Register(TRegistrar registrar)
             for (const auto& [key, value] : field) {
                 THROW_ERROR_EXCEPTION_UNLESS(
                     value >= 0,
-                    "Maximum value of fails for each exit code must be non-negative! (ExitCode: %v, MaxFailsCount: %v)",
+                    "Maximum number of fails for exit code %v must be non-negative, got %v",
                     key,
                     value);
             }
@@ -1053,6 +1054,9 @@ void TOperationSpecBase::Register(TRegistrar registrar)
 
     registrar.Parameter("bypass_hunk_remote_copy_prohibition", &TThis::BypassHunkRemoteCopyProhibition)
         .Default();
+
+    registrar.Parameter("allow_unfrozen_input_tables", &TThis::AllowUnfrozenInputTables)
+        .Default(false);
 
     registrar.Parameter("cuda_profiler_layer_path", &TThis::CudaProfilerLayerPath)
         .Default();
@@ -1951,7 +1955,7 @@ void TSortOperationSpecBase::Register(TRegistrar registrar)
         .GreaterThan(1);
 
     registrar.Parameter("enable_final_partitions_merging", &TThis::EnableFinalPartitionsMerging)
-        .Default(false);
+        .Default();
 
     registrar.Parameter("force_job_size_adjuster", &TThis::ForceJobSizeAdjuster)
         .Default(false);
@@ -1988,28 +1992,37 @@ void TSortOperationSpecBase::Register(TRegistrar registrar)
             }
         }
 
-        THROW_ERROR_EXCEPTION_IF(
-            spec->EnableFinalPartitionsMerging && spec->PartitionCount.has_value(),
-            "Option %Qv cannot be specified when %Qv is enabled",
-            "partition_count",
-            "enable_final_partitions_merging");
+        if (spec->EnableFinalPartitionsMerging.value_or(false)) {
+            THROW_ERROR_EXCEPTION_IF(
+                spec->PartitionCount.has_value(),
+                "Option %Qv cannot be specified when %Qv is enabled",
+                "partition_count",
+                "enable_final_partitions_merging");
 
-        THROW_ERROR_EXCEPTION_IF(
-            !spec->EnableFinalPartitionsMerging && spec->PartitionDataWeightForMerging.has_value(),
-            "Option %Qv cannot be specified when %Qv is not enabled",
-            "partition_data_weight_for_merging",
-            "enable_final_partitions_merging");
+            THROW_ERROR_EXCEPTION_IF(
+                !spec->PivotKeys.empty(),
+                "Option %Qv cannot be specified when %Qv is enabled",
+                "pivot_keys",
+                "enable_final_partitions_merging");
+        }
 
-        if (spec->EnableFinalPartitionsMerging &&
-            spec->PartitionDataWeightForMerging.has_value() &&
-            *spec->PartitionDataWeightForMerging > spec->DataWeightPerShuffleJob)
-        {
-            THROW_ERROR_EXCEPTION(
-                "Option %Qv cannot be greater than %Qv",
+        if (spec->PartitionDataWeightForMerging.has_value()) {
+            THROW_ERROR_EXCEPTION_IF(
+                !spec->EnableFinalPartitionsMerging.value_or(false),
+                "Option %Qv cannot be specified when %Qv is not enabled",
                 "partition_data_weight_for_merging",
-                "data_weight_per_sort_job")
-                << TErrorAttribute("partition_data_weight_for_merging", *spec->PartitionDataWeightForMerging)
-                << TErrorAttribute("data_weight_per_sort_job", spec->DataWeightPerShuffleJob);
+                "enable_final_partitions_merging");
+
+            if (spec->EnableFinalPartitionsMerging.value_or(false) &&
+                *spec->PartitionDataWeightForMerging > spec->DataWeightPerShuffleJob)
+            {
+                THROW_ERROR_EXCEPTION(
+                    "Option %Qv cannot be greater than %Qv",
+                    "partition_data_weight_for_merging",
+                    "data_weight_per_sort_job")
+                    << TErrorAttribute("partition_data_weight_for_merging", *spec->PartitionDataWeightForMerging)
+                    << TErrorAttribute("data_weight_per_sort_job", spec->DataWeightPerShuffleJob);
+            }
         }
     });
 }
@@ -2029,6 +2042,9 @@ void TSortOperationSpec::Register(TRegistrar registrar)
 
     // Provide custom names for shared settings.
     registrar.BaseClassParameter("partition_job_count", &TSortOperationSpec::PartitionJobCount)
+        .Default()
+        .GreaterThan(0);
+    registrar.BaseClassParameter("max_partition_job_count", &TSortOperationSpec::MaxPartitionJobCount)
         .Default()
         .GreaterThan(0);
     registrar.BaseClassParameter("data_weight_per_partition_job", &TSortOperationSpec::DataWeightPerPartitionJob)
@@ -2115,6 +2131,9 @@ void TMapReduceOperationSpec::Register(TRegistrar registrar)
 
     // Provide custom names for shared settings.
     registrar.BaseClassParameter("map_job_count", &TMapReduceOperationSpec::PartitionJobCount)
+        .Default()
+        .GreaterThan(0);
+    registrar.BaseClassParameter("max_map_job_count", &TMapReduceOperationSpec::MaxPartitionJobCount)
         .Default()
         .GreaterThan(0);
     registrar.BaseClassParameter("data_weight_per_map_job", &TMapReduceOperationSpec::DataWeightPerPartitionJob)

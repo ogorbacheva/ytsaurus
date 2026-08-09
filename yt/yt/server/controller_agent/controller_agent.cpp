@@ -60,6 +60,7 @@
 
 #include <yt/yt/core/actions/cancelable_context.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/convert.h>
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
@@ -1286,6 +1287,22 @@ private:
             immediate ? TDuration::Zero() : Config_->SchedulerHandshakeFailureBackoff);
     }
 
+    template <class TCallback>
+    bool RunGuarded(const TCallback& callback)
+    {
+        try {
+            callback();
+            return true;
+        } catch (const std::exception& ex) {
+            YT_LOG_WARNING(ex, "Error connecting to scheduler");
+
+            SchedulerDisconnected_.Fire();
+            DoCleanup();
+            ScheduleConnect(false);
+            return false;
+        }
+    }
+
     void DoConnect()
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
@@ -1293,24 +1310,18 @@ private:
         YT_VERIFY(ConnectScheduled_);
         ConnectScheduled_ = false;
 
-        try {
-            OnConnecting();
-            SyncClusterDirectory();
-            SyncMediumDirectory();
-            SyncMasterCellDirectory();
-            UpdateConfig();
-            PerformHandshake();
-            OnConnected();
-        } catch (const std::exception& ex) {
-            YT_LOG_WARNING(ex, "Error connecting to scheduler");
-
-            SchedulerDisconnected_.Fire();
-            DoCleanup();
-            ScheduleConnect(false);
+        auto connected = RunGuarded([&] {
+            StartConnecting();
+        });
+        if (connected) {
+            // Run the rest of the connection sequence on the cancelable control
+            // invoker so that a disconnect aborts it.
+            CancelableControlInvoker_->Invoke(
+                BIND(&TImpl::DoConnectCancelable, MakeStrong(this)));
         }
     }
 
-    void OnConnecting()
+    void StartConnecting()
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
@@ -1332,10 +1343,21 @@ private:
                 error,
                 "Unexpected failure in job tracker initialization");
         }
+    }
 
-        SwitchTo(CancelableControlInvoker_);
+    void DoConnectCancelable()
+    {
+        YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
-        SchedulerConnecting_.Fire();
+        RunGuarded([&] {
+            SchedulerConnecting_.Fire();
+            SyncClusterDirectory();
+            SyncMediumDirectory();
+            SyncMasterCellDirectory();
+            UpdateConfig();
+            PerformHandshake();
+            OnConnected();
+        });
     }
 
     void SyncClusterDirectory()
@@ -1426,42 +1448,42 @@ private:
             IncarnationId_);
 
         OperationEventsOutbox_ = New<TMessageQueueOutbox<TAgentToSchedulerOperationEvent>>(
-            ControllerAgentLogger().WithTag(
-                "Kind: AgentToSchedulerOperations, IncarnationId: %v",
-                IncarnationId_),
+            ControllerAgentLogger()
+                .WithTag("Kind", "AgentToSchedulerOperations")
+                .WithTag("IncarnationId", IncarnationId_),
             ControllerAgentProfiler().WithTag("queue", "operation_events"),
             CancelableControlInvoker_);
         ScheduleAllocationResponsesOutbox_ = New<TMessageQueueOutbox<TAgentToSchedulerScheduleAllocationResponse>>(
-            ControllerAgentLogger().WithTag(
-                "Kind: AgentToSchedulerScheduleAllocationResponses, IncarnationId: %v",
-                IncarnationId_),
+            ControllerAgentLogger()
+                .WithTag("Kind", "AgentToSchedulerScheduleAllocationResponses")
+                .WithTag("IncarnationId", IncarnationId_),
             ControllerAgentProfiler().WithTag("queue", "schedule_job_responses"),
             Bootstrap_->GetControlInvoker(),
             /*supportTracing*/ true);
 
         RunningAllocationStatisticsUpdatesOutbox_ = New<TMessageQueueOutbox<TAgentToSchedulerRunningAllocationStatistics>>(
-            ControllerAgentLogger().WithTag(
-                "Kind: AgentToSchedulerRunningAllocationStatistics, IncarnationId: %v",
-                IncarnationId_),
+            ControllerAgentLogger()
+                .WithTag("Kind", "AgentToSchedulerRunningAllocationStatistics")
+                .WithTag("IncarnationId", IncarnationId_),
             ControllerAgentProfiler().WithTag("queue", "running_allocation_statistics"),
             Bootstrap_->GetControlInvoker());
 
         AllocationEventsInbox_ = std::make_shared<TMessageQueueInbox>(
-            ControllerAgentLogger().WithTag(
-                "Kind: SchedulerToAgentAllocationEvents, IncarnationId: %v",
-                IncarnationId_),
+            ControllerAgentLogger()
+                .WithTag("Kind", "SchedulerToAgentAllocationEvents")
+                .WithTag("IncarnationId", IncarnationId_),
             ControllerAgentProfiler().WithTag("queue", "job_events"),
             JobEventsInvoker_);
         OperationEventsInbox_ = std::make_unique<TMessageQueueInbox>(
-            ControllerAgentLogger().WithTag(
-                "Kind: SchedulerToAgentOperations, IncarnationId: %v",
-                IncarnationId_),
+            ControllerAgentLogger()
+                .WithTag("Kind", "SchedulerToAgentOperations")
+                .WithTag("IncarnationId", IncarnationId_),
             ControllerAgentProfiler().WithTag("queue", "operation_events"),
             CancelableControlInvoker_);
         ScheduleAllocationRequestsInbox_ = std::make_unique<TMessageQueueInbox>(
-            ControllerAgentLogger().WithTag(
-                "Kind: SchedulerToAgentScheduleAllocationRequests, IncarnationId: %v",
-                IncarnationId_),
+            ControllerAgentLogger()
+                .WithTag("Kind", "SchedulerToAgentScheduleAllocationRequests")
+                .WithTag("IncarnationId", IncarnationId_),
             ControllerAgentProfiler().WithTag("queue", "schedule_job_requests"),
             Bootstrap_->GetControlInvoker());
 
@@ -1955,8 +1977,7 @@ private:
                 auto scheduleAllocationInvoker = controller->GetCancelableInvoker(Config_->ScheduleAllocationControllerQueue);
                 auto requestDequeueInstant = TInstant::Now();
 
-                GuardedInvoke(
-                    scheduleAllocationInvoker,
+                scheduleAllocationInvoker->Invoke(MakeGuardedCallback(
                     BIND([=, rsp = rsp, this, this_ = MakeStrong(this)] {
                         TTraceContextFinishGuard guard(TryGetCurrentTraceContext());
 
@@ -2043,7 +2064,7 @@ private:
                             operationId,
                             allocationId,
                             EScheduleFailReason::UnknownOperation);
-                    }));
+                    })));
             });
     }
 
@@ -2356,14 +2377,14 @@ private:
 
     IYPathServicePtr GetDynamicOrchidService()
     {
-        auto dynamicOrchidService = New<TCompositeMapService>();
+        auto dynamicOrchidService = CreateCompositeMapService();
         dynamicOrchidService->AddChild("operations", New<TOperationsService>(this));
         return dynamicOrchidService;
     }
 
     IYPathServicePtr GetJobTrackerOrchidService()
     {
-        auto service = New<TCompositeMapService>();
+        auto service = CreateCompositeMapService();
         service->AddChild("job_tracker", JobTracker_->GetOrchidService());
         return service;
     }

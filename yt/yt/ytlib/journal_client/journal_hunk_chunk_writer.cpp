@@ -44,7 +44,7 @@ public:
             logger))
         , Options_(std::move(options))
         , Config_(std::move(config))
-        , Logger(logger.WithTag("ChunkId: %v", sessionId.ChunkId))
+        , Logger(logger.WithTag("ChunkId", sessionId.ChunkId))
         , ChunkId_(sessionId.ChunkId)
     {
         auto guard = Guard(Lock_);
@@ -298,7 +298,7 @@ private:
         }
         YT_VERIFY(ptr == record.End());
 
-        return UnderlyingWriter_->WriteRecord(std::move(record));
+        return UnderlyingWriter_->WriteRecord(std::move(record)).AsVoid();
     }
 
     TFuture<void> FlushErasureRecord()

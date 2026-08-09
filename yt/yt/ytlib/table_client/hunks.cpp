@@ -1671,7 +1671,7 @@ TFuture<TSharedRange<TUnversionedValue*>> DecodeHunks(
         columnarStatisticsThunk->MergeTo(hunkChunkReaderStatistics);
     }
 
-    auto fragmentsFuture = chunkFragmentReader->ReadFragments(options, requests);
+    auto fragmentsFuture = chunkFragmentReader->ReadFragments(requests, options);
     return fragmentsFuture.AsUnique().Apply(BIND([
             =,
             requests = std::move(requests),
@@ -1718,7 +1718,7 @@ TFuture<TSharedRange<TUnversionedValue*>> DecodeHunks(
             }
 
 
-            auto result = MakeSharedRange(values, values, std::move(response.Fragments));
+            auto result = MakeSharedRange(values, values, std::move(response.Fragments), std::move(response.MemoryGuard));
 
             if (!compressedValues.empty()) {
                 // NB: We have to make an owning holder of the values here
@@ -1874,8 +1874,7 @@ public:
         , DictionaryCompressionFactory_(std::move(dictionaryCompressionFactory))
         , Options_(std::move(options))
         , PerformanceCounters_(std::move(performanceCounters))
-        , Logger(TableClientLogger().WithTag("ReadSessionId: %v",
-            Options_.ReadSessionId))
+        , Logger(TableClientLogger().WithTag("ReadSessionId", Options_.ReadSessionId))
     { }
 
     TDataStatistics GetDataStatistics() const override
@@ -2454,6 +2453,13 @@ public:
     const TDataStatistics& GetDataStatistics() const override
     {
         return Underlying_->GetDataStatistics();
+    }
+
+    i64 GetDataWeight() const override
+    {
+        auto guard = Guard(Lock_);
+
+        return DataWeight_;
     }
 
     void OnParentReaderFinished(TChunkId compressionDictionaryId) override

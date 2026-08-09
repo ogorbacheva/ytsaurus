@@ -46,6 +46,7 @@
 #include <yt/yt/core/misc/process_exit_profiler.h>
 #include <yt/yt/core/misc/statistics.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
 #include <yt/yt/core/ytree/ypath_resolver.h>
@@ -363,16 +364,24 @@ public:
             return;
         }
 
-        if (auto delay = GetDynamicConfig()->TestResourceAcquisitionDelay) {
-            YT_LOG_DEBUG("Performing testing delay before resource acquisition (Delay: %v)", delay);
-            TDelayedExecutor::WaitForDuration(*delay);
-            YT_LOG_DEBUG("Finished testing delay before resource acquisition");
+        if (AllocationsWaitingForResources_.empty()) {
+            return;
         }
 
-        Bootstrap_->GetJobInvoker()->Invoke(BIND(
-            &TJobController::StartWaitingAllocations,
-            MakeWeak(this)));
         StartAllocationsScheduled_ = true;
+
+        auto delay = GetDynamicConfig()->TestResourceAcquisitionDelay;
+        auto readyFuture = delay
+            ? TDelayedExecutor::MakeDelayed(*delay)
+            : OKFuture;
+
+        readyFuture.Subscribe(
+            BIND([weakThis = MakeWeak(this)] (const TError& /*error*/) {
+                if (auto this_ = weakThis.Lock()) {
+                    this_->StartWaitingAllocations();
+                }
+            })
+                .Via(Bootstrap_->GetJobInvoker()));
     }
 
     IYPathServicePtr GetOrchidService() override
@@ -796,9 +805,9 @@ private:
 
         TForbidContextSwitchGuard guard;
 
-        static const TString tmpfsSizeSensorName = "/user_job/tmpfs_size/sum";
-        static const TString jobProxyMaxMemorySensorName = "/job_proxy/max_memory/sum";
-        static const TString userJobMaxMemorySensorName = "/user_job/max_memory/sum";
+        static const std::string tmpfsSizeSensorName = "/user_job/tmpfs_size/sum";
+        static const std::string jobProxyMaxMemorySensorName = "/job_proxy/max_memory/sum";
+        static const std::string userJobMaxMemorySensorName = "/user_job/max_memory/sum";
 
         JobCountBuffer_->Update([this] (ISensorWriter* writer) {
             TWithTagGuard tagGuard(writer, "origin", FormatEnum(EJobOrigin::Scheduler));
@@ -989,7 +998,7 @@ private:
 
         const auto& agentDescriptor = context->ControllerAgentConnector->GetDescriptor();
 
-        auto Logger = NExecNode::Logger().WithTag("ControllerAgentDescriptor: %v", agentDescriptor);
+        auto Logger = NExecNode::Logger().WithTag("ControllerAgentDescriptor", agentDescriptor);
 
         ToProto(request->mutable_controller_agent_incarnation_id(), agentDescriptor.IncarnationId);
 
@@ -1220,7 +1229,7 @@ private:
 
         const auto& agentDescriptor = context->ControllerAgentConnector->GetDescriptor();
 
-        auto Logger = NExecNode::Logger().WithTag("ControllerAgentDescriptor: %v", agentDescriptor);
+        auto Logger = NExecNode::Logger().WithTag("ControllerAgentDescriptor", agentDescriptor);
 
         for (const auto& protoJobToStore : response->jobs_to_store()) {
             auto jobToStore = FromProto<NControllerAgent::TJobToStore>(protoJobToStore);
@@ -1515,7 +1524,7 @@ private:
                     "Scheduler requested to preempt allocation (AllocationId: %v)",
                     allocationId);
 
-                TString preemptionReason;
+                std::string preemptionReason;
                 if (allocationToPreempt.has_preemption_reason()) {
                     preemptionReason = allocationToPreempt.preemption_reason();
                 }
@@ -1679,9 +1688,9 @@ private:
         if (const auto& allocation = job->GetAllocation();
             !allocation || allocation->IsFinished())
         {
-            auto Logger = NExecNode::Logger().WithTag("JobId: %v", job->GetId());
+            auto Logger = NExecNode::Logger().WithTag("JobId", job->GetId());
             if (allocation) {
-                Logger.AddTag("AllocationId: %v", allocation->GetId());
+                Logger.AddTag("AllocationId", allocation->GetId());
             }
 
             YT_LOG_INFO("Job abortion skipped since it is not settled in running allocation");
@@ -1716,9 +1725,9 @@ private:
         if (const auto& allocation = job->GetAllocation();
             !allocation || allocation->IsFinished())
         {
-            auto Logger = NExecNode::Logger().WithTag("JobId: %v", job->GetId());
+            auto Logger = NExecNode::Logger().WithTag("JobId", job->GetId());
             if (allocation) {
-                Logger.AddTag("AllocationId: %v", allocation->GetId());
+                Logger.AddTag("AllocationId", allocation->GetId());
             }
 
             YT_LOG_INFO("Job interruption skipped since it is not settled in running allocation");
@@ -2335,7 +2344,7 @@ private:
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
-        return New<TCompositeMapService>()
+        return CreateCompositeMapService()
             ->AddChild(
                 "active_jobs",
                 CreateActiveJobsService())

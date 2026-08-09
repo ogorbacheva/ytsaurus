@@ -39,7 +39,6 @@
 
 #include <yt/yt/core/misc/collection_helpers.h>
 #include <yt/yt/core/misc/linear_probe.h>
-#include <yt/yt/core/misc/skip_list.h>
 
 #include <yt/yt/core/profiling/timing.h>
 
@@ -959,8 +958,8 @@ TSortedDynamicStore::TSortedDynamicStore(
         RowBuffer_->GetPool(),
         RowKeyComparer_))
     , RevisionProvider_(tablet->GetSerializationType() == ETabletTransactionSerializationType::Coarse
-        ? static_cast<IRevisionProviderPtr>(New<TTwoLevelRevisionProvider>())
-        : static_cast<IRevisionProviderPtr>(New<TThreeLevelRevisionProvider>()))
+        ? CreateTwoLevelRevisionProvider()
+        : CreateThreeLevelRevisionProvider())
 {
     YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 

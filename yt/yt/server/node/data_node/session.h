@@ -4,7 +4,7 @@
 
 #include <yt/yt/server/lib/io/io_tracker.h>
 
-#include <yt/yt/server/lib/nbd/chunk_block_device.h>
+#include <yt/yt/server/lib/nbd/config.h>
 
 #include <yt/yt/server/node/data_node/location.h>
 
@@ -53,17 +53,18 @@ public:
     TSessionId GetSessionId() const;
 
     void CancelRequests();
-    bool IsCanceled() const;
+    bool HasRequests() const;
 
     i64 GetCurrentApprovedMemory() const;
     i64 GetMaxRequestedMemory() const;
 
     std::optional<TRequest> TryGetMinRequest();
-    void ApproveRequest(TLocationMemoryGuard&& memoryGuard, TRequest request);
+    void ApproveRequest(TLocationMemoryGuard&& memoryGuard, TRequest request, NNode::TLocationFairShareSlotPtr slot = nullptr);
 
     void PushRequest(TRequest request);
 
     void ReleaseResourcesForPutBlocks(i64 memory);
+    NNode::TLocationFairShareSlotPtr FindFairShareQueueSlot(i64 cumulativeBlockSize);
 
 private:
     const TSessionId SessionId_;
@@ -77,6 +78,7 @@ private:
     i64 ApprovedMemory_ = 0;
 
     TLocationMemoryGuard MemoryGuard_;
+    std::vector<std::pair<i64, NNode::TLocationFairShareSlotPtr>> FairShareQueueSlots_;
 };
 
 DEFINE_REFCOUNTED_TYPE(TProbePutBlocksRequestSupplier)
@@ -189,6 +191,8 @@ struct ISession
         int startBlockIndex,
         int blockCount,
         i64 cumulativeBlockSize,
+        std::optional<i64> ioConsumed,
+        std::optional<double> ioFairShareWeight,
         TDuration requestTimeout,
         bool instantReplyOnThrottling,
         const NNodeTrackerClient::TNodeDescriptor& target) = 0;

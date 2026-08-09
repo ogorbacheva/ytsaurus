@@ -10,6 +10,8 @@
 
 namespace NYT::NDataNode {
 
+using namespace NNode;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 TProbePutBlocksRequestSupplier::TProbePutBlocksRequestSupplier(TSessionId sessionId)
@@ -23,14 +25,22 @@ TSessionId TProbePutBlocksRequestSupplier::GetSessionId() const
 
 void TProbePutBlocksRequestSupplier::CancelRequests()
 {
-    auto guard = Guard(Lock_);
-    Canceled_ = true;
+    TLocationMemoryGuard memoryGuard;
+    {
+        auto guard = Guard(Lock_);
+        Canceled_ = true;
+        memoryGuard = std::exchange(MemoryGuard_, {});
+        FairShareQueueSlots_.clear();
+        Requests_.clear();
+        ApprovedMemory_ = 0;
+        MaxRequestedMemory_ = 0;
+    }
 }
 
-bool TProbePutBlocksRequestSupplier::IsCanceled() const
+bool TProbePutBlocksRequestSupplier::HasRequests() const
 {
     auto guard = Guard(Lock_);
-    return Canceled_;
+    return !Requests_.empty();
 }
 
 i64 TProbePutBlocksRequestSupplier::GetCurrentApprovedMemory() const
@@ -45,6 +55,19 @@ i64 TProbePutBlocksRequestSupplier::GetMaxRequestedMemory() const
     return MaxRequestedMemory_;
 }
 
+TLocationFairShareSlotPtr TProbePutBlocksRequestSupplier::FindFairShareQueueSlot(i64 cumulativeBlockSize)
+{
+    auto guard = Guard(Lock_);
+    auto it = std::lower_bound(
+        FairShareQueueSlots_.begin(),
+        FairShareQueueSlots_.end(),
+        cumulativeBlockSize,
+        [] (const auto& cur, i64 target) {
+            return cur.first < target;
+        });
+    return it == FairShareQueueSlots_.end() ? nullptr : it->second;
+}
+
 std::optional<TProbePutBlocksRequestSupplier::TRequest> TProbePutBlocksRequestSupplier::TryGetMinRequest()
 {
     auto guard = Guard(Lock_);
@@ -57,14 +80,18 @@ std::optional<TProbePutBlocksRequestSupplier::TRequest> TProbePutBlocksRequestSu
     return request;
 }
 
-void TProbePutBlocksRequestSupplier::ApproveRequest(TLocationMemoryGuard&& memoryGuard, TRequest request)
+void TProbePutBlocksRequestSupplier::ApproveRequest(TLocationMemoryGuard&& memoryGuard, TRequest request, TLocationFairShareSlotPtr slot)
 {
     auto guard = Guard(Lock_);
+    YT_VERIFY(!Canceled_);
+    if (slot) {
+        // Make sure to add in increasing order.
+        YT_VERIFY(FairShareQueueSlots_.empty() || FairShareQueueSlots_.back().first < request.CumulativeBlockSize);
+        FairShareQueueSlots_.push_back({request.CumulativeBlockSize, std::move(slot)});
+    }
 
     YT_VERIFY(request.CumulativeBlockSize > ApprovedMemory_);
-    YT_VERIFY(memoryGuard.GetUseLegacyUsedMemory() == false);
     YT_VERIFY(memoryGuard.GetSize() == request.CumulativeBlockSize - ApprovedMemory_);
-    YT_VERIFY(!MemoryGuard_ || MemoryGuard_.GetUseLegacyUsedMemory() == false);
 
     if (MemoryGuard_) {
         YT_VERIFY(memoryGuard.GetOwner() == MemoryGuard_.GetOwner());
@@ -86,6 +113,9 @@ void TProbePutBlocksRequestSupplier::ApproveRequest(TLocationMemoryGuard&& memor
 void TProbePutBlocksRequestSupplier::PushRequest(TRequest request)
 {
     auto guard = Guard(Lock_);
+    if (Canceled_) {
+        return;
+    }
 
     if (request.CumulativeBlockSize <= ApprovedMemory_) {
         return;
@@ -129,11 +159,11 @@ TSessionBase::TSessionBase(
     , Lease_(std::move(lease))
     , MasterEpoch_(Bootstrap_->GetMasterEpoch())
     , SessionInvoker_(CreateSerializedInvoker(Location_->GetAuxPoolInvoker()))
-    , Logger(DataNodeLogger().WithTag("LocationId: %v, LocationUuid: %v, LocationIndex: %v, ChunkId: %v",
-        Location_->GetId(),
-        Location_->GetUuid(),
-        Location_->GetIndex(),
-        SessionId_))
+    , Logger(DataNodeLogger()
+        .WithTag("LocationId", Location_->GetId())
+        .WithTag("LocationUuid", Location_->GetUuid())
+        .WithTag("LocationIndex", Location_->GetIndex())
+        .WithTag("ChunkId", SessionId_))
     , StartTime_(TInstant::Now())
     , LockedChunkGuard_(std::move(lockedChunkGuard))
     , WriteBlocksOptions_(std::move(writeBlocksOptions))
@@ -272,8 +302,7 @@ void TSessionBase::Cancel(const TError& error)
             TLeaseManager::CloseLease(Lease_);
             Active_ = false;
             Canceled_.store(true);
-            ProbePutBlocksRequestSupplier_->CancelRequests();
-            Location_->CheckProbePutBlocksRequests();
+            Location_->RemoveProbePutBlocksRequestSupplier(ProbePutBlocksRequestSupplier_);
 
             DoCancel(error);
         }));
@@ -316,6 +345,7 @@ TFuture<ISession::TFinishResult> TSessionBase::Finish(
 
             TLeaseManager::CloseLease(Lease_);
             Active_ = false;
+            Location_->RemoveProbePutBlocksRequestSupplier(ProbePutBlocksRequestSupplier_);
 
             return DoFinish(chunkMeta, blockCount);
         })
@@ -329,7 +359,7 @@ TLocationMemoryGuard TSessionBase::GetMemoryForPutBlocks(i64 memory)
 
     ProbePutBlocksRequestSupplier_->ReleaseResourcesForPutBlocks(memory);
 
-    return Location_->AcquireLocationMemory(true, {}, EIODirection::Write, GetWorkloadDescriptor(), memory);
+    return Location_->AcquireLocationMemory({}, EIODirection::Write, GetWorkloadDescriptor(), memory);
 }
 
 i64 TSessionBase::GetApprovedCumulativeBlockSize() const
@@ -399,6 +429,8 @@ TFuture<TSessionBase::TSendBlocksResult> TSessionBase::SendBlocks(
     int startBlockIndex,
     int blockCount,
     i64 cumulativeBlockSize,
+    std::optional<i64> ioConsumed,
+    std::optional<double> ioFairShareWeight,
     TDuration requestTimeout,
     bool instantReplyOnThrottling,
     const TNodeDescriptor& targetDescriptor)
@@ -412,7 +444,7 @@ TFuture<TSessionBase::TSendBlocksResult> TSessionBase::SendBlocks(
             ValidateActive();
             Ping();
 
-            return DoSendBlocks(startBlockIndex, blockCount, cumulativeBlockSize, requestTimeout, instantReplyOnThrottling, targetDescriptor);
+            return DoSendBlocks(startBlockIndex, blockCount, cumulativeBlockSize, ioConsumed, ioFairShareWeight, requestTimeout, instantReplyOnThrottling, targetDescriptor);
         })
         .AsyncVia(SessionInvoker_)
         .Run();

@@ -114,8 +114,8 @@ using namespace NYson;
 using namespace NYTree;
 using namespace NServer;
 
-using NYT::ToProto;
 using NYT::FromProto;
+using NYT::ToProto;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -2118,12 +2118,17 @@ void TTableNodeProxy::ValidatePermission(
 {
     const auto& securityManager = Bootstrap_->GetSecurityManager();
     auto successfulValidationResult = securityManager->ValidatePermission(object, permission);
-    YT_LOG_ALERT_IF(
-        CachedHasRowLevelAce_ && *CachedHasRowLevelAce_ != successfulValidationResult.HasRowLevelAce,
-        "Cached row-level ACE presence info differs from the recently computed one (CachedHasRowLevelAce: %v, NewHasRowLevelAce: %v)",
-        *CachedHasRowLevelAce_,
-        successfulValidationResult.HasRowLevelAce);
-    CachedHasRowLevelAce_ = successfulValidationResult.HasRowLevelAce;
+    // NB: When checking for anything other than read-like permissions, permission checker
+    // will not fill #HasRowLevelAce. If we then reuse the proxy for different permission
+    // checks (e.g. in overwriting copy) such non-read checks would spoil the cache.
+    if (object == Object_ && Any(permission & (EPermission::Read | EPermission::FullRead))) {
+        YT_LOG_ALERT_IF(
+            CachedHasRowLevelAce_ && *CachedHasRowLevelAce_ != successfulValidationResult.HasRowLevelAce,
+            "Cached row-level ACE presence info differs from the recently computed one (CachedHasRowLevelAce: %v, NewHasRowLevelAce: %v)",
+            *CachedHasRowLevelAce_,
+            successfulValidationResult.HasRowLevelAce);
+        CachedHasRowLevelAce_ = successfulValidationResult.HasRowLevelAce;
+    }
 }
 
 void TTableNodeProxy::RemoveSelf(TReqRemove* request, TRspRemove* response, const TCtxRemovePtr& context)
@@ -2218,13 +2223,10 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, GetMountInfo)
         if (const auto& predicate = index->Predicate()) {
             ToProto(protoIndexInfo->mutable_predicate(), *predicate);
         }
-        if (const auto& unfoldedColumns = index->UnfoldedColumns()) {
-            auto* protoUnfoldedColumns = protoIndexInfo->mutable_unfolded_columns();
-            ToProto(protoUnfoldedColumns->mutable_index_column(), unfoldedColumns->IndexColumn);
-            ToProto(protoUnfoldedColumns->mutable_table_column(), unfoldedColumns->TableColumn);
-            if (unfoldedColumns->IndexColumn == unfoldedColumns->TableColumn) {
-                ToProto(protoIndexInfo->mutable_unfolded_column(), unfoldedColumns->IndexColumn);
-            }
+        const auto& unfoldedColumns = index->UnfoldedColumns();
+        YT_OPTIONAL_TO_PROTO(protoIndexInfo, unfolded_columns, unfoldedColumns);
+        if (unfoldedColumns && unfoldedColumns->IndexColumn == unfoldedColumns->TableColumn) {
+            ToProto(protoIndexInfo->mutable_unfolded_column(), unfoldedColumns->IndexColumn);
         }
         protoIndexInfo->set_index_correspondence(ToProto(index->GetTableToIndexCorrespondence()));
         if (const auto& evaluatedColumnsSchema = index->EvaluatedColumnsSchema()) {
@@ -2494,7 +2496,17 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, Alter)
                     ValidatePivotKey(segment.LowerKey, *heavySchema, "replication progress");
                 }
             } else {
-                ValidateOrderedTabletReplicationProgress(*options.ReplicationProgress);
+                if (table->IsExternal()) {
+                    // We can't get actual tablet count from the secondary cell,
+                    // so accept any valid progress and check it again on mount.
+                    ValidateOrderedTableReplicationProgress(
+                        *options.ReplicationProgress,
+                        /*tabletCount*/ std::numeric_limits<int>::max());
+                } else {
+                    ValidateOrderedTableReplicationProgress(
+                        *options.ReplicationProgress,
+                        std::ssize(table->Tablets()));
+                }
             }
 
             table->ValidateAllTabletsUnmounted("Cannot change replication progress");
@@ -2696,7 +2708,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, LockDynamicTable)
     DeclareMutating();
     ValidateTransaction();
 
-    auto timestamp = request->timestamp();
+    auto timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
 
     context->SetRequestInfo("Timestamp: %v",
         timestamp);
@@ -2730,7 +2742,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, StartBackup)
     DeclareMutating();
     ValidateTransaction();
 
-    auto timestamp = request->timestamp();
+    auto timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
     auto backupMode = FromProto<EBackupMode>(request->backup_mode());
 
     auto upstreamReplicaId = request->has_upstream_replica_id()

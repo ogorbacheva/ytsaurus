@@ -40,6 +40,7 @@
 
 #include <yt/yt/core/tracing/trace_context.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/virtual.h>
 
@@ -1830,7 +1831,7 @@ private:
             // confirmed by the receipient (see |next_persistent_incoming_message_id|),
             // we must still send empty ("idle") PostMessage periodically.
             cellRuntimeData->IdlePostCookie = TDelayedExecutor::Submit(
-                BIND_NO_PROPAGATE(&THiveManager::PostOutcomingMessagesThunk, MakeStrong(this), MakeWeak(cellRuntimeData), /*allowidle*/ true)
+                BIND_NO_PROPAGATE(&THiveManager::PostOutcomingMessagesThunk, MakeWeak(this), MakeWeak(cellRuntimeData), /*allowidle*/ true)
                     .Via(BackgroundInvoker_),
                 Config_->IdlePostPeriod);
             return;
@@ -2433,21 +2434,21 @@ private:
         }
     }
 
-    TString FormatIncomingMailboxEndpoints(TEndpointId endpointId) const
+    std::string FormatIncomingMailboxEndpoints(TEndpointId endpointId) const
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
         return FormatMailboxEndpoints(endpointId, /*outgoing*/ false);
     }
 
-    TString FormatOutgoingMailboxEndpoints(TEndpointId endpointId) const
+    std::string FormatOutgoingMailboxEndpoints(TEndpointId endpointId) const
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
         return FormatMailboxEndpoints(endpointId, /*outgoing*/ true);
     }
 
-    TString FormatMailboxEndpoints(TEndpointId endpointId, bool outgoing) const
+    std::string FormatMailboxEndpoints(TEndpointId endpointId, bool outgoing) const
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -2556,6 +2557,7 @@ private:
         CellMailboxMap_.Clear();
         AvenueMailboxMap_.Clear();
         UnregisteredCellIds_.clear();
+        LogicalTimeRegistry_->Clear();
 
         RuntimeData_.Store(THiveRuntimeData{});
     }
@@ -2616,7 +2618,7 @@ private:
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
         auto automatonInvoker = HydraManager_->CreateGuardedAutomatonInvoker(AutomatonInvoker_);
-        return New<TCompositeMapService>()
+        return CreateCompositeMapService()
             ->AddChild("cell_mailboxes", New<TMailboxOrchidService<TCellMailboxRuntimeData, &THiveRuntimeData::CellIdToCellRuntimeData>>(
                 MakeWeak(this))
                 ->Via(BackgroundInvoker_))

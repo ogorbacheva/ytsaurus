@@ -77,11 +77,11 @@ NLogging::TLogger MakeLogger(const std::optional<TTransactionReplicationInitiato
     auto logger = TransactionServerLogger();
     if (requestInfo) {
         TStringBuilder builder;
-        builder.AppendFormat("InitiatorRequestId: %v", requestInfo->RequestId);
+        builder.AppendFormat("%v", requestInfo->RequestId);
         if (requestInfo->SubrequestIndex) {
             builder.AppendFormat("[%v]", *requestInfo->SubrequestIndex);
         }
-        logger.AddRawTag(builder.Flush());
+        logger.AddTag("InitiatorRequestId", builder.Flush());
     }
     return logger;
 }
@@ -399,14 +399,36 @@ TTransactionReplicationSessionBase::DoInvokeReplicationRequests()
 
     YT_ASSERT(MirroringToSequoiaEnabled_ || mirroredTransactionsToReplicate.empty());
 
-    return {
-        .NonMirrored = asyncResults,
-        .Mirrored = MirroringToSequoiaEnabled_
-            ? ReplicateCypressTransactionsInSequoiaAndSyncWithLeader(
+    TFuture<void> mirroredResult = OKFuture;
+    if (MirroringToSequoiaEnabled_) {
+        // NB: if wrapping of every ObjectService::Execute is requested then
+        // Sequoia transaction with boomerang mutation has to be the last
+        // boomerang.
+        if (SequoiaNodeIdToLock_ && !asyncResults.empty()) {
+            mirroredResult = AllSucceeded(asyncResults).AsVoid().Apply(BIND([
+                bootstrap = Bootstrap_,
+                mirroredTransactionsToReplicate = std::move(mirroredTransactionsToReplicate),
+                mirroredBoomerang = std::move(MirroredBoomerang_),
+                sequoiaNodeIdToLock = SequoiaNodeIdToLock_
+            ] () mutable {
+                return ReplicateCypressTransactionsInSequoiaAndSyncWithLeader(
+                    bootstrap,
+                    std::move(mirroredTransactionsToReplicate),
+                    std::move(mirroredBoomerang),
+                    sequoiaNodeIdToLock);
+            }));
+        } else {
+            mirroredResult = ReplicateCypressTransactionsInSequoiaAndSyncWithLeader(
                 Bootstrap_,
                 std::move(mirroredTransactionsToReplicate),
-                std::move(MirroredBoomerang_))
-            : OKFuture,
+                std::move(MirroredBoomerang_),
+                SequoiaNodeIdToLock_);
+        }
+    }
+
+    return {
+        .NonMirrored = std::move(asyncResults),
+        .Mirrored = std::move(mirroredResult),
     };
 }
 
@@ -531,11 +553,14 @@ NObjectClient::TCellTagList TTransactionReplicationSessionWithoutBoomerangs::Get
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TTransactionReplicationSessionWithBoomerangs::SetMutation(std::unique_ptr<TMutation> mutation)
+void TTransactionReplicationSessionWithBoomerangs::SetMutation(
+    std::unique_ptr<TMutation> mutation,
+    NCypressClient::TNodeId sequoiaNodeIdToLock)
 {
     YT_VERIFY(!Mutation_);
     YT_VERIFY(mutation);
     Mutation_ = std::move(mutation);
+    SequoiaNodeIdToLock_ = sequoiaNodeIdToLock;
 
     if (!Mutation_->GetMutationId()) {
         Mutation_->SetMutationId(GenerateMutationId(), Mutation_->IsRetry());
@@ -601,11 +626,13 @@ void TTransactionReplicationSessionWithBoomerangs::ConstructReplicationRequests(
         request->set_boomerang_mutation_data(boomerangMutationData);
     };
 
-    if (!MirroredTransactionIds_.empty()) {
-        ++boomerangWaveSize;
+    if (MirroringToSequoiaEnabled_) {
+        if (!MirroredTransactionIds_.empty() || SequoiaNodeIdToLock_) {
+            ++boomerangWaveSize;
 
-        MirroredBoomerang_ = std::make_unique<NProto::TReqReturnBoomerang>();
-        fillBoomerangRequest(MirroredBoomerang_.get());
+            MirroredBoomerang_ = std::make_unique<NProto::TReqReturnBoomerang>();
+            fillBoomerangRequest(MirroredBoomerang_.get());
+        }
     }
 
     for (auto& [cellTag, request] : ReplicationRequests_) {
@@ -634,7 +661,7 @@ TFuture<TMutationResponse> TTransactionReplicationSessionWithBoomerangs::InvokeR
 
 TFuture<TMutationResponse> TTransactionReplicationSessionWithBoomerangs::InvokeReplicationRequests(std::optional<TDuration> timeout)
 {
-    if (ReplicationRequestCellTags_.empty() && MirroredTransactionIds_.empty()) {
+    if (ReplicationRequestCellTags_.empty() && (MirroredTransactionIds_.empty() && (!SequoiaNodeIdToLock_ || !MirroringToSequoiaEnabled_))) {
         return timeout
             ? Mutation_->Commit().WithTimeout(*timeout)
             : Mutation_->Commit();
@@ -785,6 +812,9 @@ void RunTransactionReplicationSessionAndReply(
     if (syncWithUpstream) {
         cellSyncSession->ScheduleSyncWithUpstream();
     }
+    if (enableMirroringToSequoia) {
+        cellSyncSession->ScheduleSyncWithSequoiaTransactions();
+    }
     if (enableMutationBoomerangs) {
         auto replicationSession = New<TTransactionReplicationSessionWithBoomerangs>(
             bootstrap,
@@ -792,7 +822,7 @@ void RunTransactionReplicationSessionAndReply(
             std::move(transactionIds),
             std::move(requestInfo),
             enableMirroringToSequoia);
-        replicationSession->SetMutation(std::move(mutation));
+        replicationSession->SetMutation(std::move(mutation), /*sequoiaNodeIdToLock*/ NullObjectId);
         YT_UNUSED_FUTURE(replicationSession->Run(context));
     } else {
         auto automatonInvoker = bootstrap->GetHydraFacade()->GetAutomatonInvoker(EAutomatonThreadQueue::TransactionManager);
@@ -823,6 +853,10 @@ TFuture<void> RunTransactionReplicationSession(
     auto cellSyncSession = New<TMultiPhaseCellSyncSession>(bootstrap, TransactionServerLogger());
     if (syncWithUpstream) {
         cellSyncSession->ScheduleSyncWithUpstream();
+    }
+
+    if (enableMirroringToSequoia) {
+        cellSyncSession->ScheduleSyncWithSequoiaTransactions();
     }
 
     auto replicationSession = New<TTransactionReplicationSessionWithoutBoomerangs>(

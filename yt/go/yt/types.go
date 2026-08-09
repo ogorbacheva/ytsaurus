@@ -35,6 +35,8 @@ const (
 	NodeSys               NodeType = "sys_node"
 	NodePortalEntrance    NodeType = "portal_entrance"
 	NodePortalExit        NodeType = "portal_exit"
+	NodeScion             NodeType = "scion"
+	NodeRootstock         NodeType = "rootstock"
 	NodeSchedulerPool     NodeType = "scheduler_pool"
 	NodeSchedulerPoolTree NodeType = "scheduler_pool_tree"
 
@@ -391,6 +393,14 @@ func (id *MaintenanceID) UnmarshalYSON(data []byte) (err error) {
 	*id = MaintenanceID(g)
 	return
 }
+
+type PartitionMode string
+
+const (
+	PartitionModeSorted    PartitionMode = "sorted"
+	PartitionModeOrdered   PartitionMode = "ordered"
+	PartitionModeUnordered PartitionMode = "unordered"
+)
 
 type OrderedTableBackupMode string
 

@@ -632,7 +632,14 @@ private:
             .Item("wait_time").Value(this->GetWaitDuration())
             .Item("execution_time").Value(this->GetExecutionDuration())
             .Item("finish_instant").Value(this->GetFinishInstant())
-            .OptionalItem("cpu_time", this->GetTraceContextTime());
+            .OptionalItem("cpu_time", this->GetTraceContextTime())
+            .DoIf(credentialsExt.has_user_ticket() && !credentialsExt.has_service_ticket(), [&] (auto fluent) {
+                fluent
+                    .Item("debug_info").Value(BuildYsonStringFluently()
+                        .BeginMap()
+                            .Item("user_ticket_and_no_service_ticket").Value(true)
+                        .EndMap());
+            });
     }
 
     void DoEmitError() const
@@ -1418,7 +1425,7 @@ void TApiService::InitContext(TApiServiceContext<TRequestMessage, TResponseMessa
     using TContext = NYT::NRpcProxy::TApiServiceContext<TRequestMessage, TResponseMessage>;
 
     context->SetLogger(Logger
-        .WithTag("RequestId: %v", context->GetRequestId()));
+        .WithTag("RequestId", context->GetRequestId()));
 
     // First, recover request path from the typed request context using the incredible power of C++20 concepts.
     std::optional<TYPath> requestPath;
@@ -1676,8 +1683,7 @@ TDetailedProfilingCountersPtr TApiService::GetOrCreateDetailedProfilingCounters(
             }
             if (key.UserTag) {
                 profiler = profiler
-                    // TODO(babenko): switch to std::string
-                    .WithTag("user", ToString(*key.UserTag));
+                    .WithTag("user", *key.UserTag);
             }
             return New<TDetailedProfilingCounters>(std::move(profiler));
         })
@@ -1762,7 +1768,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, GenerateTimestamps)
         },
         [clockClusterTag] (const auto& context, const TTimestamp& timestamp) {
             auto* response = &context->Response();
-            response->set_timestamp(timestamp);
+            response->set_timestamp(ToProto(timestamp));
 
             context->SetResponseInfo("Timestamp: %v@%v",
                 timestamp,
@@ -1810,7 +1816,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, StartTransaction)
     }
     options.PrerequisiteTransactionIds = FromProto<std::vector<TTransactionId>>(request->prerequisite_transaction_ids());
     if (request->has_start_timestamp()) {
-        options.StartTimestamp = request->start_timestamp();
+        options.StartTimestamp = FromProto<NTransactionClient::TTimestamp>(request->start_timestamp());
     }
 
     context->SetRequestInfo("TransactionType: %v, TransactionId: %v, ParentId: %v, PrerequisiteTransactionIds: %v, "
@@ -1838,7 +1844,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, StartTransaction)
         [=, this, this_ = MakeStrong(this)] (const auto& context, const auto& transaction) {
             auto* response = &context->Response();
             ToProto(response->mutable_id(), transaction->GetId());
-            response->set_start_timestamp(transaction->GetStartTimestamp());
+            response->set_start_timestamp(ToProto(transaction->GetStartTimestamp()));
             if (transactionType == ETransactionType::Tablet) {
                 response->set_sequence_number_source_id(NextSequenceNumberSourceId_++);
             }
@@ -1901,7 +1907,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, CommitTransaction)
             << TErrorAttribute("expected_prepare_signatures_size", options.ExpectedPrepareSignatures.size());
     }
     if (request->has_max_allowed_commit_timestamp()) {
-        options.MaxAllowedCommitTimestamp = request->max_allowed_commit_timestamp();
+        options.MaxAllowedCommitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->max_allowed_commit_timestamp());
     }
     if (request->has_prerequisite_options()) {
         FromProto(&options, request->prerequisite_options());
@@ -1928,7 +1934,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, CommitTransaction)
         [] (const auto& context, const TTransactionCommitResult& result) {
             auto* response = &context->Response();
             ToProto(response->mutable_commit_timestamps(), result.CommitTimestamps);
-            response->set_primary_commit_timestamp(result.PrimaryCommitTimestamp);
+            response->set_primary_commit_timestamp(ToProto(result.PrimaryCommitTimestamp));
 
             context->SetResponseInfo("PrimaryCommitTimestamp: %v, CommitTimestamps: %v",
                 result.PrimaryCommitTimestamp, result.CommitTimestamps);
@@ -2020,7 +2026,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, AttachTransaction)
         /*searchInPool*/ true);
 
     response->set_type(static_cast<NApi::NRpcProxy::NProto::ETransactionType>(transaction->GetType()));
-    response->set_start_timestamp(transaction->GetStartTimestamp());
+    response->set_start_timestamp(ToProto(transaction->GetStartTimestamp()));
     response->set_atomicity(static_cast<NApi::NRpcProxy::NProto::EAtomicity>(transaction->GetAtomicity()));
     response->set_durability(static_cast<NApi::NRpcProxy::NProto::EDurability>(transaction->GetDurability()));
     response->set_timeout(ToProto(transaction->GetTimeout()));
@@ -2115,27 +2121,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, GetTableMountInfo)
             }
             response->set_physical_path(tableMountInfo->PhysicalPath);
 
-            for (const auto& indexInfo : tableMountInfo->Indices) {
-                auto* protoIndexInfo = response->add_indices();
-                ToProto(protoIndexInfo->mutable_index_table_id(), indexInfo.TableId);
-                protoIndexInfo->set_index_kind(ToProto(indexInfo.Kind));
-                if (const auto& predicate = indexInfo.Predicate) {
-                    ToProto(protoIndexInfo->mutable_predicate(), *predicate);
-                }
-                if (const auto& unfoldedColumns = indexInfo.UnfoldedColumns) {
-                    auto* protoUnfoldedColumns = protoIndexInfo->mutable_unfolded_columns();
-                    ToProto(protoUnfoldedColumns->mutable_index_column(), unfoldedColumns->IndexColumn);
-                    ToProto(protoUnfoldedColumns->mutable_table_column(), unfoldedColumns->TableColumn);
-                    // COMPAT(sabdenovch): Query tracker best-effort backwards compat.
-                    if (unfoldedColumns->IndexColumn == unfoldedColumns->TableColumn) {
-                        ToProto(protoIndexInfo->mutable_unfolded_column(), unfoldedColumns->IndexColumn);
-                    }
-                }
-                protoIndexInfo->set_index_correspondence(ToProto(indexInfo.Correspondence));
-                if (const auto& evaluatedColumnsSchema = indexInfo.EvaluatedColumnsSchema) {
-                    ToProto(protoIndexInfo->mutable_evaluated_columns_schema(), *evaluatedColumnsSchema);
-                }
-            }
+            ToProto(response->mutable_indices(), tableMountInfo->Indices);
 
             context->SetResponseInfo("Dynamic: %v, TabletCount: %v, ReplicaCount: %v",
                 tableMountInfo->Dynamic,
@@ -3100,7 +3086,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, AlterTable)
         options.ReplicationProgress = FromProto<TReplicationProgress>(request->replication_progress());
     }
     if (request->has_clip_timestamp()) {
-        options.ClipTimestamp = request->clip_timestamp();
+        options.ClipTimestamp = FromProto<NTransactionClient::TTimestamp>(request->clip_timestamp());
     }
 
     context->SetRequestInfo("Path: %v",
@@ -3186,6 +3172,23 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, AlterReplicationCard)
     }
     if (request->has_collocation_options()) {
         options.CollocationOptions = ConvertTo<TReplicationCollocationOptionsPtr>(TYsonString(request->collocation_options()));
+    }
+
+    using ECase = NApi::NRpcProxy::NProto::TReqAlterReplicationCard::SecondaryIndexCase;
+    switch (request->secondary_index_case()) {
+        case ECase::kCreateSecondaryIndex:
+            options.CreateSecondaryIndex = ConvertTo<TCreateSecondaryIndexPtr>(
+                TYsonString(request->create_secondary_index()));
+            break;
+        case ECase::kDestroySecondaryIndex:
+            FromProto(&options.DestroySecondaryIndex, request->destroy_secondary_index());
+            break;
+        case ECase::kProgressSecondaryIndexCorrespondence:
+            options.ProgressSecondaryIndexCorrespondence = ConvertTo<TProgressSecondaryIndexCorrespondencePtr>(
+                TYsonString(request->progress_secondary_index_correspondence()));
+            break;
+        default:
+            break;
     }
 
     context->SetRequestInfo("ReplicationCardId: %v",
@@ -4208,10 +4211,10 @@ static void LookupRowsPrelude(
 
     SetTimeoutOptions(options, context.Get());
 
-    options->Timestamp = request->timestamp();
+    options->Timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
 
     if constexpr (requires { request->retention_timestamp(); }) {
-        options->RetentionTimestamp = request->retention_timestamp();
+        options->RetentionTimestamp = FromProto<NTransactionClient::TTimestamp>(request->retention_timestamp());
     }
 
     if (request->has_multiplexing_band()) {
@@ -4617,7 +4620,7 @@ template <class TRequest>
 static void FillSelectRowsOptionsBaseFromRequest(const TRequest request, TSelectRowsOptionsBase* options)
 {
     if (request->has_timestamp()) {
-        options->Timestamp = request->timestamp();
+        options->Timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
     }
     if (request->has_udf_registry_path()) {
         options->UdfRegistryPath = request->udf_registry_path();
@@ -4672,7 +4675,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, SelectRows)
         options.EnableCodeCache = request->enable_code_cache();
     }
     if (request->has_retention_timestamp()) {
-        options.RetentionTimestamp = request->retention_timestamp();
+        options.RetentionTimestamp = FromProto<NTransactionClient::TTimestamp>(request->retention_timestamp());
     }
     // TODO: Support WorkloadDescriptor
     if (request->has_memory_limit_per_node()) {
@@ -4789,7 +4792,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, PullRows)
     options.OrderRowsByTimestamp = request->order_rows_by_timestamp();
     FromProto(&options.ReplicationProgress, request->replication_progress());
     if (request->has_upper_timestamp()) {
-        options.UpperTimestamp = request->upper_timestamp();
+        options.UpperTimestamp = FromProto<NTransactionClient::TTimestamp>(request->upper_timestamp());
     }
     for (auto protoReplicationRowIndex : request->start_replication_row_indexes()) {
         auto tabletId = FromProto<TTabletId>(protoReplicationRowIndex.tablet_id());
@@ -4877,7 +4880,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, GetInSyncReplicas)
     TGetInSyncReplicasOptions options;
     SetTimeoutOptions(&options, context.Get());
     if (request->has_timestamp()) {
-        options.Timestamp = request->timestamp();
+        options.Timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
     }
 
     if (request->has_cached_sync_replicas_timeout()) {
@@ -4950,15 +4953,15 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, GetTabletInfos)
                 protoTabletInfo->set_total_row_count(tabletInfo.TotalRowCount);
                 protoTabletInfo->set_trimmed_row_count(tabletInfo.TrimmedRowCount);
                 protoTabletInfo->set_delayed_lockless_row_count(tabletInfo.DelayedLocklessRowCount);
-                protoTabletInfo->set_barrier_timestamp(tabletInfo.BarrierTimestamp);
-                protoTabletInfo->set_last_write_timestamp(tabletInfo.LastWriteTimestamp);
+                protoTabletInfo->set_barrier_timestamp(ToProto(tabletInfo.BarrierTimestamp));
+                protoTabletInfo->set_last_write_timestamp(ToProto(tabletInfo.LastWriteTimestamp));
                 ToProto(protoTabletInfo->mutable_tablet_errors(), tabletInfo.TabletErrors);
 
                 if (tabletInfo.TableReplicaInfos) {
                     for (const auto& replicaInfo : *tabletInfo.TableReplicaInfos) {
                         auto* protoReplicaInfo = protoTabletInfo->add_replicas();
                         ToProto(protoReplicaInfo->mutable_replica_id(), replicaInfo.ReplicaId);
-                        protoReplicaInfo->set_last_replication_timestamp(replicaInfo.LastReplicationTimestamp);
+                        protoReplicaInfo->set_last_replication_timestamp(ToProto(replicaInfo.LastReplicationTimestamp));
                         protoReplicaInfo->set_mode(static_cast<NApi::NRpcProxy::NProto::ETableReplicaMode>(replicaInfo.Mode));
                         protoReplicaInfo->set_current_replication_row_index(replicaInfo.CurrentReplicationRowIndex);
                         protoReplicaInfo->set_committed_replication_row_index(replicaInfo.CommittedReplicationRowIndex);
@@ -5071,7 +5074,7 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, PushQueueProducer)
         },
         [] (const auto& context, const auto& pushQueueProducerResult) {
             auto* response = &context->Response();
-            response->set_last_sequence_number(pushQueueProducerResult.LastSequenceNumber.Underlying());
+            response->set_last_sequence_number(ToProto(pushQueueProducerResult.LastSequenceNumber));
             response->set_skipped_row_count(pushQueueProducerResult.SkippedRowCount);
 
             context->SetResponseInfo(
@@ -5411,8 +5414,8 @@ DEFINE_RPC_SERVICE_METHOD(TApiService, CreateQueueProducerSession)
         [=] (const auto& context, const TCreateQueueProducerSessionResult& result) {
             auto* response = &context->Response();
 
-            response->set_sequence_number(result.SequenceNumber.Underlying());
-            response->set_epoch(result.Epoch.Underlying());
+            response->set_sequence_number(ToProto(result.SequenceNumber));
+            response->set_epoch(ToProto(result.Epoch));
             if (result.UserMeta) {
                 ToProto(response->mutable_user_meta(), ConvertToYsonString(result.UserMeta).ToString());
             }
@@ -5477,6 +5480,20 @@ void TApiService::DoModifyRows(
         THROW_ERROR_EXCEPTION("Row count mismatch")
             << TErrorAttribute("rowset_size", rowsetSize)
             << TErrorAttribute("row_modification_types_size", request.row_modification_types_size());
+    }
+
+    auto totalLockCount = request.row_legacy_read_locks_size() + request.row_legacy_locks_size() + request.row_locks_size();
+    if ((request.row_legacy_read_locks_size() != 0 && request.row_legacy_read_locks_size() != rowsetSize) ||
+        (request.row_legacy_locks_size() != 0 && request.row_legacy_locks_size() != rowsetSize) ||
+        (request.row_locks_size() != 0 && request.row_locks_size() != rowsetSize) ||
+        (totalLockCount != 0 && totalLockCount != rowsetSize))
+    {
+        THROW_ERROR_EXCEPTION("Lock count mismatch")
+            << TErrorAttribute("rowset_size", rowsetSize)
+            << TErrorAttribute("row_legacy_read_locks_size", request.row_legacy_read_locks_size())
+            << TErrorAttribute("row_legacy_locks_size", request.row_legacy_locks_size())
+            << TErrorAttribute("row_locks_size", request.row_locks_size())
+            << TErrorAttribute("total_lock_count", totalLockCount);
     }
 
     std::vector<TRowModification> modifications;

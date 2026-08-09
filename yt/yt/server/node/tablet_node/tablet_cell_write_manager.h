@@ -3,6 +3,8 @@
 #include "private.h"
 #include "tablet_write_manager.h"
 
+#include <yt/yt/server/lib/hive/public.h>
+
 #include <yt/yt/server/lib/hydra/entity_map.h>
 
 #include <yt/yt/server/lib/lease_server/public.h>
@@ -42,6 +44,7 @@ struct ITabletCellWriteManagerHost
     virtual TTablet* GetTablet(const TTabletId& id) const = 0;
     virtual const NHydra::TReadOnlyEntityMap<TTablet>& Tablets() const = 0;
 
+    virtual NHiveClient::ICellDirectoryPtr GetCellDirectory() const = 0;
     virtual ITransactionManagerPtr GetTransactionManager() const = 0;
     virtual NTabletClient::TDynamicTabletCellOptionsPtr GetDynamicOptions() const = 0;
     virtual TTabletManagerConfigPtr GetConfig() const = 0;
@@ -92,8 +95,6 @@ struct ITabletCellWriteManager
     // Tablet locking stuff.
     virtual void AddTransientAffectedTablet(TTransaction* transaction, TTablet* tablet) = 0;
     virtual void AddPersistentAffectedTablet(TTransaction* transaction, TTablet* tablet) = 0;
-
-    DECLARE_INTERFACE_SIGNAL(void(TTablet*), ReplicatorWriteTransactionFinished);
 };
 
 DEFINE_REFCOUNTED_TYPE(ITabletCellWriteManager)

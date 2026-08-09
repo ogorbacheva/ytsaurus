@@ -70,6 +70,17 @@ TFuture<TBlock> TNbdSession::Read(i64 offset, i64 length, ui64 cookie)
     return NbdChunkHandler_->Read(offset, length, cookie);
 }
 
+TFuture<std::vector<TBlock>> TNbdSession::ReadBatch(
+    const std::vector<TNbdReadSubrequest>& subrequests,
+    ui64 cookie)
+{
+    YT_LOG_DEBUG("Batch reading from NBD session (SubrequestCount: %v, Cookie: %x)",
+        subrequests.size(),
+        cookie);
+
+    return NbdChunkHandler_->ReadBatch(subrequests, cookie);
+}
+
 TFuture<NIO::TIOCounters> TNbdSession::Write(i64 offset, const TBlock& block, ui64 cookie)
 {
     YT_LOG_DEBUG("Writing to NBD session (Offset: %v, Length: %v, Cookie: %x)",
@@ -78,6 +89,23 @@ TFuture<NIO::TIOCounters> TNbdSession::Write(i64 offset, const TBlock& block, ui
         cookie);
 
     return NbdChunkHandler_->Write(offset, block, cookie);
+}
+
+TFuture<void> TNbdSession::Flush(ui64 cookie)
+{
+    YT_LOG_DEBUG("Flushing NBD session (Cookie: %x)",
+        cookie);
+
+    return NbdChunkHandler_->Flush(cookie);
+}
+
+TFuture<void> TNbdSession::FlushRange(i64 offset, i64 size)
+{
+    YT_LOG_DEBUG("Flushing NBD session range (Offset: %v, Size: %v)",
+        offset,
+        size);
+
+    return NbdChunkHandler_->FlushRange(offset, size);
 }
 
 //! Create NBD chunk and make filesystem on it.
@@ -242,6 +270,8 @@ TFuture<TNbdSession::TSendBlocksResult> TNbdSession::SendBlocks(
     int /* startBlockIndex */,
     int /* blockCount */,
     i64 /* cumulativeBlockSize */,
+    std::optional<i64> /* ioConsumed */,
+    std::optional<double> /* ioFairShareWeight */,
     TDuration /* requestTimeout */,
     bool /* instantReplyOnThrottling */,
     const NNodeTrackerClient::TNodeDescriptor& /* target */)

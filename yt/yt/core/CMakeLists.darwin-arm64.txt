@@ -15,6 +15,7 @@
 add_subdirectory(misc)
 add_subdirectory(http)
 add_subdirectory(https)
+add_subdirectory(yaml)
 add_subdirectory(rpc)
 add_subdirectory(service_discovery)
 add_subdirectory(test_framework)
@@ -70,6 +71,7 @@ target_link_libraries(yt-yt-core PUBLIC
   cpp-yt-logging
   yt-logging-plain_text_formatter
   cpp-yt-misc
+  cpp-yt-mpl
   cpp-yt-memory
   cpp-yt-string
   cpp-yt-yson
@@ -105,6 +107,7 @@ target_sources(yt-yt-core PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/core/actions/invoker_pool.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/actions/invoker_util.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/bus/public.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/bus/helpers.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/bus/tcp/connection.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/bus/tcp/dispatcher.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/bus/tcp/dispatcher_impl.cpp
@@ -259,6 +262,7 @@ target_sources(yt-yt-core PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/core/phoenix/type_registry.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/authentication_identity.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/authenticator.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/backend.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/balancing_channel.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/caching_channel_factory.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/channel_detail.cpp
@@ -266,6 +270,8 @@ target_sources(yt-yt-core PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/config.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/dispatcher.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/dynamic_channel_pool.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/dynamic_channel_pool_provider.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/endpoint_address.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/hedging_channel.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/helpers.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/local_channel.cpp
@@ -292,6 +298,8 @@ target_sources(yt-yt-core PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/stream.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/throttling_channel.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/viable_peer_registry.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/multi_protocol_channel_factory.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/multi_protocol_server.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/bus/server.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/bus/channel.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/service_discovery/service_discovery.cpp
@@ -338,6 +346,7 @@ target_sources(yt-yt-core PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/core/yson/list_verb_lazy_yson_consumer.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/yson/attributes_stripper.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/ytree/attribute_consumer.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/ytree/composite_map.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/ytree/helpers.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/ytree/attributes.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/ytree/attribute_filter.cpp
@@ -413,6 +422,7 @@ target_link_libraries(yt-yt-core.global PUBLIC
   cpp-yt-logging
   yt-logging-plain_text_formatter
   cpp-yt-misc
+  cpp-yt-mpl
   cpp-yt-memory
   cpp-yt-string
   cpp-yt-yson
@@ -449,6 +459,8 @@ target_sources(yt-yt-core.global PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/core/misc/ref_tracked.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/net/configure_address_resolver.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/configure_dispatcher.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/bus/tcp_backend.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/core/rpc/bus/uds_backend.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/tracing/trace_context.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/core/yson/configure_protobuf_interop.cpp
 )

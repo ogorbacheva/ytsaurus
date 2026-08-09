@@ -14,9 +14,10 @@ from yt_commands import (
     gc_collect, execute_command, get_batch_output, switch_leader, is_active_primary_master_leader,
     is_active_primary_master_follower, get_active_primary_master_leader_address,
     get_active_primary_master_follower_address, sync_mount_table, sync_create_cells, check_permission,
-    get_driver, create_access_control_object_namespace, create_chaos_cell_bundle)
+    get_driver, create_access_control_object_namespace, create_chaos_cell_bundle,
+    create_account_resource_usage_lease)
 
-from yt_helpers import get_current_time, profiler_factory, account_usage_all_zero
+from yt_helpers import parse_yt_time, get_current_time, profiler_factory, account_usage_all_zero
 
 from yt.common import YtError, YtResponseError, WaitFailed
 from yt.environment.helpers import assert_items_equal
@@ -722,7 +723,7 @@ class TestCypress(YTEnvSetup):
         create("file", "//tmp/p1/f", attributes={"account": "a"})
         wait(lambda: get("//sys/accounts/a/@resource_usage/master_memory/total") > 0)
 
-        with raises_yt_error("Cannot remove an account .* because its usage is not zero"):
+        with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove("//sys/accounts/a")
         assert get("//sys/accounts/a/@life_stage") == "creation_committed"
 
@@ -2293,6 +2294,40 @@ class TestCypress(YTEnvSetup):
         assert not exists("//tmp/t/@expiration_timeout_user")
         assert not exists("//tmp/t/@expiration_timeout")
         assert exists("//tmp/t/@expiration_timeout_last_reset_time")
+
+    @authors("theevilbird")
+    def test_expiration_arming_time(self):
+        create("table", "//tmp/t1")
+        assert not exists("//tmp/t1/@expiration_time_arming_time")
+        assert not exists("//tmp/t1/@expiration_timeout_arming_time")
+
+        current_time1 = get_current_time()
+        set("//tmp/t1/@expiration_time", str(get_current_time() + timedelta(seconds=20)))
+        assert current_time1 < parse_yt_time(get("//tmp/t1/@expiration_time_arming_time")) < current_time1 + timedelta(seconds=2)
+
+        create("table", "//tmp/t2")
+        current_time2 = get_current_time()
+        set("//tmp/t2/@expiration_timeout", 20000)
+        assert current_time2 < parse_yt_time(get("//tmp/t2/@expiration_timeout_arming_time")) < current_time2 + timedelta(seconds=2)
+
+        current_time3 = get_current_time()
+        create("table", "//tmp/t3", attributes={"expiration_time": str(get_current_time() + timedelta(seconds=20000))})
+        assert current_time3 < parse_yt_time(get("//tmp/t3/@expiration_time_arming_time")) < current_time3 + timedelta(seconds=2)
+
+        current_time4 = get_current_time()
+        create("table", "//tmp/t4", attributes={"expiration_timeout": 20000})
+        assert current_time4 < parse_yt_time(get("//tmp/t4/@expiration_timeout_arming_time")) < current_time4 + timedelta(seconds=2)
+
+        time.sleep(3)
+        current_time1_2 = get_current_time()
+        set("//tmp/t1/@expiration_timeout", 10000)
+        assert current_time1 < parse_yt_time(get("//tmp/t1/@expiration_time_arming_time")) < current_time1 + timedelta(seconds=2)
+        assert current_time1_2 < parse_yt_time(get("//tmp/t1/@expiration_timeout_arming_time")) < current_time1_2 + timedelta(seconds=2)
+
+        current_time2_2 = get_current_time()
+        set("//tmp/t2/@expiration_time", str(get_current_time() + timedelta(seconds=10)))
+        assert current_time2 < parse_yt_time(get("//tmp/t2/@expiration_timeout_arming_time")) < current_time2 + timedelta(seconds=2)
+        assert current_time2_2 < parse_yt_time(get("//tmp/t2/@expiration_time_arming_time")) < current_time2_2 + timedelta(seconds=2)
 
     @authors("shakurov")
     @pytest.mark.parametrize("authorized", [False, True])
@@ -5761,6 +5796,7 @@ class TestCypressSequoia(TestCypressMulticell):
         "11": {"roles": ["chunk_host", "cypress_node_host"]},
         "12": {"roles": ["sequoia_node_host"]},
         "13": {"roles": ["chunk_host"]},
+        "14": {"roles": ["sequoia_node_host"]},
     }
 
     @authors("theevilbird")
@@ -5792,4 +5828,70 @@ class TestCypressSequoia(TestCypressMulticell):
             for cell, ids in branched_node_ids.items():
                 assert len(ids) == 0
 
+    @authors("kvk1920")
+    def test_cross_cell_revision(self):
+        last_revision = 0
+        for i in range(20):
+            node_id = create("document", f"//tmp/doc{i}", attributes={"value": {}})
+            new_revision = get(f"#{node_id}/@revision")
+            assert last_revision < new_revision
+            last_revision = new_revision
+
+        for i in range(20):
+            set(f"//tmp/doc{i}/value", 123)
+            new_revision = get(f"//tmp/doc{i}/@revision")
+            assert last_revision < new_revision
+            last_revision = new_revision
+
+
 ################################################################################
+
+
+class TestVirtualMaps_1(YTEnvSetup):
+    @authors("ivpiskarev")
+    def test_account_resource_usage_leases_vmap(self):
+        set("//sys/@config/object_manager/gc_sweep_period", 1000)  # 1 second
+
+        create_account("a")
+        for _ in range(3):
+            tx = start_transaction()
+            lease_id = create_account_resource_usage_lease(account="a", transaction_id=tx)
+            commit_transaction(tx)
+
+            # Must not crash.
+            ls("//sys/account_resource_usage_leases", attributes=["account", "transaction_id", "resource_usage"])
+            with raises_yt_error(f"Node has no child with key \"{lease_id}\""):
+                get(f"//sys/account_resource_usage_leases/{lease_id}", attributes=["account", "transaction_id", "resource_usage"])
+
+        gc_collect()
+
+
+class TestVirtualMaps_2(YTEnvSetup):
+    NUM_SECONDARY_MASTER_CELLS = 2
+
+    MASTER_CELL_DESCRIPTORS = {
+        "10": {"roles": ["cypress_node_host"]},
+        "11": {"roles": ["cypress_node_host"]},
+        "12": {"roles": ["transaction_coordinator"]},
+    }
+
+    @authors("ivpiskarev")
+    def test_foreign_transactions_vmap(self):
+        set("//sys/@config/object_manager/gc_sweep_period", 50_000)  # 50 seconds
+
+        for _ in range(3):
+            tx = start_transaction(replicate_to_master_cell_tags=[10, 11])
+            wait(lambda: tx in ls("//sys/foreign_transactions", attributes=["transaction_id"], driver=get_driver(0)))
+            commit_transaction(tx)
+
+            # Must not crash.
+            for _ in range(10):
+                for i in [0, 1]:
+                    ls("//sys/foreign_transactions", attributes=["transaction_id"], driver=get_driver(i))
+                    with raises_yt_error(f"Node has no child with key \"{tx}\""):
+                        get(f"//sys/foreign_transactions/{tx}", attributes=["transaction_id"], driver=get_driver(i))
+                time.sleep(0.25)
+
+        # To speed up teardown.
+        set("//sys/@config/object_manager/gc_sweep_period", 1_000)  # 1 second
+        gc_collect()

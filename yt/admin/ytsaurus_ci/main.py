@@ -52,14 +52,22 @@ def cloud_function_token_option(f):
 @cli.command()
 @click.option("--job-id", type=str, required=True, help="job_id of interested test")
 @cloud_function_token_option
-def reproduce(job_id, cloud_function_token):
+@click.option("--check", "checks", type=str, multiple=True, help="Patch scenario checks, e.g. --check odin_latest")
+@click.option("--ttl", type=int, default=None, help="Patch scenario ttl in seconds")
+def reproduce(job_id, cloud_function_token, checks, ttl):
     client = cloudfunction_client.CloudFunctionClient(
         cloudfunction_client.YCFunctionAuth(
             cloud_function_token=cloud_function_token,
         )
     )
 
-    content = client.run_task(job_id)
+    patch = {}
+    if checks:
+        patch["checks"] = [check.dict() for check in scenario_processor.ResolveChecks(list(checks))]
+    if ttl is not None:
+        patch["ttl"] = ttl
+
+    content = client.run_task(job_id, patch or None)
     if content["status"]:
         color = "green"
     else:
@@ -142,6 +150,12 @@ def docs(output_dir):
 @click.option(
     "--upgrade-config", type=str, required=False, default=None, help="Upgrade config name, e.g. '25.1-to-25.2'"
 )
+@click.option(
+    "--priority",
+    type=click.Choice([p.name for p in enums.TaskPriority]),
+    default=enums.TaskPriority.NORMAL.name,
+    help="Priority of the created tasks",
+)
 @click.option("--apply", is_flag=True, help="Make new task with generated spec")
 @click.option("--force", is_flag=True, help="Overwrite job")
 @click.option("--verbose", is_flag=True, help="Detailed output of request")
@@ -152,6 +166,7 @@ def run_scenario(
     cloud_function_token,
     version_filter,
     upgrade_config,
+    priority,
     apply,
     force,
     verbose,
@@ -168,6 +183,7 @@ def run_scenario(
         json_payload = scenario.to_dict()
         if force:
             json_payload["force"] = True
+        json_payload["priority"] = enums.TaskPriority[priority].value
         content = client.submit_task(json_payload, apply)
 
         if not apply:
@@ -198,7 +214,8 @@ def run_scenario(
 @cli.command()
 @click.option("--job-id", type=str, required=True, help="Id of the job to get info for")
 @cloud_function_token_option
-def job_info(job_id, cloud_function_token):
+@click.option("--json", "with_json", is_flag=True, help="Print raw response")
+def job_info(job_id, cloud_function_token, with_json):
     client = cloudfunction_client.CloudFunctionClient(
         cloudfunction_client.YCFunctionAuth(
             cloud_function_token=cloud_function_token,
@@ -206,7 +223,10 @@ def job_info(job_id, cloud_function_token):
     )
 
     content = client.get_task_info(job_id)
-    pretty.print_job_info(content, job_id)
+    if with_json:
+        click.echo(json.dumps(content, indent=2, ensure_ascii=False))
+    else:
+        pretty.print_job_info(content, job_id)
 
 
 @cli.command()

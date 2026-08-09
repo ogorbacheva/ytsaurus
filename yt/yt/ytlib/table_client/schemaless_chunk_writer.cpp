@@ -85,8 +85,8 @@ using namespace NYTree;
 using namespace NYson;
 
 using NYT::FromProto;
-using NYT::TRange;
 using NYT::ToProto;
+using NYT::TRange;
 
 static const i64 PartitionRowCountThreshold = 1000 * 1000;
 static const i64 PartitionRowCountLimit = std::numeric_limits<i32>::max() - PartitionRowCountThreshold;
@@ -141,7 +141,7 @@ public:
         TNameTablePtr nameTable,
         const TChunkTimestamps& chunkTimestamps,
         const std::optional<NChunkClient::TDataSink>& dataSink)
-        : Logger(TableClientLogger().WithTag("ChunkWriterId: %v", TGuid::Create()))
+        : Logger(TableClientLogger().WithTag("ChunkWriterId", TGuid::Create()))
         , Schema_(std::move(schema))
         , ChunkTimestamps_(chunkTimestamps)
         , ChunkNameTable_(nameTable ? std::move(nameTable) : TNameTable::FromSchemaStable(*Schema_))
@@ -344,10 +344,10 @@ protected:
         miscExt.set_is_compatible_with_dynamic_table_constraints(IsCompatibleWithDynamicTableConstraints_);
 
         if (ChunkTimestamps_.MinTimestamp != NullTimestamp) {
-            miscExt.set_min_timestamp(ChunkTimestamps_.MinTimestamp);
+            miscExt.set_min_timestamp(ToProto(ChunkTimestamps_.MinTimestamp));
         }
         if (ChunkTimestamps_.MaxTimestamp != NullTimestamp) {
-            miscExt.set_max_timestamp(ChunkTimestamps_.MaxTimestamp);
+            miscExt.set_max_timestamp(ToProto(ChunkTimestamps_.MaxTimestamp));
         }
 
         if (Options_->EnableSkynetSharing) {
@@ -1470,7 +1470,7 @@ public:
         YT_VERIFY(BlockSize_ > 0);
         YT_VERIFY(BufferSize_ > 0);
 
-        Logger.AddTag("PartitionMultiChunkWriterId: %v", TGuid::Create());
+        Logger.AddTag("PartitionMultiChunkWriterId", TGuid::Create());
 
         int partitionCount = Partitioner_->GetPartitionCount();
         BlockWriters_.reserve(partitionCount);
@@ -2153,7 +2153,7 @@ private:
             const auto& timestampColumn = row[columnIndex];
             writeTimestamps[columnIndex - columnCount] = timestampColumn.Type == EValueType::Null
                 ? MinTimestamp
-                : timestampColumn.Data.Uint64;
+                : NTransactionClient::TTimestamp(timestampColumn.Data.Uint64);
         }
 
         SortUnique(writeTimestamps, std::greater<TTimestamp>());
@@ -2172,7 +2172,7 @@ private:
             const auto& timestampColumn = row[columnIndex + valueColumnCount];
             *currentValue = MakeVersionedValue(row[columnIndex], timestampColumn.Type == EValueType::Null
                 ? MinTimestamp
-                : timestampColumn.Data.Uint64);
+                : NTransactionClient::TTimestamp(timestampColumn.Data.Uint64));
         }
 
         std::copy(writeTimestamps.begin(), writeTimestamps.end(), versionedRow.BeginWriteTimestamps());
@@ -2623,9 +2623,9 @@ public:
         , Throttler_(std::move(throttler))
         , BlockCache_(std::move(blockCache))
         , WriteBlocksOptions_(std::move(writeBlocksOptions))
-        , Logger(TableClientLogger().WithTag("Path: %v, TransactionId: %v",
-            richPath.GetPath(),
-            TransactionId_))
+        , Logger(TableClientLogger()
+            .WithTag("Path", richPath.GetPath())
+            .WithTag("TransactionId", TransactionId_))
     {
         if (Transaction_) {
             StartListenTransaction(Transaction_);
@@ -2931,9 +2931,9 @@ public:
         , Throttler_(std::move(throttler))
         , BlockCache_(std::move(blockCache))
         , WriteBlocksOptions_(std::move(writeBlocksOptions))
-        , Logger(TableClientLogger().WithTag("Path: %v, TransactionId: %v",
-            cookie.PatchInfo.RichPath,
-            TransactionId_))
+        , Logger(TableClientLogger()
+            .WithTag("Path", cookie.PatchInfo.RichPath)
+            .WithTag("TransactionId", TransactionId_))
     { }
 
     TFuture<void> Open()

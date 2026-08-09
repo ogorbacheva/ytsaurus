@@ -144,12 +144,14 @@
 #include <yt/yt/core/misc/backtrace.h>
 #include <yt/yt/core/misc/collection_helpers.h>
 #include <yt/yt/core/misc/error.h>
+#include <yt/yt/core/misc/expiration_verifier.h>
 #include <yt/yt/core/misc/finally.h>
 #include <yt/yt/core/misc/fs.h>
 #include <yt/yt/core/misc/statistics.h>
 
 #include <yt/yt/core/profiling/timing.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/virtual.h>
 #include <yt/yt/core/ytree/ypath_resolver.h>
 #include <yt/yt/core/ytree/yson_struct_update.h>
@@ -276,7 +278,7 @@ TOperationControllerBase::TOperationControllerBase(
     , UserTransactionId_(operation->GetUserTransactionId())
     , Logger([&] {
         auto logger = ControllerLogger();
-        logger = logger.WithTag("OperationId: %v", OperationId_);
+        logger = logger.WithTag("OperationId", OperationId_);
         if (spec->EnableTraceLogging) {
             logger = logger.WithMinLevel(ELogLevel::Trace);
         }
@@ -467,6 +469,7 @@ TError TOperationControllerBase::BuildHighJobThreadCountAlert() const
         errors.push_back(
             TError("Jobs exceed thread count limit")
                 << TErrorAttribute("thread_count", info.ThreadCount)
+                << TErrorAttribute("threshold", info.Threshold)
                 << TErrorAttribute("job_id", info.JobId)
                 << TErrorAttribute("task", taskName));
     }
@@ -988,8 +991,7 @@ void TOperationControllerBase::InitializeStructures()
     }
 
     if (TLayerJobExperiment::IsEnabled(Spec_, GetUserJobSpecs())) {
-        // TODO(babenko): migrate to std::string
-        auto path = TRichYPath(TString(*Spec_->JobExperiment->BaseLayerPath));
+        auto path = TRichYPath(*Spec_->JobExperiment->BaseLayerPath);
         if (path.GetTransactionId()) {
             THROW_ERROR_EXCEPTION("Transaction id is not supported for \"probing_base_layer_path\"");
         }
@@ -1071,7 +1073,7 @@ void TOperationControllerBase::InitializeOrchid()
     using TLivePreviewMapService = NYTree::TCollectionBoundMapService<TLivePreviewMap>;
     LivePreviewService_ = New<TLivePreviewMapService>(std::weak_ptr<TLivePreviewMap>(LivePreviews_));
 
-    auto createService = [&] (auto fluentMethod, const TString& key) {
+    auto createService = [&] (auto fluentMethod, const std::string& key) {
         return IYPathService::FromProducer(BIND(
             [
                 =,
@@ -1106,18 +1108,18 @@ void TOperationControllerBase::InitializeOrchid()
         };
     };
 
-    auto createServiceWithInvoker = [&] (auto fluentMethod, const TString& key) -> IYPathServicePtr {
+    auto createServiceWithInvoker = [&] (auto fluentMethod, const std::string& key) -> IYPathServicePtr {
         return createService(std::move(fluentMethod), key)
             ->Via(InvokerPool_->GetInvoker(EOperationControllerQueue::Default));
     };
 
-    auto createMapServiceWithInvoker = [&] (auto fluentMethod, const TString& key) -> IYPathServicePtr {
+    auto createMapServiceWithInvoker = [&] (auto fluentMethod, const std::string& key) -> IYPathServicePtr {
         return createServiceWithInvoker(wrapWithMap(std::move(fluentMethod)), key);
     };
 
     // NB: We may safely pass unretained this below as all the callbacks are wrapped with a createService helper
     // that takes care on checking the controller presence and properly replying in case it is already destroyed.
-    auto service = New<TCompositeMapService>()
+    auto service = CreateCompositeMapService()
         ->AddChild(
             "progress",
             createMapServiceWithInvoker(BIND(&TOperationControllerBase::BuildProgress, Unretained(this)), "progress"))
@@ -1592,11 +1594,10 @@ TOperationControllerReviveResult TOperationControllerBase::Revive(bool suspended
 
     if (!Config_->EnableJobRevival) {
         if (HasJobUniquenessRequirements() && RunningJobCount_ != 0) {
-            OnJobUniquenessViolated(TError(
+            THROW_ERROR_EXCEPTION(
                 NScheduler::EErrorCode::OperationFailedOnJobRestart,
                 "Reviving operation without job revival; failing operation since \"fail_on_job_restart\" option is set in operation spec or user job spec")
-                << TErrorAttribute("reason", EFailOnJobRestartReason::JobRevivalDisabled));
-            return result;
+                << TErrorAttribute("reason", EFailOnJobRestartReason::JobRevivalDisabled);
         }
 
         AbortAllJoblets(EAbortReason::JobRevivalDisabled, /*honestly*/ true);
@@ -1978,7 +1979,7 @@ void TOperationControllerBase::InitChunkListPools()
                         CancelableInvokerPool_,
                         OperationId_,
                         OutputTransaction_->GetId(),
-                        /*isHunk*/ true);
+                        EChunkListKind::Hunk);
 
                     CellTagToRequiredOutputHunkChunkListCount_.clear();
                 }
@@ -3197,8 +3198,7 @@ void TOperationControllerBase::OnJobStarted(const TJobletPtr& joblet)
     YT_LOG_DEBUG("Job started (JobId: %v)", joblet->JobId);
 
     joblet->LastActivityTime = TInstant::Now();
-    // TODO(babenko): migrate to std::string
-    joblet->TaskName = TString(joblet->Task->GetVertexDescriptor());
+    joblet->TaskName = joblet->Task->GetVertexDescriptor();
 
     GetJobProfiler()->ProfileStartedJob(*joblet);
 
@@ -5178,7 +5178,7 @@ void TOperationControllerBase::TryScheduleFirstJob(
                 /*allowIdleCpuPolicy*/ IsIdleCpuPolicyAllowedInTree(allocation.TreeId),
                 *context.GetScheduleAllocationSpec());
             startDescriptor.AllocationAttributes.EnableMultipleJobs = Spec_->EnableMultipleJobsInAllocation.value_or(false);
-            startDescriptor.AllocationGroupName = std::string(task->GetVertexDescriptor());
+            startDescriptor.AllocationGroupName = task->GetVertexDescriptor();
             scheduleAllocationResult->StartDescriptor.emplace(std::move(startDescriptor));
 
             RegisterTestingSpeculativeJobIfNeeded(*task, scheduleAllocationResult->StartDescriptor->Id);
@@ -5401,9 +5401,10 @@ TFuture<void> TOperationControllerBase::Suspend()
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
     if (Spec_->TestingOperationOptions->DelayInsideSuspend) {
-        return AllSucceeded(std::vector<TFuture<void>> {
+        return AllSucceeded(std::vector<TFuture<void>>{
             SuspendInvokerPool(SuspendableInvokerPool_),
-            TDelayedExecutor::MakeDelayed(*Spec_->TestingOperationOptions->DelayInsideSuspend)});
+            TDelayedExecutor::MakeDelayed(*Spec_->TestingOperationOptions->DelayInsideSuspend),
+        });
     }
 
     return SuspendInvokerPool(SuspendableInvokerPool_);
@@ -5983,6 +5984,12 @@ void TOperationControllerBase::OnJobFinished(std::unique_ptr<TJobSummary> summar
 
     auto joblet = GetJoblet(jobId);
     if (!joblet->IsStarted()) {
+        if (joblet->Revived) {
+            // A revived job that was not marked started in the snapshot may have
+            // actually started after the snapshot was built. Job tracker revives
+            // such a job, so it must be explicitly released once it finishes.
+            JobIdToReleaseFlags_.emplace(jobId, summary->ReleaseFlags);
+        }
         return;
     }
 
@@ -6132,8 +6139,7 @@ void TOperationControllerBase::InitializeJobExperiment()
         if (TLayerJobExperiment::IsEnabled(Spec_, GetUserJobSpecs())) {
             YT_VERIFY(BaseLayer_.has_value());
             JobExperiment_ = New<TLayerJobExperiment>(
-                // TODO(babenko): migrate to std::string
-                TString(*Spec_->DefaultBaseLayerPath),
+                *Spec_->DefaultBaseLayerPath,
                 *BaseLayer_,
                 Config_->EnableBypassArtifactCache,
                 Logger);
@@ -6405,7 +6411,7 @@ void TOperationControllerBase::SuppressLivePreviewIfNeeded()
         // We should check if user is not in legacy live preview blacklist in order to inform him
         // if he is in a blacklist.
         if (NRe2::TRe2::FullMatch(
-            NRe2::StringPiece(AuthenticatedUser_),
+            re2::StringPiece(AuthenticatedUser_),
             *Config_->LegacyLivePreviewUserBlacklist))
         {
             suppressionErrors.push_back(TError(
@@ -6453,12 +6459,12 @@ void TOperationControllerBase::CreateLivePreviewTables()
     auto batchReq = proxy.ExecuteBatch();
 
     auto addRequest = [&] (
-        const TString& path,
+        const NYPath::TYPath& path,
         TCellTag cellTag,
         int replicationFactor,
         NCompression::ECodec compressionCodec,
         const std::optional<std::string>& account,
-        const TString& key,
+        const std::string& key,
         const TYsonString& acl,
         const TTableSchemaPtr& schema)
     {
@@ -6924,7 +6930,7 @@ void TOperationControllerBase::PatchTableWriteBuffer(
         !schema->Columns().empty() &&
         schemaMode == NTableClient::ETableSchemaMode::Strong)
     {
-        THashSet<TString> groups;
+        THashSet<std::string> groups;
         int singleColumnGroupCount = 0;
 
         for (const auto& column : schema->Columns()) {
@@ -7193,7 +7199,17 @@ void TOperationControllerBase::LockOutputTablesAndGetAttributes()
             table->TableWriterOptions->ErasureCodec = table->TableUploadOptions.ErasureCodec;
             table->TableWriterOptions->EnableStripedErasure = table->TableUploadOptions.EnableStripedErasure;
             table->TableWriterOptions->ReplicationFactor = attributes->Get<int>("replication_factor");
-            table->TableWriterOptions->MediumName = attributes->Get<std::string>("primary_medium");
+            auto primaryMedium = attributes->Get<std::string>("primary_medium");
+            if (Config_->ForbidOperationsOnOffshoreMedia) {
+                auto mediumDescriptor = GetMediumDirectory()->FindByName(primaryMedium);
+                if (mediumDescriptor && mediumDescriptor->IsOffshore()) {
+                    THROW_ERROR_EXCEPTION(
+                        "Operations on tables with offshore medium are forbidden by controller agent config")
+                        << TErrorAttribute("table_path", table->Path)
+                        << TErrorAttribute("primary_medium", primaryMedium);
+                }
+            }
+            table->TableWriterOptions->MediumName = primaryMedium;
             table->TableWriterOptions->Account = attributes->Get<std::string>("account");
             table->TableWriterOptions->ChunksVital = attributes->Get<bool>("vital");
             table->TableWriterOptions->OptimizeFor = table->TableUploadOptions.OptimizeFor;
@@ -7392,34 +7408,35 @@ void TOperationControllerBase::FetchUserFiles()
         }
         chunkSpecFetcher = New<TMasterChunkSpecFetcher>(
             InputManager_->GetClient(LocalClusterName),
-            TMasterReadOptions{},
             InputManager_->GetNodeDirectory(LocalClusterName),
             GetCancelableInvoker(),
-            Config_->MaxChunksPerFetch,
-            Config_->MaxChunksPerLocateRequest,
-            [&] (const TChunkOwnerYPathProxy::TReqFetchPtr& req, int fileIndex) {
-                const auto& file = *userFiles[fileIndex];
-                req->set_fetch_all_meta_extensions(false);
-                req->add_extension_tags(TProtoExtensionTag<NChunkClient::NProto::TMiscExt>::Value);
-                if (file.Type == EObjectType::File && file.Path.GetColumns() && Spec_->UserFileColumnarStatistics->Enabled) {
-                    req->add_extension_tags(TProtoExtensionTag<THeavyColumnStatisticsExt>::Value);
-                }
-                if (file.Dynamic || IsBoundaryKeysFetchEnabled()) {
-                    req->add_extension_tags(TProtoExtensionTag<TBoundaryKeysExt>::Value);
-                }
-                if (file.Dynamic) {
-                    if (!Spec_->EnableDynamicStoreRead.value_or(true)) {
-                        req->set_omit_dynamic_stores(true);
+            TMasterChunkSpecFetcherOptions{
+                .MaxChunksPerFetch = Config_->MaxChunksPerFetch,
+                .MaxChunksPerLocateRequest = Config_->MaxChunksPerLocateRequest,
+                .FetchRequestInitializer = [&] (const TChunkOwnerYPathProxy::TReqFetchPtr& req, int fileIndex) {
+                    const auto& file = *userFiles[fileIndex];
+                    req->set_fetch_all_meta_extensions(false);
+                    req->add_extension_tags(TProtoExtensionTag<NChunkClient::NProto::TMiscExt>::Value);
+                    if (file.Type == EObjectType::File && file.Path.GetColumns() && Spec_->UserFileColumnarStatistics->Enabled) {
+                        req->add_extension_tags(TProtoExtensionTag<THeavyColumnStatisticsExt>::Value);
                     }
-                    if (OperationType_ == EOperationType::RemoteCopy) {
-                        req->set_throw_on_chunk_views(true);
+                    if (file.Dynamic || IsBoundaryKeysFetchEnabled()) {
+                        req->add_extension_tags(TProtoExtensionTag<TBoundaryKeysExt>::Value);
                     }
-                }
-                // NB: We always fetch parity replicas since
-                // erasure reader can repair data on flight.
-                req->set_fetch_parity_replicas(true);
-                AddCellTagToSyncWith(req, file.ObjectId);
-                SetTransactionId(req, file.ExternalTransactionId);
+                    if (file.Dynamic) {
+                        if (!Spec_->EnableDynamicStoreRead.value_or(true)) {
+                            req->set_omit_dynamic_stores(true);
+                        }
+                        if (OperationType_ == EOperationType::RemoteCopy) {
+                            req->set_throw_on_chunk_views(true);
+                        }
+                    }
+                    // NB: We always fetch parity replicas since
+                    // erasure reader can repair data on flight.
+                    req->set_fetch_parity_replicas(true);
+                    AddCellTagToSyncWith(req, file.ObjectId);
+                    SetTransactionId(req, file.ExternalTransactionId);
+                },
             },
             Logger);
     };
@@ -7549,11 +7566,12 @@ void TOperationControllerBase::ValidateUserFileSizes()
     if (columnarStatisticsFetcher->GetChunkCount() > 0) {
         YT_LOG_INFO("Fetching columnar statistics for table files with column selectors (ChunkCount: %v)",
             columnarStatisticsFetcher->GetChunkCount());
-        columnarStatisticsFetcher->SetCancelableContext(GetCancelableContext());
         WaitFor(columnarStatisticsFetcher->Fetch())
             .ThrowOnError();
         columnarStatisticsFetcher->ApplyColumnSelectivityFactors();
     }
+
+    VerifyEventualExpiration(std::move(columnarStatisticsFetcher), Logger);
 
     auto updateOptional = [] (auto& updated, auto patch, auto defaultValue)
     {
@@ -7701,7 +7719,7 @@ void TOperationControllerBase::GetUserFilesAttributes()
             InputManager_->GetClient(LocalClusterName),
             MakeUserObjectList(files),
             InputTransactions_->GetLocalInputTransactionId(),
-            Logger().WithTag("TaskTitle: %v", userJobSpec->TaskTitle),
+            Logger().WithTag("TaskTitle", userJobSpec->TaskTitle),
             EPermission::Read,
             TGetUserObjectBasicAttributesOptions{
                 .OmitInaccessibleRows = Spec_->OmitInaccessibleRows,
@@ -7759,7 +7777,7 @@ void TOperationControllerBase::GetUserFilesAttributes()
             {
                 auto req = TYPathProxy::Get(file.GetObjectIdPath() + "/@");
                 SetTransactionId(req, *file.TransactionId);
-                std::vector<TString> attributeKeys;
+                std::vector<std::string> attributeKeys;
                 attributeKeys.emplace_back("file_name");
                 attributeKeys.emplace_back("account");
                 switch (file.Type) {
@@ -7809,7 +7827,7 @@ void TOperationControllerBase::GetUserFilesAttributes()
 
     int index = 0;
     for (auto& [userJobSpec, files] : UserJobFiles_) {
-        THashSet<TString> userFileNames;
+        THashSet<std::string> userFileNames;
         try {
             for (auto& file : files) {
                 const auto& path = file.Path.GetPath();
@@ -7834,9 +7852,9 @@ void TOperationControllerBase::GetUserFilesAttributes()
                                 linkAttributes = ConvertToAttributes(TYsonString(linkRsp.Value()->value()));
                                 actualAttributes = linkAttributes.Get();
                             }
-                            if (const auto& fileNameAttribute = actualAttributes->Find<TString>("file_name")) {
+                            if (const auto& fileNameAttribute = actualAttributes->Find<std::string>("file_name")) {
                                 file.FileName = *fileNameAttribute;
-                            } else if (const auto& keyAttribute = actualAttributes->Find<TString>("key")) {
+                            } else if (const auto& keyAttribute = actualAttributes->Find<std::string>("key")) {
                                 file.FileName = *keyAttribute;
                             } else {
                                 THROW_ERROR_EXCEPTION("Couldn't infer file name for user file");
@@ -7860,14 +7878,16 @@ void TOperationControllerBase::GetUserFilesAttributes()
 
                                 auto accessMethod = file.Path.GetAccessMethod();
                                 if (!accessMethod) {
-                                    accessMethod = attributes.Find<TString>("access_method");
+                                    accessMethod = attributes.Find<ELayerAccessMethod>("access_method");
                                 }
 
                                 // We deliberately do not support filesystem in file.Path
                                 // since filesystem is the property of the actual file not its path.
-                                std::tie(file.AccessMethod, file.Filesystem) = GetAccessMethodAndFilesystemFromStrings(
-                                    accessMethod.value_or(ToString(ELayerAccessMethod::Local)),
-                                    attributes.Find<TString>("filesystem").value_or(ToString(ELayerFilesystem::Archive)));
+                                auto filesystem = attributes.Find<ELayerFilesystem>("filesystem").value_or(ELayerFilesystem::Archive);
+
+                                file.AccessMethod = accessMethod.value_or(ELayerAccessMethod::Local);
+                                file.Filesystem = filesystem;
+                                ValidateCompatibility(*file.AccessMethod, *file.Filesystem);
                             }
                             break;
 
@@ -7877,7 +7897,7 @@ void TOperationControllerBase::GetUserFilesAttributes()
                             file.RlsReadSpec = TRlsReadSpec::BuildFromRowLevelAclAndTableSchema(
                                 file.Schema,
                                 file.RowLevelAcl,
-                                Logger().WithTag("Path: %v", file.GetPath()));
+                                Logger().WithTag("Path", file.GetPath()));
 
                             YT_LOG_INFO_IF(
                                 file.RlsReadSpec,
@@ -8222,7 +8242,7 @@ void TOperationControllerBase::InitAccountResourceUsageLeases()
 
     for (const auto& userJobSpec : GetUserJobSpecs()) {
         for (const auto& [_, volume] : userJobSpec->Volumes) {
-            if (!volume->DiskRequest || volume->DiskRequest->GetCurrentType() == NExecNode::EVolumeType::Tmpfs) {
+            if (!volume->DiskRequest || volume->DiskRequest->GetType() == NExecNode::EVolumeType::Tmpfs) {
                 continue;
             }
 
@@ -8245,7 +8265,7 @@ void TOperationControllerBase::InitAccountResourceUsageLeases()
                     }
                 }
                 if (Config_->DeprecatedMedia.contains(mediumName) &&
-                    volume->DiskRequest->GetCurrentType() != NExecNode::EVolumeType::Nbd)
+                    volume->DiskRequest->GetType() != NExecNode::EVolumeType::Nbd)
                 {
                     THROW_ERROR_EXCEPTION("Medium is deprecated to be used in disk requests")
                         << TErrorAttribute("medium_name", mediumName);
@@ -8254,7 +8274,7 @@ void TOperationControllerBase::InitAccountResourceUsageLeases()
                     accounts.insert(*diskRequest->Account);
                 }
 
-                if (volume->DiskRequest->GetCurrentType() == NExecNode::EVolumeType::Nbd) {
+                if (volume->DiskRequest->GetType() == NExecNode::EVolumeType::Nbd) {
                     // Allow only NBD media.
                     if (!Config_->NbdMedia.contains(mediumName)) {
                         THROW_ERROR_EXCEPTION("Inappropriate medium for NBD")
@@ -8478,7 +8498,6 @@ std::vector<TLegacyDataSlicePtr> TOperationControllerBase::CollectPrimaryVersion
                 totalDataWeightBefore += dataSlice->GetDataWeight();
             }
 
-            fetcher->SetCancelableContext(GetCancelableContext());
             asyncResults.emplace_back(fetcher->Fetch());
             fetchers.emplace_back(std::move(fetcher));
             comparators.push_back(table->Comparator);
@@ -8511,6 +8530,10 @@ std::vector<TLegacyDataSlicePtr> TOperationControllerBase::CollectPrimaryVersion
             result.emplace_back(std::move(dataSlice));
             ++totalDataSliceCount;
         }
+    }
+
+    for (auto& fetcher : fetchers) {
+        VerifyEventualExpiration(std::move(fetcher), Logger);
     }
 
     YT_LOG_INFO(
@@ -8680,7 +8703,7 @@ bool TOperationControllerBase::IsLocalityEnabled() const
         && Options_->AllowLocality;
 }
 
-TString TOperationControllerBase::GetLoggingProgress() const
+std::string TOperationControllerBase::GetLoggingProgress() const
 {
     return Format(
         "{JobCounter: %v, ControllerPendingJobCount: %v, UnavailableInputChunks: %v}",
@@ -8880,7 +8903,7 @@ bool TOperationControllerBase::IsBoundaryKeysFetchEnabled() const
     return false;
 }
 
-void TOperationControllerBase::RegisterLivePreviewTable(TString name, const TOutputTablePtr& table)
+void TOperationControllerBase::RegisterLivePreviewTable(std::string name, const TOutputTablePtr& table)
 {
     // COMPAT(galtsev)
     if (name.empty()) {
@@ -8893,7 +8916,8 @@ void TOperationControllerBase::RegisterLivePreviewTable(TString name, const TOut
 
     auto schema = table->TableUploadOptions.TableSchema.Get();
     LivePreviews_->emplace(
-        name,
+        // TODO(babenko): drop cast once TLivePreviewMap key accepts std::string
+        TString(name),
         New<TLivePreview>(std::move(schema), OutputNodeDirectory_, Logger, OperationId_, name, table->Path.GetPath()));
     table->LivePreviewTableName = std::move(name);
 }
@@ -10372,7 +10396,11 @@ void TOperationControllerBase::UpdateHighThreadCountJob(
     }
 
     if (*threadCount > threadLimit) {
-        HighThreadCountJobPerTask_[taskName] = THighThreadCountJobInfo{.JobId = jobSummary.Id, .ThreadCount = *threadCount};
+        HighThreadCountJobPerTask_[taskName] = THighThreadCountJobInfo{
+            .JobId = jobSummary.Id,
+            .ThreadCount = *threadCount,
+            .Threshold = threadLimit,
+        };
     }
 }
 
@@ -10540,7 +10568,7 @@ void TOperationControllerBase::InitUserJobSpecTemplate(
         jobSpec->set_job_time_limit(ToProto(*jobSpecConfig->JobTimeLimit));
     }
     jobSpec->set_prepare_time_limit(ToProto(jobSpecConfig->PrepareTimeLimit));
-    jobSpec->set_memory_limit(jobSpecConfig->MemoryLimit);
+    jobSpec->set_memory_limit(jobSpecConfig->MemoryLimit + Config_->ExecFootprintMemory.value_or(0L));
     jobSpec->set_include_memory_mapped_files(jobSpecConfig->IncludeMemoryMappedFiles);
     jobSpec->set_use_yamr_descriptors(jobSpecConfig->UseYamrDescriptors);
     jobSpec->set_check_input_fully_consumed(jobSpecConfig->CheckInputFullyConsumed);
@@ -10572,8 +10600,12 @@ void TOperationControllerBase::InitUserJobSpecTemplate(
         jobSpec->set_container_cpu_limit(cpuLimit);
     }
 
-    // This is common policy for all operations of given type.
-    i64 threadLimit = ceil(userJobOptions->InitialThreadLimit + userJobOptions->ThreadLimitMultiplier * specifiedCpuLimit);
+    i64 threadLimit = 0;
+    try {
+        threadLimit = userJobOptions->ThreadLimitFormula.Eval({{"cpu", static_cast<i64>(std::ceil(specifiedCpuLimit))}});
+    } catch (const std::exception& ex) {
+        THROW_ERROR_EXCEPTION("Failed to evaluate %Qv", "thread_limit_formula") << ex;
+    }
     jobSpec->set_thread_limit(threadLimit);
 
     // Option in task spec overrides value in operation options.
@@ -10585,15 +10617,6 @@ void TOperationControllerBase::InitUserJobSpecTemplate(
 
     jobSpec->set_port_count(jobSpecConfig->PortCount);
     jobSpec->set_use_porto_memory_tracking(jobSpecConfig->UsePortoMemoryTracking);
-
-    if (!Config_->EnableTmpfs) {
-        for (const auto& [_, volume] : jobSpecConfig->Volumes) {
-            if (!volume->DiskRequest || !volume->DiskRequest->TryGetConcrete<TTmpfsStorageRequest>()) {
-                continue;
-            }
-            THROW_ERROR_EXCEPTION("Tmpfs creation is disabled on this cluster. The operation cannot be started because tmpfs is requested in its specification");
-        }
-    }
 
     // COMPAT(krasovav)
     std::vector<TTmpfsVolumeConfigPtr> requestedTmpfsVolumeConfigs;
@@ -10644,7 +10667,7 @@ void TOperationControllerBase::InitUserJobSpecTemplate(
         } else if (auto localDiskRequest = volume->DiskRequest->TryGetConcrete<TLocalDiskRequest>()) {
             ToProto(jobSpec->mutable_disk_request(), *localDiskRequest);
         } else {
-            YT_LOG_FATAL("Unknown volume type %v", volume->DiskRequest->GetCurrentType());
+            YT_LOG_FATAL("Unknown volume type %v", volume->DiskRequest->GetType());
         }
     }
 
@@ -10922,7 +10945,7 @@ void TOperationControllerBase::InitUserJobSpec(
             ConvertToYsonString(SecureVault_, EYsonFormat::Text)));
 
         for (const auto& [key, node] : SecureVault_->GetChildren()) {
-            std::optional<TString> value;
+            std::optional<std::string> value;
             switch (node->GetType()) {
                 #define XX(type, cppType) \
                 case ENodeType::type: \
@@ -11086,7 +11109,7 @@ i64 TOperationControllerBase::GetFinalIOMemorySize(
     return result;
 }
 
-void TOperationControllerBase::ValidateUserFileCount(const TUserJobSpecPtr& spec, const TString& operation)
+void TOperationControllerBase::ValidateUserFileCount(const TUserJobSpecPtr& spec, const std::string& operation)
 {
     if (std::ssize(spec->FilePaths) > Config_->MaxUserFileCount) {
         THROW_ERROR_EXCEPTION("Too many user files in %v: maximum allowed %v, actual %v",
@@ -11729,7 +11752,7 @@ bool TOperationControllerBase::IsCompleted() const
     return !AutoMergeTask_ || AutoMergeTask_->IsCompleted();
 }
 
-TString TOperationControllerBase::WriteCoreDump() const
+std::string TOperationControllerBase::WriteCoreDump() const
 {
     // Save `this` explicitly to simplify debugging a core dump in GDB.
     const auto* this_ = this;

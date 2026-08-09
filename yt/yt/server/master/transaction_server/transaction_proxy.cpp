@@ -252,22 +252,10 @@ private:
 
         switch (key) {
             case EInternedAttributeKey::LastPingTime:
-                RequireLeader();
-                return Bootstrap_
-                    ->GetTransactionManager()
-                    ->GetLastPingTime(transaction)
-                    .Apply(BIND([] (TInstant value) {
-                        return ConvertToYsonString(value);
-                    }));
+                return MakeFuture(ConvertToYsonString(TInstant::Now()));
 
             case EInternedAttributeKey::LastPingAddress:
-                RequireLeader();
-                return Bootstrap_
-                    ->GetTransactionManager()
-                    ->GetLastPingAddress(transaction)
-                    .Apply(BIND([] (std::optional<std::string> value) {
-                        return ConvertToYsonString(value);
-                    }));
+                return MakeFuture(ConvertToYsonString(std::optional<std::string>()));
 
             case EInternedAttributeKey::ResourceUsage:
                 return GetAggregatedResourceUsageMap().Apply(BIND([=, this, this_ = MakeStrong(this)] (const TAccountResourcesMap& usageMap) {
@@ -469,6 +457,9 @@ private:
             multicellManager->GetMasterChannelOrThrow(cellTag, EPeerKind::Follower));
         auto batchReq = proxy.ExecuteBatch();
 
+        const auto& securityManager = Bootstrap_->GetSecurityManager();
+        batchReq->SetUser(securityManager->GetAuthenticatedUserNameToForward());
+
         auto transactionId = GetId();
 
         if (remoteTransactionType == ERemoteTransactionType::Externalized) {
@@ -518,6 +509,9 @@ private:
         auto proxy = TObjectServiceProxy::FromDirectMasterChannel(
             multicellManager->GetMasterChannelOrThrow(cellTag, EPeerKind::Follower));
         auto batchReq = proxy.ExecuteBatch();
+
+        const auto& securityManager = Bootstrap_->GetSecurityManager();
+        batchReq->SetUser(securityManager->GetAuthenticatedUserNameToForward());
 
         auto transactionId = Object_->GetId();
         auto req = TYPathProxy::Get("&" + FromObjectId(transactionId) + "/@" + attributeKey);

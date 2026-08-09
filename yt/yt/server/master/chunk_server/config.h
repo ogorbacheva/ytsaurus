@@ -298,12 +298,33 @@ DEFINE_REFCOUNTED_TYPE(TDanglingLocationCleanerConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TDynamicDataNodeTrackerTestingConfig
+    : public NYTree::TYsonStruct
+{
+    std::optional<TDuration> FullHeartbeatDelay;
+
+    REGISTER_YSON_STRUCT(TDynamicDataNodeTrackerTestingConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDynamicDataNodeTrackerTestingConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TDynamicDataNodeTrackerConfig
     : public NYTree::TYsonStruct
 {
     int MaxConcurrentChunkReplicasDuringFullHeartbeat;
 
     int MaxConcurrentChunkReplicasDuringIncrementalHeartbeat;
+
+    // COMPAT(danilalexeev): YT-23781.
+    int MaxConcurrentFullHeartbeats;
+
+    int MaxConcurrentLocationFullHeartbeats;
+
+    int MaxConcurrentIncrementalHeartbeats;
 
     TDanglingLocationCleanerConfigPtr DanglingLocationCleaner;
 
@@ -318,6 +339,9 @@ struct TDynamicDataNodeTrackerConfig
     // COMPAT(grphil)
     bool IgnoreReplicasWithChangedStateDuringValidation;
 
+    bool EnableChunkReplicasThrottlingInHeartbeats;
+    bool FlushBatchedIncrementalHeartbeatsOnThrottling;
+
     bool EnableLocationIndexesInDataNodeHeartbeats;
 
     // COMPAT(cherepashka)
@@ -330,6 +354,14 @@ struct TDynamicDataNodeTrackerConfig
     bool CheckLocationConvergenceByIndexAndUuidOnConfirmation;
 
     bool VerifyAllLocationsAreReportedInFullHeartbeats;
+
+    // COMPAT(aleksandra-zh): these are just in case.
+    bool RejectSimultaneousFullHeartbeats;
+    bool RejectSimultaneousIncrementalHeartbeats;
+
+    TDuration ExpectedDataNodeHeartbeatDuration;
+
+    TDynamicDataNodeTrackerTestingConfigPtr Testing;
 
     REGISTER_YSON_STRUCT(TDynamicDataNodeTrackerConfig);
 
@@ -566,6 +598,17 @@ struct TDynamicSequoiaChunkReplicasConfig
     int MaxConcurrentLocationsToRefresh;
     int MaxLocationsAwaitingRefresh;
     int MaxUnsuccessfulLocationRefreshAttempts;
+
+    bool ScheduleChunkSealInSequoiaChunkRefresh;
+
+    // If sequoia replicas are enabled in ghost mode, all data node heartbeats will trigger sequoia replicas modifications.
+    // These modifications will be run in background and will not affect master state.
+    // All actions with chunks will use master stored replicas, and the state of sequoia replicas will have no effect on master.
+    bool EnableInGhostMode;
+    bool GhostFullHeartbeats;
+    bool GhostIncrementalHeartbeats;
+    bool GhostValidationHeartbeats;
+    bool GhostEmptyValidationHeartbeats;
 
     REGISTER_YSON_STRUCT(TDynamicSequoiaChunkReplicasConfig);
 
@@ -865,6 +908,14 @@ struct TDynamicChunkManagerConfig
 
     // COMPAT(koloshmet)
     bool UpdateHistoricallyNonVitalInUnexport;
+
+    // COMPAT(danilalexeev)
+    bool UpdateHistoricallyNonVitalOnChunkCreationAndExport;
+
+    bool AllowOffshoreMedia;
+
+    int MaxVerboselyLoggedChunks;
+    TDuration MaxVerboseLoggingEnabledDuration;
 
     REGISTER_YSON_STRUCT(TDynamicChunkManagerConfig);
 

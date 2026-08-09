@@ -41,6 +41,7 @@
 #include <yt/yt/core/ytree/fluent.h>
 
 #include <library/cpp/yt/string/stream.h>
+#include <library/cpp/yt/string/string.h>
 
 #include <util/random/random.h>
 
@@ -81,7 +82,7 @@ TContext::TContext(
     : Api_(std::move(api))
     , Request_(std::move(request))
     , Response_(std::move(response))
-    , Logger(HttpProxyLogger().WithTag("RequestId: %v", Request_->GetRequestId()))
+    , Logger(HttpProxyLogger().WithTag("RequestId", Request_->GetRequestId()))
 {
     DriverRequest_.Id = Request_->GetRequestId();
 }
@@ -91,7 +92,7 @@ bool TContext::TryPrepare()
     ProcessDebugHeaders(Request_, Response_, Api_->GetCoordinator());
 
     if (auto correlationId = Request_->GetHeaders()->Find("X-YT-Correlation-ID")) {
-        Logger.AddTag("CorrelationId: %v", *correlationId);
+        Logger.AddTag("CorrelationId", *correlationId);
     }
 
     Response_->GetHeaders()->Set("Cache-Control", "no-store");
@@ -136,8 +137,7 @@ bool TContext::TryParseRequest()
 
 bool TContext::TryParseCommandName()
 {
-    auto versionedName = TString(Request_->GetUrl().Path);
-    versionedName.to_lower();
+    auto versionedName = AsciiStringToLower(Request_->GetUrl().Path);
 
     if (versionedName == "/api" || versionedName == "/api/") {
         Response_->SetStatus(EStatusCode::OK);
@@ -151,9 +151,9 @@ bool TContext::TryParseCommandName()
         return false;
     }
 
-    if (versionedName.StartsWith("/api/v3")) {
+    if (versionedName.starts_with("/api/v3")) {
         ApiVersion_ = 3;
-    } else if (versionedName.StartsWith("/api/v4")) {
+    } else if (versionedName.starts_with("/api/v4")) {
         ApiVersion_ = 4;
     } else {
         THROW_ERROR_EXCEPTION("Unsupported API version %Qv", versionedName);
@@ -664,7 +664,10 @@ void TContext::LogStructuredRequest()
         .Item("out_bytes").Value(Response_->GetWriteByteCount())
         .DoIf(userTicketHeader && !serviceTicketHeader, [&] (auto fluent) {
             fluent
-                .Item("debug_info").Value(TYsonString(std::string("{\"user_ticket_and_no_service_ticket\"=true}")));
+                .Item("debug_info").Value(BuildYsonStringFluently()
+                    .BeginMap()
+                        .Item("user_ticket_and_no_service_ticket").Value(true)
+                    .EndMap());
         });
 }
 

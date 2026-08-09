@@ -56,7 +56,7 @@
 
 #include <yt/yt/client/table_client/tracked_memory_chunk_provider.h>
 
-#include <yt/yt/flow/lib/client/controller/controller_service_proxy.h>
+#include <yt/yt/flow/library/cpp/client/controller/controller_service_proxy.h>
 
 #include <yt/yt/client/ypath/rich.h>
 
@@ -1274,7 +1274,8 @@ private:
 
     TDuration CheckPermissionsForQuery(
         const NQueryClient::TPlanFragment& fragment,
-        const TSelectRowsOptions& options);
+        const TSelectRowsOptions& options,
+        const NTabletClient::ITableMountCachePtr& tableMountCache);
 
     TSelectRowsResult DoSelectRowsOnce(
         const std::string& queryString,

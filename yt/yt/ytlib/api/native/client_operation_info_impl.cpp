@@ -31,6 +31,8 @@
 
 #include <yt/yt/core/ytree/ypath_resolver.h>
 
+#include <library/cpp/yt/string/string.h>
+
 namespace NYT::NApi::NNative {
 
 using namespace NConcurrency;
@@ -925,7 +927,7 @@ void TClient::DoListOperationsFromCypress(
             if (rspOrError.FindMatching(NYTree::EErrorCode::ResolveError)) {
                 return;
             }
-            lightOperation.Yson = rspOrError.ValueOrThrow()->value();
+            lightOperation.Yson = TYsonString(rspOrError.ValueOrThrow()->value());
         });
     }
 
@@ -1349,7 +1351,7 @@ THashMap<TOperationId, TOperation> TClient::DoListOperationsFromArchive(
 // and an operation is in both Cypress and archive.
 TListOperationsResult TClient::DoListOperations(const TListOperationsOptions& oldOptions)
 {
-    auto Logger = this->Logger.WithTag("Command: ListOperations");
+    auto Logger = this->Logger.WithTag("Command", "ListOperations");
 
     auto options = oldOptions;
 
@@ -1374,8 +1376,7 @@ TListOperationsResult TClient::DoListOperations(const TListOperationsOptions& ol
     }
 
     if (options.SubstrFilter) {
-        // TODO(babenko): migrate to std::string
-        options.SubstrFilter = to_lower(TString(*options.SubstrFilter));
+        options.SubstrFilter = AsciiStringToLower(*options.SubstrFilter);
     }
 
     // NB(aleksandr.gaev): This client is used to get subject closure (@member_of_closure) of a user, which is protected by an ACL.

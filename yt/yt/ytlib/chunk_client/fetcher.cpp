@@ -17,8 +17,6 @@
 
 #include <yt/yt/core/rpc/retrying_channel.h>
 
-#include <yt/yt/core/actions/cancelable_context.h>
-
 #include <yt/yt/core/concurrency/action_queue.h>
 
 namespace NYT::NChunkClient {
@@ -50,7 +48,7 @@ public:
         , ThrottlerManager_(std::move(throttlerManager))
         , Client_(std::move(client))
         , NodeDirectory_(std::move(nodeDirectory))
-        , Logger(logger.WithTag("FetcherChunkScraperId: %v", TGuid::Create()))
+        , Logger(logger.WithTag("FetcherChunkScraperId", TGuid::Create()))
     { }
 
     TFuture<void> ScrapeChunks(const THashSet<TInputChunkPtr>& chunkSpecs) override
@@ -319,18 +317,9 @@ TFuture<void> TFetcherBase::Fetch()
             // TODO(pogorelov): Implement TFuture<void>::AsUnique and use it here.
             .Apply(BIND(&TFetcherBase::StartFetchingRound, MakeWeak(this))
                 .AsyncVia(Invoker_)));
-    auto future = Promise_.ToFuture();
-    if (CancelableContext_) {
-        future = future.ToImmediatelyCancelable();
-        CancelableContext_->PropagateTo(future);
-    }
+    auto future = Promise_.ToFuture().ToImmediatelyCancelable();
     Promise_.OnCanceled(BIND(&TFetcherBase::OnCanceled, MakeWeak(this)));
     return future;
-}
-
-void TFetcherBase::SetCancelableContext(TCancelableContextPtr cancelableContext)
-{
-    CancelableContext_ = std::move(cancelableContext);
 }
 
 void TFetcherBase::PerformFetchingRoundStep(TPromise<void> fetchingRoundPromise, NNodeTrackerClient::TNodeId nodeId)

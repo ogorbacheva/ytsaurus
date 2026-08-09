@@ -9,11 +9,12 @@
 
 #include <yt/yt/client/table_client/key_bound.h>
 
-#include <yt/yt/core/misc/property.h>
 #include <yt/yt/core/misc/indexed_vector.h>
 
 #include <library/cpp/yt/memory/range.h>
 #include <library/cpp/yt/memory/ref_tracked.h>
+
+#include <library/cpp/yt/misc/property.h>
 
 namespace NYT::NChunkServer {
 
@@ -97,6 +98,14 @@ public:
 
     bool IsSealed() const;
 
+    //! Whether the chunk list maintains and propagates tree statistics. False only for a scratch chunk
+    //! list, which is a mere holder of chunks.
+    bool HasStatistics() const;
+
+    bool IsHunkRoot() const;
+
+    bool IsHunkRelated() const;
+
     bool HasCumulativeStatistics() const;
     bool HasAppendableCumulativeStatistics() const;
     bool HasModifiableCumulativeStatistics() const;
@@ -115,9 +124,10 @@ public:
     //! Hunk tree specifics.
 
     const THunkChunkTreeStatistics& HunkStatistics() const;
-    void AccumulateHunkStatistics(TChunk* chunk);
+    void AccumulateHunkStatistics(TChunk* chunk, bool force = false);
     void DeaccumulateHunkStatistics(TChunk* chunk);
     void ResetHunkStatistics();
+    void CopyHunkStatistics(TChunkList* other);
     void AccumulateNewlyReferencedHunkDataSize(TChunk* chunk, i64 dataSizeDelta);
 
     //! Common statistics accessors.
@@ -146,7 +156,6 @@ private:
     struct THunkTreeChunkListTraits
     {
         THunkChunkTreeStatistics Statistics;
-        THashMap<TChunkId, int> HunkChunkIdToRefCount;
 
         void Persist(const NCellMaster::TPersistenceContext& context);
     };

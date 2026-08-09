@@ -55,6 +55,7 @@
 #include <yt/yt/ytlib/queue_client/records/queue_producer_session.record.h>
 
 #include <yt/yt/ytlib/security_client/permission_cache.h>
+#include <yt/yt/ytlib/security_client/query_pool_permission_cache.h>
 
 #include <yt/yt/ytlib/table_client/chunk_slice_fetcher.h>
 #include <yt/yt/ytlib/table_client/chunk_slice_size_fetcher.h>
@@ -673,8 +674,8 @@ std::vector<TTabletInfo> TClient::DoGetTabletInfosImpl(
                 result.TotalRowCount = tabletInfo.total_row_count();
                 result.TrimmedRowCount = tabletInfo.trimmed_row_count();
                 result.DelayedLocklessRowCount = tabletInfo.delayed_lockless_row_count();
-                result.BarrierTimestamp = tabletInfo.barrier_timestamp();
-                result.LastWriteTimestamp = tabletInfo.last_write_timestamp();
+                result.BarrierTimestamp = FromProto<NTransactionClient::TTimestamp>(tabletInfo.barrier_timestamp());
+                result.LastWriteTimestamp = FromProto<NTransactionClient::TTimestamp>(tabletInfo.last_write_timestamp());
                 result.TableReplicaInfos = tabletInfo.replicas().empty()
                     ? std::nullopt
                     : std::make_optional(std::vector<TTabletInfo::TTableReplicaInfo>());
@@ -685,7 +686,7 @@ std::vector<TTabletInfo> TClient::DoGetTabletInfosImpl(
                 for (const auto& protoReplicaInfo : tabletInfo.replicas()) {
                     auto& currentReplica = result.TableReplicaInfos->emplace_back();
                     currentReplica.ReplicaId = FromProto<TGuid>(protoReplicaInfo.replica_id());
-                    currentReplica.LastReplicationTimestamp = protoReplicaInfo.last_replication_timestamp();
+                    currentReplica.LastReplicationTimestamp = FromProto<NTransactionClient::TTimestamp>(protoReplicaInfo.last_replication_timestamp());
                     currentReplica.Mode = FromProto<ETableReplicaMode>(protoReplicaInfo.mode());
                     currentReplica.CurrentReplicationRowIndex = protoReplicaInfo.current_replication_row_index();
                     currentReplica.CommittedReplicationRowIndex = protoReplicaInfo.committed_replication_row_index();
@@ -1442,8 +1443,8 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
         req->SetMultiplexingBand(options.MultiplexingBand);
         req->set_request_codec(ToProto(connectionConfig->LookupRowsRequestCodec));
         req->set_response_codec(ToProto(connectionConfig->LookupRowsResponseCodec));
-        req->set_timestamp(options.Timestamp);
-        req->set_retention_timestamp(options.RetentionTimestamp);
+        req->set_timestamp(ToProto(options.Timestamp));
+        req->set_retention_timestamp(ToProto(options.RetentionTimestamp));
         req->set_enable_partial_result(options.EnablePartialResult);
         if (options.UseLookupCache) {
             req->set_use_lookup_cache(*options.UseLookupCache);
@@ -1623,7 +1624,8 @@ TSelectRowsResult TClient::DoSelectRows(
 
 TDuration TClient::CheckPermissionsForQuery(
     const TPlanFragment& fragment,
-    const TSelectRowsOptions& options)
+    const TSelectRowsOptions& options,
+    const ITableMountCachePtr& tableMountCache)
 {
     NProfiling::TWallTimer timer;
 
@@ -1658,23 +1660,41 @@ TDuration TClient::CheckPermissionsForQuery(
 
     grabTablesFromQueryForPermissionCheck(fragment);
 
-    if (options.ExecutionPool) {
-        permissionKeys.push_back(NSecurityClient::TPermissionKey{
-            .Path = QueryPoolsPath + "/" + NYPath::ToYPathLiteral(*options.ExecutionPool),
-            .User = Options_.GetAuthenticatedUser(),
-            .Permission = EPermission::Use,
-        });
-    }
-
     timer.Restart();
     const auto& permissionCache = Connection_->GetPermissionCache();
     auto permissionCheckErrors = WaitFor(permissionCache->GetMany(permissionKeys))
         .ValueOrThrow();
-    for (const auto& error : permissionCheckErrors) {
-        if (error.FindMatching(NYTree::EErrorCode::ResolveError)) {
+    YT_VERIFY(permissionKeys.size() == permissionCheckErrors.size());
+
+    for (int index = 0; index < std::ssize(permissionKeys); ++index) {
+        auto& error = permissionCheckErrors[index];
+        if (error.IsOK() || error.FindMatching(NYTree::EErrorCode::ResolveError)) {
             continue;
         }
+
+        const auto& key = permissionKeys[index];
+        auto tableInfoOrError = WaitForFast(tableMountCache->GetTableInfo(key.Path));
+        if (tableInfoOrError.IsOK()) {
+            const auto& tableInfo = tableInfoOrError.Value();
+            if (tableInfo->UpstreamReplicaId) {
+                error <<= TErrorAttribute("replica_path", tableInfo->PhysicalPath);
+            }
+        }
+
         error.ThrowOnError();
+    }
+
+    if (options.ExecutionPool) {
+        auto key = NSecurityClient::TPermissionKey{
+            .Path = TYPath::Join(QueryPoolsPath, '/', NYPath::ToYPathLiteral(*options.ExecutionPool)),
+            .User = Options_.GetAuthenticatedUser(),
+            .Permission = EPermission::Use,
+        };
+
+        auto permissionOrError = WaitFor(Connection_->GetQueryPoolPermissionCache()->Get(key));
+        if (!permissionOrError.IsOK() && !permissionOrError.FindMatching(NYTree::EErrorCode::ResolveError)) {
+            permissionOrError.ThrowOnError();
+        }
     }
 
     return timer.GetElapsedTime();
@@ -1736,7 +1756,7 @@ TQueryOptions GetQueryOptions(const TSelectRowsOptions& options, const TConnecti
         ? false
         : options.NewRangeInference;
     queryOptions.AdaptiveOrderedSchemafulReader = !config->DisableAdaptiveOrderedSchemafulReader;
-    queryOptions.ExecutionBackend = config->UseWebAssembly
+    queryOptions.ExecutionBackend = config->AllowWebAssembly
         ? options.ExecutionBackend.value_or(EExecutionBackend::Native)
         : EExecutionBackend::Native;
 
@@ -1783,6 +1803,9 @@ TQueryOptions GetQueryOptions(const TSelectRowsOptions& options, const TConnecti
     queryOptions.ReadFrom = options.ReadFrom;
     queryOptions.EnableParallelizeUnorderedGroupBy = options.EnableParallelizeUnorderedGroupBy.value_or(
         enableParallelizeUnorderedGroupByDefault);
+    queryOptions.AllowReverseScanForOrderBy = queryConfig
+        ? queryConfig->AllowReverseScanForOrderBy.value_or(false)
+        : false;
 
     THROW_ERROR_EXCEPTION_UNLESS(queryOptions.RowsetProcessingBatchSize > 0,
         "Expected \"rowset_processing_batch_size\" > 0, found %v",
@@ -2017,7 +2040,7 @@ TSelectRowsResult TClient::DoSelectRowsOnce(
             << TErrorAttribute("source", NAst::FormatJoin(std::get<NAst::TJoin>(ast.Joins[index])));
     }
 
-    auto permissionCacheWaitTime = CheckPermissionsForQuery(*fragment, options);
+    auto permissionCacheWaitTime = CheckPermissionsForQuery(*fragment, options, mountCache);
 
     if (options.DetailedProfilingInfo) {
         auto mainTableMountInfo = WaitForFast(mountCache->GetTableInfo(mainTable))
@@ -2182,7 +2205,10 @@ NYson::TYsonString TClient::DoExplainQuery(
         udfRegistryPath,
         options,
         memoryChunkProvider,
-        allowUnorderedGroupByWithLimit);
+        allowUnorderedGroupByWithLimit,
+        /*allowReverseScanForOrderBy*/ queryEngineConfig
+            ? queryEngineConfig->AllowReverseScanForOrderBy.value_or(false)
+            : false);
 }
 
 template <class TReq>
@@ -2273,7 +2299,7 @@ void TClient::DoMountTable(
 
     auto mountTimestamp = WaitFor(Connection_->GetTimestampProvider()->GenerateTimestamps())
         .ValueOrThrow();
-    req.set_mount_timestamp(mountTimestamp);
+    req.set_mount_timestamp(ToProto(mountTimestamp));
 
     ExecuteTabletServiceRequest(path, "Mounting", &req);
 }
@@ -2365,6 +2391,7 @@ NTabletClient::NProto::TReqReshard TClient::MakeReshardRequest(
         req.set_last_tablet_index(*options.LastTabletIndex);
     }
     ToProto(req.mutable_trimmed_row_counts(), options.TrimmedRowCounts);
+    ToProto(req.mutable_cumulative_data_weights(), options.CumulativeDataWeights);
 
     return req;
 }
@@ -2607,7 +2634,7 @@ void TClient::DoAlterTable(
         ToProto(req->mutable_replication_progress(), *options.ReplicationProgress);
     }
     if (options.ClipTimestamp) {
-        req->set_clip_timestamp(*options.ClipTimestamp);
+        req->set_clip_timestamp(ToProto(*options.ClipTimestamp));
     }
 
     auto proxy = CreateObjectServiceWriteProxy();
@@ -3544,7 +3571,7 @@ public:
         , Invoker_(std::move(invoker))
         , MemoryTracker_(std::move(memoryTracker))
         , Logger(logger
-            .WithTag("TabletId: %v", TabletInfo_->TabletId))
+            .WithTag("TabletId", TabletInfo_->TabletId))
         , IsTrivial_(IsUpperTimestampReached(Options_, Request_.Progress, Logger))
         , ReplicationProgress_(std::move(Request_.Progress))
         , ReplicationRowIndex_(Request_.StartReplicationRowIndex)
@@ -3658,7 +3685,7 @@ private:
             req->set_mount_revision(ToProto(TabletInfo_->MountRevision));
             req->set_max_rows_per_read(Options_.TabletRowsPerRead);
             req->set_max_data_weight(MaxDataWeight_);
-            req->set_upper_timestamp(Options_.UpperTimestamp);
+            req->set_upper_timestamp(ToProto(Options_.UpperTimestamp));
             req->set_max_allowed_commit_instant(ToProto(Options_.MaxTransactionCommitInstant));
             ToProto(req->mutable_tablet_id(), TabletInfo_->TabletId);
             ToProto(req->mutable_cell_id(), TabletInfo_->CellId);
@@ -3766,7 +3793,7 @@ private:
         std::vector<TTypeErasedRow> rows;
         while (!reader->IsFinished()) {
             auto row = reader->ReadSchemafulRow(schemaData, true);
-            auto rowTimestamp = FromUnversionedValue<ui64>(row[TimestampColumnIndex_]);
+            auto rowTimestamp = FromUnversionedValue<NTransactionClient::TTimestamp>(row[TimestampColumnIndex_]);
             if (rowTimestamp > maxTimestamp) {
                 ReplicationRowIndex_.reset();
                 break;
@@ -4129,6 +4156,15 @@ void TClient::DoAlterReplicationCard(
     }
     if (options.CollocationOptions) {
         req->set_collocation_options(ToProto(ConvertToYsonString(options.CollocationOptions)));
+    }
+    if (options.CreateSecondaryIndex) {
+        req->set_create_secondary_index(ConvertToYsonString(options.CreateSecondaryIndex).ToString());
+    }
+    if (options.DestroySecondaryIndex) {
+        ToProto(req->mutable_destroy_secondary_index(), options.DestroySecondaryIndex);
+    }
+    if (options.ProgressSecondaryIndexCorrespondence) {
+        req->set_progress_secondary_index_correspondence(ConvertToYsonString(options.ProgressSecondaryIndexCorrespondence).ToString());
     }
 
     auto result = WaitFor(req->Invoke());

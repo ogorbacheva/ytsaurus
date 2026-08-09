@@ -58,8 +58,7 @@ public:
         YT_VERIFY(!Promise_);
         Promise_ = NewPromise<std::vector<TSharedRef>>();
 
-        Logger.AddTag("ReadSessionId: %v",
-            chunkReadOptions.ReadSessionId);
+        Logger.AddTag("ReadSessionId", chunkReadOptions.ReadSessionId);
 
         auto dictionaryCompressionFactory = DictionaryCompressionFactory_.Lock();
         if (!dictionaryCompressionFactory) {
@@ -446,8 +445,8 @@ TFuture<TRowDigestedDictionary> OnDictionaryMetaRead(
         requests.size());
 
     return chunkFragmentReader->ReadFragments(
-        chunkReadOptions,
-        std::move(requests))
+        std::move(requests),
+        chunkReadOptions)
         .Apply(BIND(
             [
                 =,
@@ -467,7 +466,7 @@ TFuture<TRowDigestedDictionary> OnDictionaryMetaRead(
                     << responseOrError;
             }
 
-            auto response = responseOrError.Value();
+            const auto& response = responseOrError.Value();
             YT_VERIFY(response.Fragments.size() == columnIdMapping.size());
 
             YT_LOG_DEBUG("Successfully read fragments of a dictionary chunk");
@@ -620,10 +619,10 @@ TFuture<TRowDigestedDictionary> ReadDigestedDictionary(
     bool suitableForCaching,
     NLogging::TLogger logger)
 {
-    logger.AddTag("ReadSessionId: %v, DictionaryId: %v, IsDecompression: %v",
-        chunkReadOptions.ReadSessionId,
-        dictionaryId,
-        isDecompression);
+    logger
+        .AddTag("ReadSessionId", chunkReadOptions.ReadSessionId)
+        .AddTag("DictionaryId", dictionaryId)
+        .AddTag("IsDecompression", isDecompression);
 
     const auto& Logger = logger;
 

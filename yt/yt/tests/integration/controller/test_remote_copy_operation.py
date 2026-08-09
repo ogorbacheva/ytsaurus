@@ -1856,6 +1856,72 @@ class TestSchedulerRemoteCopyDynamicTables(TestSchedulerRemoteCopyDynamicTablesB
         with raises_yt_error():
             _run_remote_copy("//tmp/ordered", "//tmp/ordered")
 
+    @authors("babenko")
+    def test_allow_unfrozen_input_tables(self):
+        sync_create_cells(1, driver=self.remote_driver)
+        sync_create_cells(1)
+        self._create_sorted_table("//tmp/t1", driver=self.remote_driver)
+        self._create_sorted_table("//tmp/t2")
+
+        rows = [{"key": i, "value": str(i)} for i in range(10)]
+        sync_mount_table("//tmp/t1", driver=self.remote_driver)
+        insert_rows("//tmp/t1", rows, driver=self.remote_driver)
+        sync_flush_table("//tmp/t1", driver=self.remote_driver)
+
+        # The input table stays mounted (neither frozen nor unmounted).
+        assert get("//tmp/t1/@tablet_state", driver=self.remote_driver) == "mounted"
+
+        # By default remote copy of a mounted table is forbidden.
+        with raises_yt_error():
+            remote_copy(
+                in_="//tmp/t1",
+                out="//tmp/t2",
+                spec={"cluster_name": self.REMOTE_CLUSTER_NAME},
+            )
+
+        # With allow_unfrozen_input_tables the check is bypassed.
+        remote_copy(
+            in_="//tmp/t1",
+            out="//tmp/t2",
+            spec={
+                "cluster_name": self.REMOTE_CLUSTER_NAME,
+                "allow_unfrozen_input_tables": True,
+            },
+        )
+
+        assert read_table("//tmp/t2") == rows
+
+    @authors("babenko")
+    def test_allow_unfrozen_input_tables_omits_dynamic_stores(self):
+        sync_create_cells(1, driver=self.remote_driver)
+        sync_create_cells(1)
+        self._create_sorted_table("//tmp/t1", enable_dynamic_store_read=True, driver=self.remote_driver)
+        self._create_sorted_table("//tmp/t2")
+
+        flushed_rows = [{"key": i, "value": str(i)} for i in range(5)]
+        sync_mount_table("//tmp/t1", driver=self.remote_driver)
+        insert_rows("//tmp/t1", flushed_rows, driver=self.remote_driver)
+        sync_flush_table("//tmp/t1", driver=self.remote_driver)
+
+        # These rows remain in an unflushed dynamic store.
+        unflushed_rows = [{"key": i, "value": str(i)} for i in range(5, 10)]
+        insert_rows("//tmp/t1", unflushed_rows, driver=self.remote_driver)
+
+        # Sanity check: the dynamic store is exposed to fetch requests.
+        assert read_table("//tmp/t1", driver=self.remote_driver) == flushed_rows + unflushed_rows
+
+        remote_copy(
+            in_="//tmp/t1",
+            out="//tmp/t2",
+            spec={
+                "cluster_name": self.REMOTE_CLUSTER_NAME,
+                "allow_unfrozen_input_tables": True,
+            },
+        )
+
+        # The copy is best-effort: dynamic stores are omitted.
+        assert read_table("//tmp/t2") == flushed_rows
+
     @authors("ifsmirnov")
     def test_self_cluster(self):
         sync_create_cells(1)

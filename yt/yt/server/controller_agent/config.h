@@ -299,9 +299,8 @@ DEFINE_REFCOUNTED_TYPE(TDataBalancerOptions)
 struct TUserJobOptions
     : public NYTree::TYsonStruct
 {
-    //! Thread limit for the user job is ceil(#InitialThreadLimit + #ThreadLimitMultiplier * JobCpuLimit);
-    i64 ThreadLimitMultiplier;
-    i64 InitialThreadLimit;
+    //! Thread limit for the user job container as a function of cpu (variable "cpu" = ceil(job cpu_limit)).
+    TArithmeticFormula ThreadLimitFormula;
 
     REGISTER_YSON_STRUCT(TUserJobOptions);
 
@@ -326,7 +325,7 @@ struct TGpuCheckOptions
     std::vector<std::string> BinaryArgs;
 
     //! Network project for GPU check container.
-    std::optional<TString> NetworkProject;
+    std::optional<std::string> NetworkProject;
 
     REGISTER_YSON_STRUCT(TGpuCheckOptions);
 
@@ -540,6 +539,7 @@ struct TSortOperationOptionsBase
     NChunkPools::TJobSizeAdjusterConfigPtr SortedMergeJobSizeAdjuster;
     TDataBalancerOptionsPtr DataBalancer;
     i64 DefaultPartitionDataWeightForMerging;
+    bool EnableFinalPartitionsMergingByDefault;
 
     REGISTER_YSON_STRUCT(TSortOperationOptionsBase);
 
@@ -1041,7 +1041,7 @@ struct TControllerAgentConfig
     int MaxRangesOnTable;
 
     TUserFileLimitsConfigPtr UserFileLimits;
-    THashMap<TString, TUserFileLimitsPatchConfigPtr> UserFileLimitsPerTree;
+    THashMap<std::string, TUserFileLimitsPatchConfigPtr> UserFileLimitsPerTree;
 
     //! Maximum number of files per user job.
     int MaxUserFileCount;
@@ -1060,9 +1060,6 @@ struct TControllerAgentConfig
 
     //! Maximum number of foreign chunks to locate per request.
     int MaxChunksPerLocateRequest;
-
-    //! Enables using tmpfs if tmpfs_path is specified in user spec.
-    bool EnableTmpfs;
 
     //! Enables dynamic change of job sizes.
     bool EnablePartitionMapJobSizeAdjustment;
@@ -1293,6 +1290,8 @@ struct TControllerAgentConfig
 
     // Supposed to be used in tests.
     std::optional<i64> FootprintMemory;
+    // Supposed to be set for asan builds to account for ytserver-exec's memory.
+    std::optional<i64> ExecFootprintMemory;
 
     //! Enables job profiling.
     bool EnableJobProfiling;
@@ -1351,6 +1350,9 @@ struct TControllerAgentConfig
     NServer::TOperationEventReporterConfigPtr OperationEventsReporter;
 
     bool FailOperationsInEmptyTrees;
+
+    //! If |true|, operations on tables whose primary medium is S3 (offshore) are forbidden.
+    bool ForbidOperationsOnOffshoreMedia;
 
     REGISTER_YSON_STRUCT(TControllerAgentConfig);
 

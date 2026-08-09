@@ -254,15 +254,16 @@ std::string GetFileNameWithoutExtension(const std::string& path)
 
 void CleanTempFiles(const std::string& path)
 {
-    YT_LOG_INFO("Cleaning temp files in %v", path);
+    YT_TLOG_INFO("Cleaning temp files")
+        .With("Path", path);
 
     // TODO(ignat): specify suffix in EnumerateFiles.
     auto entries = EnumerateFiles(path, std::numeric_limits<int>::max());
     for (const auto& entry : entries) {
         if (entry.ends_with(TempFileSuffix)) {
             auto fileName = NFS::CombinePaths(path, entry);
-            YT_LOG_DEBUG("Removing file (FileName: %v)",
-                fileName);
+            YT_TLOG_DEBUG("Removing file")
+                .With("FileName", fileName);
             NFS::Remove(fileName);
         }
     }
@@ -458,7 +459,20 @@ i64 GetDirectoriesSize(const std::vector<std::string>& paths, bool ignoreUnavail
         wrapNoEntryError([&] {
             auto subdirectories = EnumerateDirectories(directory);
             for (const auto& subdirectory : subdirectories) {
-                directories.push(CombinePaths(directory, subdirectory));
+                auto subpath = CombinePaths(directory, subdirectory);
+                if (checkDeviceId) {
+                    // Skip subdirectories residing on a different device (e.g. overlay mounts
+                    // such as a root volume) to avoid traversing them unnecessarily.
+                    wrapNoEntryError([&] {
+                        auto subStat = GetPathStatistics(subpath);
+                        if (deviceId && subStat.DeviceId != *deviceId) {
+                            return;
+                        }
+                        directories.push(subpath);
+                    });
+                } else {
+                    directories.push(subpath);
+                }
             }
         });
 
@@ -866,7 +880,8 @@ void WrapIOErrors(std::function<void()> func)
 
             default: {
                 TError error(ex);
-                YT_LOG_FATAL(error, "Unexpected exception thrown during I/O operation");
+                YT_TLOG_FATAL("Unexpected exception thrown during I/O operation")
+                    .With(error);
                 break;
             }
         }
@@ -1090,7 +1105,7 @@ TFuture<TSpliceResult> SpliceAsync(
                     .Run())
                 .ThrowOnError();
         },
-        "SimplePollable");
+        NLogging::TLoggingTagList().With("Pollable", "Simple"));
 
     bool registered = poller->TryRegister(pollable);
     THROW_ERROR_EXCEPTION_UNLESS(registered, "Failed to register pollable");

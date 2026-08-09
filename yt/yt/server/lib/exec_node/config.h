@@ -10,8 +10,6 @@
 
 #include <yt/yt/server/lib/nbd/config.h>
 
-#include <yt/yt/server/lib/signature/components/public.h>
-
 #include <yt/yt/ytlib/chunk_client/public.h>
 
 #include <yt/yt/library/dns_over_rpc/client/config.h>
@@ -19,6 +17,8 @@
 #include <yt/yt/library/gpu/config.h>
 
 #include <yt/yt/library/tracing/jaeger/public.h>
+
+#include <yt/yt/library/signature/components/public.h>
 
 #include <yt/yt/core/concurrency/config.h>
 
@@ -121,6 +121,11 @@ struct TSlotManagerConfig
 
     std::vector<TNumaNodeConfigPtr> NumaNodes;
 
+    //! Unfortunately, we cannot always allow non-root volumes to be created. I know of two cases where this flag must be disabled:
+    //! 1) The node uses Simple environment but is not running as root.
+    //! 2) The node runs in a CRI environment, but the Kubernetes configuration for the node container does not set mountPropagation: Bidirectional.
+    bool EnableNonRootVolumes;
+
     REGISTER_YSON_STRUCT(TSlotManagerConfig);
 
     static void Register(TRegistrar registrar);
@@ -183,8 +188,6 @@ struct TSlotManagerDynamicConfig
     //! Copy artifacts without blocking any of the slot location IO invokers.
     bool EnableAsyncArtifactCopy;
 
-    std::optional<i64> ArtifactPipeSize;
-
     TDuration CopyRateAggregatorHalfLife;
 
     //! Polymorphic job environment configuration.
@@ -223,6 +226,9 @@ struct TVolumeManagerDynamicConfig
 
     //! For testing purpuses.
     bool ThrowOnPrepareVolume;
+
+    //! For testing purposes.
+    bool ThrowOnPrepareLayers;
 
     REGISTER_YSON_STRUCT(TVolumeManagerDynamicConfig);
 
@@ -821,7 +827,6 @@ struct TLogDumpConfig
 
     static void Register(TRegistrar registrar);
 };
-
 
 DEFINE_REFCOUNTED_TYPE(TLogDumpConfig)
 

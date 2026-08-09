@@ -35,6 +35,7 @@ namespace NYT::NDataNode {
 using namespace NHydra;
 using namespace NHydra::NProto;
 using namespace NConcurrency;
+using namespace NNode;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -306,7 +307,7 @@ private:
 
     void DumpAnalysisResults()
     {
-        auto dumpChunkIds = [&] (const THashSet<TChunkId>& chunkIds, const TString& action) {
+        auto dumpChunkIds = [&] (const THashSet<TChunkId>& chunkIds, const std::string& action) {
             for (auto chunkId : chunkIds) {
                 YT_LOG_INFO("Replay may %v journal chunk (ChunkId: %v, FirstRelevantVersion: %v)",
                     action,
@@ -943,7 +944,10 @@ public:
         INodeMemoryTrackerPtr nodeMemoryTracker)
         : Location_(std::move(location))
         , ChunkContext_(std::move(chunkContext))
-        , Logger(DataNodeLogger().WithTag("LocationId: %v, LocationUuid: %v, LocationIndex: %v", Location_->GetId(), Location_->GetUuid(), Location_->GetIndex()))
+        , Logger(DataNodeLogger()
+            .WithTag("LocationId", Location_->GetId())
+            .WithTag("LocationUuid", Location_->GetUuid())
+            .WithTag("LocationIndex", Location_->GetIndex()))
         , Config_(config)
     {
         auto journalIndexMemoryTracker = nodeMemoryTracker

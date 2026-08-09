@@ -57,7 +57,14 @@ void TQueryEngineDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("prefetch_join_tables", &TThis::PrefetchJoinTables)
         .Optional();
 
+    registrar.Parameter("allow_multiple_join_subqueries_for_non_lookup_joins", &TThis::AllowMultipleJoinSubqueriesForNonLookupJoins)
+        .Optional();
+
     registrar.Parameter("join_cache_size", &TThis::JoinCacheSize)
+        .GreaterThan(0)
+        .Optional();
+
+    registrar.Parameter("max_subsplits_per_tablet", &TThis::MaxSubsplitsPerTablet)
         .GreaterThan(0)
         .Optional();
 }

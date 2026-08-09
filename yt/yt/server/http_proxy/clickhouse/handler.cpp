@@ -18,8 +18,7 @@
 #include <yt/yt/library/auth_server/helpers.h>
 #include <yt/yt/library/auth_server/token_authenticator.h>
 
-#include <yt/yt/library/clickhouse_discovery/discovery_v1.h>
-#include <yt/yt/library/clickhouse_discovery/discovery_v2.h>
+#include <yt/yt/library/clickhouse_discovery/discovery.h>
 #include <yt/yt/library/clickhouse_discovery/helpers.h>
 
 #include <yt/yt/client/api/client.h>
@@ -95,7 +94,6 @@ public:
         const IResponseWriterPtr& rsp,
         const TDynamicClickHouseConfigPtr& config,
         TBootstrap* bootstrap,
-        const NApi::IClientPtr& client,
         const TOperationCachePtr& operationCache,
         const TPermissionCachePtr& permissionCache,
         const TDiscoveryCachePtr discoveryCache,
@@ -109,7 +107,6 @@ public:
         , Response_(rsp)
         , Config_(config)
         , Bootstrap_(bootstrap)
-        , Client_(client)
         , HttpClient_(CreateClient(Config_->HttpClient, Bootstrap_->GetPoller()))
         , OperationCache_(operationCache)
         , PermissionCache_(permissionCache)
@@ -202,7 +199,6 @@ private:
     const IResponseWriterPtr& Response_;
     const TDynamicClickHouseConfigPtr& Config_;
     TBootstrap* const Bootstrap_;
-    const NApi::IClientPtr& Client_;
     NHttp::IClientPtr HttpClient_;
     const TOperationCachePtr OperationCache_;
     const TPermissionCachePtr PermissionCache_;
@@ -307,14 +303,14 @@ private:
                 result = TUserAndToken{.User=std::move(userAndToken[0]), .Token=std::move(userAndToken[1])};
             } else {
                 return TError(
-                    "Wrong 'Basic' authorization header format; 'default:<oauth-token>' encoded with base64 expected (CredentialsDecoded: %v)",
-                    credentialsDecoded);
+                    "Wrong 'Basic' authorization header format; 'default:<oauth-token>' encoded with base64 expected")
+                    << TErrorAttribute("credentials_decoded", credentialsDecoded);
             }
 
         } else {
-            return TError("Unsupported type of authorization header (AuthorizationType: %v, TokenCount: %v)",
-                authorizationType,
-                authorizationTypeAndCredentials.size());
+            return TError("Unsupported authorization header type %Qv",
+                authorizationType)
+                << TErrorAttribute("token_count", authorizationTypeAndCredentials.size());
         }
         YT_LOG_DEBUG("Token parsed (AuthorizationType: %v)", authorizationType);
 
@@ -539,8 +535,7 @@ private:
         } else if (hasHeader(xClickHouseKey) || hasHeader(xClickHouseUser)) {
             result = TUserAndToken{
                 xClickHouseUser ? *xClickHouseUser : "",
-                // TODO(babenko): switch to std::string
-                TString(xClickHouseKey ? *xClickHouseKey : ""),
+                xClickHouseKey ? *xClickHouseKey : "",
             };
         } else if (CgiParameters_.Has("user") || CgiParameters_.Has("password")) {
             result = TUserAndToken{CgiParameters_.Get("user"), CgiParameters_.Get("password")};
@@ -713,22 +708,6 @@ private:
         }
     }
 
-    IDiscoveryPtr CreateDiscoveryV1()
-    {
-        auto config = New<TDiscoveryV1Config>();
-        auto path = Format("%v/%v", Config_->DiscoveryPath, OperationId_);
-        config->Directory = path;
-        config->BanTimeout = Bootstrap_->GetConfig()->ClickHouse->DiscoveryCache->UnavailableInstanceBanTimeout;
-        config->ReadFrom = NApi::EMasterChannelKind::Cache;
-        config->MasterCacheExpireTime = Bootstrap_->GetConfig()->ClickHouse->DiscoveryCache->MasterCacheExpireTime;
-        return NClickHouseServer::CreateDiscoveryV1(
-            std::move(config),
-            Client_,
-            ControlInvoker_,
-            DiscoveryAttributes_,
-            Logger);
-    }
-
     std::string GetOperationAlias() const
     {
         return "*" + *CliqueAlias_;
@@ -739,46 +718,33 @@ private:
         return "/chyt/" + *CliqueAlias_;
     }
 
-    IDiscoveryPtr CreateDiscoveryV2()
+    IDiscoveryPtr TryCreateDiscovery()
     {
-        auto config = New<TDiscoveryV2Config>();
+        if (!Bootstrap_->GetNativeConnection()->GetConfig()->DiscoveryConnection) {
+            YT_LOG_DEBUG("Skipping discovery v2 because of missing discovery connection config (ClusterConnection: %v)",
+                ConvertToYsonString(Bootstrap_->GetNativeConnection()->GetConfig(), EYsonFormat::Text).ToString());
+            THROW_ERROR_EXCEPTION("Discovery is missed");
+        }
+
+        auto config = New<TDiscoveryConfig>();
         config->GroupId = GetDiscoveryGroupId();
         config->ReadQuorum = 1;
         config->WriteQuorum = 1;
         config->BanTimeout = Bootstrap_->GetConfig()->ClickHouse->DiscoveryCache->UnavailableInstanceBanTimeout;
-        return NClickHouseServer::CreateDiscoveryV2(
+
+        auto discovery = NClickHouseServer::CreateDiscoveryFromNativeConnection(
             std::move(config),
             Bootstrap_->GetNativeConnection(),
             Bootstrap_->GetNativeConnection()->GetChannelFactory(),
             ControlInvoker_,
             DiscoveryAttributes_,
             Logger);
-    }
+        auto discoveryFuture = discovery->UpdateList().Apply(BIND([discovery = std::move(discovery)] { return discovery; }));
 
-    IDiscoveryPtr TryChooseDiscovery()
-    {
-        auto discoveryV1 = CreateDiscoveryV1();
-        auto discoveryV1Future = discoveryV1->UpdateList().Apply(BIND([discovery = std::move(discoveryV1)] { return discovery; }));
-        auto futures = std::vector{discoveryV1Future};
-
-        if (Bootstrap_->GetNativeConnection()->GetConfig()->DiscoveryConnection) {
-            auto discoveryV2 = CreateDiscoveryV2();
-            auto discoveryV2Future = discoveryV2->UpdateList().Apply(BIND([discovery = std::move(discoveryV2)] { return discovery; }));
-            futures.emplace_back(std::move(discoveryV2Future));
-        } else {
-            YT_LOG_DEBUG("Skipping discovery v2 because of missing discovery connection config (ClusterConnection: %v)",
-                ConvertToYsonString(Bootstrap_->GetNativeConnection()->GetConfig(), EYsonFormat::Text).ToString());
-        }
-
-        auto valueOrError = WaitFor(AnySucceeded(futures));
+        auto valueOrError = WaitFor(discoveryFuture);
         if (!valueOrError.IsOK()) {
-            if (valueOrError.FindMatching(NYTree::EErrorCode::ResolveError)) {
-                THROW_ERROR_EXCEPTION("Clique directory does not exist; perhaps the clique is still starting, wait for up to 5 minutes")
-                    << valueOrError;
-            } else {
-                THROW_ERROR_EXCEPTION("Clique discovery is not found")
-                    << valueOrError;
-            }
+            THROW_ERROR_EXCEPTION("Clique discovery is not found")
+                << valueOrError;
         }
 
         return valueOrError.Value();
@@ -798,9 +764,7 @@ private:
             if (cookie.IsActive()) {
                 YT_LOG_DEBUG("Clique cache missed (Clique: %v)", CliqueAlias_);
 
-                auto discovery = TryChooseDiscovery();
-
-                YT_LOG_DEBUG("Fetched discovery version (Version: %v)", discovery->Version());
+                auto discovery = TryCreateDiscovery();
 
                 cookie.EndInsert(New<TCachedDiscovery>(
                     OperationId_,
@@ -849,9 +813,8 @@ private:
             }
 
             auto instances = Discovery_->Value()->List();
-            if (Discovery_->Value()->Version() == 2) {
-                instances = FilterInstancesByIncarnation(instances);
-            }
+            instances = FilterInstancesByIncarnation(instances);
+
             YT_LOG_DEBUG("Instances discovered (Count: %v)", instances.size());
             if (instances.empty()) {
                 PushError(TError("Clique %v has no running instances", CliqueAlias_));
@@ -1291,7 +1254,7 @@ void TClickHouseHandler::HandleRequest(
     const IResponseWriterPtr& response)
 {
     auto Logger = ClickHouseUnstructuredLogger()
-        .WithTag("RequestId: %v", request->GetRequestId());
+        .WithTag("RequestId", request->GetRequestId());
 
     if (!Coordinator_->CanHandleHeavyRequests()) {
         // We intentionally read the body of the request and drop it to make sure
@@ -1318,7 +1281,6 @@ void TClickHouseHandler::HandleRequest(
             response,
             config,
             Bootstrap_,
-            Client_,
             OperationCache_,
             PermissionCache_,
             DiscoveryCache_,

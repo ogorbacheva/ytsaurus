@@ -768,13 +768,15 @@ class DynamicTablesSingleCellBase(DynamicTablesBase):
         driver = get_driver(1 if self.NUM_SECONDARY_MASTER_CELLS > 0 else 0)
         table_id = get("//tmp/t/@id")
 
-        # Waiting for all content revision updates to reach the master.
-        time.sleep(2)
-
         for i in range(0, 3):
+            # Waiting for all content revision updates to reach the master.
+            time.sleep(2)
             old_content_revision = get(f"#{table_id}/@content_revision", driver=driver)
             insert_rows("//tmp/t", [{"key": i, "value": "0"}])
             wait(lambda: get(f"#{table_id}/@content_revision", driver=driver) != old_content_revision)
+
+        # Waiting for all content revision updates to reach the master.
+        time.sleep(2)
 
         content_revision = get(f"#{table_id}/@content_revision", driver=driver)
         time.sleep(3)
@@ -4296,6 +4298,58 @@ class TestDynamicTablesSequoia(TestDynamicTablesShardedTx):
         "11": {"roles": ["chunk_host", "cypress_node_host"]},
         "12": {"roles": ["chunk_host"]},
         "13": {"roles": ["transaction_coordinator", "sequoia_node_host"]},
+    }
+
+
+class TestDynamicTablesSequoiaAndMasterJournalReplicas(TestDynamicTablesMulticell):
+    ENABLE_MULTIDAEMON = False  # There are component restarts.
+    USE_SEQUOIA = True
+
+    DELTA_DYNAMIC_MASTER_CONFIG = {
+        "chunk_manager": {
+            "replica_approve_timeout": 5000,
+            "sequoia_chunk_replicas": {
+                "enable": True,
+                "enable_sequoia_chunk_refresh": True,
+                "schedule_chunk_seal_in_sequoia_refresh": True,
+                "sequoia_chunk_refresh_period": 100,
+                "batch_chunk_confirmation": True,
+                "journal_chunk_replicas": {
+                    "store_in_sequoia": True,
+                    "replicas_percentage": 100,
+                    "fetch_replicas_from_sequoia": True,
+                    "store_sequoia_replicas_on_master": True,
+                    "store_sequoia_replicas_on_master_percentage": 100,
+                    "validate_sequoia_replicas_fetch": True,
+                    "allow_extra_master_replicas_during_validation": False,
+                },
+            },
+        },
+    }
+
+
+class TestDynamicTablesOnlySequoiaJournalReplicas(TestDynamicTablesSequoiaAndMasterJournalReplicas):
+    ENABLE_MULTIDAEMON = False  # There are component restarts.
+
+    DELTA_DYNAMIC_MASTER_CONFIG = {
+        "chunk_manager": {
+            "replica_approve_timeout": 5000,
+            "sequoia_chunk_replicas": {
+                "enable": True,
+                "enable_sequoia_chunk_refresh": True,
+                "schedule_chunk_seal_in_sequoia_refresh": True,
+                "sequoia_chunk_refresh_period": 100,
+                "batch_chunk_confirmation": True,
+                "journal_chunk_replicas": {
+                    "store_in_sequoia": True,
+                    "replicas_percentage": 100,
+                    "fetch_replicas_from_sequoia": True,
+                    "store_sequoia_replicas_on_master": False,
+                    "process_removed_sequoia_replicas_on_master": False,
+                    "validate_sequoia_replicas_fetch": False,
+                },
+            },
+        },
     }
 
 

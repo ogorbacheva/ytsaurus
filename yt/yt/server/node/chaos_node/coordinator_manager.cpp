@@ -21,6 +21,7 @@
 #include <yt/yt/core/misc/protobuf_helpers.h>
 #include <yt/yt/core/misc/serialize.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/virtual.h>
 
@@ -238,7 +239,7 @@ private:
     TShortcut* FindShortcut(TChaosObjectId chaosObjectId)
     {
         auto it = Shortcuts_.find(chaosObjectId);
-        return it ? &it->second : nullptr;
+        return it != Shortcuts_.end() ? &it->second : nullptr;
     }
 
     void HydraReqSuspend(NChaosClient::NProto::TReqSuspendCoordinator* /*request*/)
@@ -315,7 +316,7 @@ private:
             auto chaosObjectId = FromProto<NChaosClient::TChaosObjectId>(protoShortcut.chaos_object_id());
             auto era = protoShortcut.era();
 
-            if (auto it = Shortcuts_.find(chaosObjectId)) {
+            if (auto it = Shortcuts_.find(chaosObjectId); it != Shortcuts_.end()) {
                 YT_LOG_ALERT("Granting shortcut while shortcut already present "
                     "(ChaosCellId: %v, ChaosObjectId: %v, Type: %v, OldEra: %v, OldState: %v)",
                     chaosCellId,
@@ -327,7 +328,7 @@ private:
                 YT_VERIFY(it->second.AliveTransactions.empty());
             }
 
-            InsertShortcut(chaosObjectId, {chaosCellId, era, EShortcutState::Granted, {}});
+            InsertShortcut(chaosObjectId, chaosCellId, era, EShortcutState::Granted);
             grantedShortcuts.emplace_back(chaosObjectId, era);
 
             auto* rspShortcut = rsp.add_shortcuts();
@@ -355,7 +356,8 @@ private:
             auto chaosObjectId = FromProto<NChaosClient::TChaosObjectId>(protoShortcut.chaos_object_id());
             auto era = protoShortcut.era();
 
-            if (!Shortcuts_.contains(chaosObjectId)) {
+            auto it = Shortcuts_.find(chaosObjectId);
+            if (it == Shortcuts_.end()) {
                 YT_LOG_ALERT("Revoking unknown shortcut (ChaosCellId: %v, ChaosObjectId: %v, Type: %v, Era: %v)",
                     chaosCellId,
                     chaosObjectId,
@@ -364,7 +366,7 @@ private:
                 continue;
             }
 
-            auto& shortcut = Shortcuts_[chaosObjectId];
+            auto& shortcut = it->second;
             if (IsChaosLeaseType(TypeFromId(chaosObjectId))) {
                 shortcut.CellId = chaosCellId;
             }
@@ -407,17 +409,19 @@ private:
         NChaosClient::NProto::TReqForsakeShortcut* request,
         NChaosClient::NProto::TRspForsakeShortcut* response)
     {
-        auto chaosObjectId = FromProto<TCellId>(request->chaos_object_id());
+        auto chaosObjectId = FromProto<TChaosObjectId>(request->chaos_object_id());
 
-        if (!Shortcuts_.contains(chaosObjectId)) {
+        auto it = Shortcuts_.find(chaosObjectId);
+        if (it == Shortcuts_.end()) {
             YT_LOG_DEBUG("Trying to forsake unknown shortcut (ChaosObjectId: %v, Type: %v)",
                 chaosObjectId,
                 TypeFromId(chaosObjectId));
 
             response->set_success(false);
+            return;
         }
 
-        auto& shortcut = Shortcuts_[chaosObjectId];
+        const auto& shortcut = it->second;
 
         if (!shortcut.AliveTransactions.empty()) {
             YT_LOG_DEBUG("Trying to forsake shortcut with alive transactions "
@@ -474,36 +478,49 @@ private:
                 << TErrorAttribute("replication_card_era", era);
         }
 
+        auto transactionId = transaction->GetId();
+
+        // TODO(osidorkin): Make chaos lease a usual transaction participant so we can drop this field.
         auto chaosLeaseIds = FromProto<std::vector<TChaosLeaseId>>(request->prerequisite_ids());
+        SortUnique(chaosLeaseIds);
+
         for (const auto& chaosLeaseId : chaosLeaseIds) {
-            auto it = Shortcuts_.find(chaosLeaseId);
-            if (it == Shortcuts_.end()) {
+            auto leaseIt = Shortcuts_.find(chaosLeaseId);
+            if (leaseIt == Shortcuts_.end()) {
                 THROW_ERROR_EXCEPTION(
                     NChaosClient::EErrorCode::ShortcutNotFound,
                     "Shortcut for chaos lease is not found")
                     << TErrorAttribute("chaos_object_type", TypeFromId(chaosLeaseId))
                     << TErrorAttribute("chaos_object_id", chaosLeaseId);
             }
-            if (it->second.State != EShortcutState::Granted) {
+
+            if (leaseIt->second.State != EShortcutState::Granted) {
                 THROW_ERROR_EXCEPTION(
                     NChaosClient::EErrorCode::ShortcutRevoked,
                     "Shortcut for chaos lease has been revoked")
                     << TErrorAttribute("chaos_object_type", TypeFromId(chaosLeaseId))
                     << TErrorAttribute("chaos_object_id", chaosLeaseId)
-                    << TErrorAttribute("shortcut_state", it->second.State);
+                    << TErrorAttribute("shortcut_state", leaseIt->second.State);
+            }
+
+            if (leaseIt->second.AliveTransactions.contains(transactionId)) {
+                THROW_ERROR_EXCEPTION(
+                    "Transaction already prepared for chaos lease")
+                    << TErrorAttribute("chaos_object_id", chaosLeaseId)
+                    << TErrorAttribute("transaction_id", transactionId);
             }
         }
 
-        InsertOrCrash(it->second.AliveTransactions, transaction->GetId());
+        InsertOrCrash(it->second.AliveTransactions, transactionId);
 
         for (const auto& chaosLeaseId : chaosLeaseIds) {
-            auto it = GetIteratorOrCrash(Shortcuts_, chaosLeaseId);
-            InsertOrCrash(it->second.AliveTransactions, transaction->GetId());
+            auto leaseIt = GetIteratorOrCrash(Shortcuts_, chaosLeaseId);
+            InsertOrCrash(leaseIt->second.AliveTransactions, transactionId);
         }
 
         YT_LOG_DEBUG("Replication batch prepared (ReplicationCardId: %v, TransactionId: %v, ChaosLeaseIds: %v)",
             replicationCardId,
-            transaction->GetId(),
+            transactionId,
             chaosLeaseIds);
     }
 
@@ -555,7 +572,8 @@ private:
         }
 
         auto& aliveTransactions = it->second.AliveTransactions;
-        if (auto transactionIt = aliveTransactions.find(transactionId); transactionIt == aliveTransactions.end()) {
+        auto transactionIt = aliveTransactions.find(transactionId);
+        if (transactionIt == aliveTransactions.end()) {
             YT_LOG_DEBUG("Trying to decrease transaction count for transaction absent shortcut "
                 "(ChaosObjectId: %v, Type: %v, TransactionId: %v)",
                 chaosObjectId,
@@ -563,9 +581,9 @@ private:
                 transactionId);
             YT_VERIFY(isAbort);
             return;
-        } else {
-            aliveTransactions.erase(transactionIt);
         }
+
+        aliveTransactions.erase(transactionIt);
 
         if (aliveTransactions.empty() && it->second.State == EShortcutState::Revoking) {
             auto chaosCellId = it->second.CellId;
@@ -583,7 +601,7 @@ private:
 
     void SendRevokeShortcutsResponse(
         TCellId chaosCellId,
-        const std::vector<std::pair<TReplicationCardId, TReplicationEra>>& shortcuts)
+        const std::vector<std::pair<TChaosObjectId, TReplicationEra>>& shortcuts)
     {
         NChaosNode::NProto::TRspRevokeShortcuts rsp;
         ToProto(rsp.mutable_coordinator_cell_id(), Slot_->GetCellId());
@@ -599,22 +617,28 @@ private:
         hiveManager->PostMessage(mailbox, rsp);
     }
 
-    void InsertShortcut(TChaosObjectId chaosObjectId, TShortcut shortcut)
+    void InsertShortcut(TChaosObjectId chaosObjectId, TCellId chaosCellId, TReplicationEra era, EShortcutState state)
     {
-        Shortcuts_[chaosObjectId] = shortcut;
-        SnapshotStore_->UpdateShortcut(chaosObjectId, {shortcut.Era});
+        Shortcuts_[chaosObjectId] = TShortcut{
+            .CellId = chaosCellId,
+            .Era = era,
+            .State = state,
+            .AliveTransactions = {},
+        };
+
+        SnapshotStore_->UpdateShortcut(chaosObjectId, {era});
     }
 
     void EraseShortcut(TChaosObjectId chaosObjectId)
     {
-        Shortcuts_.erase(chaosObjectId);
         SnapshotStore_->RemoveShortcut(chaosObjectId);
+        Shortcuts_.erase(chaosObjectId);
     }
 
 
-    TCompositeMapServicePtr CreateOrchidService()
+    ICompositeMapServicePtr CreateOrchidService()
     {
-        return New<TCompositeMapService>()
+        return CreateCompositeMapService()
             ->AddAttribute(EInternedAttributeKey::Opaque, BIND([] (IYsonConsumer* consumer) {
                     BuildYsonFluently(consumer)
                         .Value(true);
@@ -656,9 +680,8 @@ private:
 
     std::vector<TCellId> GetMetadataCellIds()
     {
-        std::vector<TCellId> cells;
         const auto& chaosManager = Slot_->GetChaosManager();
-        cells = chaosManager->CoordinatorCellIds();
+        auto cells = chaosManager->CoordinatorCellIds();
         SortUnique(cells);
         return cells;
     }

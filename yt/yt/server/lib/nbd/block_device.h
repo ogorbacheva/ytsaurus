@@ -3,6 +3,9 @@
 #include "public.h"
 
 #include <yt/yt/core/actions/future.h>
+#include <yt/yt/core/actions/signal.h>
+
+#include <yt/yt/core/ytree/public.h>
 
 #include <library/cpp/yt/memory/ref.h>
 
@@ -45,14 +48,29 @@ struct TWriteResponse
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TFlushOptions
+{
+    //! Request id issued by linux kernel (NBD module).
+    ui64 Cookie = 0;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 //! Represents a block device that can be exposed via the NBD protocol.
 struct IBlockDevice
     : public virtual TRefCounted
 {
+    //! Returns the total byte size of the device. Always divisible by block size.
     virtual i64 GetTotalSize() const = 0;
+
+    //! Returns the minimum I/O granularity (offset and length alignment) that
+    //! must be honored by the callers.
+    virtual i64 GetBlockSize() const = 0;
+
     virtual bool IsReadOnly() const = 0;
-    virtual std::string DebugString() const = 0;
+    virtual std::string GetDescription() const = 0;
     virtual std::string GetProfileSensorTag() const = 0;
+    virtual NYTree::IYPathServicePtr GetOrchidService() = 0;
 
     virtual TFuture<void> Initialize() = 0;
     virtual TFuture<void> Finalize() = 0;
@@ -67,39 +85,18 @@ struct IBlockDevice
         const TSharedRef& data,
         const TWriteOptions& options = {}) = 0;
 
-    virtual TFuture<void> Flush() = 0;
+    virtual TFuture<void> Flush(const TFlushOptions& options = {}) = 0;
 
     //! Get the latest error set for device.
-    virtual const TError& GetError() const = 0;
-    //! Set an error (error.IsOK() == false) for device.
+    virtual TError GetError() const = 0;
+    //! Set an error for device.
     virtual void SetError(TError error) = 0;
-    //! Subscribe #id (e.g. job id) for device errors.
-    virtual bool SubscribeForErrors(TGuid id, const TCallback<void()>& callback) = 0;
-    //! Unsubscribe #id (e.g. job id) from device errors.
-    virtual bool UnsubscribeFromErrors(TGuid id) = 0;
+    //! Fired with the error once one is set on the device (see #SetError).
+    //! A subscriber added after the error was set is invoked in situ.
+    DECLARE_INTERFACE_SIGNAL(void(const TError&), Error);
 };
 
 DEFINE_REFCOUNTED_TYPE(IBlockDevice)
-
-////////////////////////////////////////////////////////////////////////////////
-
-class TBaseBlockDevice
-    : public IBlockDevice
-{
-public:
-    const TError& GetError() const final;
-    void SetError(TError error) final;
-
-    bool SubscribeForErrors(TGuid id, const TCallback<void()>& callback) final;
-    bool UnsubscribeFromErrors(TGuid id) final;
-
-private:
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock_);
-    THashMap<TGuid, TCallback<void()>> SubscriberCallbacks_;
-    TError Error_;
-
-    void CallSubscribers() const;
-};
 
 ////////////////////////////////////////////////////////////////////////////////
 

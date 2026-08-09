@@ -124,7 +124,7 @@ protected:
         IClientPtr client)
         : Path_(std::move(path))
         , Client_(std::move(client))
-        , Logger(HydraLogger().WithTag("Path: %v", Path_))
+        , Logger(HydraLogger().WithTag("Path", Path_))
     { }
 
     void ListChangelogs(
@@ -143,7 +143,7 @@ protected:
 
         auto items = ConvertTo<IListNodePtr>(result);
         for (const auto& item : items->GetChildren()) {
-            auto key = item->GetValue<TString>();
+            auto key = item->GetValue<std::string>();
             int id;
             if (!TryFromString(key, id)) {
                 THROW_ERROR_EXCEPTION("Unrecognized item %Qv in changelog store %v",
@@ -508,7 +508,7 @@ private:
             , Meta_(std::move(meta))
             , PrerequisiteTransaction_(std::move(prerequisiteTransaction))
             , Owner_(std::move(owner))
-            , Logger(Owner_->Logger().WithTag("ChangelogId: %v", id))
+            , Logger(Owner_->Logger().WithTag("ChangelogId", id))
             , RecordCount_(recordCount)
             , DataSize_(dataSize)
         { }

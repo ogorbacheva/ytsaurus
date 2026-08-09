@@ -1068,9 +1068,9 @@ public:
         const NLogging::TLogger& logger)
         : TCrossCellExecutor(
             std::move(client),
-            logger.WithTag("SrcPath: %v, DstPath: %v",
-                srcPath,
-                dstPath))
+            logger
+                .WithTag("SrcPath", srcPath)
+                .WithTag("DstPath", dstPath))
         , SrcPath_(std::move(srcPath))
         , DstPath_(std::move(dstPath))
         , Options_(options)
@@ -1162,9 +1162,9 @@ public:
         const NLogging::TLogger& logger)
         : TCrossCellExecutor(
             std::move(client),
-            logger.WithTag("Path: %v, CellTag: %v",
-                path,
-                cellTag))
+            logger
+                .WithTag("Path", path)
+                .WithTag("CellTag", cellTag))
         , Path_(std::move(path))
         , Options_(options)
     {
@@ -1511,7 +1511,7 @@ TLockNodeDetailedResult TClient::DoLockNodeDetailed(
     }
     auto timestamp = WaitFor(Connection_->GetTimestampProvider()->GenerateTimestamps())
         .ValueOrThrow();
-    req->set_timestamp(timestamp);
+    req->set_timestamp(ToProto(timestamp));
     batchReq->AddRequest(req);
 
     auto batchRsp = WaitFor(batchReq->Invoke())
@@ -2084,12 +2084,13 @@ private:
 
         auto chunkSpecFetcher = New<TMasterChunkSpecFetcher>(
             Client_,
-            TMasterReadOptions{},
             Client_->Connection_->GetNodeDirectory(),
             Client_->Connection_->GetInvoker(),
-            Client_->Connection_->GetConfig()->MaxChunksPerFetch,
-            Client_->Connection_->GetConfig()->MaxChunksPerLocateRequest,
-            prepareFetchRequest,
+            TMasterChunkSpecFetcherOptions{
+                .MaxChunksPerFetch = Client_->Connection_->GetConfig()->MaxChunksPerFetch,
+                .MaxChunksPerLocateRequest = Client_->Connection_->GetConfig()->MaxChunksPerLocateRequest,
+                .FetchRequestInitializer = prepareFetchRequest,
+            },
             Logger);
 
         for (int srcObjectIndex = 0; srcObjectIndex < std::ssize(SrcObjects_); ++srcObjectIndex) {

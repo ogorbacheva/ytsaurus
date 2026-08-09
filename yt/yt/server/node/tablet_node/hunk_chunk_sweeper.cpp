@@ -54,6 +54,12 @@ public:
 private:
     IBootstrap* const Bootstrap_;
 
+    const NProfiling::TProfiler Profiler_ = TabletNodeProfiler()
+        .WithPrefix("/hunk_chunk_sweeper")
+        .WithSparse();
+    const NProfiling::TCounter ScheduledHunkChunkCounter_ = Profiler_.Counter("/scheduled_hunk_chunk_count");
+    const NProfiling::TCounter SweptHunkChunkCounter_ = Profiler_.Counter("/swept_hunk_chunk_count");
+
 
     void OnScanSlot(const ITabletSlotPtr& slot)
     {
@@ -86,6 +92,8 @@ private:
         for (const auto& hunkChunk : hunkChunks) {
             BeginHunkChunkSweep(hunkChunk);
         }
+
+        ScheduledHunkChunkCounter_.Increment(hunkChunks.size());
 
         tablet->GetEpochAutomatonInvoker()->Invoke(BIND(
             &THunkChunkSweeper::SweepHunkChunks,
@@ -130,7 +138,7 @@ private:
         auto tabletId = tablet->GetId();
 
         auto Logger = TabletNodeLogger()
-            .WithTag("%v", tablet->GetLoggingTag());
+            .WithTags(tablet->GetLoggingTags());
 
         try {
             YT_LOG_INFO("Sweeping tablet hunk chunks (ChunkIds: %v)",
@@ -160,7 +168,7 @@ private:
                 YT_LOG_INFO("Tablet hunk chunks sweep transaction created (TransactionId: %v)",
                     transaction->GetId());
 
-                Logger.AddTag("TransactionId: %v", transaction->GetId());
+                Logger.AddTag("TransactionId", transaction->GetId());
             }
 
             tablet->ThrottleTabletStoresUpdate(slot, Logger);
@@ -187,6 +195,8 @@ private:
             for (const auto& hunkChunk : hunkChunks) {
                 EndHunkChunkSweep(hunkChunk);
             }
+
+            SweptHunkChunkCounter_.Increment(hunkChunks.size());
         } catch (const std::exception& ex) {
             YT_LOG_ERROR(ex, "Error sweeping tablet hunk chunks");
 

@@ -189,7 +189,7 @@ public:
     std::optional<NHydra::TRevision> ForcedChunkViewCompactionRevision;
 
     EDynamicTableProfilingMode ProfilingMode;
-    TString ProfilingTag;
+    std::string ProfilingTag;
 
     bool EnableDynamicStoreRead;
 
@@ -399,6 +399,9 @@ struct TCustomTableMountConfig
     // COMPAT(ponasenko-rs): Safety switch to be able to revert to pre-fix behaviour
     // if there are too many unexpected conflicts.
     bool CheckConflictHorizon;
+
+    // Quantum of waiting on blocked row for tables with enabled per-row serialization.
+    TDuration PerRowSerializationBlockedRowWaitQuantum;
 
     TTestingTableMountConfig Testing;
 

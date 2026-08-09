@@ -16,9 +16,10 @@
 
 #include <yt/yt/core/misc/finally.h>
 #include <yt/yt/core/misc/digest.h>
-#include <yt/yt/core/misc/string_builder.h>
 
 #include <yt/yt/core/profiling/timing.h>
+
+#include <library/cpp/yt/string/string_builder.h>
 
 #include <util/generic/ymath.h>
 
@@ -39,7 +40,7 @@ using NVectorHdrf::ToJobResources;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static const TString InvalidCustomProfilingTag("invalid");
+static const std::string InvalidCustomProfilingTag("invalid");
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1189,7 +1190,7 @@ void TPoolTreeCompositeElement::UpdateStarvationStatuses(TInstant now, bool enab
 
 TYPath TPoolTreeCompositeElement::GetFullPath(bool explicitOnly, bool withTreeId) const
 {
-    std::vector<TString> tokens;
+    std::vector<std::string> tokens;
     const auto* current = this;
     while (!current->IsRoot()) {
         if (!explicitOnly || current->IsExplicit()) {
@@ -1242,9 +1243,9 @@ TPoolTreePoolElement::TPoolTreePoolElement(
         treeId,
         id,
         EResourceTreeElementKind::Pool,
-        logger.WithTag("Pool: %v, SchedulingMode: %v",
-            id,
-            config->Mode))
+        logger
+            .WithTag("Pool", id)
+            .WithTag("SchedulingMode", config->Mode))
     , TPoolTreePoolElementFixedState(id, objectId)
 {
     DoSetConfig(std::move(config));
@@ -1504,12 +1505,11 @@ bool TPoolTreePoolElement::IsEphemeralHub() const
     return Config_->CreateEphemeralSubpools;
 }
 
-THashSet<TString> TPoolTreePoolElement::GetAllowedProfilingTags() const
+THashSet<std::string> TPoolTreePoolElement::GetAllowedProfilingTags() const
 {
-    // TODO(babenko): migrate to std::string
-    THashSet<TString> result;
+    THashSet<std::string> result;
     for (const auto& tag : Config_->AllowedProfilingTags) {
-        result.insert(TString(tag));
+        result.insert(tag);
     }
     return result;
 }
@@ -1818,7 +1818,7 @@ TPoolTreeOperationElement::TPoolTreeOperationElement(
         treeId,
         ToString(operation->GetId()),
         EResourceTreeElementKind::Operation,
-        logger.WithTag("OperationId: %v", operation->GetId()))
+        logger.WithTag("OperationId", operation->GetId()))
     , TPoolTreeOperationElementFixedState(
         std::move(operation),
         std::move(controllerConfig),
@@ -2563,7 +2563,7 @@ void TPoolTreeOperationElement::MarkPendingBy(TPoolTreeCompositeElement* violate
         violatedPool->GetMaxRunningOperationCount());
 }
 
-std::optional<TString> TPoolTreeOperationElement::GetCustomProfilingTag() const
+std::optional<std::string> TPoolTreeOperationElement::GetCustomProfilingTag() const
 {
     auto tagName = Spec_->CustomProfilingTag;
     if (!tagName) {
@@ -2574,7 +2574,7 @@ std::optional<TString> TPoolTreeOperationElement::GetCustomProfilingTag() const
         return {};
     }
 
-    THashSet<TString> allowedProfilingTags;
+    THashSet<std::string> allowedProfilingTags;
     const auto* parent = GetParent();
     while (parent) {
         for (const auto& tag : parent->GetAllowedProfilingTags()) {
@@ -2585,7 +2585,7 @@ std::optional<TString> TPoolTreeOperationElement::GetCustomProfilingTag() const
 
     if (allowedProfilingTags.find(*tagName) == allowedProfilingTags.end() ||
         (TreeConfig_->CustomProfilingTagFilter &&
-            NRe2::TRe2::FullMatch(NRe2::StringPiece(*tagName), *TreeConfig_->CustomProfilingTagFilter)))
+            NRe2::TRe2::FullMatch(re2::StringPiece(*tagName), *TreeConfig_->CustomProfilingTagFilter)))
     {
         tagName = InvalidCustomProfilingTag;
     }
@@ -2654,9 +2654,9 @@ TPoolTreeRootElement::TPoolTreeRootElement(
         treeId,
         RootPoolName,
         EResourceTreeElementKind::Root,
-        logger.WithTag("Pool: %v, SchedulingMode: %v",
-            RootPoolName,
-            ESchedulingMode::FairShare))
+        logger
+            .WithTag("Pool", RootPoolName)
+            .WithTag("SchedulingMode", ESchedulingMode::FairShare))
 {
     Mode_ = ESchedulingMode::FairShare;
 }
@@ -2833,7 +2833,7 @@ bool TPoolTreeRootElement::IsEphemeralHub() const
     return false;
 }
 
-THashSet<TString> TPoolTreeRootElement::GetAllowedProfilingTags() const
+THashSet<std::string> TPoolTreeRootElement::GetAllowedProfilingTags() const
 {
     return {};
 }

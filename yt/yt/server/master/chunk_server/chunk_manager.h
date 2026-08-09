@@ -55,6 +55,8 @@ struct IChunkManager
         const NProto::TReqScheduleChunkRequisitionUpdates& request) = 0;
     virtual std::unique_ptr<NHydra::TMutation> CreateTopUpSequoiaChunkPurgatoryMutation(
         const NProto::TReqTopUpSequoiaChunkPurgatory& request) = 0;
+    virtual std::unique_ptr<NHydra::TMutation> CreateScheduleMultipleChunkSealsMutation(
+        const NProto::TReqScheduleMultipleChunkSeals& request) = 0;
 
     using TCtxExportChunks = NRpc::TTypedServiceContext<
         NChunkClient::NProto::TReqExportChunks,
@@ -110,6 +112,11 @@ struct IChunkManager
         NChunkClient::NProto::TRspCreateChunkLists>;
     using TCtxCreateChunkListsPtr = TIntrusivePtr<TCtxCreateChunkLists>;
 
+    using TCtxDetachChunkTrees = NRpc::TTypedServiceContext<
+        NChunkClient::NProto::TReqDetachChunkTrees,
+        NChunkClient::NProto::TRspDetachChunkTrees>;
+    using TCtxDetachChunkTreesPtr = TIntrusivePtr<TCtxDetachChunkTrees>;
+
     using TCtxUnstageChunkTree = NRpc::TTypedServiceContext<
         NChunkClient::NProto::TReqUnstageChunkTree,
         NChunkClient::NProto::TRspUnstageChunkTree>;
@@ -134,6 +141,8 @@ struct IChunkManager
         TCtxScheduleChunkSealPtr context) = 0;
     virtual std::unique_ptr<NHydra::TMutation> CreateCreateChunkListsMutation(
         TCtxCreateChunkListsPtr context) = 0;
+    virtual std::unique_ptr<NHydra::TMutation> CreateDetachChunkTreesMutation(
+        TCtxDetachChunkTreesPtr context) = 0;
     virtual std::unique_ptr<NHydra::TMutation> CreateUnstageChunkTreeMutation(
         TCtxUnstageChunkTreePtr context) = 0;
     virtual std::unique_ptr<NHydra::TMutation> CreateAttachChunkTreesMutation(
@@ -219,7 +228,8 @@ struct IChunkManager
 
     virtual void AttachToChunkList(
         TChunkList* chunkList,
-        TRange<TChunkTreeRawPtr> children) = 0;
+        TRange<TChunkTreeRawPtr> children,
+        bool updateChunkListStatistics = true) = 0;
 
     virtual void DetachFromChunkList(
         TChunkList* chunkList,
@@ -295,6 +305,9 @@ struct IChunkManager
 
     virtual void ScheduleGlobalChunkRefresh() = 0;
     virtual void RescheduleChunkListRequisitionTraversals() = 0;
+
+    virtual void SetVerboselyLogged(const TChunk* chunk, bool enable) = 0;
+    virtual bool IsVerboselyLogged(const TChunk* chunk) const = 0;
 
     //! Computes quorum info for a given journal chunk
     //! by querying a quorum of replicas.
@@ -385,9 +398,11 @@ struct IChunkManager
         const std::vector<TChunkLocationUuid>& reportedLocationUuids) = 0;
     virtual void FinalizeDataNodeFullHeartbeatSession(TNode* node) noexcept = 0;
 
+    virtual void FlushWaitingSequoiaIncrementalHeartbeatRequests() = 0;
     virtual TFuture<void> ModifySequoiaReplicas(
         NSequoiaClient::ESequoiaTransactionType transactionType,
-        std::unique_ptr<NDataNodeTrackerClient::NProto::TReqModifyReplicas> request) = 0;
+        std::unique_ptr<NDataNodeTrackerClient::NProto::TReqModifyReplicas> request,
+        bool allowBatching) = 0;
 
     virtual TFuture<void> ReplaceSequoiaLocationReplicas(
         NSequoiaClient::ESequoiaTransactionType transactionType,

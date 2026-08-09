@@ -2411,6 +2411,39 @@ class TestAccounts(AccountsTestSuiteBase):
         remove_account("a2")
         remove_account("b")
 
+    @authors("theevilbird")
+    def test_change_root_request_limits(self):
+        root_request_limits_before = get("//sys/users/root/@request_limits")
+
+        limits = ["read_request_rate_limit", "write_request_rate_limit", "request_queue_size_limit"]
+
+        for limit in limits:
+            with raises_yt_error(f"Cannot set \"{limit}\" for \"root\""):
+                set(f"//sys/users/root/@{limit}", 42)
+
+        root_request_limits = get("//sys/users/root/@request_limits")
+        root_request_limits["read_request_rate"]["default"] = 63
+
+        with raises_yt_error("Cannot set \"request_limits\" for \"root\""):
+            set("//sys/users/root/@request_limits", root_request_limits)
+
+        try:
+            set("//sys/@config/security_manager/allow_change_request_limits_for_root", True)
+
+            for limit in limits:
+                set(f"//sys/users/root/@{limit}", 42)
+                assert get(f"//sys/users/root/@{limit}") == 42
+
+            set("//sys/users/root/@request_limits", root_request_limits)
+            assert get("//sys/users/root/@request_limits") == root_request_limits
+
+            set("//sys/users/root/@request_limits/write_request_rate/clusterwide", 63)
+            root_request_limits["write_request_rate"]["clusterwide"] = 63
+            assert get("//sys/users/root/@request_limits") == root_request_limits
+        finally:
+            set("//sys/users/root/@request_limits", root_request_limits_before)
+            set("//sys/@config/security_manager/allow_change_request_limits_for_root", False)
+
 
 class TestAccountTree(AccountsTestSuiteBase):
     ENABLE_MULTIDAEMON = True
@@ -2667,16 +2700,17 @@ class TestAccountTree(AccountsTestSuiteBase):
 
     @authors("kiselyovp", "theevilbird")
     def test_remove3(self):
+        set("//sys/@config/security_manager/account_statistics_gossip_period", 100)
+
         create_account("sparrow")
         create("map_node", "//tmp/sparrow", attributes={"account": "sparrow"})
-        with raises_yt_error("Cannot remove an account .* because its usage is not zero"):
+        with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove_account("sparrow", recursive=True, force=True, sync=False)
 
         remove("//tmp/sparrow")
         gc_collect()
         wait(lambda: account_usage_all_zero(get("//sys/accounts/sparrow/@recursive_resource_usage")))
-        remove_account("sparrow", recursive=True, force=True, sync=False)
-        wait(lambda: not exists("//sys/account_tree/sparrow"))
+        remove_account("sparrow", recursive=True, force=True, sync=True)
 
         create_account("max")
         create_account("max42", "max")
@@ -2684,7 +2718,7 @@ class TestAccountTree(AccountsTestSuiteBase):
 
         create("map_node", "//tmp/max42", attributes={"account": "max42"})
 
-        with raises_yt_error("Cannot remove an account .* because its usage is not zero"):
+        with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove_account("max", recursive=True, force=True, sync=False)
         assert exists("//sys/account_tree/max/max69")
         assert exists("//sys/account_tree/max/max42")
@@ -2702,8 +2736,8 @@ class TestAccountTree(AccountsTestSuiteBase):
         remove("//tmp/max42")
         gc_collect()
         wait(lambda: account_usage_all_zero(get("//sys/accounts/max42/@recursive_resource_usage")))
-        remove_account("max", recursive=True, force=True, sync=False)
-        wait(lambda: not exists("//sys/account_tree/max"))
+        wait(lambda: account_usage_all_zero(get("//sys/accounts/max/@recursive_resource_usage")))
+        remove_account("max", recursive=True, force=True, sync=True)
 
     @authors("kiselyovp", "theevilbird")
     def test_remove4(self):
@@ -2723,7 +2757,7 @@ class TestAccountTree(AccountsTestSuiteBase):
         create("table", "//tmp/t", attributes={"account": "a1"})
         wait(lambda: self._get_detailed_master_memory_usage("a1", "nodes") > 0)
 
-        with raises_yt_error("Cannot remove an account .* because its usage is not zero"):
+        with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove("//sys/account_tree/max/*")
         assert exists("//sys/account_tree/max/a1")
         assert exists("//sys/account_tree/max/a2")
@@ -3114,7 +3148,7 @@ class TestAccountTree(AccountsTestSuiteBase):
         )
 
         remove_account("yt-dev-spof-1")
-        with raises_yt_error("Cannot remove an account .* because its usage is not zero"):
+        with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove_account("yt-dev-spof", sync=False)
 
         wait(
@@ -4141,7 +4175,7 @@ class TestAccountTree(AccountsTestSuiteBase):
         create_account("yt-prod", attributes={"resource_limits": {"node_count": 5}})
 
         create("map_node", "//tmp/test", attributes={"account": "yt-dev"})
-        with raises_yt_error("Cannot remove an account .* because its usage is not zero"):
+        with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove_account("yt-dev", sync=False)
 
         transfer_account_resources("yt-dev", "yt-prod", {"node_count": 4})

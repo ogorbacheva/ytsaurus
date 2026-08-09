@@ -51,6 +51,8 @@ class TReqUnstageChunkTree;
 class TRspUnstageChunkTree;
 class TReqAttachChunkTrees;
 class TRspAttachChunkTrees;
+class TReqDetachChunkTrees;
+class TRspDetachChunkTrees;
 
 } // namespace NYT::NChunkClient::NProto
 
@@ -87,6 +89,7 @@ using NChunkClient::TChunkReplicaWithLocationList;
 using NChunkClient::ChunkShardCount;
 using NChunkClient::TypicalChunkLocationCount;
 using NChunkClient::EChunkListContentType;
+using NChunkClient::EChunkListKind;
 using NChunkClient::EChunkReplicaState;
 
 using NJobTrackerClient::EJobType;
@@ -164,6 +167,7 @@ DECLARE_REFCOUNTED_STRUCT(IMasterCellChunkStatisticsPieceCollector)
 
 DECLARE_REFCOUNTED_STRUCT(TChunkManagerConfig)
 DECLARE_REFCOUNTED_STRUCT(TDanglingLocationCleanerConfig)
+DECLARE_REFCOUNTED_STRUCT(TDynamicDataNodeTrackerTestingConfig)
 DECLARE_REFCOUNTED_STRUCT(TDynamicDataNodeTrackerConfig)
 DECLARE_REFCOUNTED_STRUCT(TDynamicChunkTreeBalancerConfig)
 DECLARE_REFCOUNTED_STRUCT(TDynamicChunkAutotomizerConfig)
@@ -233,24 +237,11 @@ DEFINE_BIT_ENUM(EChunkScanKind,
     ((GlobalStatisticsCollector)    (0x0010))
 );
 
-DEFINE_ENUM(EChunkListKind,
-    ((Static)                 (0))
-    ((SortedDynamicRoot)      (1))
-    ((SortedDynamicTablet)    (2))
-    ((OrderedDynamicRoot)     (3))
-    ((OrderedDynamicTablet)   (4))
-    ((SortedDynamicSubtablet) (5))
-    ((JournalRoot)            (6))
-    ((HunkRoot)               (7))
-    ((Hunk)                   (8))
-    ((HunkStorageRoot)        (9))
-    ((HunkTablet)            (10))
-);
 
 DEFINE_ENUM(EChunkLocationState,
     // Belongs to a node that is not online.
     ((Offline)   (0))
-    // Belongs to a node that is online and reports presence of this location.
+    // Belongs to a node that has alive local state and reports presence of this location.
     ((Online)    (1))
     // Belongs to a node that is online but does not report presence of this location.
     ((Dangling)  (2))
@@ -280,6 +271,8 @@ DEFINE_ENUM(EChunkDetachPolicy,
     ((HunkTablet)          (3))
     // For hunk chunks of ordered tablets.
     ((OrderedTabletHunk)   (4))
+    // For arbitrary chunks of scratch chunk lists.
+    ((Scratch)             (5))
 );
 
 inline static const EChunkScanKind DelegatedScanKinds = EChunkScanKind::Refresh | EChunkScanKind::RequisitionUpdate;

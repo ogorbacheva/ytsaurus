@@ -27,6 +27,9 @@
 
 #include <yt/yt/server/master/tablet_server/tablet_manager.h>
 
+#include <yt/yt/server/master/table_server/public.h>
+#include <yt/yt/server/master/table_server/table_manager.h>
+
 #include <yt/yt/server/master/transaction_server/transaction.h>
 #include <yt/yt/server/master/transaction_server/transaction_replication_session.h>
 
@@ -65,6 +68,7 @@ using namespace NTransactionClient;
 using namespace NTransactionServer;
 using namespace NRpc;
 using namespace NDataNodeTrackerClient;
+using namespace NTableClient;
 
 using NYT::FromProto;
 using NYT::ToProto;
@@ -133,6 +137,8 @@ public:
         RegisterMethod(RPC_SERVICE_METHOD_DESC(UnstageChunkTree)
             .SetHeavy(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(AttachChunkTrees)
+            .SetHeavy(true));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(DetachChunkTrees)
             .SetHeavy(true));
         RegisterMethod(RPC_SERVICE_METHOD_DESC(ExecuteBatch)
             .SetCancelable(true)
@@ -722,7 +728,7 @@ private:
 
         auto syncSession = New<TMultiPhaseCellSyncSession>(
             Bootstrap_,
-            ChunkServerLogger().WithTag("RequestId: %v", context->GetRequestId()));
+            ChunkServerLogger().WithTag("RequestId", context->GetRequestId()));
         WaitFor(syncSession->Sync(cellTagsToSyncWith))
             .ThrowOnError();
 
@@ -860,6 +866,25 @@ private:
             AreCypressTransactionsInSequoiaEnabled());
     }
 
+    DECLARE_RPC_SERVICE_METHOD(NChunkClient::NProto, DetachChunkTrees)
+    {
+        auto parentId = FromProto<TChunkListId>(request->parent_id());
+
+        context->SetRequestInfo(
+            "ParentId: %v, "
+            "ChildCount: %v",
+            parentId,
+            request->child_ids_size());
+
+        ValidateClusterInitialized();
+        ValidatePeer(EPeerKind::Leader);
+
+        const auto& chunkManager = Bootstrap_->GetChunkManager();
+        auto mutation = chunkManager->CreateDetachChunkTreesMutation(context);
+        mutation->SetCurrentTraceContext();
+        YT_UNUSED_FUTURE(mutation->CommitAndReply(context));
+    }
+
     DECLARE_RPC_SERVICE_METHOD(NChunkClient::NProto, UnstageChunkTree)
     {
         auto chunkTreeId = FromProto<TChunkId>(request->chunk_tree_id());
@@ -985,17 +1010,22 @@ private:
         ValidatePeer(EPeerKind::Leader);
 
         ValidateChunkMetaOnConfirmation(request->chunk_meta());
+        auto schemaId = FromProto<TMasterTableSchemaId>(request->schema_id());
 
         auto doConfirmChunks = [
             this,
             this_ = MakeStrong(this),
             context,
-            chunkId
+            chunkId,
+            schemaId
         ] () -> std::optional<TError> {
+            YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
             ValidatePeer(EPeerKind::Leader);
 
             const auto& chunkManager = Bootstrap_->GetChunkManager();
             const auto& configManager = Bootstrap_->GetConfigManager();
+            const auto& tableManager = Bootstrap_->GetTableManager();
 
             const auto& sequoiaChunkReplicasConfig = configManager->GetConfig()->ChunkManager->SequoiaChunkReplicas;
 
@@ -1017,6 +1047,11 @@ private:
                 }
                 context->Reply();
                 return std::nullopt;
+            }
+
+            const auto& chunkManagerConfig = Bootstrap_->GetConfigManager()->GetConfig()->ChunkManager;
+            if (chunkManagerConfig->EnableChunkSchemas && schemaId != NullTableSchemaId) {
+                Y_UNUSED(tableManager->GetMasterTableSchemaOrThrow(schemaId));
             }
 
             auto chunkSequoiaConfig = GetChunkSequoiaConfig(chunkId, sequoiaChunkReplicasConfig);
@@ -1080,13 +1115,20 @@ private:
 
         auto cellTag = CellTagFromId(transactionId);
         auto cellId = multicellManager->GetCellId(cellTag);
-        auto syncFuture = hiveManager->SyncWith(cellId, /*enableBatching*/ true);
+        std::vector<TFuture<void>> syncFutures;
+        syncFutures.reserve(2);
+        syncFutures.push_back(hiveManager->SyncWith(cellId, /*enableBatching*/ true));
 
         YT_LOG_DEBUG("Request will synchronize with another cell (RequestId: %v, CellTag: %v)",
             context->GetRequestId(),
             cellTag);
 
-        WaitFor(syncFuture)
+        if (IsCypressTransactionMirroredToSequoia(transactionId) && AreCypressTransactionsInSequoiaEnabled()) {
+            const auto& transactionManager = Bootstrap_->GetTransactionManager();
+            syncFutures.push_back(transactionManager->WaitUntilAllPreparedTransactionsFinished());
+        }
+
+        WaitFor(AllSucceeded(syncFutures))
             .ThrowOnError();
     }
 };

@@ -32,6 +32,7 @@
 
 #include <yt/yt/core/profiling/timing.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/service_combiner.h>
 #include <yt/yt/core/ytree/virtual.h>
 
@@ -805,7 +806,7 @@ public:
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
-        auto dynamicOrchidService = New<TCompositeMapService>();
+        auto dynamicOrchidService = CreateCompositeMapService();
         dynamicOrchidService->AddChild("pool_trees", New<TPoolTreeService>(this));
         return dynamicOrchidService;
     }
@@ -1113,7 +1114,7 @@ public:
 
         for (const auto& [treeId, future] : treeIdToUpdateFuture) {
             const auto& treeAllocationUpdates = GetOrCrash(allocationUpdatesPerTree, treeId);
-            auto updateResults = WaitFor(future)
+            auto updateResults = WaitForFast(future)
                 .ValueOrThrow();
             YT_VERIFY(updateResults.size() == treeAllocationUpdates.size());
 
@@ -2218,7 +2219,7 @@ private:
         auto it = NodeIdToDescriptor_.find(nodeId);
         if (it == NodeIdToDescriptor_.end()) {
             THROW_ERROR_EXCEPTION_IF(NodeAddresses_.contains(nodeAddress),
-                "Duplicate node address found (Address: %v, NewNodeId: %v)",
+                "Duplicate node address %Qv found for new node id %v",
                 nodeAddress,
                 nodeId);
 
@@ -2525,7 +2526,6 @@ private:
         {
             YT_ASSERT_INVOKERS_AFFINITY(Strategy_->FeasibleInvokers_);
 
-            // TODO(babenko): switch to std::string
             const auto it = Strategy_->IdToTree_.find(treeId);
             if (it == std::cend(Strategy_->IdToTree_)) {
                 return nullptr;

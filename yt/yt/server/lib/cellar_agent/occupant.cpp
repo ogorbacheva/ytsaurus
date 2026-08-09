@@ -66,12 +66,14 @@
 #include <yt/yt/core/logging/log.h>
 
 #include <yt/yt/core/misc/duration_moving_average.h>
+#include <yt/yt/core/misc/expiration_verifier.h>
 
 #include <yt/yt/core/bus/tcp/dispatcher.h>
 
 #include <yt/yt/core/rpc/response_keeper.h>
 #include <yt/yt/core/rpc/server.h>
 
+#include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/virtual.h>
 #include <yt/yt/core/ytree/helpers.h>
@@ -936,9 +938,9 @@ private:
         return builder.Flush();
     }
 
-    TCompositeMapServicePtr CreateOrchidService()
+    ICompositeMapServicePtr CreateOrchidService()
     {
-        return New<TCompositeMapService>()
+        return CreateCompositeMapService()
             ->AddAttribute(EInternedAttributeKey::Opaque, BIND([] (IYsonConsumer* consumer) {
                     BuildYsonFluently(consumer)
                         .Value(true);
@@ -1013,19 +1015,22 @@ private:
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
-        CellManager_.Reset();
+        VerifyEventualExpiration(std::exchange(CellManager_, nullptr), Logger);
 
         // Stop everything and release the references to break cycles.
         if (auto hydraManager = GetHydraManager()) {
             WaitFor(hydraManager->Finalize())
                 .ThrowOnError();
         }
-        HydraManager_.Store(nullptr);
+        // Null the member only now -- after Finalize has taken the automaton out of
+        // Leading -- so "Leading => HydraManager_ is non-null" holds and guarded-invoker
+        // callers never observe a null manager; then verify it expires.
+        VerifyEventualExpiration(HydraManager_.Exchange(nullptr), Logger);
 
         if (ElectionManager_) {
             ElectionManager_->Finalize();
         }
-        ElectionManager_.Reset();
+        VerifyEventualExpiration(std::exchange(ElectionManager_, nullptr), Logger);
 
         ResponseKeeper_.Reset();
 
@@ -1036,7 +1041,7 @@ private:
 
         GetOccupier()->Finalize();
 
-        Occupier_.Store(nullptr);
+        VerifyEventualExpiration(Occupier_.Exchange(nullptr), Logger);
     }
 
     void DoFinalizeAutomaton()
@@ -1050,19 +1055,19 @@ private:
                 rpcServer->UnregisterService(service);
             }
         }
-        TransactionSupervisor_.Reset();
+        VerifyEventualExpiration(std::exchange(TransactionSupervisor_, nullptr), Logger);
 
         if (HiveManager_) {
             rpcServer->UnregisterService(HiveManager_->GetRpcService());
         }
-        HiveManager_.Reset();
+        VerifyEventualExpiration(std::exchange(HiveManager_, nullptr), Logger);
 
         if (LeaseManager_) {
             rpcServer->UnregisterService(LeaseManager_->GetRpcService());
         }
-        LeaseManager_.Reset();
+        VerifyEventualExpiration(std::exchange(LeaseManager_, nullptr), Logger);
 
-        Automaton_.Reset();
+        VerifyEventualExpiration(std::exchange(Automaton_, nullptr), Logger);
     }
 
     void OnRecoveryComplete()
@@ -1088,9 +1093,9 @@ private:
 
     NLogging::TLogger MakeLogger() const
     {
-        return CellarAgentLogger().WithTag("CellId: %v, PeerId: %v",
-            CellDescriptor_.CellId,
-            PeerId_);
+        return CellarAgentLogger()
+            .WithTag("CellId", CellDescriptor_.CellId)
+            .WithTag("PeerId", PeerId_);
     }
 };
 

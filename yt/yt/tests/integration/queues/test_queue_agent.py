@@ -9,12 +9,14 @@ from yt.environment.init_queue_agent_state import (
 )
 
 from yt_commands import (alter_table_replica, authors, commit_transaction, generate_timestamp, get, get_batch_output,
-                         get_driver, set, ls, wait, assert_yt_error, create, create_table_replica, sync_mount_table, insert_rows,
+                         get_driver, set, ls, wait, assert_yt_error, create, create_table_replica, sync_mount_table, sync_reshard_table, insert_rows,
                          delete_rows, remove, raises_yt_error, exists, start_transaction, select_rows,
                          sync_unmount_table, trim_rows, print_debug, alter_table, register_queue_consumer,
                          unregister_queue_consumer, mount_table, wait_for_tablet_state, sync_freeze_table,
                          sync_unfreeze_table, advance_consumer, sync_flush_table, sync_create_cells, lock,
-                         execute_batch, make_batch_request, abort_transaction, read_table)
+                         execute_batch, make_batch_request, abort_transaction, read_table, create_user)
+
+from yt.environment.helpers import write_config
 
 from yt_helpers import calculate_object_diff, profiler_factory
 
@@ -1323,6 +1325,12 @@ class TestMultipleAgents(TestQueueAgentBase):
             "lock_acquisition_period": 100,
             "leader_cache_update_period": 100,
         },
+        "multi_consumer_names_garbage_collector_election_manager": {
+            "transaction_timeout": 5000,
+            "transaction_ping_period": 100,
+            "lock_acquisition_period": 100,
+            "leader_cache_update_period": 100,
+        },
     }
 
     DELTA_QUEUE_AGENT_DYNAMIC_CONFIG = {
@@ -1540,6 +1548,9 @@ class TestMultipleAgents(TestQueueAgentBase):
     ])
     @pytest.mark.timeout(120)
     def test_trimming_with_sharded_objects(self, consumer_paths_and_names):
+        if not self._is_multi_consumer_supported() and any(name is not None for _, name in consumer_paths_and_names):
+            pytest.skip("Multi consumer controller is not supported in this version.")
+
         queue = "//tmp/q"
         self._create_queue(queue, mount=False)
         table_is_multi_consumer = dict((x[0], bool(x[1])) for x in consumer_paths_and_names)
@@ -1726,6 +1737,11 @@ class TestOrchid(TestMultipleAgents):
 class TestMasterIntegration(TestQueueAgentBase):
     DELTA_QUEUE_AGENT_CONFIG = {
         "election_manager": {
+            "transaction_timeout": 5000,
+            "transaction_ping_period": 100,
+            "lock_acquisition_period": 100,
+        },
+        "multi_consumer_names_garbage_collector_election_manager": {
             "transaction_timeout": 5000,
             "transaction_ping_period": 100,
             "lock_acquisition_period": 100,
@@ -2953,6 +2969,43 @@ class TestMultiClusterReplicatedTableObjects(TestMultiClusterReplicatedTableObje
 
         assert "Chaos cell directory synchronizer is stopped" not in str(get(f"{chaos_queue}/@queue_status")["alerts"])
 
+    @authors("apachee")
+    def test_trim_chaos_replica_with_partition_count_mismatch(self):
+        if not self._is_multi_consumer_supported():
+            pytest.skip("Partition count mismatch alert is not supported in this version.")
+
+        cell_id = self._sync_create_chaos_bundle_and_cell()
+        set("//sys/chaos_cell_bundles/c/@metadata_cell_id", cell_id)
+
+        queue_agent_orchid = QueueAgentOrchid()
+
+        queue_path = "//tmp/crt-queue"
+        replicas = self._create_chaos_replicated_queue(queue_path)
+
+        primary_replica = replicas[0]
+        assert primary_replica["cluster_name"] == "primary"
+        primary_replica_path = primary_replica["replica_path"]
+        sync_unmount_table(primary_replica_path)
+        sync_reshard_table(primary_replica_path, 3)
+        sync_mount_table(primary_replica_path)
+
+        self._wait_for_component_passes()
+
+        queue_orchid = queue_agent_orchid.get_queue_orchid(f"primary:{queue_path}")
+        primary_replica_orchid = queue_agent_orchid.get_queue_orchid(f"primary:{primary_replica_path}")
+        queue_orchid.wait_fresh_pass()
+        primary_replica_orchid.wait_fresh_pass()
+
+        wait(lambda: len(primary_replica_orchid.get_partitions()) == 3)
+        assert len(queue_orchid.get_partitions()) == 1
+
+        set(f"{queue_path}/@auto_trim_config", {"enable": True})
+
+        self._wait_for_global_sync()
+
+        alerts = queue_orchid.get_alerts()
+        alerts.assert_matching("queue_agent_queue_controller_trim_failed", text="Trimming iteration skipped due to mismatch between partition count of the queue and its replica")
+
 
 class TestReplicatedTableObjects(TestQueueAgentBase, ReplicatedObjectBase):
     DELTA_QUEUE_AGENT_DYNAMIC_CONFIG = {
@@ -3209,6 +3262,14 @@ class TestDynamicConfig(TestQueueAgentBase):
 
 class TestQueueStaticExportBase(TestQueueAgentBase, QueueStaticExportHelpers):
     NUM_SECONDARY_MASTER_CELLS = 2
+    DELTA_QUEUE_AGENT_CONFIG = {
+        "multi_consumer_names_garbage_collector_election_manager": {
+            "transaction_timeout": 5000,
+            "transaction_ping_period": 100,
+            "lock_acquisition_period": 100,
+            "leader_cache_update_period": 100,
+        },
+    }
     DELTA_QUEUE_AGENT_DYNAMIC_CONFIG = {
         "cypress_synchronizer": {
             "policy": "watching",
@@ -3435,6 +3496,117 @@ class TestQueueAgentBannedAttribute(TestQueueStaticExportBase):
         self.remove_export_destination(export_dir)
 
 
+class TestQueueStaticExportUser(TestQueueStaticExportBase):
+    ENABLE_MULTIDAEMON = False
+
+    NUM_SECONDARY_MASTER_CELLS = 0
+    MASTER_CELL_DESCRIPTORS = {}
+
+    DELTA_QUEUE_AGENT_CONFIG = {
+        "election_manager": {
+            "transaction_timeout": 5000,
+            "transaction_ping_period": 100,
+            "lock_acquisition_period": 100,
+            "leader_cache_update_period": 100,
+        },
+        "multi_consumer_names_garbage_collector_election_manager": {
+            "transaction_timeout": 5000,
+            "transaction_ping_period": 100,
+            "lock_acquisition_period": 100,
+            "leader_cache_update_period": 100,
+        },
+    }
+
+    QUEUE_AGENT_CUSTOM_USER = "queue_agent_custom"
+    EXPORT_USER = "queue_export_custom"
+
+    def _restart_queue_agents_with_config(self, patch):
+        with Restarter(self.Env, QUEUE_AGENTS_SERVICE):
+            for index, config in enumerate(self.Env.configs["queue_agent"]):
+                update_inplace(config, patch)
+                write_config(config, self.Env.config_paths["queue_agent"][index])
+
+        instances = self._wait_for_instances()
+        self._wait_for_global_sync(instances)
+
+    @authors("apachee")
+    def test_export_user(self):
+        if getattr(self, "USE_OLD_QUEUE_EXPORTER_IMPL"):
+            pytest.skip()
+
+        create_user(self.QUEUE_AGENT_CUSTOM_USER)
+        # Non-superuser queue agent user needs explicit write access to //sys/queue_agents.
+        set("//sys/queue_agents/@acl/end", {
+            "action": "allow",
+            "subjects": [self.QUEUE_AGENT_CUSTOM_USER],
+            "permissions": ["read", "write", "remove", "administer", "mount"],
+        })
+        create_user(self.EXPORT_USER)
+
+        queue_path = self.create_queue_path()
+        export_dir = queue_path + "-export"
+
+        _, queue_id = self._create_queue(queue_path, partition_count=1)
+        self._create_export_destination(export_dir, queue_id)
+
+        # The export user is a non-superuser, so it needs explicit access to write the exported tables.
+        export_account = get(f"{export_dir}/@account")
+        set(f"//sys/accounts/{export_account}/@acl/end",
+            {"action": "allow", "subjects": [self.EXPORT_USER], "permissions": ["use"]})
+        set(f"{export_dir}/@acl", [{
+            "action": "allow",
+            "subjects": [self.EXPORT_USER],
+            "permissions": ["read", "write", "remove", "mount"],
+        }])
+        set(f"{export_dir}/@inherit_acl", False)
+
+        # By default the export user is the queue agent user, which the destination ACL forbids.
+        self._restart_queue_agents_with_config({"user": self.QUEUE_AGENT_CUSTOM_USER})
+
+        set(f"{queue_path}/@static_export_config", {
+            "default": {
+                "export_directory": export_dir,
+                "export_period": 1000,
+            }
+        })
+
+        insert_rows(queue_path, [{"$tablet_index": 0, "data": "foo"}] * 2)
+        self._flush_table(queue_path)
+
+        queue_orchid = QueueAgentOrchid().get_queue_orchid(f"primary:{queue_path}")
+        wait(lambda: queue_orchid.get_alerts().check_matching(
+            "queue_agent_queue_controller_static_export_failed",
+            text="Access denied",
+            attributes={"export_name": "default"},
+        ), ignore_exceptions=True)
+        assert queue_orchid.get_alerts().check_matching(
+            "queue_agent_queue_controller_static_export_failed",
+            text=self.QUEUE_AGENT_CUSTOM_USER,
+            attributes={"export_name": "default"},
+        )
+        assert len(ls(export_dir)) == 0
+
+        # Overriding the export user with one allowed by the ACL unblocks exports.
+        self._restart_queue_agents_with_config({
+            "queue_agent": {
+                "queue_export_manager": {
+                    "user": self.EXPORT_USER,
+                },
+            },
+        })
+
+        queue_orchid = QueueAgentOrchid().get_queue_orchid(f"primary:{queue_path}")
+        wait(lambda: len(ls(export_dir)) == 1)
+        self._check_export(export_dir, [["foo"] * 2])
+
+        exported_table = ls(export_dir)[0]
+        assert get(f"{export_dir}/{exported_table}/@owner") == self.EXPORT_USER
+
+        wait(lambda: len(queue_orchid.get_alerts()) == 0)
+
+        self.remove_export_destination(export_dir)
+
+
 # XXX(apachee): Maybe split TestQueueStaticExport in TestQueueStaticExportCommon and TestQueueStaticExportNoPortals.
 class TestQueueStaticExport(TestQueueStaticExportBase):
     NUM_TEST_PARTITIONS = 3
@@ -3444,7 +3616,10 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
     @authors("cherepashka", "achulkov2", "nadya73")
     @pytest.mark.parametrize("queue_external_cell_tag", [10, 11, 12])
     def test_multicell_export(self, queue_external_cell_tag):
-        if getattr(self, "ENABLE_TMP_PORTAL", False) and queue_external_cell_tag == 10:
+        if (
+            getattr(self, "ENABLE_TMP_PORTAL", False) or
+            getattr(self, "USE_SEQUOIA", False)
+        ) and queue_external_cell_tag == 10:
             pytest.skip()
 
         queue_agent_orchid = QueueAgentOrchid()
@@ -4120,10 +4295,8 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
         self.remove_export_destination(export_dir)
 
     @authors("apachee")
+    @pytest.mark.skip(reason="FIXME(apachee): Remove skip after crash issue get resolved")
     def test_crashes_fix_yt_23930(self):
-        # FIXME(apachee): Remove skip after crash issue get resolved
-        pytest.skip()
-
         queue_path = self.create_queue_path()
         export_dir = queue_path + "-export"
 
@@ -4213,6 +4386,7 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
             pytest.skip()
 
         queue_agent_orchid = QueueAgentOrchid()
+        export_task_wait_timeout = 10 if getattr(self, "USE_SEQUOIA", False) else 5
 
         queue_path = self.create_queue_path()
         export_dir = queue_path + "-export"
@@ -4255,7 +4429,7 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
             "queue_agent_queue_controller_static_export_failed",
             text=f"Node {export_dir}/{exported_table_names[0]} already exist",
             attributes={"export_name": "default"}
-        ), timeout=5, ignore_exceptions=True)
+        ), timeout=export_task_wait_timeout, ignore_exceptions=True)
 
         export_progress = get(f"{export_dir}/@queue_static_export_progress")
         export_task_instant = datetime.datetime.fromisoformat(export_progress["last_export_task_instant"])
@@ -4273,7 +4447,7 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
             "queue_agent_queue_controller_static_export_failed",
             text=f"Node {export_dir}/{exported_table_names[1]} already exist",
             attributes={"export_name": "default"}
-        ), timeout=5, ignore_exceptions=True)
+        ), timeout=export_task_wait_timeout, ignore_exceptions=True)
 
         export_progress = get(f"{export_dir}/@queue_static_export_progress")
         new_export_task_instant = datetime.datetime.fromisoformat(export_progress["last_export_task_instant"])
@@ -4293,7 +4467,7 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
         remove(f"{export_dir}/{exported_table_names[1]}")
         remove(f"{export_dir}/{exported_table_names[0]}")
 
-        wait(lambda: len(queue_agent_orchid.get_queue_orchid(f"primary:{queue_path}").get_alerts()) == 0, timeout=5)
+        wait(lambda: len(queue_agent_orchid.get_queue_orchid(f"primary:{queue_path}").get_alerts()) == 0, timeout=export_task_wait_timeout)
 
         export_progress = get(f"{export_dir}/@queue_static_export_progress")
         new_export_task_instant = datetime.datetime.fromisoformat(export_progress["last_export_task_instant"])
@@ -4301,9 +4475,7 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
 
         assert new_export_task_instant > export_task_instant
         assert new_last_successful_export_task_instant > last_successful_export_task_instant
-        last_successful_export_task_instant = new_last_successful_export_task_instant
-
-        assert (datetime.datetime.now(pytz.UTC) - last_successful_export_task_instant).seconds <= 2
+        assert new_export_task_instant == new_last_successful_export_task_instant
 
         # At this point there should be 2 exported tables from exported_table_names and nothing else in the export directory
         assert len(exported_table_names) == 2
@@ -4414,6 +4586,48 @@ class TestQueueStaticExport(TestQueueStaticExportBase):
         use_old_queue_exporter_impl = getattr(self, "USE_OLD_QUEUE_EXPORTER_IMPL")
         print_debug(f"{config_value=}, {is_config_value_old=}, {use_old_queue_exporter_impl=}")
         assert is_config_value_old == use_old_queue_exporter_impl
+
+    @authors("apachee")
+    def test_export_table_name_uniqueness_invariant_violated(self):
+        if getattr(self, "USE_OLD_QUEUE_EXPORTER_IMPL"):
+            pytest.skip()
+
+        if not self._is_multi_consumer_supported():
+            pytest.skip("Output table name uniqueness invariant check is not supported in this version.")
+
+        orchid = QueueAgentOrchid()
+
+        queue_path = self.create_queue_path()
+        export_dir = queue_path + "-export"
+
+        _, queue_id = self._create_queue(queue_path)
+
+        self._create_export_destination(export_dir, queue_id)
+
+        set(f"{queue_path}/@static_export_config", {
+            "default": {
+                "export_directory": export_dir,
+                "export_period": 1000,
+                "output_table_name_pattern": "test",
+            },
+        })
+
+        insert_rows(queue_path, [{"data": "kano"}])
+        self._flush_table(queue_path)
+        wait(lambda: len(ls(export_dir)) == 1)
+        insert_rows(queue_path, [{"data": "kari"}])
+        self._flush_table(queue_path)
+
+        wait(lambda: orchid.get_queue_orchid(f"primary:{queue_path}").get_alerts().check_matching(
+            "queue_agent_queue_controller_static_export_failed",
+            text="Generated output table name uniqueness invariant violated",
+            attributes={
+                "export_name": "default",
+            },
+        ), timeout=15, ignore_exceptions=True)
+        assert len(orchid.get_queue_orchid(f"primary:{queue_path}").get_alerts()) == 1
+
+        self.remove_export_destination(export_dir)
 
 
 # COMPAT(apachee): Same tests, but use old implementation.
@@ -5335,43 +5549,74 @@ class TestAutomaticTrimmingWithExportsOldImpl(TestAutomaticTrimmingWithExports):
     ENABLE_MULTIDAEMON = True
 
 
-class TestQueueStaticExportPortals(TestQueueStaticExport):
+class QueueStaticExportCrossCellBase(TestQueueStaticExport):
+    QUEUE_PATH = None
+    EXPORT_DIR = None
+
+    @authors("achulkov2", "nadya73")
+    def test_different_native_cells(self):
+        _, queue_id = self._create_queue(self.QUEUE_PATH)
+
+        self._create_export_destination(self.EXPORT_DIR, queue_id)
+
+        assert get(f"{self.EXPORT_DIR}/@native_cell_tag") != get(f"{self.QUEUE_PATH}/@native_cell_tag")
+
+        insert_rows(self.QUEUE_PATH, [{"$tablet_index": 0, "data": "foo"}] * 6)
+        self._flush_table(self.QUEUE_PATH)
+
+        set(f"{self.QUEUE_PATH}/@static_export_config", {
+            "default": {
+                "export_directory": self.EXPORT_DIR,
+                "export_period": 3 * 1000,
+            }
+        })
+
+        wait(lambda: len(ls(self.EXPORT_DIR)) == 1)
+        self._check_export(self.EXPORT_DIR, [["foo"] * 6])
+
+        self.remove_export_destination(self.EXPORT_DIR)
+
+
+class TestQueueStaticExportPortals(QueueStaticExportCrossCellBase):
     ENABLE_TMP_PORTAL = True
 
     ENABLE_MULTIDAEMON = True
+
+    QUEUE_PATH = "//portals/q"
+    EXPORT_DIR = "//tmp/export"
 
     MASTER_CELL_DESCRIPTORS = {
         "11": {"roles": ["chunk_host", "cypress_node_host"]},
         "12": {"roles": ["chunk_host"]},
     }
 
-    @authors("achulkov2", "nadya73")
-    def test_different_native_cells(self):
-        _, queue_id = self._create_queue("//portals/q")
-
-        export_dir = "//tmp/export"
-        self._create_export_destination(export_dir, queue_id)
-
-        assert get(f"{export_dir}/@native_cell_tag") != get("//portals/q/@native_cell_tag")
-
-        insert_rows("//portals/q", [{"$tablet_index": 0, "data": "foo"}] * 6)
-        self._flush_table("//portals/q")
-
-        set("//portals/q/@static_export_config", {
-            "default": {
-                "export_directory": export_dir,
-                "export_period": 3 * 1000,
-            }
-        })
-
-        wait(lambda: len(ls(export_dir)) == 1)
-        self._check_export(export_dir, [["foo"] * 6])
-
-        self.remove_export_destination(export_dir)
-
 
 # COMPAT(apachee): Same tests, but use old implementation.
 class TestQueueStaticExportPortalsOldImpl(TestQueueStaticExportOldImpl, TestQueueStaticExportPortals):
+    USE_OLD_QUEUE_EXPORTER_IMPL = True
+
+    ENABLE_MULTIDAEMON = True
+
+
+class TestQueueStaticExportSequoia(QueueStaticExportCrossCellBase):
+    ENABLE_MULTIDAEMON = True
+    USE_SEQUOIA = True
+    ENABLE_CYPRESS_TRANSACTIONS_IN_SEQUOIA = True
+    ENABLE_GROUND_TABLE_MOUNT_CACHE = False
+    ENABLE_TMP_ROOTSTOCK = True
+
+    QUEUE_PATH = "//tmp/q"
+    EXPORT_DIR = "//sys/queue_export"
+
+    MASTER_CELL_DESCRIPTORS = {
+        "10": {"roles": ["cypress_node_host"]},
+        "11": {"roles": ["chunk_host", "cypress_node_host", "sequoia_node_host"]},
+        "12": {"roles": ["chunk_host", "cypress_node_host", "sequoia_node_host"]},
+    }
+
+
+# COMPAT(apachee): Same tests, but use old implementation.
+class TestQueueStaticExportSequoiaOldImpl(TestQueueStaticExportOldImpl, TestQueueStaticExportSequoia):
     USE_OLD_QUEUE_EXPORTER_IMPL = True
 
     ENABLE_MULTIDAEMON = True

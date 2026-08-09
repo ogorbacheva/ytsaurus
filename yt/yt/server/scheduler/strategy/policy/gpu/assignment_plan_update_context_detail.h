@@ -9,12 +9,12 @@ namespace NYT::NScheduler::NStrategy::NPolicy::NGpu {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TDynamicAttributes
+//! Per-element attributes computed and used within a single assignment plan update.
+struct TPlanUpdateAttributes
 {
     TJobResources AssignedResourceUsage;
+    bool PriorityModuleBindingEnabled = false;
 };
-
-using TDynamicAttributesList = TAttributesList<TDynamicAttributes>;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -23,7 +23,7 @@ class TAssignmentHandler
 public:
     explicit TAssignmentHandler(NLogging::TLogger logger);
 
-    void AddPlannedAssignment(
+    TAssignmentPtr AddPlannedAssignment(
         std::string allocationGroupName,
         TJobResourcesWithQuota resourceUsage,
         TOperation* operation,
@@ -60,7 +60,7 @@ public:
     const TNodeMap& Nodes() const override;
     const TGpuPlanUpdateStatisticsPtr& GetStatistics() const override;
 
-    void AddPlannedAssignment(
+    TAssignmentPtr AddPlannedAssignment(
         std::string allocationGroupName,
         TJobResourcesWithQuota resourceUsage,
         TOperation* operation,
@@ -74,7 +74,10 @@ public:
         TOperationId preemptedForOperationId = {}) override;
 
     TJobResources GetAvailableOperationLimits(const TOperationPtr& operation) const override;
-    std::optional<TString> FindLimitViolatingParentId(const TPoolTreeElement* element) const;
+
+    bool IsDetailedLoggingEnabled(const TOperationPtr& operation) const override;
+
+    std::optional<std::string> FindLimitViolatingParentId(const TPoolTreeElement* element) const;
 
     void UpdatePreemptionStatuses() const;
     void FillOperationUsage();
@@ -96,7 +99,7 @@ private:
 
     const EGpuSchedulingPolicyMode PolicyMode_;
 
-    TDynamicAttributesList AttributesList_;
+    TAttributesList<TPlanUpdateAttributes> AttributesList_;
 
     const TOperationMap SchedulableOperations_;
 
@@ -114,11 +117,17 @@ private:
 
     void IncreaseOperationUsage(const TOperationPtr& operation, const TJobResources& resourceDelta = {});
 
+    void InitializeRecursiveAttributes(const TPoolTreeElement* element);
+    void InitializeRecursiveAttributesAtCompositeElement(const TPoolTreeCompositeElement* element);
+    void InitializeRecursiveAttributesAtOperation(const TPoolTreeOperationElement* element);
+    void SetPriorityModuleBindingAttribute(const TPoolTreeCompositeElement* element);
+
     void PreemptAllOperationAssignments(
         const TOperationPtr& operation,
         EAllocationPreemptionReason preemptionReason,
         const std::string& preemptionDescription);
 
+    bool IsPriorityModuleBindingEnabled(const TOperationPtr& operation) const;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

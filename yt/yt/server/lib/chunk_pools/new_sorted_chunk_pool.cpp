@@ -64,14 +64,12 @@ public:
         , SliceForeignChunks_(options.SliceForeignChunks)
         , MinManiacDataWeight_(options.MinManiacDataWeight)
         , JobSizeConstraints_(options.JobSizeConstraints)
-        , TeleportChunkSampler_(JobSizeConstraints_->GetSamplingRate())
+        , TeleportChunkSampler_(JobSizeConstraints_->GetSamplingRate(), JobSizeConstraints_->GetSamplingSeed())
         , RowBuffer_(options.RowBuffer)
         , ChunkPoolStatistics_(options.ChunkPoolStatistics)
     {
         Logger = options.Logger;
         StructuredLogger = options.StructuredLogger;
-        ValidateLogger(Logger);
-
         YT_VERIFY(RowBuffer_);
 
         if (options.JobSizeAdjusterConfig && JobSizeConstraints_->CanAdjustDataWeightPerJob()) {
@@ -230,9 +228,10 @@ public:
                 jobSummary.SplitJobCount,
                 cookie);
 
-            ValidateChildJobSizes(cookie, childCookies, [&] (TOutputCookie cookie) {
-                return GetStripeList(cookie);
-            });
+            // NB(apollo1321): The sorted pool slices data by key bound, not by row index, and
+            // key-bound slicing does not re-estimate per-slice statistics: a slice keeps the full
+            // chunk's data weight and row count. Therefore, it is not feasible in the current
+            // implementation to ValidateChildJobSizes.
 
             RegisterChildCookies(jobSummary.Id, cookie, std::move(childCookies));
         }
@@ -869,7 +868,6 @@ void TNewSortedChunkPool::RegisterMetadata(auto&& registrar)
         .SinceVersion(ESnapshotVersion::ChunkPoolStatistics));
 
     registrar.AfterLoad([] (TThis* this_, auto& /*context*/) {
-        ValidateLogger(this_->Logger);
         this_->RowBuffer_ = New<TRowBuffer>();
     });
 }

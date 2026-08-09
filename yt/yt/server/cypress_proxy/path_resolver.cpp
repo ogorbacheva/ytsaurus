@@ -95,7 +95,9 @@ public:
             }
 
             builder.AppendChar(TAbsolutePath::Separator);
-            builder.AppendString(tokenizer.GetToken());
+            // NB: ToYPathLiteral escapes non-ASCII bytes to \xNN sequences, so every
+            // TAbsolutePath built here has YPath-literal-escaped components.
+            builder.AppendString(ToYPathLiteral(tokenizer.GetLiteralValue()));
             recordPrefixAndSuffix();
             tokenizer.Advance();
 
@@ -289,9 +291,8 @@ TResolveIterationResult ResolveByObjectId(
         }
 
         const auto& pathAttribute = NServer::EInternedAttributeKey::Path.Unintern();
-        auto asyncNodeAttributes = FetchSingleObjectAttributes(
-            session->GetNativeAuthenticatedClient(),
-            TVersionedObjectId{rootDesignator, session->GetCurrentCypressTransactionId()},
+        auto asyncNodeAttributes = session->FetchSingleObjectAttributes(
+            rootDesignator,
             TAttributeFilter({pathAttribute}));
 
         auto nodeAttributes = WaitFor(asyncNodeAttributes)
@@ -327,6 +328,10 @@ TResolveIterationResult ResolveByObjectId(
                 },
                 .RewrittenTargetPath = std::move(targetPath),
             };
+        }
+
+        if (TypeFromId(rootDesignator) == EObjectType::Scion && StartsWithAmpersand(pathSuffix)) {
+            pathSuffix.SkipPrefix("&"_sb);
         }
 
         if (resolvedNode->IsSnapshot) {
@@ -502,6 +507,13 @@ TMaybeUnreachableResolveResult ResolvePathWithUnreachableResultAllowed(
     TStringBuf method)
 {
     return DoResolvePath(session, path, /*pathIsAdditional*/ false, service, method, /*history*/ nullptr);
+}
+
+TNodeId TryParseTargetObjectId(NYPath::TYPath path)
+{
+    return Visit(GetRootDesignator(path).first,
+        [] (TNodeId id) { return id; },
+        [] (auto) { return NullObjectId; });
 }
 
 ////////////////////////////////////////////////////////////////////////////////

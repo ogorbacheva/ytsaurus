@@ -2,7 +2,7 @@
 
 #include <yt/yt/ytlib/chunk_client/data_node_nbd_service_proxy.h>
 
-#include <yt/yt/server/lib/nbd/chunk_handler.h>
+#include <yt/yt/server/lib/nbd/chunk/chunk_handler.h>
 
 #include <yt/yt/server/node/cluster_node/config.h>
 
@@ -74,7 +74,8 @@ protected:
 
         //NLogging::TLogManager::Get()->Configure(NLogging::TLogManagerConfig::CreateStderrLogger(NLogging::ELogLevel::Debug));
 
-        auto config = NYTree::ConvertTo<TConfigPtr>(NYson::TYsonString(TFileInput(ConfigPath_).ReadAll()));
+        // TODO(babenko): drop TString cast once TFileInput accepts std::string.
+        auto config = NYTree::ConvertTo<TConfigPtr>(NYson::TYsonString(TFileInput(TString(ConfigPath_)).ReadAll()));
         auto busServer = NYT::NBus::NTcp::CreateBusServer(NYT::NBus::NTcp::TBusServerConfig::CreateTcp(config->Port));
         auto rpcServer = NRpc::NBus::CreateBusServer(busServer);
 
@@ -89,7 +90,7 @@ protected:
     }
 
 private:
-    TString ConfigPath_;
+    std::string ConfigPath_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

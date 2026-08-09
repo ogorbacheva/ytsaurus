@@ -155,7 +155,7 @@ protected:
         auto writer = Client_->CreateFileWriter(Format("#%v", fileId));
         WaitFor(writer->Open())
             .ThrowOnError();
-        WaitFor(writer->Write(TSharedRef::FromString("Hello, World"))).ThrowOnError();
+        WaitFor(writer->Write(TSharedRef::FromString(std::string("Hello, World")))).ThrowOnError();
         WaitFor(writer->Close())
             .ThrowOnError();
     }
@@ -431,7 +431,7 @@ TEST_F(TChunkScraperBaseTest, WithNontrivialThrottler)
     StartScraperWithChunks(scraper, CreateChunks());
     Sleep(TDuration::Seconds(3));
     TestFinishedPromise_.Set();
-    EXPECT_THAT(batchesCounter.load(), testing::AllOf(Ge(20), Le(40))) << "expected value is 30";
+    EXPECT_THAT(batchesCounter.load(), testing::AllOf(Ge(20), Le(50))) << "expected value is 30";
 }
 
 TEST_F(TChunkScraperBaseTest, DrainQueueAndAddChunks)

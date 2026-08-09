@@ -63,6 +63,7 @@
 #include <yt/yt/core/misc/fs.h>
 
 #include <yt/yt/core/compression/public.h>
+#include <yt/yt/core/misc/protobuf_helpers.h>
 
 #include <library/cpp/yt/assert/assert.h>
 
@@ -104,7 +105,7 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-IChunkReaderAllowingRepairPtr GetChunkReader(const IIOEnginePtr& ioEngine, const TString& chunkFileName)
+IChunkReaderAllowingRepairPtr GetChunkReader(const IIOEnginePtr& ioEngine, const std::string& chunkFileName)
 {
     auto chunkId = TChunkId::FromString(NFS::GetFileName(chunkFileName));
     return CreateChunkFileReaderAdapter(New<TChunkFileReader>(
@@ -120,7 +121,7 @@ std::tuple<std::function<IVersionedReaderPtr(int)>, std::vector<TLegacyOwningKey
     const TLegacyOwningKey& lowerKey,
     const TLegacyOwningKey& upperKey,
     IBlockCachePtr blockCache,
-    const std::vector<TString>& chunkFileNames)
+    const std::vector<std::string>& chunkFileNames)
 {
     std::vector<TLegacyOwningKey> boundaries;
     std::vector<IChunkReaderPtr> chunkReaders;
@@ -199,7 +200,7 @@ TTableSchemaPtr GetSchemaFromChunkMeta(const TChunkMeta& meta)
     return tableSchema;
 }
 
-TTableSchemaPtr GetMergedSchema(const IIOEnginePtr& ioEngine, const std::vector<TString>& chunkFileNames)
+TTableSchemaPtr GetMergedSchema(const IIOEnginePtr& ioEngine, const std::vector<std::string>& chunkFileNames)
 {
     std::vector<TTableSchemaPtr> schemas;
 
@@ -274,16 +275,16 @@ void PrintHunkChunkMetasExt(const THunkChunkMetasExt& metas)
     }
 }
 
-void PrintHunkChunkMeta(const IIOEnginePtr& ioEngine, const TString& chunkFileName)
+void PrintHunkChunkMeta(const IIOEnginePtr& ioEngine, const std::string& chunkFileName)
 {
-    auto chunkId = TChunkId::FromString(NFS::GetFileName(TString(chunkFileName)));
+    auto chunkId = TChunkId::FromString(NFS::GetFileName(chunkFileName));
     auto chunkReader = GetChunkReader(ioEngine, chunkFileName);
     auto meta = WaitFor(chunkReader->GetMeta(/*chunkReadOptions*/{}))
         .ValueOrThrow();
     auto hunkMiscExt = GetProtoExtension<NTableClient::NProto::THunkChunkMiscExt>(meta->extensions());
     auto miscExt = GetProtoExtension<NChunkClient::NProto::TMiscExt>(meta->extensions());
 
-    Cout << "Chunk: " << ToString(chunkFileName) << Endl;
+    Cout << "Chunk: " << chunkFileName << Endl;
     Cout << "  Id: " << ToString(chunkId) << Endl;
     Cout << "  Chunk format: " << ToString(FromProto<EChunkFormat>(meta->format())) << Endl;
     Cout << "  Codec: " << ToString(NCompression::ECodec(miscExt.compression_codec())) << Endl;
@@ -292,9 +293,9 @@ void PrintHunkChunkMeta(const IIOEnginePtr& ioEngine, const TString& chunkFileNa
     Cout << "    Total hunk length: " << ToString(FromProto<i64>(hunkMiscExt.total_hunk_length())) << Endl;
 }
 
-void PrintMeta(const IIOEnginePtr& ioEngine, const TString& chunkFileName)
+void PrintMeta(const IIOEnginePtr& ioEngine, const std::string& chunkFileName)
 {
-    auto chunkId = TChunkId::FromString(NFS::GetFileName(TString(chunkFileName)));
+    auto chunkId = TChunkId::FromString(NFS::GetFileName(chunkFileName));
     auto chunkReader = GetChunkReader(ioEngine, chunkFileName);
     auto meta = WaitFor(chunkReader->GetMeta(/*options*/{}))
         .ValueOrThrow();
@@ -325,7 +326,7 @@ void PrintMeta(const IIOEnginePtr& ioEngine, const TString& chunkFileName)
         FromProto(&schema, tableSchemaExt);
     }
 
-    Cout << "Chunk: " << ToString(chunkFileName) << Endl;
+    Cout << "Chunk: " << chunkFileName << Endl;
     Cout << "  Id: " << ToString(chunkId) << Endl;
     Cout << "  Chunk format: " << ToString(FromProto<EChunkFormat>(meta->format())) << Endl;
     Cout << "  Codec: " << ToString(NCompression::ECodec(miscExt.compression_codec())) << Endl;
@@ -421,7 +422,7 @@ void PrintMeta(const IIOEnginePtr& ioEngine, const TString& chunkFileName)
     }
 }
 
-void PrintMeta(const IIOEnginePtr& ioEngine, const std::vector<TString>& chunkFileNames)
+void PrintMeta(const IIOEnginePtr& ioEngine, const std::vector<std::string>& chunkFileNames)
 {
     for (const auto& chunkFileName : chunkFileNames) {
         PrintMeta(ioEngine, chunkFileName);
@@ -432,7 +433,7 @@ void PrintMeta(const IIOEnginePtr& ioEngine, const std::vector<TString>& chunkFi
 
 std::pair<IChunkReaderPtr, NYT::NErasure::ICodec*> CreateErasureReader(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames)
+    const std::vector<std::string>& chunkFileNames)
 {
     NYT::NErasure::ICodec* codec;
 
@@ -572,7 +573,7 @@ private:
 
 std::unique_ptr<IUniversalReader> CreateUnversionedUniversalReader(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames,
+    const std::vector<std::string>& chunkFileNames,
     IBlockCachePtr blockCache,
     TTableSchemaPtr schema,
     TLegacyOwningKey lowerKey,
@@ -630,7 +631,7 @@ std::unique_ptr<IUniversalReader> CreateUnversionedUniversalReader(
 
 std::unique_ptr<IUniversalReader> CreateVersionedUniversalReader(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames,
+    const std::vector<std::string>& chunkFileNames,
     IBlockCachePtr blockCache,
     TTableSchemaPtr schema,
     TLegacyOwningKey lowerKey,
@@ -719,7 +720,7 @@ std::unique_ptr<IUniversalReader> CreateVersionedUniversalReader(
 
 std::unique_ptr<IUniversalReader> CreateNativeUniversalReader(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames,
+    const std::vector<std::string>& chunkFileNames,
     IBlockCachePtr blockCache,
     TTableSchemaPtr schema,
     TLegacyOwningKey lowerKey,
@@ -765,7 +766,7 @@ std::unique_ptr<IUniversalReader> CreateNativeUniversalReader(
 
 std::unique_ptr<IUniversalReader> CreateMergedUnversionedUniversalReader(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames,
+    const std::vector<std::string>& chunkFileNames,
     IBlockCachePtr blockCache,
     TTableSchemaPtr schema,
     TLegacyOwningKey lowerKey,
@@ -815,7 +816,7 @@ std::unique_ptr<IUniversalReader> CreateMergedUnversionedUniversalReader(
 
 std::unique_ptr<IUniversalReader> CreateMergedVersionedUniversalReader(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames,
+    const std::vector<std::string>& chunkFileNames,
     IBlockCachePtr blockCache,
     TTableSchemaPtr schema,
     TLegacyOwningKey lowerKey,
@@ -853,7 +854,7 @@ std::unique_ptr<IUniversalReader> CreateMergedVersionedUniversalReader(
         NTableClient::TColumnFilter(),
         New<TRetentionConfig>(),
         AllCommittedTimestamp,
-        0,
+        NYT::NTransactionClient::NullTimestamp,
         columnEvaluator,
         false,
         false);
@@ -875,8 +876,8 @@ std::unique_ptr<IUniversalReader> CreateMergedVersionedUniversalReader(
 
 std::unique_ptr<IUniversalReader> CreateUniversalReader(
     const IIOEnginePtr& ioEngine,
-    const TString& mode,
-    const std::vector<TString>& chunkFileNames,
+    const std::string& mode,
+    const std::vector<std::string>& chunkFileNames,
     IBlockCachePtr blockCache,
     TTableSchemaPtr schema,
     TLegacyOwningKey lowerKey,
@@ -933,7 +934,7 @@ std::unique_ptr<IUniversalReader> CreateUniversalReader(
 
 void ExtractErasureBlocks(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames,
+    const std::vector<std::string>& chunkFileNames,
     bool actionValidateErasureCodec)
 {
     YT_VERIFY(!chunkFileNames.empty());
@@ -1046,7 +1047,7 @@ void ExtractErasureBlocks(
 
 void ExtractBlocks(
     const IIOEnginePtr& ioEngine,
-    const TString& chunkFileName)
+    const std::string& chunkFileName)
 {
     auto chunkReader = GetChunkReader(ioEngine, chunkFileName);
     auto meta = WaitFor(chunkReader->GetMeta(/*options*/ {}))
@@ -1085,7 +1086,7 @@ void ExtractBlocks(
 
 void ExtractBlocks(
     const IIOEnginePtr& ioEngine,
-    const std::vector<TString>& chunkFileNames)
+    const std::vector<std::string>& chunkFileNames)
 {
     for (const auto& chunkFileName : chunkFileNames) {
         ExtractBlocks(ioEngine, chunkFileName);
@@ -1096,7 +1097,7 @@ void ExtractBlocks(
 
 void SliceChunk(
     const IIOEnginePtr& ioEngine,
-    TString chunkFileName,
+    std::string chunkFileName,
     ESliceBy sliceBy,
     TLegacyOwningKey lowerKey,
     TLegacyOwningKey upperKey,
@@ -1143,12 +1144,12 @@ void SliceChunk(
 
 void GuardedMain(int argc, char** argv)
 {
-    auto mode = TString("native");
+    std::string mode = "native";
     EIOEngineType engineType = EIOEngineType::ThreadPool;
-    TString schemaString;
-    TString lowerString;
-    TString upperString;
-    TString ioConfigString;
+    std::string schemaString;
+    std::string lowerString;
+    std::string upperString;
+    std::string ioConfigString;
     bool actionMeta = false;
     bool actionDump = false;
     bool actionBenchmark = false;
@@ -1184,11 +1185,11 @@ void GuardedMain(int argc, char** argv)
         .NoArgument()
         .SetFlag(&actionLoop);
     opts.AddLongOption("engine", "I/O Engine (ThreadPool)")
-        .StoreMappedResultT<TString>(&engineType, &TEnumTraits<EIOEngineType>::FromString);
+        .StoreMappedResultT<std::string>(&engineType, &TEnumTraits<EIOEngineType>::FromString);
     opts.AddLongOption("io-config", "I/O Engine config")
         .StoreResult(&ioConfigString);
     opts.AddLongOption("slice-by", "Slice chunk (keys|rows)")
-        .StoreMappedResultT<TString>(&sliceBy, &TEnumTraits<ESliceBy>::FromString);
+        .StoreMappedResultT<std::string>(&sliceBy, &TEnumTraits<ESliceBy>::FromString);
     opts.AddLongOption("slice-data-weight", "Slice data weight")
         .StoreResult(&sliceDataWeight);
     opts.AddLongOption("erasure-chunk", "In case of erasure chunks. Only one chunk processing is supported")
@@ -1234,7 +1235,7 @@ void GuardedMain(int argc, char** argv)
 
     auto blockCache = GetNullBlockCache();
 
-    std::vector<TString> chunkFileNames;
+    std::vector<std::string> chunkFileNames;
     for (int chunkIndex = 0; chunkIndex < argc; ++chunkIndex) {
         chunkFileNames.push_back(argv[chunkIndex]);
     }

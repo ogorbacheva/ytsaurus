@@ -44,7 +44,11 @@
 
 #include <yt/yt/client/tablet_client/public.h>
 
+#include <yt/yt/client/misc/workload.h>
+
 #include <yt/yt_proto/yt/client/node_tracker_client/proto/node.pb.h>
+
+#include <yt/yt/core/bus/public.h>
 
 #include <yt/yt/core/rpc/helpers.h>
 
@@ -117,7 +121,7 @@ public:
             bootstrap,
             /*reportHeartbeatsToAllSecondaryMasters*/ true,
             ENodeHeartbeatType::Data,
-            DataNodeLogger().WithTag("HeartbeatType: %v", ENodeHeartbeatType::Data))
+            DataNodeLogger().WithTag("HeartbeatType", ENodeHeartbeatType::Data))
         , Bootstrap_(bootstrap)
         , Config_(bootstrap->GetConfig()->DataNode->MasterConnector)
         , JobHeartbeatPeriod_(*Config_->JobHeartbeatPeriod)
@@ -192,7 +196,7 @@ public:
             const auto& location = chunk->GetLocation();
             if (!SkipLocationInHeartbeat(location) && CellTagFromId(chunk->GetId()) == cellTag) {
                 *req->add_chunks() = BuildAddChunkInfo(chunk, &locationDirectory);
-                auto mediumIndex = chunk->GetLocation()->GetMediumDescriptor()->GetIndex();
+                auto mediumIndex = chunk->GetLocation()->GetMediumIndex();
                 ++perMediumChunkCounts[mediumIndex];
                 ++perLocationChunkCounts[location->GetUuid()];
                 ++storedChunkCount;
@@ -1493,7 +1497,7 @@ private:
     {
         const auto& ioThroughputMeter = Bootstrap_->GetIOThroughputMeter();
 
-        auto mediumIndex = location->GetMediumDescriptor()->GetIndex();
+        auto mediumIndex = location->GetMediumIndex();
         statistics->set_medium_index(mediumIndex);
         statistics->set_available_space(location->GetAvailableSpace());
         statistics->set_used_space(location->GetUsedSpace());
@@ -1533,7 +1537,7 @@ private:
                 continue;
             }
 
-            auto mediumIndex = location->GetMediumDescriptor()->GetIndex();
+            auto mediumIndex = location->GetMediumIndex();
 
             totalAvailableSpace += location->GetAvailableSpace();
             totalLowWatermarkSpace += location->GetLowWatermarkSpace();
@@ -1611,7 +1615,7 @@ private:
             return true;
         }
 
-        auto mediumIndex = location->GetMediumDescriptor()->GetIndex();
+        auto mediumIndex = location->GetMediumIndex();
         return mediumIndex == GenericMediumIndex;
     }
 
@@ -1627,6 +1631,17 @@ private:
             return false;
         }
 
+        const auto& dynamicConfig = Bootstrap_->GetDynamicConfigManager()->GetConfig()->DataNode;
+        if (dynamicConfig->EnableInThrottlerQueueWritableCheck.value_or(false)) {
+            auto netThrottling = Bootstrap_->CheckNetInThrottling(
+                NBus::DefaultNetworkName,
+                TWorkloadDescriptor{},
+                /*incrementCounter*/ false);
+            if (netThrottling.Enabled) {
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -1637,7 +1652,7 @@ private:
         bool onMediumChange = false)
     {
         ToProto(chunkInfo.mutable_chunk_id(), chunk->GetId());
-        chunkInfo.set_medium_index(chunk->GetLocation()->GetMediumDescriptor()->GetIndex());
+        chunkInfo.set_medium_index(chunk->GetLocation()->GetMediumIndex());
 
         auto locationIndex = chunk->GetLocation()->GetIndex();
         auto locationUuid = chunk->GetLocation()->GetUuid();

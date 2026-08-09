@@ -122,9 +122,9 @@ public:
         , ClusterName_(replicaInfo->GetClusterName())
         , ReplicaPath_(replicaInfo->GetReplicaPath())
         , MountConfig_(tablet->GetSettings().MountConfig)
-        , Logger(TabletNodeLogger().WithTag("%v, ReplicaId: %v",
-            tablet->GetLoggingTag(),
-            ReplicaId_))
+        , Logger(TabletNodeLogger()
+            .WithTags(tablet->GetLoggingTags())
+            .WithTag("ReplicaId", ReplicaId_))
         , ReplicationLogParser_(CreateReplicationLogParser(
             TableSchema_,
             tablet->GetPhysicalSchema(),
@@ -150,21 +150,26 @@ public:
     {
         Disable();
 
-        FiberFuture_ = BIND(&TImpl::FiberMain, MakeWeak(this))
-            .AsyncVia(Slot_->GetHydraManager()->GetAutomatonCancelableContext()->CreateInvoker(WorkerInvoker_))
-            .Run();
+        ReplicationExecutor_ = New<TPeriodicExecutor>(
+            Slot_->GetHydraManager()->GetAutomatonCancelableContext()->CreateInvoker(WorkerInvoker_),
+            BIND(&TImpl::OnReplicationTick, MakeWeak(this)),
+            TPeriodicExecutorOptions{
+                .Period = MountConfig_->ReplicationTickPeriod,
+                .DelayMode = EPeriodicExecutorDelayMode::FromPreviousStart,
+            });
+        ReplicationExecutor_->Start();
 
-        YT_LOG_INFO("Replicator fiber started");
+        YT_LOG_INFO("Table replicator enabled");
     }
 
     void Disable()
     {
-        if (FiberFuture_) {
-            FiberFuture_.Cancel(TError("Replicator disabled"));
-            YT_LOG_INFO("Replicator fiber stopped");
+        if (auto executor = std::exchange(ReplicationExecutor_, nullptr)) {
+            YT_UNUSED_FUTURE(executor->Stop());
         }
-        FiberFuture_.Reset();
         HasActiveReplicationIteration_.store(false);
+
+        YT_LOG_INFO("Table replicator disabled");
     }
 
     bool HasActiveReplicationIteration()
@@ -200,22 +205,14 @@ private:
 
     TBackoffStrategy SoftErrorBackoff_;
 
-    TFuture<void> FiberFuture_;
+    TPeriodicExecutorPtr ReplicationExecutor_;
 
     std::atomic<bool> HasActiveReplicationIteration_ = false;
 
-    void FiberMain()
+    void OnReplicationTick()
     {
-        while (true) {
-            TTraceContextGuard traceContextGuard(TTraceContext::NewRoot("TableReplicator"));
-            NProfiling::TWallTimer timer;
-            FiberIteration();
-            TDelayedExecutor::WaitForDuration(MountConfig_->ReplicationTickPeriod - timer.GetElapsedTime());
-        }
-    }
+        TTraceContextGuard traceContextGuard(TTraceContext::NewRoot("TableReplicator"));
 
-    void FiberIteration()
-    {
         TTableReplicaSnapshotPtr replicaSnapshot;
         TTabletSnapshotPtr tabletSnapshot;
         try {
@@ -501,7 +498,7 @@ private:
                 ToProto(req.mutable_replica_id(), ReplicaId_);
                 req.set_prev_replication_row_index(lastReplicationRowIndex);
                 req.set_new_replication_row_index(newReplicationRowIndex);
-                req.set_new_replication_timestamp(newReplicationTimestamp);
+                req.set_new_replication_timestamp(ToProto(newReplicationTimestamp));
                 localTransaction->AddAction(Slot_->GetCellId(), MakeTransactionActionData(req));
             }
 

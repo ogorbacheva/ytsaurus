@@ -81,7 +81,7 @@ public:
         , NodeTag_(nodeTag)
         , JobProxyUnixDomainSocketPath_(GetJobProxyUnixDomainSocketPath())
         , NumaNodeAffinity_(numaNodeAffinity)
-        , Logger(SlotLogger().WithTag("SlotIndex: %v", SlotIndex_))
+        , Logger(SlotLogger().WithTag("SlotIndex", SlotIndex_))
     {
         Location_->IncreaseSessionCount();
         if (diskRequest.disk_space() > 0) {
@@ -450,6 +450,28 @@ public:
             /*actionName*/ "PrepareNonRootVolumes",
             /*uncancelable*/ false,
             [&] {
+                if (!Bootstrap_->GetConfig()->ExecNode->SlotManager->EnableNonRootVolumes) {
+                    for (const auto& volume : volumeParams) {
+                        if (!volume->LayerArtifactKeys.empty()) {
+                            THROW_ERROR_EXCEPTION(
+                                "Cannot create fake non-root volume %v since it contains a layer",
+                                volume->VolumeId);
+                        }
+                    }
+
+                    return Location_->CreateFakeNonRootVolumes(rootVolume, SlotIndex_, volumeMounts)
+                        .AsUnique()
+                        .Apply(
+                            BIND([] (TError&& error) {
+                                if (!error.IsOK()) {
+                                    THROW_ERROR_EXCEPTION(
+                                        "Failed to prepare fake non-root volumes: %v",
+                                        error);
+                                }
+                                return MakeFuture(std::vector<TVolumeResultPtr>{});
+                            }));
+                }
+
                 return VolumeManager_->PrepareNonRootVolumes(userSandboxPath, jobId, volumeParams, std::move(perVolumeOverlayData), volumeMounts)
                     .AsUnique()
                     .Apply(
@@ -467,8 +489,8 @@ public:
 
                                 auto& volumeResults = volumeResultsOrError.Value();
 
-                                // Inform slot location about tmpfses to be used.
-                                Location_->TakeIntoAccountTmpfsVolumes(
+                                // Inform slot location about non-root volumes to be used.
+                                Location_->TakeIntoAccountNonRootVolumes(
                                     SlotIndex_,
                                     rootVolume,
                                     volumeResults,
@@ -477,7 +499,6 @@ public:
                     })
                     .AsyncVia(Bootstrap_->GetJobInvoker()));
             });
-
     }
 
     TFuture<void> LinkVolumes(
@@ -494,6 +515,10 @@ public:
             auto error = TError("Failed to link volumes since volume manager is not initialized");
             YT_LOG_WARNING(error);
             return MakeFuture<void>(std::move(error));
+        }
+
+        if (!Bootstrap_->GetConfig()->ExecNode->SlotManager->EnableNonRootVolumes) {
+            return OKFuture;
         }
 
         auto rootPath = GetRootPath(rootVolume, testRootFs);
@@ -676,7 +701,7 @@ public:
     {
         VerifyEnabled();
 
-        Logger.AddTag("AllocationId: %v", allocationId);
+        Logger.AddTag("AllocationId", allocationId);
     }
 
     std::string GetJobProxyUnixDomainSocketPath() const override

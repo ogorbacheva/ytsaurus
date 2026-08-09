@@ -55,8 +55,6 @@ class TTabletCellWriteManager
     : public ITabletCellWriteManager
     , public TTabletAutomatonPart
 {
-    DEFINE_SIGNAL_OVERRIDE(void(TTablet*), ReplicatorWriteTransactionFinished);
-
 public:
     TTabletCellWriteManager(
         ITabletCellWriteManagerHostPtr host,
@@ -135,13 +133,33 @@ public:
 
         tabletSnapshot->TabletRuntimeData->ModificationTime = NProfiling::GetInstant();
 
-        auto actualizeTablet = [&] {
-            tablet = Host_->GetTabletOrThrow(tabletSnapshot->TabletId);
+        auto actualizeTablet = [&] (bool retryable) {
+            if (tablet = Host_->FindTablet(tabletSnapshot->TabletId); !tablet) {
+                THROW_ERROR_EXCEPTION(
+                    NTabletClient::EErrorCode::NoSuchTablet,
+                    "No such tablet %v",
+                    tabletSnapshot->TabletId)
+                    << TErrorAttribute("tablet_id", tabletSnapshot->TabletId)
+                    << TErrorAttribute("retryable", retryable);
+            }
+
             tablet->ValidateMountRevision(tabletSnapshot->MountRevision);
             ValidateTabletMounted(tablet);
         };
 
-        actualizeTablet();
+        tabletSnapshot->ValidateServantIsActive(Host_->GetCellDirectory(), /*waitForActivation*/ false)
+            .ThrowOnError();
+        actualizeTablet(/*retryable*/ true);
+
+        if (!tablet->SmoothMovementData().IsWriteToTabletAllowed()) {
+            WaitUntilServantIsWritable(
+                tablet,
+                Host_->GetCellDirectory(),
+                Host_->GetDynamicConfig()->TabletManager->WaitOnReadOnlySmoothMovementStageTimeout);
+            actualizeTablet(/*retryable*/ true);
+            tablet->ValidateServantIsWritable(Host_->GetCellDirectory(), /*retryable*/ true)
+                .ThrowOnError();
+        }
 
         if (atomicity == EAtomicity::Full) {
             const auto& lockManager = tablet->GetLockManager();
@@ -182,7 +200,7 @@ public:
             // NB: No yielding beyond this point.
             // May access tablet and transaction.
 
-            actualizeTablet();
+            actualizeTablet(/*retryable*/ false);
 
             ValidateTabletStoreLimit(tablet);
 
@@ -192,8 +210,10 @@ public:
             Host_->ValidateMemoryLimit(poolTag);
             ValidateWriteBarrier(replicatorWrite, tablet);
 
+            tablet->ValidateServantIsWritable(Host_->GetCellDirectory())
+                .ThrowOnError();
+
             auto tabletId = tablet->GetId();
-            tablet->SmoothMovementData().ValidateWriteToTablet(tabletId);
 
             TTransaction* transaction = nullptr;
             bool updateReplicationProgress = false;
@@ -292,6 +312,8 @@ public:
                 transaction->TransientPrepareSignature() += mutationPrepareSignature;
             }
 
+            auto tableProfiler = tablet->GetTableProfiler();
+
             if (!reader->IsBatchEmpty()) {
                 auto writeCommandBatch = reader->FinishBatch();
                 auto compressedRecordData = ChangelogCodec_->Compress(writeCommandBatch.Data());
@@ -310,7 +332,7 @@ public:
 
                 TReqWriteRows hydraRequest;
                 ToProto(hydraRequest.mutable_transaction_id(), params.TransactionId);
-                hydraRequest.set_transaction_start_timestamp(params.TransactionStartTimestamp);
+                hydraRequest.set_transaction_start_timestamp(ToProto(params.TransactionStartTimestamp));
                 hydraRequest.set_transaction_timeout(ToProto(params.TransactionTimeout));
                 ToProto(hydraRequest.mutable_tablet_id(), tabletId);
                 hydraRequest.set_mount_revision(ToProto(tablet->GetMountRevision()));
@@ -336,7 +358,7 @@ public:
                 auto mutation = CreateMutation(HydraManager_, hydraRequest);
                 mutation->SetHandler(BIND_NO_PROPAGATE(
                     &TTabletCellWriteManager::HydraLeaderWriteRows,
-                    MakeWeak(this),
+                    MakeStrong(this),
                     params.TransactionId,
                     tablet->GetMountRevision(),
                     mutationPrepareSignature,
@@ -350,7 +372,7 @@ public:
                 mutation->SetCurrentTraceContext();
                 commitResult = mutation->Commit().As<void>();
 
-                auto counters = tablet->GetTableProfiler()->GetWriteCounters(GetCurrentProfilingUser());
+                auto counters = tableProfiler->GetWriteCounters(GetCurrentProfilingUser());
                 counters->RowCount.Increment(writeRecord.RowCount);
                 counters->DataWeight.Increment(writeRecord.DataWeight);
             }
@@ -363,8 +385,7 @@ public:
                     context.BlockedLockMask,
                     context.BlockedTimestamp);
 
-                tablet
-                    ->GetTableProfiler()
+                tableProfiler
                     ->GetWriteCounters(GetCurrentProfilingUser())
                     ->WaitOnBlockedRowDuration
                     .Record(waitOnBlockedRowDuration);
@@ -455,7 +476,7 @@ private:
         if (mountRevision != tablet->GetMountRevision()) {
             YT_LOG_DEBUG("Mount revision mismatch; write ignored "
                 "(%v, TransactionId: %v, MutationMountRevision: %x, CurrentMountRevision: %x)",
-                tablet->GetLoggingTag(),
+                tablet->GetLoggingTags(),
                 transactionId,
                 mountRevision,
                 tablet->GetMountRevision());
@@ -476,7 +497,7 @@ private:
             if (!lostHunkStoreIds.empty()) {
                 YT_LOG_ALERT("Hunk store locks are lost; write ignored "
                     "(%v, TransactionId: %v, HunkStoreIds: %v)",
-                    tablet->GetLoggingTag(),
+                    tablet->GetLoggingTags(),
                     transactionId,
                     lostHunkStoreIds);
                 return;
@@ -549,7 +570,7 @@ private:
                 if (tablet->GetState() == ETabletState::Orphaned) {
                     YT_LOG_DEBUG("Tablet is orphaned; non-atomic write ignored "
                         "(%v, TransactionId: %v)",
-                        tablet->GetLoggingTag(),
+                        tablet->GetLoggingTags(),
                         transactionId);
                     return;
                 }
@@ -581,7 +602,7 @@ private:
     {
         auto transactionId = FromProto<TTransactionId>(request->transaction_id());
         auto atomicity = AtomicityFromTransactionId(transactionId);
-        auto transactionStartTimestamp = request->transaction_start_timestamp();
+        auto transactionStartTimestamp = FromProto<NTransactionClient::TTimestamp>(request->transaction_start_timestamp());
         auto transactionTimeout = FromProto<TDuration>(request->transaction_timeout());
         auto prepareSignature = request->prepare_signature();
         // COMPAT(gritukan)
@@ -751,7 +772,7 @@ private:
         TReqWriteRows request)
     {
         YT_LOG_DEBUG("Forwarding writes to sibling servant (%v, TransactionId: %v)",
-            tablet->GetLoggingTag(),
+            tablet->GetLoggingTags(),
             transactionId);
 
         TTransactionExternalizationToken token(tablet->SmoothMovementData().GetSiblingAvenueEndpointId());
@@ -1020,7 +1041,7 @@ private:
             if (tabletWriteManager->HasWriteState(transaction)) {
                 YT_LOG_ALERT("Tablet still has transation write state on transaction finish "
                     "(%v, TransactionId: %v)",
-                    tablet->GetLoggingTag(),
+                    tablet->GetLoggingTags(),
                     transaction->GetId());
             }
         }

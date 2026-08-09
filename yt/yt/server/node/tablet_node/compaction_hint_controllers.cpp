@@ -275,9 +275,9 @@ void TCompactionHintControllerBase<TDerived, TLsmCompactionHint, TOwner>::OnLsmF
     YT_VERIFY(lsmCompactionHint.IsRelevantLsmResponse());
     LsmCompactionHint_ = std::move(lsmCompactionHint);
 
-    YT_LOG_DEBUG("Got relevant compaction hint feedback from lsm "
+    YT_LOG_DEBUG("Got relevant compaction hint feedback from LSM "
         "(%v, OwnerId: %v, StoreCompactionHintKind: %v, PartitionCompactionHintKind: %v)",
-        owner->GetTablet()->GetLoggingTag(),
+        owner->GetTablet()->GetLoggingTags(),
         owner->GetId(),
         StoreCompactionHintKind_,
         PartitionCompactionHintKind_);
@@ -306,7 +306,7 @@ void TCompactionHintControllerBase<TDerived, TLsmCompactionHint, TOwner>::SetPas
     YT_LOG_DEBUG_IF(owner->GetTablet()->GetSettings().MountConfig->EnableLsmVerboseLogging,
         "Set passive state for compaction hint controller "
         "(%v, OwnerId: %v, StoreCompactionHintKind: %v, PartitionCompactionHintKind: %v, State: %v)",
-        owner->GetTablet()->GetLoggingTag(),
+        owner->GetTablet()->GetLoggingTags(),
         owner->GetId(),
         StoreCompactionHintKind_,
         PartitionCompactionHintKind_,
@@ -330,7 +330,7 @@ void TCompactionHintControllerBase<TDerived, TLsmCompactionHint, TOwner>::SetAct
     YT_LOG_DEBUG_IF(owner->GetTablet()->GetSettings().MountConfig->EnableLsmVerboseLogging,
         "Set active state for compaction hint controller "
         "(%v, OwnerId: %v, StoreCompactionHintKind: %v, PartitionCompactionHintKind: %v)",
-        owner->GetTablet()->GetLoggingTag(),
+        owner->GetTablet()->GetLoggingTags(),
         owner->GetId(),
         StoreCompactionHintKind_,
         PartitionCompactionHintKind_);

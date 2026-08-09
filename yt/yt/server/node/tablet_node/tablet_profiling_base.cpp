@@ -7,11 +7,13 @@ namespace NYT::NTabletNode {
 
 using namespace NProfiling;
 
+namespace {
+
 ////////////////////////////////////////////////////////////////////////////////
 
-TString HideDigits(const TString& path)
+NYPath::TYPath SanitizeDigitsInYPath(const NYPath::TYPath& path)
 {
-    TString pathCopy = path;
+    auto pathCopy = path;
     for (auto& c : pathCopy) {
         if (std::isdigit(c)) {
             c = '_';
@@ -19,6 +21,8 @@ TString HideDigits(const TString& path)
     }
     return pathCopy;
 }
+
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -35,7 +39,7 @@ TTableProfilerPtr TTabletProfilerManager::CreateTableProfiler(
     EDynamicTableProfilingMode profilingMode,
     const std::string& bundle,
     const NYPath::TYPath& tablePath,
-    const TString& tableTag,
+    const std::string& tableTag,
     const std::string& account,
     const std::string& medium,
     NObjectClient::TObjectId schemaId,
@@ -46,7 +50,7 @@ TTableProfilerPtr TTabletProfilerManager::CreateTableProfiler(
     TProfilerKey key;
     switch (profilingMode) {
         case EDynamicTableProfilingMode::Path:
-            key = {profilingMode, bundle, tablePath, account, medium, schemaId};
+            key = {profilingMode, bundle, std::string(tablePath), account, medium, schemaId};
             AllTables_.insert(tablePath);
             ConsumedTableTags_.Update(AllTables_.size());
             break;
@@ -56,8 +60,8 @@ TTableProfilerPtr TTabletProfilerManager::CreateTableProfiler(
             break;
 
         case EDynamicTableProfilingMode::PathLetters:
-            key = {profilingMode, bundle, HideDigits(tablePath), account, medium, schemaId};
-            AllTables_.insert(HideDigits(tablePath));
+            key = {profilingMode, bundle, std::string(SanitizeDigitsInYPath(tablePath)), account, medium, schemaId};
+            AllTables_.insert(SanitizeDigitsInYPath(tablePath));
             ConsumedTableTags_.Update(AllTables_.size());
             break;
 
@@ -103,7 +107,7 @@ TTableProfilerPtr TTabletProfilerManager::CreateTableProfiler(
             break;
 
         case EDynamicTableProfilingMode::PathLetters:
-            tableTagSet.AddTag({"table_path", HideDigits(tablePath)}, -1);
+            tableTagSet.AddTag({"table_path", SanitizeDigitsInYPath(tablePath)}, -1);
 
             mediumTagSet = tableTagSet;
             mediumTagSet.AddTagWithChild({"medium", medium}, -1);

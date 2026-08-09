@@ -99,6 +99,7 @@
 #include <yt/yt/ytlib/transaction_client/helpers.h>
 
 #include <yt/yt/client/chaos_client/replication_card_serialization.h>
+#include <yt/yt/client/chaos_client/helpers.h>
 
 #include <yt/yt/client/object_client/helpers.h>
 
@@ -118,6 +119,7 @@
 
 #include <yt/yt/core/ytree/tree_builder.h>
 
+#include <yt/yt/core/misc/protobuf_helpers.h>
 #include <yt/yt/core/yson/protobuf_helpers.h>
 
 #include <library/cpp/yt/misc/numeric_helpers.h>
@@ -173,10 +175,8 @@ using NTabletNode::DynamicStoreIdPoolSize;
 using NTransactionServer::TTransaction;
 
 using NSecurityServer::ConvertToClusterResources;
-
 using NYT::FromProto;
 using NYT::ToProto;
-
 using TTabletResources = NTabletServer::TTabletResources;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -850,6 +850,14 @@ public:
                     THROW_ERROR_EXCEPTION("Ordered dynamic table bound for chaos replication should have %Qlv column",
                         TimestampColumnName);
                 }
+
+                for (const auto& tablet : table->Tablets()) {
+                    if (const auto& replicationProgress = tablet->As<TTablet>()->ReplicationProgress();
+                        !replicationProgress.Segments.empty())
+                    {
+                        ValidateOrderedTabletReplicationProgress(replicationProgress);
+                    }
+                }
             }
 
             const auto& bundle = table->TabletCellBundle();
@@ -1269,6 +1277,7 @@ public:
         int newTabletCount,
         const std::vector<TLegacyOwningKey>& pivotKeys,
         const std::vector<i64>& trimmedRowCounts,
+        const std::vector<i64>& cumulativeDataWeights,
         bool create = false) override
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
@@ -1280,7 +1289,8 @@ public:
             lastTabletIndex,
             newTabletCount,
             pivotKeys,
-            trimmedRowCounts);
+            trimmedRowCounts,
+            cumulativeDataWeights);
 
         if (!create && !table->IsForeign()) {
             const auto& securityManager = Bootstrap_->GetSecurityManager();
@@ -1369,7 +1379,8 @@ public:
         int lastTabletIndex,
         int newTabletCount,
         const std::vector<TLegacyOwningKey>& pivotKeys,
-        const std::vector<i64>& trimmedRowCounts) override
+        const std::vector<i64>& trimmedRowCounts,
+        const std::vector<i64>& cumulativeDataWeights) override
     {
         if (table->IsExternal()) {
             UpdateTabletState(table);
@@ -1382,7 +1393,8 @@ public:
             lastTabletIndex,
             newTabletCount,
             pivotKeys,
-            trimmedRowCounts);
+            trimmedRowCounts,
+            cumulativeDataWeights);
 
         UpdateTabletState(table);
     }
@@ -1646,7 +1658,7 @@ public:
             ToProto(req.mutable_tablet_id(), tablet->GetId());
             ToProto(req.mutable_transaction_id(), transaction->GetId());
             req.set_commit_timestamp(static_cast<i64>(
-                transactionManager->GetTimestampHolderTimestamp(transaction->GetId())));
+                transactionManager->GetTimestampHolderTimestamp(transaction->GetId()).Underlying()));
             req.set_update_mode(ToProto(updateMode));
 
             i64 startingRowIndex = 0;
@@ -2014,6 +2026,10 @@ public:
 
             trunkClonedTable->SetChunkList(contentType, clonedRootChunkList);
             clonedRootChunkList->AddOwningNode(trunkClonedTable);
+
+            if (contentType == EChunkListContentType::Hunk) {
+                clonedRootChunkLists[contentType]->CopyHunkStatistics(trunkSourceTable->GetChunkList(contentType));
+            }
         }
 
         const auto& backupManager = Bootstrap_->GetBackupManager();
@@ -2034,7 +2050,10 @@ public:
             for (auto contentType : TEnumTraits<EChunkListContentType>::GetDomainValues()) {
                 auto* sourceRootChunkList = trunkSourceTable->GetChunkList(contentType);
                 auto tabletChunkList = sourceRootChunkList->Children()[index];
-                chunkManager->AttachToChunkList(clonedRootChunkLists[contentType], {tabletChunkList});
+                chunkManager->AttachToChunkList(
+                    clonedRootChunkLists[contentType],
+                    {tabletChunkList},
+                    /*updateChunkListStatistics*/ contentType != EChunkListContentType::Hunk);
             }
 
             clonedTablets.push_back(clonedTablet);
@@ -2179,7 +2198,7 @@ public:
         ValidateResourceUsageIncrease(table, TTabletResources().SetTabletCount(1));
     }
 
-    void MakeTableDynamic(TTableNode* table, i64 trimmedRowCount) override
+    void MakeTableDynamic(TTableNode* table, i64 trimmedRowCount, i64 cumulativeDataWeight) override
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
         YT_VERIFY(table->IsTrunk());
@@ -2203,7 +2222,7 @@ public:
         table->MutableTablets() = {tablet};
         table->RecomputeTabletMasterMemoryUsage();
 
-        TabletChunkManager_->MakeTableDynamic(table);
+        TabletChunkManager_->MakeTableDynamic(table, cumulativeDataWeight);
 
         const auto& securityManager = this->Bootstrap_->GetSecurityManager();
         securityManager->UpdateMasterMemoryUsage(table);
@@ -2360,7 +2379,7 @@ public:
             TReqLockTablet req;
             ToProto(req.mutable_tablet_id(), tablet->GetId());
             ToProto(req.mutable_lock()->mutable_transaction_id(), transaction->GetId());
-            req.mutable_lock()->set_timestamp(static_cast<i64>(timestamp));
+            req.mutable_lock()->set_timestamp(ToProto(timestamp));
             hiveManager->PostMessage(mailbox, req);
         }
 
@@ -2691,10 +2710,10 @@ public:
             }
         }
 
-        // NB: We accumulate statistics to ancestors before copying shared chunk lists, because otherwise
-        // statistics are copied incorrectly as chunk manager is unaware of which chunk has just been sealed.
-        VisitAllAncestorsInHunkTree(chunk, [&] (TChunkList* chunkList, bool /*firstOccurrence*/) {
-            chunkList->AccumulateHunkStatistics(chunk);
+        VisitAllAncestorsInHunkTree(chunk, [&] (TChunkList* chunkList, bool firstOccurrence) {
+            if (firstOccurrence) {
+                chunkList->AccumulateHunkStatistics(chunk, /*force*/ true);
+            }
         });
 
         for (auto* table : tableNodes) {
@@ -3288,9 +3307,9 @@ private:
 
             MaybeSetTabletAvenueEndpointId(tablet, cell->GetId(), &req);
 
-            reqReplicatable.set_retained_timestamp(tablet->GetRetainedTimestamp());
+            reqReplicatable.set_retained_timestamp(ToProto(tablet->GetRetainedTimestamp()));
             if (table->IsPhysicallySorted()) {
-                reqReplicatable.set_conflict_horizon_timestamp(tablet->GetConflictHorizonTimestamp());
+                reqReplicatable.set_conflict_horizon_timestamp(ToProto(tablet->GetConflictHorizonTimestamp()));
             }
 
             if (!table->IsPhysicallySorted()) {
@@ -3361,7 +3380,7 @@ private:
             for (auto [transactionId, lock] : table->DynamicTableLocks()) {
                 auto* protoLock = reqReplicatable.add_locks();
                 ToProto(protoLock->mutable_transaction_id(), transactionId);
-                protoLock->set_timestamp(lock.Timestamp);
+                protoLock->set_timestamp(ToProto(lock.Timestamp));
             }
 
             if (!freeze && IsDynamicStoreReadEnabled(table, GetDynamicConfig())) {
@@ -3447,7 +3466,7 @@ private:
         }
 
         if (mountTimestamp != NullTimestamp) {
-            tablet->NodeStatistics().set_unflushed_timestamp(mountTimestamp);
+            tablet->NodeStatistics().set_unflushed_timestamp(ToProto(mountTimestamp));
         }
     }
 
@@ -3776,7 +3795,7 @@ private:
                 ToProto(req.mutable_transaction_id(), transaction->GetId());
                 req.set_mount_revision(ToProto(tablet->Servant().GetMountRevision()));
                 // Aborted bulk insert should not conflict with concurrent tablet transactions.
-                req.set_commit_timestamp(static_cast<i64>(MinTimestamp));
+                req.set_commit_timestamp(ToProto(MinTimestamp));
 
                 hiveManager->PostMessage(mailbox, req);
             }
@@ -3859,7 +3878,8 @@ private:
         int lastTabletIndex,
         int newTabletCount,
         const std::vector<TLegacyOwningKey>& pivotKeys,
-        const std::vector<i64>& trimmedRowCounts)
+        const std::vector<i64>& trimmedRowCounts,
+        const std::vector<i64>& cumulativeDataWeights)
     {
         if (IsTableType(table->GetType())) {
             return DoReshardTable(
@@ -3868,7 +3888,8 @@ private:
                 lastTabletIndex,
                 newTabletCount,
                 pivotKeys,
-                trimmedRowCounts);
+                trimmedRowCounts,
+                cumulativeDataWeights);
         } else if (table->GetType() == EObjectType::HunkStorage) {
             return DoReshardHunkStorage(
                 table->As<THunkStorageNode>(),
@@ -3900,14 +3921,16 @@ private:
             lastTabletIndex,
             newTabletCount,
             pivotKeys,
-            /*trimmedRowCounts*/ {});
+            /*trimmedRowCounts*/ {},
+            /*cumulativeDataWeights*/ {});
         return DoReshard(
             table,
             firstTabletIndex,
             lastTabletIndex,
             newTabletCount,
             pivotKeys,
-            /*trimmedRowCounts*/ {});
+            /*trimmedRowCounts*/ {},
+            /*cumulativeDataWeights*/ {});
     }
 
     int DoReshardTable(
@@ -3916,7 +3939,8 @@ private:
         int lastTabletIndex,
         int newTabletCount,
         const std::vector<TLegacyOwningKey>& pivotKeys,
-        const std::vector<i64>& trimmedRowCounts)
+        const std::vector<i64>& trimmedRowCounts,
+        const std::vector<i64>& cumulativeDataWeights)
     {
         if (!pivotKeys.empty() || !table->IsPhysicallySorted()) {
             ReshardTableImpl(
@@ -3925,7 +3949,8 @@ private:
                 lastTabletIndex,
                 newTabletCount,
                 pivotKeys,
-                trimmedRowCounts);
+                trimmedRowCounts,
+                cumulativeDataWeights);
             return newTabletCount;
         } else {
             auto newPivotKeys = CalculatePivotKeys(table, firstTabletIndex, lastTabletIndex, newTabletCount);
@@ -3936,7 +3961,8 @@ private:
                 lastTabletIndex,
                 newTabletCount,
                 newPivotKeys,
-                /*trimmedRowCounts*/ {});
+                /*trimmedRowCounts*/ {},
+                /*cumulativeDataWeights*/ {});
             return newTabletCount;
         }
     }
@@ -4017,7 +4043,8 @@ private:
         int lastTabletIndex,
         int newTabletCount,
         const std::vector<TLegacyOwningKey>& pivotKeys,
-        const std::vector<i64>& trimmedRowCounts)
+        const std::vector<i64>& trimmedRowCounts,
+        const std::vector<i64>& cumulativeDataWeights)
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
         YT_VERIFY(table->IsTrunk());
@@ -4053,7 +4080,7 @@ private:
             auto* tablet = tablets[index]->As<TTablet>();
             retainedTimestamp = std::max(retainedTimestamp, tablet->GetRetainedTimestamp());
             conflictHorizonTimestamp = std::max(conflictHorizonTimestamp, tablet->GetConflictHorizonTimestamp());
-            unflushedTimestamp = std::min(unflushedTimestamp, tablet->NodeStatistics().unflushed_timestamp());
+            unflushedTimestamp = std::min(unflushedTimestamp, FromProto<NTransactionClient::TTimestamp>(tablet->NodeStatistics().unflushed_timestamp()));
         }
 
         // Save eden stores of removed tablets.
@@ -4089,7 +4116,7 @@ private:
             }
             newTablet->SetRetainedTimestamp(retainedTimestamp);
             newTablet->SetConflictHorizonTimestamp(conflictHorizonTimestamp);
-            newTablet->NodeStatistics().set_unflushed_timestamp(unflushedTimestamp);
+            newTablet->NodeStatistics().set_unflushed_timestamp(ToProto(unflushedTimestamp));
             newTablets.push_back(newTablet);
 
             if (table->IsReplicated()) {
@@ -4183,6 +4210,7 @@ private:
             oldTabletIds,
             oldPivotKeyBounds,
             pivotKeys,
+            cumulativeDataWeights,
             oldEdenStoreIds);
 
         // Account new tablet statistics.
@@ -4561,7 +4589,7 @@ private:
             if (table) {
                 table->SetLastCommitTimestamp(std::max(
                     table->GetLastCommitTimestamp(),
-                    tablet->NodeStatistics().last_commit_timestamp()));
+                    FromProto<NTransactionClient::TTimestamp>(tablet->NodeStatistics().last_commit_timestamp())));
 
                 if (tablet->NodeStatistics().has_modification_time()) {
                     auto modificationTime = FromProto<TInstant>(tablet->NodeStatistics().modification_time());
@@ -4839,39 +4867,35 @@ private:
     {
         if (tablet->GetState() == ETabletState::Unmounted) {
             if (!tablet->GetWasForcefullyUnmounted()) {
-                YT_LOG_ALERT("%v notification received by an unmounted tablet, ignored "
-                    "(TabletId: %v, SenderId: %v)",
-                    changeType,
+                // NB: This may happen if the tablet was unmounted while the smooth movement auxiliary
+                // servant was mounting. Although auxiliary servant is forcefully unmounted, its
+                // "mounted" notification may still arrive after the tablet has been completely
+                // unmounted.
+                YT_LOG_WARNING("Unexpected notification received by an unmounted tablet, ignored "
+                    "(TabletId: %v, SenderId: %v, NotificationType: %v, MountRevision: %x)",
                     tablet->GetId(),
-                    senderId);
+                    senderId,
+                    changeType,
+                    mountRevision);
             }
             return nullptr;
         }
 
         TTabletServant* servant = nullptr;
 
-        // COMPAT(ifsmirnov): remove when 24.1 is deployed.
-        // This should not happen unless masters are updated before nodes.
-        if (!mountRevision) {
-            servant = &tablet->Servant();
-            YT_LOG_ALERT("%v notification received without mount revision "
-                "(TabletId: %v, SenderId: %v)",
-                changeType,
-                tablet->GetId(),
-                senderId);
+        YT_VERIFY(mountRevision);
 
-        } else {
-            servant = tablet->FindServant(mountRevision);
-            if (!servant) {
-                YT_LOG_WARNING("%v notification received by a tablet with wrong mount revision, ignored "
-                    "(TabletId: %v, MainServantMountRevision: %v, RequestMountRevision: %v, SenderId: %v)",
-                    changeType,
-                    tablet->GetId(),
-                    tablet->Servant().GetMountRevision(),
-                    mountRevision,
-                    senderId);
-                return nullptr;
-            }
+        servant = tablet->FindServant(mountRevision);
+        if (!servant) {
+            YT_LOG_WARNING("Notification received by a tablet with wrong mount revision, ignored "
+                "(TabletId: %v, MainServantMountRevision: %x, RequestMountRevision: %x, SenderId: %v, "
+                "NotificationType: %v)",
+                tablet->GetId(),
+                tablet->Servant().GetMountRevision(),
+                mountRevision,
+                senderId,
+                changeType);
+            return nullptr;
         }
 
         auto expectedSenderId = senderIsCell
@@ -4881,14 +4905,15 @@ private:
         // This condition should never be violated given that mount revision check passed.
         if (senderId != expectedSenderId) {
             YT_LOG_ALERT(
-                "%v notification received from unexpected sender, ignored "
-                "(TabletId: %v, State: %v, SenderId: %v, TabletCellId: %v, MountRevision: %v)",
-                changeType,
+                "Notification received from unexpected sender, ignored "
+                "(TabletId: %v, State: %v, SenderId: %v, TabletCellId: %v, MountRevision: %x, "
+                "NotificationType: %v)",
                 tablet->GetId(),
                 tablet->GetState(),
                 senderId,
                 GetObjectId(tablet->Servant().GetCell()),
-                servant->GetMountRevision());
+                servant->GetMountRevision(),
+                changeType);
             return nullptr;
         }
 
@@ -5009,7 +5034,7 @@ private:
         // after EMasterReign::AddPerTabletConflictHorizonTimestamp is removed.
         if (response->has_conflict_horizon_timestamp()) {
             YT_VERIFY(typedTablet->GetTable()->IsPhysicallySorted());
-            typedTablet->SetConflictHorizonTimestamp(response->conflict_horizon_timestamp());
+            typedTablet->SetConflictHorizonTimestamp(FromProto<NTransactionClient::TTimestamp>(response->conflict_horizon_timestamp()));
         }
 
         if (response->has_replication_progress()) {
@@ -5100,7 +5125,7 @@ private:
         // after EMasterReign::AddPerTabletConflictHorizonTimestamp is removed.
         if (response->has_conflict_horizon_timestamp()) {
             YT_VERIFY(table->IsPhysicallySorted());
-            tablet->SetConflictHorizonTimestamp(response->conflict_horizon_timestamp());
+            tablet->SetConflictHorizonTimestamp(FromProto<NTransactionClient::TTimestamp>(response->conflict_horizon_timestamp()));
         }
 
         TabletActionManager_->OnTabletActionStateChanged(tablet->GetAction());
@@ -5243,8 +5268,8 @@ private:
             auxiliaryServant.GetMountRevision() != targetMountRevision)
         {
             YT_LOG_DEBUG("Mount revision mismatch, will not switch servants "
-                "(TabletId: %v, ExpectedSourceMountRevision: %v, ExpectedTargetMountRevision: %v, "
-                "ActualSourceMountRevision: %v, ActualTargetMountRevision: %v)",
+                "(TabletId: %v, ExpectedSourceMountRevision: %x, ExpectedTargetMountRevision: %x, "
+                "ActualSourceMountRevision: %x, ActualTargetMountRevision: %x)",
                 tablet->GetId(),
                 sourceMountRevision,
                 targetMountRevision,
@@ -5312,8 +5337,8 @@ private:
 
         if (auxiliaryServant.GetMountRevision() != auxiliaryMountRevision) {
             YT_LOG_DEBUG("Mount revision mismatch, will not deallocate servant "
-                "(TabletId: %v, ExpectedAuxiliaryMountRevision: %v, "
-                "ActualSourceMountRevision: %v, ActualTargetMountRevision: %v)",
+                "(TabletId: %v, ExpectedAuxiliaryMountRevision: %x, "
+                "ActualSourceMountRevision: %x, ActualTargetMountRevision: %x)",
                 tablet->GetId(),
                 auxiliaryMountRevision,
                 mainServant.GetMountRevision(),
@@ -6288,7 +6313,7 @@ private:
         if (multicellManager->IsPrimaryMaster()) {
             for (auto cellTag : multicellManager->GetRegisteredMasterCellTags()) {
                 NProto::TReqSetTabletCellBundleResourceUsage request;
-                request.set_cell_tag(multicellManager->GetCellTag().Underlying());
+                request.set_cell_tag(ToProto(multicellManager->GetCellTag()));
 
                 fillBundles(request, cellTag);
 
@@ -6296,7 +6321,7 @@ private:
             }
         } else {
             NProto::TReqSetTabletCellBundleResourceUsage request;
-            request.set_cell_tag(multicellManager->GetCellTag().Underlying());
+            request.set_cell_tag(ToProto(multicellManager->GetCellTag()));
 
             fillBundles(request, /*cellTag*/ {});
 
@@ -6690,11 +6715,11 @@ private:
             if (auto overrideTimestamp = transactionManager->GetTimestampHolderTimestamp(
                 chunkView->GetTransactionId()))
             {
-                viewDescriptor->set_override_timestamp(overrideTimestamp);
+                viewDescriptor->set_override_timestamp(ToProto(overrideTimestamp));
             }
 
             if (auto maxClipTimestamp = chunkView->GetMaxClipTimestamp()) {
-                viewDescriptor->set_max_clip_timestamp(maxClipTimestamp);
+                viewDescriptor->set_max_clip_timestamp(ToProto(maxClipTimestamp));
             }
         } else {
             chunk = chunkOrView->AsChunk();
@@ -6819,7 +6844,7 @@ private:
         ToProto(descriptor->mutable_replica_id(), replica->GetId());
         descriptor->set_cluster_name(replica->GetClusterName());
         descriptor->set_replica_path(replica->GetReplicaPath());
-        descriptor->set_start_replication_timestamp(replica->GetStartReplicationTimestamp());
+        descriptor->set_start_replication_timestamp(ToProto(replica->GetStartReplicationTimestamp()));
         descriptor->set_mode(ToProto(replica->GetMode()));
         descriptor->set_preserve_timestamps(replica->GetPreserveTimestamps());
         descriptor->set_atomicity(ToProto(replica->GetAtomicity()));
@@ -6836,7 +6861,7 @@ private:
             statistics.committed_replication_row_index()));
         info->SetCurrentReplicationTimestamp(std::max(
             info->GetCurrentReplicationTimestamp(),
-            statistics.current_replication_timestamp()));
+            FromProto<NTransactionClient::TTimestamp>(statistics.current_replication_timestamp())));
     }
 };
 

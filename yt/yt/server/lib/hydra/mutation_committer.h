@@ -24,9 +24,10 @@
 #include <yt/yt/core/logging/log.h>
 
 #include <yt/yt/core/misc/mpsc_queue.h>
-#include <yt/yt/core/misc/ring_queue.h>
 
 #include <yt/yt/library/tracing/async_queue_trace.h>
+
+#include <library/cpp/yt/containers/ring_queue.h>
 
 namespace NYT::NHydra {
 
@@ -40,7 +41,6 @@ struct TMutationDraft
 };
 
 using TMutationDraftQueue = TMpscQueue<TMutationDraft>;
-using TMutationDraftQueuePtr = TIntrusivePtr<TMutationDraftQueue>;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -114,7 +114,6 @@ public:
         const TDistributedHydraManagerOptions& options,
         TDecoratedAutomatonPtr decoratedAutomaton,
         TLeaderLeasePtr leaderLease,
-        TMutationDraftQueuePtr mutationDraftQueue,
         IChangelogPtr changelog,
         TReachableState reachableState,
         TEpochContext* epochContext,
@@ -136,17 +135,21 @@ public:
     void Start();
     void Stop();
 
-    void SerializeMutations();
+    //! True between Start() and Stop(): the manager's pump only forwards drafts to an
+    //! active committer (otherwise it drops them).
+    bool IsActive() const;
+
+    void SerializeMutations(TMutationDraftQueue* mutationDraftQueue);
 
     void BuildMonitoring(NYTree::TFluentMap fluent);
 
 private:
-    const TMutationDraftQueuePtr MutationDraftQueue_;
     const TLeaderLeasePtr LeaderLease_;
 
     const NConcurrency::TPeriodicExecutorPtr FlushMutationsExecutor_;
-    const NConcurrency::TPeriodicExecutorPtr SerializeMutationsExecutor_;
     const NConcurrency::TPeriodicExecutorPtr CheckpointCheckExecutor_;
+
+    bool Active_ = false;
 
     struct TPeerState
     {

@@ -943,7 +943,7 @@ class TestSequoiaReplicas(YTEnvSetup):
 
     @authors("grphil")
     def test_fill_replicas_using_validation_heartbeat_fixes(self):
-        if get("//sys/@config/chunk_manager/sequoia_chunk_replicas/blob_chunk_replicas/store_sequoia_replicas_on_master"):
+        if not get("//sys/@config/chunk_manager/sequoia_chunk_replicas/blob_chunk_replicas/store_sequoia_replicas_on_master"):
             pytest.skip("store_sequoia_replicas_on_master is enabled")
 
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/enable", False)
@@ -961,6 +961,9 @@ class TestSequoiaReplicas(YTEnvSetup):
         for chunk_id in chunk_ids:
             wait(lambda: len(get(f"#{chunk_id}/@stored_replicas")) == 3)
 
+        set("//sys/@config/chunk_manager/data_node_tracker/enable_validation_full_heartbeats", False)
+        time.sleep(1)
+
         set("//sys/@config/cell_master/logging/message_level_overrides",
             {
                 "Sequoia replicas validation failed": "debug",
@@ -968,6 +971,8 @@ class TestSequoiaReplicas(YTEnvSetup):
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/fix_sequoia_replicas_if_replica_validation_failed", True)
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/enable", True)
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/blob_chunk_replicas/store_in_sequoia", True)
+
+        set("//sys/@config/chunk_manager/data_node_tracker/enable_validation_full_heartbeats", True)
 
         time.sleep(2)
 
@@ -1349,6 +1354,64 @@ class TestSequoiaReplicasProcessRemovedSequoiaReplicasOnMaster(TestSequoiaReplic
 
     def teardown_method(self, method):
         super(TestSequoiaReplicasProcessRemovedSequoiaReplicasOnMaster, self).teardown_method(method)
+
+
+class TestGhostSequoiaReplicas(YTEnvSetup):
+    USE_SEQUOIA = True
+    ENABLE_MULTIDAEMON = False  # There are component restarts.
+
+    DELTA_DYNAMIC_MASTER_CONFIG = {
+        "chunk_manager": {
+            "replica_approve_timeout": 5000,
+            "sequoia_chunk_replicas": {
+                "enable_in_ghost_mode": True,
+                "ghost_validation_heartbeats": True,
+            },
+        }
+    }
+
+    @authors("grphil")
+    @pytest.mark.parametrize("enable_incremental_heartbeats", [True, False])
+    @pytest.mark.parametrize("restart_nodes", [True, False])
+    def test_chunk_created_and_removed(self, enable_incremental_heartbeats, restart_nodes):
+        if enable_incremental_heartbeats:
+            set("//sys/@config/chunk_manager/sequoia_chunk_replicas/ghost_incremental_heartbeats", True)
+        if restart_nodes:
+            set("//sys/@config/chunk_manager/sequoia_chunk_replicas/ghost_full_heartbeats", True)
+
+        create("table", "//tmp/t")
+        write_table("//tmp/t", {"a": "b"})
+        chunk = get_singular_chunk_id("//tmp/t")
+
+        def check_has_replicas_in_sequoia(expected):
+            rows = select_rows_from_ground(f"* from [{DESCRIPTORS.chunk_replicas.get_default_path()}]")
+            for row in rows:
+                if row["chunk_id"] != chunk:
+                    continue
+                return len(row["stored_replicas"]) == expected
+            return False
+
+        # All replicas of chunk should be in sequoia even if heartbeats fail, because of repeating validation heartbeats
+        wait(lambda: check_has_replicas_in_sequoia(3))
+
+        if restart_nodes:
+            with Restarter(self.Env, NODES_SERVICE):
+                # Disposal is unsupported in ghost mode, so replicas should remain in sequoia
+                wait(lambda: check_has_replicas_in_sequoia(3))
+        wait(lambda: check_has_replicas_in_sequoia(3))
+
+        set("//sys/@config/chunk_manager/sequoia_chunk_replicas/ghost_empty_validation_heartbeats", True)
+        set("//sys/@config/chunk_manager/sequoia_chunk_replicas/ghost_validation_heartbeats", False)
+
+        wait(lambda: check_has_replicas_in_sequoia(0))
+
+        set("//sys/@config/chunk_manager/sequoia_chunk_replicas/ghost_validation_heartbeats", True)
+        set("//sys/@config/chunk_manager/sequoia_chunk_replicas/ghost_empty_validation_heartbeats", False)
+
+        wait(lambda: check_has_replicas_in_sequoia(3))
+
+        remove("//tmp/t")
+        wait(lambda: check_has_replicas_in_sequoia(0))
 
 
 class TestSequoiaQueues(YTEnvSetup):

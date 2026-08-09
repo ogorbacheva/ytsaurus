@@ -68,6 +68,7 @@ TWriteResponse DoWriteAligned(
     const TWriteRequest& request,
     int directIoBlockSize,
     i64 maxBytesPerWrite,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors,
     TSharedMutableRef hugePageBlob);
 
@@ -75,15 +76,18 @@ TWriteResponse DoWriteImpl(
     const TWriteRequest& request,
     i64 maxBytesPerWrite,
     std::optional<i64> simulatedMaxBytesPerWrite,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors,
     bool enablePwritev);
 TFlushFileResponse DoFlushFile(
     const TFlushFileRequest& request,
     bool enableSync,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors);
 TFlushFileRangeResponse DoFlushFileRange(
     const TFlushFileRangeRequest& request,
     bool enableSync,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors);
 
 TSharedMutableRef UnwrapAlignedBuffer(const TReadRequest& request, TSharedMutableRef& buffer, int blockSize)
@@ -240,7 +244,7 @@ TInternalReadResponse DoRead(
             i64 toRead = AlignUp<i64>(Min<i64>(toReadRemaining, AlignDown<i64>(maxBytesPerRead, blockSize)), blockSize);
             i64 reallyRead = -1;
             bool hugePageAvailable = hugePageBlob && static_cast<i64>(hugePageBlob.Size()) >= toRead;
-            TRequestStatsGuard statsGuard(sensors->ReadSensors, hugePageAvailable);
+            TRequestStatsGuard statsGuard(sensors->ReadSensors[category], hugePageAvailable);
             NTracing::TNullTraceContextGuard nullTraceContextGuard;
 
             if (hugePageAvailable) {
@@ -269,7 +273,7 @@ TInternalReadResponse DoRead(
             ++response.IORequests;
 
             if (reallyRead > 0) {
-                sensors->RegisterReadBytes(reallyRead);
+                sensors->RegisterReadBytes(reallyRead, category);
             }
 
             YT_LOG_DEBUG_IF(category == EWorkloadCategory::UserInteractive,
@@ -342,6 +346,7 @@ TWriteResponse DoWrite(
     bool asyncFlush,
     bool enableSync,
     std::optional<i64> simulatedMaxBytesPerWrite,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors,
     TSharedMutableRef hugePageBlob,
     bool enablePwritev)
@@ -353,6 +358,7 @@ TWriteResponse DoWrite(
             request,
             directIoBlockSize,
             maxBytesPerWrite,
+            category,
             sensors,
             hugePageBlob);
     } else {
@@ -360,6 +366,7 @@ TWriteResponse DoWrite(
             request,
             maxBytesPerWrite,
             simulatedMaxBytesPerWrite,
+            category,
             sensors,
             enablePwritev);
     }
@@ -373,6 +380,7 @@ TWriteResponse DoWrite(
                 .Async = !syncFlush && asyncFlush,
             },
             enableSync,
+            category,
             sensors);
 
         writeResponse.IOSyncRequests += flushFileRangeResponse.IOSyncRequests;
@@ -385,6 +393,7 @@ TWriteResponse DoWriteAligned(
     const TWriteRequest& request,
     int directIoBlockSize,
     i64 maxBytesPerWrite,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors,
     TSharedMutableRef hugePageBlob)
 {
@@ -426,7 +435,7 @@ TWriteResponse DoWriteAligned(
 
             i32 reallyWritten;
             {
-                TRequestStatsGuard statsGuard(sensors->WriteSensors, /*usingHugePages*/ true);
+                TRequestStatsGuard statsGuard(sensors->WriteSensors[category], /*usingHugePages*/ true);
                 NTracing::TNullTraceContextGuard nullTraceContextGuard;
                 reallyWritten = HandleEintr(::pwrite, *request.Handle, const_cast<char*>(buffer.Begin()) + bufferOffset, toWrite, fileOffset);
             }
@@ -435,7 +444,7 @@ TWriteResponse DoWriteAligned(
                 ythrow TFileError();
             }
 
-            sensors->RegisterWrittenBytes(reallyWritten);
+            sensors->RegisterWrittenBytes(reallyWritten, category);
             fileOffset += reallyWritten;
             bufferOffset += reallyWritten;
             toWriteRemaining -= reallyWritten;
@@ -456,6 +465,7 @@ TWriteResponse DoWriteImpl(
     const TWriteRequest& request,
     i64 maxBytesPerWrite,
     std::optional<i64> simulatedMaxBytesPerWrite,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors,
     bool enablePwritev)
 {
@@ -512,7 +522,7 @@ TWriteResponse DoWriteImpl(
 
                 i64 reallyWritten;
                 {
-                    TRequestStatsGuard statsGuard(sensors->WriteSensors);
+                    TRequestStatsGuard statsGuard(sensors->WriteSensors[category]);
                     NTracing::TNullTraceContextGuard nullTraceContextGuard;
                     reallyWritten = HandleEintr(::pwritev, *request.Handle, iov.data(), iovCount, fileOffset);
                 }
@@ -521,7 +531,7 @@ TWriteResponse DoWriteImpl(
                     ythrow TFileError();
                 }
 
-                sensors->RegisterWrittenBytes(reallyWritten);
+                sensors->RegisterWrittenBytes(reallyWritten, category);
                 if (simulatedMaxBytesPerWrite) {
                     reallyWritten = Min(reallyWritten, *simulatedMaxBytesPerWrite);
                 }
@@ -549,7 +559,7 @@ TWriteResponse DoWriteImpl(
 
                 i32 reallyWritten;
                 {
-                    TRequestStatsGuard statsGuard(sensors->WriteSensors);
+                    TRequestStatsGuard statsGuard(sensors->WriteSensors[category]);
                     NTracing::TNullTraceContextGuard nullTraceContextGuard;
                     reallyWritten = HandleEintr(::pwrite, *request.Handle, const_cast<char*>(buffer.Begin()) + bufferOffset, toWrite, fileOffset);
                 }
@@ -558,7 +568,7 @@ TWriteResponse DoWriteImpl(
                     ythrow TFileError();
                 }
 
-                sensors->RegisterWrittenBytes(reallyWritten);
+                sensors->RegisterWrittenBytes(reallyWritten, category);
                 fileOffset += reallyWritten;
                 bufferOffset += reallyWritten;
                 toWriteRemaining -= reallyWritten;
@@ -586,6 +596,7 @@ TWriteResponse DoWriteImpl(
 TFlushFileResponse DoFlushFile(
     const TFlushFileRequest& request,
     bool enableSync,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors)
 {
     TFlushFileResponse response;
@@ -596,13 +607,13 @@ TFlushFileResponse DoFlushFile(
     }
 
     auto doFsync = [&] {
-        TRequestStatsGuard statsGuard(sensors->SyncSensors);
+        TRequestStatsGuard statsGuard(sensors->SyncSensors[category]);
         return HandleEintr(::fsync, *request.Handle);
     };
 
 #ifdef _linux_
     auto doFdatasync = [&] {
-        TRequestStatsGuard statsGuard(sensors->DataSyncSensors);
+        TRequestStatsGuard statsGuard(sensors->DataSyncSensors[category]);
         return HandleEintr(::fdatasync, *request.Handle);
     };
 #else
@@ -635,6 +646,7 @@ TFlushFileResponse DoFlushFile(
 TFlushFileRangeResponse DoFlushFileRange(
     const TFlushFileRangeRequest& request,
     bool enableSync,
+    EWorkloadCategory category,
     const TIOEngineSensorsPtr& sensors)
 {
     TFlushFileRangeResponse response;
@@ -649,7 +661,7 @@ TFlushFileRangeResponse DoFlushFileRange(
         NTracing::TNullTraceContextGuard nullTraceContextGuard;
         int result = 0;
         {
-            TRequestStatsGuard statsGuard(sensors->DataSyncSensors);
+            TRequestStatsGuard statsGuard(sensors->DataSyncSensors[category]);
             const auto flags = request.Async
                 ? SYNC_FILE_RANGE_WRITE
                 : SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER;
@@ -998,7 +1010,7 @@ public:
                         std::move(slice.Request),
                         std::move(slice.OutputBuffer),
                         TWallTimer(),
-                        CreateInFlightRequestGuard(EIOEngineRequestType::Read));
+                        CreateInFlightRequestGuard(EIOEngineRequestType::Read, category));
                 futures.push_back(std::move(future));
             }
         }
@@ -1055,6 +1067,7 @@ public:
                     config->AsyncFlushAfterWrite,
                     config->EnableSync,
                     config->SimulatedMaxBytesPerWrite,
+                    category,
                     Sensors_,
                     writeBlob,
                     config->EnablePwritev);
@@ -1063,7 +1076,7 @@ public:
                 .Run(
                     std::move(slice),
                     TWallTimer(),
-                    CreateInFlightRequestGuard(EIOEngineRequestType::Write));
+                    CreateInFlightRequestGuard(EIOEngineRequestType::Write, category));
             futures.push_back(std::move(future));
         }
 
@@ -1085,7 +1098,7 @@ public:
         TFlushFileRequest request,
         EWorkloadCategory category) override
     {
-        return BIND(&DoFlushFile, std::move(request), StaticConfig_->EnableSync, Sensors_)
+        return BIND(&DoFlushFile, std::move(request), StaticConfig_->EnableSync, category, Sensors_)
             .AsyncVia(ThreadPool_.GetWriteInvoker(category, {}))
             .Run();
     }
@@ -1099,7 +1112,7 @@ public:
         auto config = Config_.Acquire();
         for (auto& slice : GetRequestSlicer().Slice(std::move(request), config->DirectIOBlockSize)) {
             futures.push_back(
-                BIND(&DoFlushFileRange, std::move(slice), StaticConfig_->EnableSync, Sensors_)
+                BIND(&DoFlushFileRange, std::move(slice), StaticConfig_->EnableSync, category, Sensors_)
                     .AsyncVia(ThreadPool_.GetWriteInvoker(category, sessionId))
                     .Run());
         }
@@ -1228,7 +1241,7 @@ public:
                     timer = TWallTimer(),
                     category = category,
                     sessionId = sessionId,
-                    requestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Read)] () mutable {
+                    requestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Read, category)] () mutable {
                     const auto readWaitTime = timer.GetElapsedTime();
                     AddReadWaitTimeSample(readWaitTime);
 
@@ -1289,7 +1302,7 @@ public:
 
     TFuture<TWriteResponse> Write(
         TWriteRequest request,
-        EWorkloadCategory /*category*/,
+        EWorkloadCategory category,
         TIOSessionId /*sessionId*/) override
     {
         YT_ASSERT(request.Handle);
@@ -1320,7 +1333,7 @@ public:
                 this_ = MakeStrong(this),
                 request = std::move(slice),
                 timer = TWallTimer(),
-                requestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Write)] () mutable {
+                requestCounterGuard = CreateInFlightRequestGuard(EIOEngineRequestType::Write, category)] () mutable {
                 AddWriteWaitTimeSample(timer.GetElapsedTime());
                 TSharedMutableRef writeBlob;
                 if (request.Handle->IsOpenForDirectIO()) {
@@ -1335,6 +1348,7 @@ public:
                     config->AsyncFlushAfterWrite,
                     config->EnableSync,
                     config->SimulatedMaxBytesPerWrite,
+                    category,
                     Sensors_,
                     writeBlob,
                     config->EnablePwritev);
@@ -1371,7 +1385,7 @@ public:
 
     TFuture<TFlushFileResponse> FlushFile(
         TFlushFileRequest request,
-        EWorkloadCategory /*category*/) override
+        EWorkloadCategory category) override
     {
         auto slotId = request.FairShareSlotId;
         auto requestId = TGuid::Create();
@@ -1379,7 +1393,7 @@ public:
             slotId,
             requestId,
             EFairShareIOEngineRequestType::Flush);
-        auto callback = BIND(&DoFlushFile, std::move(request), StaticConfig_->EnableSync, Sensors_);
+        auto callback = BIND(&DoFlushFile, std::move(request), StaticConfig_->EnableSync, category, Sensors_);
         auto future = promise.ToFuture();
         auto guard = Guard(Lock_);
 
@@ -1401,7 +1415,7 @@ public:
 
     TFuture<TFlushFileRangeResponse> FlushFileRange(
         TFlushFileRangeRequest request,
-        EWorkloadCategory /*category*/,
+        EWorkloadCategory category,
         TIOSessionId /*sessionId*/) override
     {
         std::vector<TFuture<TFlushFileRangeResponse>> futures;
@@ -1419,7 +1433,7 @@ public:
 
             futures.push_back(promise.ToFuture());
 
-            auto callback = BIND(&DoFlushFileRange, std::move(slice), StaticConfig_->EnableSync, Sensors_);
+            auto callback = BIND(&DoFlushFileRange, std::move(slice), StaticConfig_->EnableSync, category, Sensors_);
 
             EmplaceOrCrash(
                 FlushFileRangeRequestStorage_,

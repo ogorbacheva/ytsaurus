@@ -46,7 +46,7 @@ void TPermissionChecker<TAccessControlEntry, TCallback>::ProcessAce(
     if (ace.Columns) {
         for (const auto& column : *ace.Columns) {
             // NB: Multiple occurrences are possible.
-            ColumnToResult_.emplace(column, TPermissionCheckResult{.ObjectId = objectId});
+            ColumnToResult_.emplace(column, TPermissionCheckResult{});
         }
     }
 
@@ -143,33 +143,41 @@ TPermissionCheckResponse TPermissionChecker<TAccessControlEntry, TCallback>::Get
                 result = static_cast<const TPermissionCheckResult>(Response_);
             } else {
                 result = it->second;
-                if (result.Action == NSecurityClient::ESecurityAction::Undefined && !FullReadExplicitlyGranted_) {
-                    result.Action = NSecurityClient::ESecurityAction::Deny;
-                    if (!deniedColumnResult) {
-                        deniedColumnResult = result;
+                if (result.Action == NSecurityClient::ESecurityAction::Undefined) {
+                    if (FullReadExplicitlyGranted_) {
+                        // An explicit "full_read" grant covers every column, so fall back
+                        // to the (allowing) object-level result.
+                        result = static_cast<const TPermissionCheckResult>(Response_);
+                    } else {
+                        result.Action = NSecurityClient::ESecurityAction::Deny;
+                        if (!deniedColumnResult) {
+                            deniedColumnResult = result;
+                        }
                     }
                 }
-            }
-        }
-
-        if (FullReadRequested_) {
-            for (const auto& [column, result] : ColumnToResult_) {
-                if (result.Action == NSecurityClient::ESecurityAction::Deny ||
-                    (result.Action == NSecurityClient::ESecurityAction::Undefined && !FullReadExplicitlyGranted_))
-                {
-                    Response_.DeniedColumnResult = result;
-                    Response_.DeniedColumnResult->Action = NSecurityClient::ESecurityAction::Deny;
-                    break;
-                }
-            }
-            if (CheckAllAceColumnsFullRead_) {
-                deniedColumnResult = Response_.DeniedColumnResult;
             }
         }
 
         if (FullReadRequested_ && deniedColumnResult) {
             RequestedFullReadButReadIsDenied_ = false;
             SetDeny(deniedColumnResult->SubjectId, deniedColumnResult->ObjectId);
+        }
+    }
+
+    // COMPAT(danilalexeev)
+    if (Response_.Action == NSecurityClient::ESecurityAction::Allow && FullReadRequested_) {
+        for (const auto& [column, result] : ColumnToResult_) {
+            if (result.Action == NSecurityClient::ESecurityAction::Deny ||
+                (result.Action == NSecurityClient::ESecurityAction::Undefined && !FullReadExplicitlyGranted_))
+            {
+                Response_.DeniedColumnResult = result;
+                Response_.DeniedColumnResult->Action = NSecurityClient::ESecurityAction::Deny;
+                if (CheckAllAceColumnsFullRead_) {
+                    RequestedFullReadButReadIsDenied_ = false;
+                    SetDeny(result.SubjectId, result.ObjectId);
+                }
+                break;
+            }
         }
     }
 
@@ -299,7 +307,7 @@ void TSubtreePermissionChecker<TAccessControlEntry, TCallback>::TrackAce(
     }
 
     auto subjectId = MatchAceSubjectCallback_(*ace);
-    if (!subjectId && !ace->RowAccessPredicate) {
+    if (!subjectId && !ace->RowAccessPredicate && !ace->Columns) {
         return;
     }
 

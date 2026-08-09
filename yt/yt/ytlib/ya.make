@@ -181,6 +181,7 @@ SRCS(
     chunk_client/helpers.cpp
     chunk_client/input_chunk_slice.cpp
     chunk_client/input_chunk.cpp
+    chunk_client/job_io_meter.cpp
     GLOBAL chunk_client/job_spec_extensions.cpp
     chunk_client/legacy_data_slice.cpp
     chunk_client/medium_directory_synchronizer.cpp
@@ -383,6 +384,8 @@ SRCS(
     push_based_shuffle_client/session_provider.cpp
     push_based_shuffle_client/partition_reader.cpp
     push_based_shuffle_client/shuffle_writer.cpp
+    push_based_shuffle_client/sort_reader.cpp
+    push_based_shuffle_client/sorted_merging_reader.cpp
 
     query_client/executor.cpp
     query_client/explain.cpp
@@ -422,6 +425,7 @@ SRCS(
     security_client/helpers.cpp
     security_client/permission_cache.cpp
     security_client/public.cpp
+    security_client/query_pool_permission_cache.cpp
     security_client/user_attribute_cache.cpp
 
     security_client/proto/account_ypath.proto
@@ -824,9 +828,10 @@ PEERDIR(
     library/cpp/erasure
     library/cpp/iterator
     library/cpp/yt/backtrace/symbolizers/dwarf
-    library/cpp/containers/absl_flat_hash
+    library/cpp/containers/absl
     yt/yt/library/erasure/impl
     yt/yt/library/containers
+    yt/yt/library/discovery_client
     yt/yt/library/disk_manager
     yt/yt/library/process
     yt/yt/library/random
@@ -856,17 +861,15 @@ PEERDIR(
     yt/yt/library/vector_hdrf
     yt/yt/library/web_assembly/api
     yt/yt/ytlib/admin
-    yt/yt/ytlib/discovery_client
     yt/yt/ytlib/query_tracker_client
     yt/yt_proto/yt/client
-    yt/yt/flow/lib/client
-    yt/yt/flow/lib/native_client
+    yt/yt/flow/library/cpp/client
+    yt/yt/flow/library/cpp/native_client
 )
 
 END()
 
 RECURSE(
-    discovery_client
     distributed_throttler
 )
 

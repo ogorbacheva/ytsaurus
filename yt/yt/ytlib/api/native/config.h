@@ -18,7 +18,7 @@
 
 #include <yt/yt/ytlib/offshore_data_gateway/public.h>
 
-#include <yt/yt/ytlib/discovery_client/public.h>
+#include <yt/yt/library/discovery_client/public.h>
 
 #include <yt/yt/ytlib/scheduler/public.h>
 
@@ -416,7 +416,7 @@ struct TConnectionDynamicConfig
 
     bool DisableAdaptiveOrderedSchemafulReader;
 
-    bool UseWebAssembly;
+    bool AllowWebAssembly;
 
     // COMPAT(sabdenovch)
     bool GroupByWithLimitIsUnordered;

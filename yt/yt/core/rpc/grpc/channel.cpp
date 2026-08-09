@@ -180,7 +180,7 @@ public:
         if (!TerminationError_.IsOK()) {
             auto error = TerminationError_;
             guard.Release();
-            responseHandler->HandleError(std::move(error));
+            responseHandler->HandleError(std::move(error), EndpointAddress_);
             return nullptr;
         }
         auto callHandler = New<TCallHandler>(
@@ -283,11 +283,10 @@ private:
 
         void Initialize()
         {
-            YT_LOG_DEBUG("Sending request (RequestId: %v, Method: %v.%v, Timeout: %v)",
-                Request_->GetRequestId(),
-                Request_->GetService(),
-                Request_->GetMethod(),
-                Options_.Timeout);
+            YT_TLOG_DEBUG("Sending request")
+                .With("RequestId", Request_->GetRequestId())
+                .WithFormat("Method", "%v.%v", Request_->GetService(), Request_->GetMethod())
+                .With("Timeout", Options_.Timeout);
 
             {
                 auto completionQueueGuard = GuardedCompletionQueue_->TryLock();
@@ -458,7 +457,8 @@ private:
             auto result = grpc_call_cancel(Call_.Unwrap(), nullptr);
             YT_VERIFY(result == GRPC_CALL_OK);
 
-            YT_LOG_DEBUG("Request canceled (RequestId: %v)", Request_->GetRequestId());
+            YT_TLOG_DEBUG("Request canceled")
+                .With("RequestId", Request_->GetRequestId());
 
             NotifyError(
                 TStringBuf("Request canceled"),
@@ -556,10 +556,9 @@ private:
                 return;
             }
 
-            YT_LOG_DEBUG("Request sent (RequestId: %v, Method: %v.%v)",
-                Request_->GetRequestId(),
-                Request_->GetService(),
-                Request_->GetMethod());
+            YT_TLOG_DEBUG("Request sent")
+                .With("RequestId", Request_->GetRequestId())
+                .WithFormat("Method", "%v.%v", Request_->GetService(), Request_->GetMethod());
 
             ProfileRequest(RequestBody_);
 
@@ -586,8 +585,8 @@ private:
             }
 
             ProfileAcknowledgement();
-            YT_LOG_DEBUG("Initial response metadata received (RequestId: %v)",
-                Request_->GetRequestId());
+            YT_TLOG_DEBUG("Initial response metadata received")
+                .With("RequestId", Request_->GetRequestId());
 
             Stage_ = EClientCallStage::ReceivingResponse;
 
@@ -725,7 +724,7 @@ private:
                 reason,
                 Request_->GetRequestId());
 
-            responseHandler->HandleError(std::move(detailedError));
+            responseHandler->HandleError(std::move(detailedError), Owner_->GetEndpointAddress());
         }
 
         void NotifyResponse(TSharedRefArray message)
@@ -736,11 +735,10 @@ private:
             }
 
             auto elapsed = ProfileComplete();
-            YT_LOG_DEBUG("Response received (RequestId: %v, Method: %v.%v, TotalTime: %v)",
-                Request_->GetRequestId(),
-                Request_->GetService(),
-                Request_->GetMethod(),
-                elapsed);
+            YT_TLOG_DEBUG("Response received")
+                .With("RequestId", Request_->GetRequestId())
+                .WithFormat("Method", "%v.%v", Request_->GetService(), Request_->GetMethod())
+                .With("TotalTime", elapsed);
 
             responseHandler->HandleResponse(
                 std::move(message),
@@ -757,12 +755,21 @@ class TChannelFactory
     : public IChannelFactory
 {
 public:
+    explicit TChannelFactory(TChannelFactoryConfigPtr config)
+        : FactoryConfig_(std::move(config))
+    { }
+
     IChannelPtr CreateChannel(const std::string& address) override
     {
-        auto config = New<TChannelConfig>();
-        config->Address = address;
-        return CreateGrpcChannel(config);
+        auto channelConfig = New<TChannelConfig>();
+        channelConfig->Load(ConvertToNode(FactoryConfig_), /*postprocess*/ false, /*setDefaults*/ false);
+        channelConfig->Address = address;
+        channelConfig->Postprocess();
+        return CreateGrpcChannel(channelConfig);
     }
+
+private:
+    const TChannelFactoryConfigPtr FactoryConfig_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -774,9 +781,14 @@ IGrpcChannelPtr CreateGrpcChannel(TChannelConfigPtr config)
     return New<TChannel>(std::move(config));
 }
 
-IChannelFactoryPtr GetGrpcChannelFactory()
+IChannelFactoryPtr CreateGrpcChannelFactory(TChannelFactoryConfigPtr config)
 {
-    return LeakyRefCountedSingleton<TChannelFactory>();
+    return New<TChannelFactory>(std::move(config));
+}
+
+IChannelFactoryPtr GetDefaultGrpcChannelFactory()
+{
+    return LeakyRefCountedSingleton<TChannelFactory>(New<TChannelFactoryConfig>());
 }
 
 ////////////////////////////////////////////////////////////////////////////////

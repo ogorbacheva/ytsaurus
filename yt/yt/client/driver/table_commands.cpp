@@ -64,8 +64,7 @@ NLogging::TLogger WithCommandTag(
     const NLogging::TLogger& logger,
     const ICommandContextPtr& context)
 {
-    return logger.WithTag("Command: %v",
-        context->Request().CommandName);
+    return logger.WithTag("Command", context->Request().CommandName);
 }
 
 } // namespace
@@ -712,6 +711,13 @@ void TReshardTableCommand::Register(TRegistrar registrar)
         "trimmed_row_counts",
         [] (TThis* command) -> auto& {
             return command->Options.TrimmedRowCounts;
+        })
+        .Default();
+
+    registrar.ParameterWithUniversalAccessor<std::vector<i64>>(
+        "cumulative_data_weights",
+        [] (TThis* command) -> auto& {
+            return command->Options.CumulativeDataWeights;
         })
         .Default();
 

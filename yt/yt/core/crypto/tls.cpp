@@ -310,7 +310,7 @@ public:
 
     void StartClient(bool insecureSkipVerify)
     {
-        YT_LOG_WARNING_IF(insecureSkipVerify, "Started insecure TLS client connection");
+        YT_TLOG_WARNING_IF(insecureSkipVerify, "Started insecure TLS client connection");
         if (!insecureSkipVerify) {
             // Require and verify server certificate.
             SSL_set_verify(Ssl_.get(), SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
@@ -544,13 +544,12 @@ private:
     void HandleUnderlyingIOResult(TFuture<T> future, TCallback<void(const TErrorOr<T>&)> handler)
     {
         future.Subscribe(BIND([handler = std::move(handler), invoker = Invoker_] (const TErrorOr<T>& result) {
-            GuardedInvoke(
-                std::move(invoker),
+            invoker->Invoke(MakeGuardedCallback(
                 BIND(handler, result),
                 BIND([=] {
                     TError error("Poller terminated");
                     handler(error);
-                }));
+                })));
         }));
     }
 
@@ -629,7 +628,8 @@ private:
                     MaybeStartUnderlyingIO(true);
                 } else {
                     Error_ = GetLastSslError("SSL_do_handshake failed");
-                    YT_LOG_DEBUG(Error_, "TLS handshake failed");
+                    YT_TLOG_DEBUG("TLS handshake failed")
+                        .With(Error_);
                     CheckError();
                     return;
                 }
@@ -647,7 +647,8 @@ private:
 
                 if (count < 0) {
                     Error_ = GetLastSslError("SSL_write failed");
-                    YT_LOG_DEBUG(Error_, "TLS write failed");
+                    YT_TLOG_DEBUG("TLS write failed")
+                        .With(Error_);
                     CheckError();
                     return;
                 }
@@ -678,7 +679,8 @@ private:
                     MaybeStartUnderlyingIO(true);
                 } else {
                     Error_ = GetLastSslError("SSL_read failed");
-                    YT_LOG_DEBUG(Error_, "TLS read failed");
+                    YT_TLOG_DEBUG("TLS read failed")
+                        .With(Error_);
                     CheckError();
                     return;
                 }
@@ -800,6 +802,7 @@ TInstant TSslContext::GetCommitTime() const
 void TSslContext::ApplyConfig(const TSslContextConfigPtr& config, TCertificatePathResolver pathResolver)
 {
     if (!config) {
+        UseDefaultOpenSslX509Store();
         return;
     }
 
@@ -837,9 +840,9 @@ void TSslContext::ApplyConfig(const TSslContextConfigPtr& config, TCertificatePa
     Impl_->SetInsecureSkipVerify(config->InsecureSkipVerify);
 }
 
-void TSslContext::UseBuiltinOpenSslX509Store()
+void TSslContext::UseDefaultOpenSslX509Store()
 {
-    SSL_CTX_set_cert_store(Impl_->GetContext(), GetBuiltinOpenSslX509Store().Release());
+    SSL_CTX_set_cert_store(Impl_->GetContext(), GetDefaultOpenSslX509Store().Release());
 }
 
 void TSslContext::SetCipherList(const std::string& list)
@@ -976,6 +979,8 @@ void TSslContext::AddCertificateAuthority(const TPemBlobConfigPtr& pem, TCertifi
 {
     if (pem) {
         AddCertificateAuthority(pem->LoadBlob(resolver));
+    } else {
+        UseDefaultOpenSslX509Store();
     }
 }
 

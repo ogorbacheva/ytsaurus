@@ -1061,7 +1061,7 @@ class TestLayerCacheEviction(TestLayerCacheBase):
         cache_missed_counter = profiler.counter("exec_node/layer_cache/missed_count")
         cache_hit_counter = profiler.with_tags({"hit_type": "sync"}).counter("exec_node/layer_cache/hit_count")
 
-        finished_job_counter = profiler.counter("job_controller/job_final_state")
+        finished_job_counter = profiler.with_tags({"origin": "scheduler"}).counter("job_controller/job_final_state")
 
         map(
             in_="//tmp/t_in",
@@ -1167,7 +1167,7 @@ class TestLayerCacheResurrection(TestLayerCacheBase):
         cache_missed_counter = profiler.counter("exec_node/layer_cache/missed_count")
         cache_hit_counter = profiler.with_tags({"hit_type": "sync"}).counter("exec_node/layer_cache/hit_count")
 
-        finished_job_counter = profiler.counter("job_controller/job_final_state")
+        finished_job_counter = profiler.with_tags({"origin": "scheduler"}).counter("job_controller/job_final_state")
 
         op1 = map(
             track=False,
@@ -1950,6 +1950,66 @@ class TestLocalSquashFSLayers(YTEnvSetup):
         for node in ls("//sys/cluster_nodes"):
             assert len(get("//sys/cluster_nodes/{}/@alerts".format(node))) == 0
 
+    @authors("yuryalekseev")
+    @pytest.mark.parametrize("access_method, filesystem", [
+        ("nbd", "archive"),
+        ("local", "ext3"),
+        ("local", "ext4"),
+    ])
+    def test_incompatible_access_method_and_filesystem(self, access_method, filesystem):
+        self.setup_files()
+
+        create("file", "//tmp/incompatible_layer", attributes={"replication_factor": 1})
+        write_file("//tmp/incompatible_layer", open("layers/squashfs.img", "rb").read())
+        set("//tmp/incompatible_layer/@access_method", access_method)
+        set("//tmp/incompatible_layer/@filesystem", filesystem)
+
+        create("table", "//tmp/t_in", attributes={"replication_factor": 1})
+        create("table", "//tmp/t_out", attributes={"replication_factor": 1})
+
+        write_table("//tmp/t_in", [{"k": 0, "u": 1, "v": 2}])
+        with raises_yt_error("Incompatible combination of access method"):
+            map(
+                in_="//tmp/t_in",
+                out="//tmp/t_out",
+                command="ls $YT_ROOT_FS 1>&2",
+                spec={
+                    "max_failed_job_count": 1,
+                    "mapper": {
+                        "layer_paths": ["//tmp/incompatible_layer"],
+                    },
+                },
+            )
+
+    @authors("yuryalekseev")
+    @pytest.mark.parametrize("attribute, value", [
+        ("access_method", "garbage"),
+        ("filesystem", "garbage"),
+    ])
+    def test_invalid_access_method_or_filesystem(self, attribute, value):
+        self.setup_files()
+
+        create("file", "//tmp/invalid_layer", attributes={"replication_factor": 1})
+        write_file("//tmp/invalid_layer", open("layers/squashfs.img", "rb").read())
+        set(f"//tmp/invalid_layer/@{attribute}", value)
+
+        create("table", "//tmp/t_in", attributes={"replication_factor": 1})
+        create("table", "//tmp/t_out", attributes={"replication_factor": 1})
+
+        write_table("//tmp/t_in", [{"k": 0, "u": 1, "v": 2}])
+        with raises_yt_error():
+            map(
+                in_="//tmp/t_in",
+                out="//tmp/t_out",
+                command="ls $YT_ROOT_FS 1>&2",
+                spec={
+                    "max_failed_job_count": 1,
+                    "mapper": {
+                        "layer_paths": ["//tmp/invalid_layer"],
+                    },
+                },
+            )
+
     @authors("pogorelov")
     def test_squashfs_layer_deduplication(self):
         self.setup_files()
@@ -1969,7 +2029,7 @@ class TestLocalSquashFSLayers(YTEnvSetup):
 
         finished_job_counter = profiler.with_tags({"origin": "scheduler"}).counter("job_controller/job_final_state")
         squashfs_volume_count = profiler.with_tags({"type": "squashfs"}).gauge("volumes/count")
-        assert not squashfs_volume_count.get()
+        wait(lambda: not squashfs_volume_count.get())
 
         initial_adding_log_count = len(self._get_node_debug_logs("Volume added to cache"))
         initial_removing_log_count = len(self._get_node_debug_logs("Volume removed from cache"))
@@ -2556,6 +2616,7 @@ class TestFailOperationAfterSuccessiveJobAbortsOnPrepareVolume(YTEnvSetup):
         "controller_agent": {
             "max_job_aborts_until_operation_failure": {
                 "root_volume_preparation_failed": 2,
+                "overlay_layer_preparation_failed": 2,
             },
         }
     }
@@ -2590,9 +2651,61 @@ class TestFailOperationAfterSuccessiveJobAbortsOnPrepareVolume(YTEnvSetup):
                 },
                 "slot_manager": {
                     "volume_manager": {
-                        "abort_on_operation_with_volume_failed": True,
-                        "abort_on_operation_with_layer_failed": True,
                         "throw_on_prepare_volume": True,
+                    },
+                }
+            },
+        })
+
+        with Restarter(self.Env, NODES_SERVICE):
+            pass
+
+        wait_for_nodes()
+
+        create("table", "//tmp/t_in")
+        create("table", "//tmp/t_out")
+
+        write_table("//tmp/t_in", [{"k": 0, "u": 1, "v": 2}])
+
+        with raises_yt_error("Operation failed due to excessive successive job aborts"):
+            map(
+                in_="//tmp/t_in",
+                out="//tmp/t_out",
+                command="ls $YT_ROOT_FS/dir 1>&2",
+                spec={
+                    "mapper": {
+                        "layer_paths": ["//tmp/squashfs.img"],
+                    },
+                },
+            )
+
+        # YT-14186: Corrupted user layer should not disable jobs on node.
+        for node in ls("//sys/cluster_nodes"):
+            assert len(get("//sys/cluster_nodes/{}/@alerts".format(node))) == 0
+
+    @authors("yuryalekseev")
+    def test_abort_on_prepare_layers(self):
+        self.setup_files()
+
+        update_nodes_dynamic_config({
+            "exec_node": {
+                "nbd": {
+                    "block_cache_compressed_data_capacity": 536870912,
+                    "client": {
+                        # Set read I/O timeout to 1 second
+                        "io_timeout": 1000,
+                        "connection_count": 2,
+                    },
+                    "enabled": True,
+                    "server": {
+                        "unix_domain_socket": {
+                            "path": _make_random_uds_path(),
+                        },
+                    },
+                },
+                "slot_manager": {
+                    "volume_manager": {
+                        "throw_on_prepare_layers": True,
                     },
                 }
             },

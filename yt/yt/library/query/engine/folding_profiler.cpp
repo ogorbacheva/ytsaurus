@@ -25,6 +25,8 @@ namespace {
 using NCodegen::EExecutionBackend;
 using NCodegen::EOptimizationLevel;
 
+using namespace NTableClient;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 DEFINE_ENUM(ESubqueryProfileMode,
@@ -793,6 +795,7 @@ size_t TExpressionProfiler::Profile(
         MakeCodegenReferenceExpr(
             indexInSchema,
             referenceExpr->GetWireType(),
+            referenceExpr->LogicalType->IsNullable(),
             referenceExpr->ColumnName),
         referenceExpr->GetWireType(),
         referenceExpr->LogicalType->IsNullable(),
@@ -1410,7 +1413,20 @@ size_t TExpressionProfiler::Profile(
         id.AddInteger(fromExprId);
         fromExprIds.push_back(fromExprId);
 
-        nestedColumns.emplace_back(name, expr->LogicalType->GetElement());
+
+        auto type = expr->LogicalType;
+        if (type->GetMetatype() == ELogicalMetatype::Optional) {
+            type = type->GetElement();
+        }
+
+        if (type->GetMetatype() != ELogicalMetatype::List) {
+            THROW_ERROR_EXCEPTION("Unexpected type instead of list")
+                << TErrorAttribute("column_name", name)
+                << TErrorAttribute("actual_type", type->GetMetatype());
+        }
+
+        nestedColumns.emplace_back(name, type->GetElement());
+
         fromTypes.push_back(nestedColumns.back().GetWireType());
     }
 
@@ -1717,7 +1733,8 @@ public:
         size_t* slotCount,
         size_t inputSlot,
         TTableSchemaPtr schema,
-        bool mergeMode);
+        bool mergeMode,
+        const TJoinProfilerRegistry& joinProfilerRegistry);
 
     void Profile(
         TCodegenSource* codegenSource,
@@ -1728,7 +1745,17 @@ public:
     void Profile(
         TCodegenSource* codegenSource,
         const TConstFrontQueryPtr& query,
-        size_t* slotCount);
+        size_t* slotCount,
+        const TJoinProfilerRegistry& joinProfilerRegistry);
+
+private:
+    void ProfileHierarchicalJoin(
+        TCodegenSource* codegenSource,
+        size_t* slotCount,
+        size_t* currentSlot,
+        TTableSchemaPtr* schema,
+        const TConstHierarchicalJoinClausePtr& hierarchicalJoin,
+        const TJoinProfilerRegistry& joinProfilerRegistry);
 
 protected:
     const i64 MaxJoinBatchSize_;
@@ -2013,7 +2040,8 @@ void TQueryProfiler::Profile(
     size_t* slotCount,
     size_t inputSlot,
     TTableSchemaPtr schema,
-    bool mergeMode)
+    bool mergeMode,
+    const TJoinProfilerRegistry& joinProfilerRegistry)
 {
     Fold(ExecutionBackend_);
     Fold(OptimizationLevel_);
@@ -2290,6 +2318,28 @@ void TQueryProfiler::Profile(
         MakeCodegenFragmentBodies(codegenSource, orderFragmentsInfos);
     }
 
+    if (auto derivedQuery = dynamic_cast<const TQuery*>(query.Get())) {
+        for (const auto& hierarchicalJoin : derivedQuery->HierarchicalJoinsAfterGroupBy) {
+            ProfileHierarchicalJoin(
+                codegenSource,
+                slotCount,
+                &aggregatedSlot,
+                &schema,
+                hierarchicalJoin,
+                joinProfilerRegistry);
+        }
+    } else if (auto derivedQuery = dynamic_cast<const TFrontQuery*>(query.Get())) {
+        for (const auto& hierarchicalJoin : derivedQuery->HierarchicalJoinsAfterGroupBy) {
+            ProfileHierarchicalJoin(
+                codegenSource,
+                slotCount,
+                &aggregatedSlot,
+                &schema,
+                hierarchicalJoin,
+                joinProfilerRegistry);
+        }
+    }
+
     if (auto projectClause = query->ProjectClause.Get()) {
         Fold(EFoldingObjectType::ProjectOp);
 
@@ -2444,6 +2494,93 @@ i64 InferRowWeightWithNoStrings(const TTableSchemaPtr& schema)
     }
 
     return result;
+}
+
+void TQueryProfiler::ProfileHierarchicalJoin(
+    TCodegenSource* codegenSource,
+    size_t* slotCount,
+    size_t* currentSlot,
+    TTableSchemaPtr* schema,
+    const TConstHierarchicalJoinClausePtr& hierarchicalJoin,
+    const TJoinProfilerRegistry& joinProfilerRegistry)
+{
+    Fold(EFoldingObjectType::HierarchicalJoinOp);
+    Fold(hierarchicalJoin->IsLeft);
+
+    const auto& buildDomainSubquery = hierarchicalJoin->SelfSideJoinKeys;
+
+    int closurePtrIndex = Variables_->AddOpaque<THierarchicalJoinClosure*>(nullptr);
+
+    auto buildDomainFragments = TExpressionFragments();
+    auto outerSchemaProvider = TReferenceProvider{*schema, {}, nullptr};
+    size_t buildDomainSubqueryExprId = TExpressionProfiler::Profile(
+        buildDomainSubquery.Get(),
+        &outerSchemaProvider,
+        &buildDomainFragments,
+        /*isolated=*/ false,
+        ESubqueryProfileMode::BuildDomainSubquery,
+        closurePtrIndex);
+
+    ++buildDomainFragments.Items[buildDomainSubqueryExprId].UseCount;
+    auto buildDomainFragmentInfos = buildDomainFragments.ToFragmentInfos("buildDomainSubquery");
+    buildDomainFragments.DumpArgs({buildDomainSubqueryExprId});
+    MakeCodegenFragmentBodies(codegenSource, buildDomainFragmentInfos);
+
+    auto selfKeyTypes = std::vector<EValueType>();
+    {
+        for (const auto& item : buildDomainSubquery->ProjectClause->Projections) {
+            selfKeyTypes.push_back(item.Expression->GetWireType());
+        }
+    }
+
+    int paramsIndex = Variables_->AddOpaque<TSingleJoinParameters>(TSingleJoinParameters{
+        .KeySize = hierarchicalJoin->ForeignEquations.size(),
+        .IsLeft = hierarchicalJoin->IsLeft,
+        .IsPartiallySorted = false,
+        .ForeignColumns = hierarchicalJoin->GetForeignColumnIndices(),
+        .JoinRowsProducer = joinProfilerRegistry.CreateHierarchicalJoinRowsProducer(hierarchicalJoin),
+    });
+
+    auto joiningSubqueryFragments = TExpressionFragments();
+    auto outerSchemaProviderForJoiningSubquery = TReferenceProvider{*schema, {}, nullptr};
+    size_t joiningSubqueryExprId = TExpressionProfiler::Profile(
+        hierarchicalJoin->JoiningSubquery.Get(),
+        &outerSchemaProviderForJoiningSubquery,
+        &joiningSubqueryFragments,
+        /*isolated*/ false,
+        ESubqueryProfileMode::JoiningSubquery,
+        closurePtrIndex,
+        paramsIndex);
+
+    ++joiningSubqueryFragments.Items[joiningSubqueryExprId].UseCount;
+    auto joiningSubqueryFragmentInfos = joiningSubqueryFragments.ToFragmentInfos("joiningSubquery");
+    joiningSubqueryFragments.DumpArgs({joiningSubqueryExprId});
+    MakeCodegenFragmentBodies(codegenSource, joiningSubqueryFragmentInfos);
+
+    auto primaryRowTypes = std::vector<EValueType>();
+    {
+        for (const auto& column : (*schema)->Columns()) {
+            primaryRowTypes.push_back(column.GetWireType());
+        }
+    }
+
+    Fold(primaryRowTypes.size());
+    *currentSlot = NHierarchicalJoin::MakeCodegenJoinOp(
+        codegenSource,
+        slotCount,
+        *currentSlot,
+        paramsIndex,
+        buildDomainFragmentInfos,
+        buildDomainSubqueryExprId,
+        std::move(selfKeyTypes),
+        ComparerManager_,
+        primaryRowTypes,
+        closurePtrIndex,
+        joiningSubqueryExprId,
+        joiningSubqueryFragmentInfos);
+
+    *schema = hierarchicalJoin->GetTableSchema(**schema);
+    TSchemaProfiler::Profile(*schema);
 }
 
 void TQueryProfiler::Profile(
@@ -2676,84 +2813,10 @@ void TQueryProfiler::Profile(
         TSchemaProfiler::Profile(schema);
     }
 
-    for (const auto& hierarchicalJoin : query->HierarchicalJoinsBeforeGroupBy) {
-        Fold(EFoldingObjectType::HierarchicalJoinOp);
-        Fold(hierarchicalJoin->IsLeft);
+    auto savedSchemaBeforeWhereClause = schema;
 
-        const auto& buildDomainSubquery = hierarchicalJoin->SelfSideJoinKeys;
-
-        int closurePtrIndex = Variables_->AddOpaque<THierarchicalJoinClosure*>(nullptr);
-
-        auto buildDomainFragments = TExpressionFragments();
-        auto outerSchemaProvider = TReferenceProvider{schema, {}, nullptr};
-        size_t buildDomainSubqueryExprId = TExpressionProfiler::Profile(
-            buildDomainSubquery.Get(),
-            &outerSchemaProvider,
-            &buildDomainFragments,
-            /*isolated=*/ false,
-            ESubqueryProfileMode::BuildDomainSubquery,
-            closurePtrIndex);
-
-        ++buildDomainFragments.Items[buildDomainSubqueryExprId].UseCount;
-        auto buildDomainFragmentInfos = buildDomainFragments.ToFragmentInfos("buildDomainSubquery");
-        buildDomainFragments.DumpArgs({buildDomainSubqueryExprId});
-        MakeCodegenFragmentBodies(codegenSource, buildDomainFragmentInfos);
-
-        auto selfKeyTypes = std::vector<EValueType>();
-        {
-            for (const auto& item : buildDomainSubquery->ProjectClause->Projections) {
-                selfKeyTypes.push_back(item.Expression->GetWireType());
-            }
-        }
-
-        int paramsIndex = Variables_->AddOpaque<TSingleJoinParameters>(TSingleJoinParameters{
-            .KeySize = hierarchicalJoin->ForeignEquations.size(),
-            .IsLeft = hierarchicalJoin->IsLeft,
-            .IsPartiallySorted = false,
-            .ForeignColumns = hierarchicalJoin->GetForeignColumnIndices(),
-            .JoinRowsProducer = joinProfilerRegistry.CreateHierarchicalJoinRowsProducer(hierarchicalJoin),
-        });
-
-        auto joiningSubqueryFragments = TExpressionFragments();
-        auto outerSchemaProviderForJoiningSubquery = TReferenceProvider{schema, {}, nullptr};
-        size_t joiningSubqueryExprId = TExpressionProfiler::Profile(
-            hierarchicalJoin->JoiningSubquery.Get(),
-            &outerSchemaProviderForJoiningSubquery,
-            &joiningSubqueryFragments,
-            /*isolated*/ false,
-            ESubqueryProfileMode::JoiningSubquery,
-            closurePtrIndex,
-            paramsIndex);
-
-        ++joiningSubqueryFragments.Items[joiningSubqueryExprId].UseCount;
-        auto joiningSubqueryFragmentInfos = joiningSubqueryFragments.ToFragmentInfos("joiningSubquery");
-        joiningSubqueryFragments.DumpArgs({joiningSubqueryExprId});
-        MakeCodegenFragmentBodies(codegenSource, joiningSubqueryFragmentInfos);
-
-        auto primaryRowTypes = std::vector<EValueType>();
-        {
-            for (const auto& column : schema->Columns()) {
-                primaryRowTypes.push_back(column.GetWireType());
-            }
-        }
-
-        Fold(primaryRowTypes.size());
-        currentSlot = NHierarchicalJoin::MakeCodegenJoinOp(
-            codegenSource,
-            slotCount,
-            currentSlot,
-            paramsIndex,
-            buildDomainFragmentInfos,
-            buildDomainSubqueryExprId,
-            std::move(selfKeyTypes),
-            ComparerManager_,
-            primaryRowTypes,
-            closurePtrIndex,
-            joiningSubqueryExprId,
-            joiningSubqueryFragmentInfos);
-
-        schema = hierarchicalJoin->GetTableSchema(*schema);
-        TSchemaProfiler::Profile(schema);
+    for (const auto& hierarchicalJoin : query->HierarchicalJoinsInWhereClause) {
+        ProfileHierarchicalJoin(codegenSource, slotCount, &currentSlot, &schema, hierarchicalJoin, joinProfilerRegistry);
     }
 
     if (whereClause && !IsTrue(whereClause)) {
@@ -2773,13 +2836,20 @@ void TQueryProfiler::Profile(
         MakeCodegenFragmentBodies(codegenSource, fragmentInfos);
     }
 
-    Profile(codegenSource, query, slotCount, currentSlot, schema, /*mergeMode*/ false);
+    schema = savedSchemaBeforeWhereClause;
+
+    for (const auto& hierarchicalJoin : query->HierarchicalJoinsBeforeGroupBy) {
+        ProfileHierarchicalJoin(codegenSource, slotCount, &currentSlot, &schema, hierarchicalJoin, joinProfilerRegistry);
+    }
+
+    Profile(codegenSource, query, slotCount, currentSlot, schema, /*mergeMode*/ false, joinProfilerRegistry);
 }
 
 void TQueryProfiler::Profile(
     TCodegenSource* codegenSource,
     const TConstFrontQueryPtr& query,
-    size_t* slotCount)
+    size_t* slotCount,
+    const TJoinProfilerRegistry& joinProfilerRegistry)
 {
     Fold(ExecutionBackend_);
     Fold(OptimizationLevel_);
@@ -2806,7 +2876,7 @@ void TQueryProfiler::Profile(
         ExecutionBackend_);
 
     // Front query always perform merge.
-    Profile(codegenSource, query, slotCount, currentSlot, schema, /*mergeMode*/ true);
+    Profile(codegenSource, query, slotCount, currentSlot, schema, /*mergeMode*/ true, joinProfilerRegistry);
 }
 
 } // namespace
@@ -2884,7 +2954,7 @@ TCGQueryGenerator Profile(
     if (auto derivedQuery = dynamic_cast<const TQuery*>(query.Get())) {
         profiler.Profile(&codegenSource, derivedQuery, &slotCount, joinProfilerRegistry);
     } else if (auto derivedQuery = dynamic_cast<const TFrontQuery*>(query.Get())) {
-        profiler.Profile(&codegenSource, derivedQuery, &slotCount);
+        profiler.Profile(&codegenSource, derivedQuery, &slotCount, joinProfilerRegistry);
     } else {
         YT_ABORT();
     }

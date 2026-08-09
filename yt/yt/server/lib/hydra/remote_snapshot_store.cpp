@@ -64,7 +64,7 @@ public:
         , Path_(std::move(path))
         , Client_(client)
         , PrerequisiteTransactionId_(prerequisiteTransactionId)
-        , Logger(HydraLogger().WithTag("Path: %v", Path_))
+        , Logger(HydraLogger().WithTag("Path", Path_))
         , SnapshotOutThrottlerProvider_(std::move(snapshotOutThrottlerProvider))
     { }
 
@@ -106,7 +106,7 @@ private:
             : Store_(store)
             , SnapshotId_(snapshotId)
             , Path_(Store_->GetSnapshotPath(SnapshotId_))
-            , Logger(HydraLogger().WithTag("Path: %v", Path_))
+            , Logger(HydraLogger().WithTag("Path", Path_))
         { }
 
         TFuture<void> Open() override
@@ -238,7 +238,7 @@ private:
             , SnapshotId_(snapshotId)
             , Meta_(meta)
             , Path_(Store_->GetSnapshotPath(SnapshotId_))
-            , Logger(HydraLogger().WithTag("Path: %v", Path_))
+            , Logger(HydraLogger().WithTag("Path", Path_))
         { }
 
         TFuture<void> Open() override
@@ -422,7 +422,7 @@ private:
                 .ValueOrThrow();
 
             YT_LOG_DEBUG("Snapshot list received");
-            auto keys = ConvertTo<std::vector<TString>>(result);
+            auto keys = ConvertTo<std::vector<std::string>>(result);
             int latestSnapshotId = InvalidSegmentId;
             for (const auto& key : keys) {
                 int id;

@@ -8,8 +8,6 @@
 
 #include <yt/yt/server/lib/cypress_registrar/public.h>
 
-#include <yt/yt/server/lib/signature/components/public.h>
-
 #include <yt/yt/library/auth_server/config.h>
 
 #include <yt/yt/ytlib/api/native/config.h>
@@ -34,7 +32,9 @@
 
 #include <yt/yt/library/server_program/config.h>
 
-#include <yt/yt/library/tracing/jaeger/sampler.h>
+#include <yt/yt/library/tracing/jaeger/config.h>
+
+#include <yt/yt/library/signature/components/public.h>
 
 namespace NYT::NRpcProxy {
 

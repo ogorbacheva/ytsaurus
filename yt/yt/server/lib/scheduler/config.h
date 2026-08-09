@@ -339,6 +339,8 @@ struct TTreeTestingOptions
 
     TDelayConfigPtr DelayInsidePoolPermissionsValidation;
 
+    std::optional<TDuration> SyncDelayInsideProcessAllocationUpdates;
+
     std::optional<TDuration> ResourceTreeInitializeResourceUsageDelay;
     std::optional<TDuration> ResourceTreeReleaseResourcesRandomDelay;
     std::optional<TDuration> ResourceTreeIncreaseLocalResourceUsagePrecommitRandomDelay;
@@ -379,7 +381,7 @@ struct TStrategyTreeConfig
     bool EnablePoolStarvation;
 
     //! Default parent pool for operations with unknown pool.
-    TString DefaultParentPool;
+    std::string DefaultParentPool;
     //! Forbid immediate operations in root.
     bool ForbidImmediateOperationsInRoot;
 
@@ -475,7 +477,7 @@ struct TStrategyTreeConfig
 
     THashMap<std::string, std::string> MeteringTags;
 
-    THashMap<TString, NYTree::INodePtr> PoolConfigPresets;
+    THashMap<std::string, NYTree::INodePtr> PoolConfigPresets;
 
     bool EnableFairShareTruncationInFifoPool;
 
@@ -534,6 +536,7 @@ struct TStrategyTreeConfig
     TJobResourcesConfigPtr MinNodeResourceLimits;
 
     TDuration MinNodeResourceLimitsCheckPeriod;
+    TDuration MinNodeResourceLimitsViolationTimeout;
 
     bool AllowGangOperationsOnlyInFifoPools;
 
@@ -549,6 +552,8 @@ struct TStrategyTreeConfig
     bool ConsiderSingleAllocationVanillaOperationsAsGang;
 
     bool UsePrecommitForPreemption;
+
+    bool EnableInfiniteResourceLimitsOvercommit;
 
     TGpuSchedulingPolicyConfigPtr GpuSchedulingPolicy;
     EPolicyKind PolicyKind;
@@ -665,7 +670,7 @@ struct TStrategyConfig
     // COMPAT(renadeen): remove when optimization proves worthy.
     bool EnableOptimizedOperationOrchid;
 
-    TString EphemeralPoolNameRegex;
+    std::string EphemeralPoolNameRegex;
 
     bool RequireSpecifiedOperationPoolsExistence;
 
@@ -884,7 +889,7 @@ struct TControllerAgentTrackerConfig
     int MinAgentCount;
 
     // Tag to threshols for alive agents with the tag
-    THashMap<TString, TAliveControllerAgentThresholds> TagToAliveControllerAgentThresholds;
+    THashMap<std::string, TAliveControllerAgentThresholds> TagToAliveControllerAgentThresholds;
 
     i64 MaxMessageAllocationEventCount;
 
@@ -1061,7 +1066,7 @@ struct TSchedulerConfig
 
     //! Path to Cypress root node with pool tree and pool configs.
     //! Can be a path to simple map node or special virtual map node.
-    TString PoolTreesRoot;
+    NYPath::TYPath PoolTreesRoot;
 
     int MaxEventLogNodeBatchSize;
 

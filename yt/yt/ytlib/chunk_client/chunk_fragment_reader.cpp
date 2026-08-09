@@ -2,6 +2,7 @@
 
 #include "private.h"
 #include "chunk_reader_host.h"
+
 #include "chunk_reader_options.h"
 #include "config.h"
 #include "data_node_service_proxy.h"
@@ -32,6 +33,7 @@
 #include <yt/yt/core/logging/log.h>
 
 #include <yt/yt/core/misc/adaptive_hedging_manager.h>
+#include <yt/yt/core/misc/memory_usage_tracker.h>
 #include <yt/yt/core/misc/sync_expiring_cache.h>
 
 #include <yt/yt/core/profiling/timing.h>
@@ -165,7 +167,7 @@ public:
         , NodeDirectory_(Host_->Client->GetNativeConnection()->GetNodeDirectory())
         , NodeStatusDirectory_(Host_->Client->GetNativeConnection()->GetNodeStatusDirectory())
         , Networks_(Host_->Client->GetNativeConnection()->GetNetworks())
-        , Logger(ChunkClientLogger().WithTag("ChunkFragmentReaderId: %v", TGuid::Create()))
+        , Logger(ChunkClientLogger().WithTag("ChunkFragmentReaderId", TGuid::Create()))
         , ReaderInvoker_(TDispatcher::Get()->GetReaderInvoker())
         , PeerInfoCache_(New<TPeerInfoCache>(
             Config_->PeerInfoExpirationTimeout,
@@ -180,8 +182,8 @@ public:
     }
 
     TFuture<TReadFragmentsResponse> ReadFragments(
-        TClientChunkReadOptions options,
-        std::vector<TChunkFragmentRequest> requests) override;
+        std::vector<TChunkFragmentRequest> requests,
+        TClientChunkReadOptions options) override;
 
 private:
     class TProbingSessionBase;
@@ -550,7 +552,7 @@ private:
                 TryUpdateChunkReplicas(chunkIdWithIndex.Id, subresponse);
 
                 if (!subresponse.has_complete_chunk()) {
-                    YT_LOG_WARNING("Chunk is missing from node (ChunkId: %v, Address: %v)",
+                    YT_LOG_DEBUG("Chunk is missing from node (ChunkId: %v, Address: %v)",
                         chunkIdWithIndex,
                         peerInfo->Address);
                     continue;
@@ -734,7 +736,7 @@ public:
         : TProbingSessionBase(
             reader,
             MakeOptions(),
-            reader->Logger().WithTag("PeriodicProbingSessionId: %v", TGuid::Create()))
+            reader->Logger().WithTag("PeriodicProbingSessionId", TGuid::Create()))
     { }
 
     void Run()
@@ -1772,6 +1774,13 @@ private:
                     subresponse,
                     fragments);
 
+                if (!State_->Response.MemoryGuard) {
+                    State_->Response.MemoryGuard = TMemoryUsageTrackerGuard::Build(Options_.MemoryUsageTracker);
+                }
+
+                auto newFragmentSize = GetByteSize(fragments);
+                State_->Response.MemoryGuard.IncreaseSize(newFragmentSize);
+
                 if (controller.IsDone()) {
                     if (--PendingChunkCount_ == 0) {
                         OnCompleted();
@@ -1862,9 +1871,9 @@ public:
         : Reader_(std::move(reader))
         , Options_(std::move(options))
         , SessionInvoker_(CreateSerializedInvoker(Reader_->ReaderInvoker_))
-        , Logger(Reader_->Logger().WithTag("ChunkFragmentReadSessionId: %v, ReadSessionId: %v",
-            TGuid::Create(),
-            Options_.ReadSessionId))
+        , Logger(Reader_->Logger()
+            .WithTag("ChunkFragmentReadSessionId", TGuid::Create())
+            .WithTag("ReadSessionId", Options_.ReadSessionId))
     {
         State_->Requests = std::move(requests);
         State_->Response.Fragments.resize(State_->Requests.size());
@@ -1915,15 +1924,20 @@ private:
         Promise_.TrySet(std::move(error) << std::move(Errors_));
     }
 
-    void OnSuccess()
+    void OnSuccess(i64 totalReadFragmentSize)
     {
+        if (State_->Response.MemoryGuard) {
+            // Discount fragments that are not featured in the final result, like the erasure repair ones.
+            State_->Response.MemoryGuard.SetSize(totalReadFragmentSize);
+        }
+
         Promise_.TrySet(std::move(State_->Response));
     }
 
     void Preprocess()
     {
         if (State_->Requests.empty()) {
-            OnSuccess();
+            OnSuccess(/*totalReadFragmentSize*/ 0);
             return;
         }
 
@@ -2062,9 +2076,11 @@ private:
         int totalFragmentCount = std::ssize(State_->Requests);
 
         int totalReadFragmentCount = 0;
+        i64 totalReadFragmentSize = 0;
         for (const auto& fragment : State_->Response.Fragments) {
             if (fragment) {
                 ++totalReadFragmentCount;
+                totalReadFragmentSize += std::ssize(fragment);
             }
         }
 
@@ -2075,7 +2091,7 @@ private:
         State_->ReadFragmentCount = totalReadFragmentCount;
 
         if (State_->ReadFragmentCount == totalFragmentCount) {
-            OnSuccess();
+            OnSuccess(totalReadFragmentSize);
             return;
         }
 
@@ -2137,8 +2153,8 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 
 TFuture<IChunkFragmentReader::TReadFragmentsResponse> TChunkFragmentReader::ReadFragments(
-    TClientChunkReadOptions options,
-    std::vector<TChunkFragmentRequest> requests)
+    std::vector<TChunkFragmentRequest> requests,
+    TClientChunkReadOptions options)
 {
     auto session = New<TRetryingReadFragmentsSession>(
         this,

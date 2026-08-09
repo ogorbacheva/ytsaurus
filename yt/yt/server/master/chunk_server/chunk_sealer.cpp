@@ -190,6 +190,7 @@ public:
         , UnsuccessfulSealCounter_(ChunkServerProfiler().Counter("/chunk_sealer/unsuccessful_seals"))
         , SuccessfulSealTime_(ChunkServerProfiler().TimeCounter("/chunk_sealer/successful_seal_time"))
         , SealScanner_(std::make_unique<TChunkSealScanner>(
+            Bootstrap_,
             EChunkScanKind::Seal,
             /*isJournal*/ true))
     {
@@ -471,15 +472,6 @@ private:
             SealExecutor_->SetPeriod(GetDynamicConfig()->ChunkRefreshPeriod);
         }
         Semaphore_->SetTotal(GetDynamicConfig()->MaxConcurrentChunkSeals);
-    }
-
-    static bool IsSealNeeded(const TChunk* chunk)
-    {
-        return
-            IsObjectAlive(chunk) &&
-            chunk->IsJournal() &&
-            chunk->IsConfirmed() &&
-            !chunk->IsSealed();
     }
 
     static bool IsAttached(const TChunk* chunk)

@@ -99,25 +99,6 @@ constinit const auto Logger = CypressServerLogger;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-bool IsAccessLoggedMethod(const std::string& method)
-{
-    static const THashSet<std::string> methodsForAccessLog = {
-        "Lock",
-        "Unlock",
-        "GetKey",
-        "Get",
-        "Set",
-        "Remove",
-        "List",
-        "Exists",
-        "GetBasicAttributes",
-        "CheckPermission",
-        "LockCopyDestination",
-        "LockCopySource",
-    };
-    return methodsForAccessLog.contains(method);
-}
-
 bool HasTrivialAcd(const TCypressNode* node)
 {
     const auto& acd = node->Acd();
@@ -596,9 +577,15 @@ void TNontemplateCypressNodeProxyBase::LogAcdUpdate(TInternedAttributeKey key, c
     TObjectProxyBase::LogAcdUpdate(key, value);
 
     const auto* impl = GetThisImpl();
-    // TODO(h0pless): this is not quite correct since multiple changes may get
-    // encapsulated into a single Hive mutation.
-    if (impl->GetRevision() != NHydra::GetCurrentHydraContext()->GetVersion().ToRevision()) {
+
+    bool isBeingCreated = [&] {
+        if (impl->IsSequoia() && impl->MutableSequoiaProperties()) {
+            return impl->MutableSequoiaProperties()->BeingCreated;
+        } else {
+            return impl->GetRevision() == NHydra::GetCurrentHydraContext()->GetVersion().ToRevision();
+        }
+    }();
+    if (!isBeingCreated) {
         NSecurityServer::LogAcdUpdate(key.Unintern(), GetPath(), value);
     }
 }
@@ -678,6 +665,10 @@ void TNontemplateCypressNodeProxyBase::ListSystemAttributes(std::vector<TAttribu
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ExpirationTimeoutUser)
         .SetPresent(node->GetExpirationTimeoutUser().value_or(nullptr) != nullptr)
         .SetWritable(true));
+    descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ExpirationTimeArmingTime)
+        .SetPresent(node->GetExpirationTime().has_value()));
+    descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ExpirationTimeoutArmingTime)
+        .SetPresent(node->GetExpirationTimeout().has_value()));
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ExpirationTimeLastResetTime)
         .SetPresent(node->GetExpirationTimeLastResetTime().has_value()));
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ExpirationTimeoutLastResetTime)
@@ -988,6 +979,26 @@ bool TNontemplateCypressNodeProxyBase::GetBuiltinAttribute(
 
             BuildYsonFluently(consumer)
                 .Value(expirationTimeoutUser->GetName());
+            return true;
+        }
+
+        case EInternedAttributeKey::ExpirationTimeArmingTime: {
+            auto optionalExpirationTimeArmingTime = node->GetExpirationTimeArmingTime();
+            if (!optionalExpirationTimeArmingTime) {
+                break;
+            }
+            BuildYsonFluently(consumer)
+                .Value(*optionalExpirationTimeArmingTime);
+            return true;
+        }
+
+        case EInternedAttributeKey::ExpirationTimeoutArmingTime: {
+            auto optionalExpirationTimeoutArmingTime = node->GetExpirationTimeoutArmingTime();
+            if (!optionalExpirationTimeoutArmingTime) {
+                break;
+            }
+            BuildYsonFluently(consumer)
+                .Value(*optionalExpirationTimeoutArmingTime);
             return true;
         }
 
@@ -1598,6 +1609,25 @@ void TNontemplateCypressNodeProxyBase::ValidateMediaChange(
 
     const auto& chunkManager = Bootstrap_->GetChunkManager();
 
+    auto checkOffshore = [&] (const TChunkReplication& replication) {
+        for (const auto& entry : replication) {
+            auto* medium = chunkManager->FindMediumByIndex(entry.GetMediumIndex());
+            if (!IsObjectAlive(medium)) {
+                YT_LOG_ALERT("Non-alive medium found in replication (MediumIndex: %v)",
+                    entry.GetMediumIndex());
+                continue;
+            }
+
+            if (medium->IsOffshore()) {
+                THROW_ERROR_EXCEPTION("Cannot change media if offshore media is involved");
+            }
+        }
+    };
+    if (oldReplication) {
+        checkOffshore(*oldReplication);
+    }
+    checkOffshore(newReplication);
+
     for (const auto& entry : newReplication) {
         if (entry.Policy()) {
             auto* medium = chunkManager->GetMediumByIndex(entry.GetMediumIndex());
@@ -1623,6 +1653,17 @@ bool TNontemplateCypressNodeProxyBase::ValidatePrimaryMediumChange(
     YT_VERIFY(newReplication);
 
     ValidateNoTransaction();
+
+    if (newPrimaryMedium.IsOffshore()) {
+        THROW_ERROR_EXCEPTION("Cannot change media to offshore");
+    }
+
+    if (oldPrimaryMediumIndex) {
+        const auto* oldPrimaryMedium = Bootstrap_->GetChunkManager()->FindMediumByIndex(*oldPrimaryMediumIndex);
+        if (IsObjectAlive(oldPrimaryMedium) && oldPrimaryMedium->IsOffshore()) {
+            THROW_ERROR_EXCEPTION("Cannot change media if offshore media is involved");
+        }
+    }
 
     auto tweakReplicationOnPrimaryMediumChange = [] (
         int newPrimaryMediumIndex,
@@ -1798,7 +1839,7 @@ DEFINE_YPATH_SERVICE_METHOD(TNontemplateCypressNodeProxyBase, Lock)
     auto mode = FromProto<ELockMode>(request->mode());
     auto childKey = YT_OPTIONAL_FROM_PROTO(*request, child_key);
     auto attributeKey = YT_OPTIONAL_FROM_PROTO(*request, attribute_key);
-    auto timestamp = request->timestamp();
+    auto timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
     bool waitable = request->waitable();
 
     CheckLockRequest(mode, childKey, attributeKey)

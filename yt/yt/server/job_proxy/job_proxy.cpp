@@ -46,6 +46,7 @@
 #include <yt/yt/ytlib/chunk_client/config.h>
 #include <yt/yt/ytlib/chunk_client/data_source.h>
 #include <yt/yt/ytlib/chunk_client/helpers.h>
+#include <yt/yt/ytlib/chunk_client/job_io_meter.h>
 #include <yt/yt/ytlib/chunk_client/job_spec_extensions.h>
 #include <yt/yt/ytlib/chunk_client/traffic_meter.h>
 
@@ -90,6 +91,8 @@
 #include <yt/yt/library/dns_over_rpc/client/dns_over_rpc_resolver.h>
 
 #include <yt/yt/library/tracing/jaeger/sampler.h>
+
+#include <yt/yt/library/tracing/tracer.h>
 
 #include <yt/yt/library/ytprof/external_pprof.h>
 #include <yt/yt/library/ytprof/profile.h>
@@ -216,9 +219,9 @@ TJobProxy::TJobProxy(
     , JobId_(jobId)
     , JobThread_(New<TActionQueue>("JobMain"))
     , ControlThread_(New<TActionQueue>("Control"))
-    , Logger(JobProxyLogger().WithTag("OperationId: %v, JobId: %v",
-        OperationId_,
-        JobId_))
+    , Logger(JobProxyLogger()
+        .WithTag("OperationId", OperationId_)
+        .WithTag("JobId", JobId_))
 {
     if (Config_->AbortOnUnrecognizedOptions) {
         AbortOnUnrecognizedOptions(Logger(), Config_);
@@ -342,6 +345,11 @@ IServerPtr TJobProxy::GetRpcServer() const
 TTrafficMeterPtr TJobProxy::GetTrafficMeter() const
 {
     return TrafficMeter_;
+}
+
+TJobIoMeterPtr TJobProxy::GetJobIoMeter() const
+{
+    return JobIoMeter_;
 }
 
 IThroughputThrottlerPtr TJobProxy::GetInBandwidthThrottler(const TClusterName& clusterName) const
@@ -905,6 +913,8 @@ TJobResult TJobProxy::RunJob()
 
         TrafficMeter_ = New<TTrafficMeter>(LocalDescriptor_.GetDataCenter());
         TrafficMeter_->Start();
+
+        JobIoMeter_ = New<TJobIoMeter>(Config_->JobIoMeterMaxHistoryDuration);
 
         YT_VERIFY(Config_->BusServer->UnixDomainSocketPath);
         YT_VERIFY(Config_->GrpcServer->Addresses.size() == 1);

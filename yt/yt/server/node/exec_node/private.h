@@ -22,11 +22,11 @@ inline const std::string ArtifactMetaSuffix(".artifact");
 
 ////////////////////////////////////////////////////////////////////////////////
 
-inline const TString MountSuffix = "mount";
-inline const TString VolumesName = "volumes";
-inline const TString LayersName = "porto_layers";
-inline const TString LayersMetaName = "layers_meta";
-inline const TString VolumesMetaName = "volumes_meta";
+inline const std::string MountSuffix = "mount";
+inline const std::string VolumesName = "volumes";
+inline const std::string LayersName = "porto_layers";
+inline const std::string LayersMetaName = "layers_meta";
+inline const std::string VolumesMetaName = "volumes_meta";
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -46,6 +46,8 @@ DECLARE_REFCOUNTED_CLASS(TArtifact)
 DECLARE_REFCOUNTED_CLASS(TCacheLocation)
 
 DECLARE_REFCOUNTED_CLASS(TJobFSSecretary)
+
+DECLARE_REFCOUNTED_STRUCT(TJobFSDescription)
 
 struct TControllerAgentDescriptor;
 
@@ -74,8 +76,8 @@ constexpr int TmpfsRemoveAttemptCount = 5;
 
 struct TShellCommandResult
 {
-    TString Stdout;
-    TString Stderr;
+    std::string Stdout;
+    std::string Stderr;
     TError Error;
 };
 
@@ -84,7 +86,7 @@ struct TShellCommandResult
 struct TNetworkAttributes
 {
     ui32 ProjectId;
-    TString HostName;
+    std::string HostName;
     std::vector<NJobProxy::TUserJobNetworkAddressPtr> Addresses;
 };
 

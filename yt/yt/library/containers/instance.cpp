@@ -100,7 +100,7 @@ std::vector<TResourceUsage::TTaggedStat> ExtractIOStatsPerDevice(
     const std::string& input)
 {
     // Example of input: 'hw: 34843530298; sdb: 618096087; sdi: 9284833908'.
-    static const NRe2::RE2 regex("([a-z]+) *: *([0-9]+)");
+    static const re2::RE2 regex("([a-z]+) *: *([0-9]+)");
 
     std::vector<TResourceUsage::TTaggedStat> result;
     std::string_view inputView{input.c_str(), input.length()};
@@ -108,7 +108,7 @@ std::vector<TResourceUsage::TTaggedStat> ExtractIOStatsPerDevice(
     std::string deviceName;
     int statisticsValue;
 
-    while (NRe2::RE2::FindAndConsume(&inputView, regex, &deviceName, &statisticsValue)) {
+    while (re2::RE2::FindAndConsume(&inputView, regex, &deviceName, &statisticsValue)) {
         // hw - total statistic for all devices.
         // In that function we extract only per device statistic, because of that we skip hw.
         if (deviceName != "hw") {
@@ -178,6 +178,7 @@ const THashMap<EStatField, TPortoStatRule> PortoStatRules = {
     {EStatField::ThreadCount, {"thread_count", LongExtractor}},
     {EStatField::CpuLimit, {"cpu_limit_bound", CoreNsPerSecondExtractor}},
     {EStatField::CpuGuarantee, {"cpu_guarantee_bound", CoreNsPerSecondExtractor}},
+    // NB(pavook): V2 "anon" excludes swapcached, unlike V1 "total_rss", but it is close enough and arguably more correct for ResidentAnon.
     {EStatField::ResidentAnon, {"memory.stat", GetStatByCGroupVersionedKeyExtractor(ECGroupController::Memory, "total_rss", "anon")}},
     {EStatField::TmpfsUsage, {"memory.stat", GetStatByCGroupVersionedKeyExtractor(ECGroupController::Memory, "total_shmem", "shmem")}},
     {EStatField::MappedFile, {"memory.stat", GetStatByCGroupVersionedKeyExtractor(ECGroupController::Memory, "total_mapped_file", "file_mapped")}},
@@ -302,7 +303,7 @@ class TPortoInstanceLauncher
 public:
     TPortoInstanceLauncher(std::string_view name, IPortoExecutorPtr executor)
         : Executor_(std::move(executor))
-        , Logger(ContainersLogger().WithTag("Container: %v", name))
+        , Logger(ContainersLogger().WithTag("Container", name))
     {
         Spec_.Name = name;
         Spec_.CGroupControllers = {
@@ -943,7 +944,7 @@ private:
         : Name_(std::move(name))
         , NetworkInterface_(std::move(networkInterface))
         , Executor_(std::move(executor))
-        , Logger(ContainersLogger().WithTag("Container: %v", Name_))
+        , Logger(ContainersLogger().WithTag("Container", Name_))
     { }
 
     void SetProperty(const std::string& key, const std::string& value)

@@ -24,6 +24,7 @@
 #include <yt/yt/server/lib/tablet_node/config.h>
 
 #include <yt/yt/ytlib/api/native/client.h>
+#include <yt/yt/ytlib/api/native/client_cache.h>
 #include <yt/yt/ytlib/api/native/connection.h>
 #include <yt/yt/ytlib/api/native/helpers.h>
 
@@ -95,6 +96,7 @@ namespace NYT::NQueryClient {
 
 using namespace NServer;
 using namespace NTracing;
+using namespace NTableClient;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -419,6 +421,56 @@ struct TTabletReadItems
 
 ////////////////////////////////////////////////////////////////////////////////
 
+class TJoinExecutePlanCallbackBuilder
+{
+public:
+    TJoinExecutePlanCallbackBuilder(
+        IExecutorPtr remoteExecutor,
+        TConstExternalCGInfoPtr externalCGInfo,
+        IInvokerPtr invoker,
+        TFeatureFlags requestFeatureFlags,
+        TQueryOptions baseOptions)
+        : RemoteExecutor_(std::move(remoteExecutor))
+        , ExternalCGInfo_(std::move(externalCGInfo))
+        , Invoker_(std::move(invoker))
+        , RequestFeatureFlags_(std::move(requestFeatureFlags))
+        , BaseOptions_(std::move(baseOptions))
+    { }
+
+    TExecutePlan Build(const TJoinSubqueryOptionsPatch& patch) const
+    {
+        auto joinSubqueryOptions = GetJoinSubqueryOptions(BaseOptions_);
+        joinSubqueryOptions = ApplyPatch(joinSubqueryOptions, patch);
+        return [
+            joinSubqueryOptions,
+            remoteExecutor = RemoteExecutor_,
+            externalCGInfo = ExternalCGInfo_,
+            invoker = Invoker_,
+            requestFeatureFlags = RequestFeatureFlags_
+        ] (TPlanFragment fragment, IUnversionedRowsetWriterPtr writer) {
+            return BIND(
+                &IExecutor::Execute,
+                remoteExecutor,
+                fragment,
+                externalCGInfo,
+                writer,
+                joinSubqueryOptions,
+                requestFeatureFlags)
+                .AsyncVia(invoker)
+                .Run();
+        };
+    }
+
+private:
+    IExecutorPtr RemoteExecutor_;
+    TConstExternalCGInfoPtr ExternalCGInfo_;
+    IInvokerPtr Invoker_;
+    TFeatureFlags RequestFeatureFlags_;
+    TQueryOptions BaseOptions_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TQueryExecution
     : public TRefCounted
 {
@@ -694,8 +746,12 @@ private:
             return GetPrefixReadItems(groupedDataSplits[subqueryIndex], joinClause.CommonKeyPrefix);
         };
 
-        auto executePlanWithUserProvidedTimestamp = GetExecutePlanCallback(QueryOptions_);
-        auto executePlanWithAsyncLastCommittedTimestamp = GetExecutePlanCallbackWithAsyncLastCommittedTimestamp();
+        auto joinExecutePlanBuilder = TJoinExecutePlanCallbackBuilder(
+            CreateRemoteQueryExecutor(),
+            ExternalCGInfo_,
+            Invoker_,
+            RequestFeatureFlags_,
+            QueryOptions_);
 
         return CoordinateAndExecute(
             Query_->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit),
@@ -711,8 +767,7 @@ private:
                 aggregateGenerators,
                 getPrefetchJoinDataSource = std::move(getPrefetchJoinDataSource),
                 bottomQueryPattern = std::move(bottomQueryPattern),
-                executePlanWithUserProvidedTimestamp,
-                executePlanWithAsyncLastCommittedTimestamp,
+                joinExecutePlanBuilder,
                 splitCount,
                 subqueryIndex = 0
             ] () mutable -> TEvaluateResult {
@@ -736,8 +791,18 @@ private:
                 // so we can set the most recent feature flags.
                 auto responseFeatureFlags = MakeFuture(MostFreshFeatureFlags());
 
+                auto singletonsConfig = TSingletonManager::GetDynamicConfig();
+                auto queryEngineConfig = singletonsConfig
+                    ? singletonsConfig->GetSingletonConfig<TQueryEngineDynamicConfig>()
+                    : nullptr;
+                bool allowHeavyRangeInferenceInJoins = queryEngineConfig
+                    ? queryEngineConfig->AllowHeavyRangeInferenceInJoins.value_or(false)
+                    : false;
+                bool multipleJoinSubqueriesAllowed = queryEngineConfig
+                    && queryEngineConfig->AllowMultipleJoinSubqueriesForNonLookupJoins.value_or(false);
+
                 auto joinProfilerRegistry = TJoinProfilerRegistry(
-                    executePlanWithUserProvidedTimestamp,
+                    joinExecutePlanBuilder.Build({.MaxSubqueries = 1}),
                     [=, Logger = Logger] (TQueryStatistics statistics) mutable {
                         YT_LOG_DEBUG("Remote subquery statistics (Statistics: %v)", statistics);
                         subqueryResults->Enqueue(std::move(statistics));
@@ -746,10 +811,18 @@ private:
                     Logger);
                 for (int joinIndex = 0; joinIndex < std::ssize(Query_->JoinClauses); ++joinIndex) {
                     const auto& joinClause = Query_->JoinClauses[joinIndex];
-                    auto executePlanCallback = executePlanWithUserProvidedTimestamp;
-                    if (joinClause->RequireSyncReplica == false) {
-                        executePlanCallback = executePlanWithAsyncLastCommittedTimestamp;
+
+                    int maxSubqueries = 1;
+                    if (multipleJoinSubqueriesAllowed && GetJoinSubqueryMode(*joinClause) != EJoinSubqueryMode::Lookup) {
+                        maxSubqueries = QueryOptions_.MaxSubqueries;
                     }
+
+                    auto executePlanCallback = joinExecutePlanBuilder.Build({
+                        .Timestamp = joinClause->RequireSyncReplica
+                            ? std::nullopt
+                            : std::make_optional(NTransactionClient::AsyncLastCommittedTimestamp),
+                        .MaxSubqueries = maxSubqueries,
+                    });
 
                     if (joinClause->PrefetchedBlockRange) {
                         auto [firstBlock, lastBlock] = *joinClause->PrefetchedBlockRange;
@@ -788,13 +861,6 @@ private:
                                 ? Logger
                                 : NLogging::TLogger(/*logManager*/ nullptr, "NullLogger")));
                     } else {
-                        auto singletonsConfig = TSingletonManager::GetDynamicConfig();
-                        auto queryEngineConfig = singletonsConfig
-                            ? singletonsConfig->GetSingletonConfig<TQueryEngineDynamicConfig>()
-                            : nullptr;
-                        bool allowHeavyRangeInferenceInJoins = queryEngineConfig
-                            ? queryEngineConfig->AllowHeavyRangeInferenceInJoins.value_or(false)
-                            : false;
                         joinProfilerRegistry.InsertJoinProfilerOrThrow(joinIndex, CreateJoinSubqueryProfiler(
                             joinClause,
                             executePlanCallback,
@@ -1000,15 +1066,12 @@ private:
         return dataSource;
     }
 
-    TExecutePlan GetExecutePlanCallback(const TQueryOptions& queryOptions)
+    IExecutorPtr CreateRemoteQueryExecutor()
     {
         auto clientOptions = NApi::NNative::TClientOptions::FromAuthenticationIdentity(Identity_);
-        auto client = Bootstrap_
-            ->GetClient()
-            ->GetNativeConnection()
-            ->CreateNativeClient(clientOptions);
+        auto client = Bootstrap_->GetClientCache()->Get(Identity_, clientOptions);
 
-        auto remoteExecutor = CreateQueryExecutor(
+        return CreateQueryExecutor(
             MemoryChunkProvider_,
             Bootstrap_->GetNodeMemoryUsageTracker()->WithCategory(EMemoryCategory::Query),
             client->GetNativeConnection(),
@@ -1017,31 +1080,6 @@ private:
             client->GetChannelFactory(),
             FunctionImplCache_,
             /*retryOnMetadataCacheInconsistency*/ true);
-
-        return [
-            options = GetJoinSubqueryOptions(queryOptions),
-            this,
-            this_ = MakeStrong(this),
-            remoteExecutor
-        ] (TPlanFragment fragment, IUnversionedRowsetWriterPtr writer) {
-            return BIND(
-                &IExecutor::Execute,
-                remoteExecutor,
-                fragment,
-                ExternalCGInfo_,
-                writer,
-                options,
-                RequestFeatureFlags_)
-                .AsyncVia(Invoker_)
-                .Run();
-        };
-    }
-
-    TExecutePlan GetExecutePlanCallbackWithAsyncLastCommittedTimestamp()
-    {
-        auto patchedOptions = QueryOptions_;
-        patchedOptions.TimestampRange.Timestamp = NTransactionClient::AsyncLastCommittedTimestamp;
-        return GetExecutePlanCallback(patchedOptions);
     }
 
     TSharedRange<std::vector<TTabletReadItems>> CoordinateDataSourcesOld(
@@ -1078,11 +1116,23 @@ private:
             const auto& partitions = tabletSnapshot->PartitionList;
             YT_VERIFY(!partitions.empty());
 
+            auto singletonsConfig = TSingletonManager::GetDynamicConfig();
+            auto queryEngineConfig = singletonsConfig
+                ? singletonsConfig->GetSingletonConfig<TQueryEngineDynamicConfig>()
+                : nullptr;
+            int maxSubsplitsPerTablet = queryEngineConfig && queryEngineConfig->MaxSubsplitsPerTablet
+                ? *queryEngineConfig->MaxSubsplitsPerTablet
+                : Config_->MaxSubsplitsPerTablet;
+
+            YT_LOG_DEBUG("Splitting tablet (TabletId: %v, MaxSubsplitsPerTablet: %v)",
+                tabletId,
+                maxSubsplitsPerTablet);
+
             auto tabletSplits = SplitTablet(
                 TRange(partitions),
                 ranges,
                 RowBuffer_,
-                Config_->MaxSubsplitsPerTablet,
+                maxSubsplitsPerTablet,
                 QueryOptions_.VerboseLogging,
                 Logger);
 

@@ -1,5 +1,4 @@
 #include "protobuf_helpers.h"
-#include "mpl.h"
 
 #include <yt/yt/core/compression/codec.h>
 
@@ -10,6 +9,8 @@
 #include <yt/yt/core/ytree/fluent.h>
 
 #include <library/cpp/yt/misc/cast.h>
+
+#include <library/cpp/yt/mpl/type_traits.h>
 
 #include <library/cpp/yt/threading/spin_lock.h>
 
@@ -54,8 +55,8 @@ void SerializeProtoToRef(
 {
 #ifdef YT_VALIDATE_REQUIRED_PROTO_FIELDS
     if (!partial && !message.IsInitialized()) {
-        YT_LOG_FATAL("Missing required protobuf fields (Error: %v)",
-            message.InitializationErrorString());
+        YT_TLOG_FATAL("Missing required protobuf fields")
+            .With("Error", message.InitializationErrorString());
     }
 #endif
     auto* begin = reinterpret_cast<google::protobuf::uint8*>(ref.begin());
@@ -355,7 +356,7 @@ private:
     std::vector<TRegisterAction> RegisterActions_;
 
     THashMap<int, TProtobufExtensionDescriptor> ExtensionTagToExtensionDescriptor_;
-    THashMap<TString, TProtobufExtensionDescriptor> ExtensionNameToExtensionDescriptor_;
+    THashMap<std::string, TProtobufExtensionDescriptor> ExtensionNameToExtensionDescriptor_;
 
     void EnsureInitialized()
     {

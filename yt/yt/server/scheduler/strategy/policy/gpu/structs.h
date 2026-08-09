@@ -3,6 +3,8 @@
 #include "public.h"
 #include "pool_tree_snapshot_state.h"
 
+#include <library/cpp/yt/containers/enum_indexed_array.h>
+
 #include <yt/yt/core/profiling/timing.h>
 
 #include <yt/yt/server/scheduler/strategy/policy/public.h>
@@ -135,10 +137,6 @@ public:
     DEFINE_BYVAL_RO_BOOLEAN_PROPERTY(Gang);
     DEFINE_BYVAL_RW_BOOLEAN_PROPERTY(Starving);
 
-    // Priority module binding may evict some current operations from a module if necessary.
-    // TODO(eshcherbin): (!) Set this property.
-    DEFINE_BYVAL_RW_BOOLEAN_PROPERTY(PriorityModuleBindingEnabled);
-
     //! These properties can be changed during assignment plan update.
     DEFINE_BYREF_RW_PROPERTY(std::optional<std::string>, SchedulingModule);
 
@@ -150,6 +148,11 @@ public:
     // Used only for full-host module-bound operations.
     DEFINE_BYREF_RW_PROPERTY(std::optional<TInstant>, WaitingForModuleBindingSince);
     DEFINE_BYREF_RW_PROPERTY(std::optional<TInstant>, WaitingForAssignmentsSince);
+
+    //! Whether priority module binding is enabled for this operation
+    //! Updated from pool configuration every assignment plan update during context creation
+    //! Can be nullopt if plan update did not happen yet
+    DEFINE_BYREF_RW_PROPERTY(std::optional<bool>, PriorityModuleBindingEnabled);
 
     // Full-host module-bound operation is either fully preemptible or none of its assignments are preemptible.
     DEFINE_BYVAL_RO_BOOLEAN_PROPERTY(Preemptible);
@@ -174,6 +177,7 @@ public:
 
     bool IsFullHost() const;
     bool IsFullHostModuleBound() const;
+    bool IsFullHostNonGang() const;
 
     int GetInitialNeededAllocationCount() const;
     int GetReadyToAssignNeededAllocationCount() const;
@@ -236,6 +240,9 @@ struct TGpuScheduleAllocationsStatistics
 {
     int ScheduledAllocationCount = 0;
     int PreemptedAllocationCount = 0;
+
+    // NB(severovv): not serialized or logged, only used in metrics
+    TScheduleAllocationAttemptStatistics AttemptStatistics;
 };
 using TGpuScheduleAllocationsStatisticsPtr = TIntrusivePtr<TGpuScheduleAllocationsStatistics>;
 
@@ -307,6 +314,7 @@ struct TGpuModuleStatistics final
     int TotalNodes = 0;
     int UnreservedNodes = 0;
     int FullHostModuleBoundOperations = 0;
+    int FullHostNonGangAssignments = 0;
 };
 
 void Serialize(const TGpuModuleStatistics& node, NYson::IYsonConsumer* consumer);
@@ -318,12 +326,13 @@ struct TGpuPlanUpdateStatistics final
     NProfiling::TWallTimer Timer;
 
     TDuration UpdatingOperationResourcesDuration;
-    TDuration FullHostPlanningDuration;
+    TDuration FullHostModuleBoundPlanningDuration;
+    TDuration FullHostNonGangPlanningDuration;
     TDuration RegularPlanningDuration;
     TDuration ExtraPlanningDuration;
 
-    int PlannedAssignments = 0;
-    int PreemptedAssignments = 0;
+    TEnumIndexedArray<EGpuAssignmentPlanningStage, int> PlannedAssignmentsByStage;
+    TEnumIndexedArray<EGpuAssignmentPlanningStage, int> PreemptedAssignmentsByStage;
 
     THashMap<std::string, TGpuModuleStatistics> ModuleStatistics;
 };

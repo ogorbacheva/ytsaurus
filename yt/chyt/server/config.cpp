@@ -4,7 +4,7 @@
 
 #include <yt/yt/client/api/client.h>
 
-#include <yt/yt/library/tracing/jaeger/tracer.h>
+#include <yt/yt/library/tracing/jaeger/config.h>
 
 #include <yt/yt/library/re2/re2.h>
 
@@ -99,6 +99,8 @@ void TTestingSettings::Register(TRegistrar registrar)
     registrar.Parameter("throw_exception_in_distributor", &TThis::ThrowExceptionInDistributor)
         .Default(false);
     registrar.Parameter("throw_exception_in_subquery", &TThis::ThrowExceptionInSubquery)
+        .Default(false);
+    registrar.Parameter("throw_exception_in_writer_finish", &TThis::ThrowExceptionInWriterFinish)
         .Default(false);
     registrar.Parameter("subquery_allocation_size", &TThis::SubqueryAllocationSize)
         .Default(0);
@@ -522,7 +524,7 @@ void TUserDefinedSqlObjectsStorageConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TDictionaryRepositoryConfig::Register(TRegistrar registrar)
+void TCypressObjectRepositoryConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("root_path", &TThis::RootPath)
         .NonEmpty();
@@ -693,6 +695,9 @@ void TYtConfig::Register(TRegistrar registrar)
     registrar.Parameter("health_checker", &TThis::HealthChecker)
         .DefaultNew();
 
+    registrar.Parameter("election_manager", &TThis::ElectionManager)
+        .Default();
+
     registrar.Parameter("database_directories", &TThis::DatabaseDirectories)
         .Default();
 
@@ -721,7 +726,9 @@ void TYtConfig::Register(TRegistrar registrar)
     registrar.Parameter("user_defined_sql_objects_storage", &TThis::UserDefinedSqlObjectsStorage)
         .DefaultNew();
 
-    registrar.Parameter("dictionary_repository", &TThis::DictionaryRepository)
+    registrar.Parameter("object_repository", &TThis::CypressObjectRepository)
+        // COMPAT(buyval01)
+        .Alias("dictionary_repository")
         .Default();
 
     registrar.Parameter("dictionary_access_control", &TThis::DictionaryAccessControl)
@@ -752,8 +759,6 @@ void TYtConfig::Register(TRegistrar registrar)
         config->TableColumnarStatisticsCache->RefreshTime = std::nullopt;
         config->TableColumnarStatisticsCache->ExpireAfterSuccessfulUpdateTime = TDuration::Hours(6);
         config->TableColumnarStatisticsCache->ExpireAfterAccessTime = TDuration::Hours(6);
-
-        config->Discovery->Directory = "//sys/clickhouse/cliques";
     });
 }
 
