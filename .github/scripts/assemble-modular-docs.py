@@ -19,6 +19,9 @@ CONFIG_LANGS_RE = re.compile(r"^[ \t]*langs:[ \t]*\[([^]]+)]", re.MULTILINE)
 PRESET_SCALAR_RE = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):(?:\s+(.*?))?\s*$")
 PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*}}")
 REVISION_QUERY_RE = re.compile(r"^$|^\?revision=[A-Za-z0-9._-]+$")
+VIEWER_URL_RE = re.compile(
+    r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.viewer\.ydocs\.io$"
+)
 ROUTE_ROOT_RE = re.compile(r"{{\s*(core|spyt|chyt)-docs-root\s*}}")
 MODULAR_ROUTE_RE = re.compile(
     r"{{\s*(?P<module>core|spyt|chyt)-docs-root\s*}}/"
@@ -122,12 +125,14 @@ def load_registry(path: Path) -> list[dict[str, Any]]:
 
     names: set[str] = set()
     project_names: set[str] = set()
+    viewer_urls: set[str] = set()
     prefixes: set[str] = set()
     for index, module in enumerate(modules):
         if not isinstance(module, dict):
             raise AssemblyError(f"Module #{index + 1} must be an object")
         name = module.get("name")
         project_name = module.get("project_name")
+        viewer_url = module.get("viewer_url")
         languages = module.get("languages")
         common = module.get("common")
         storage_prefix = module.get("storage_prefix")
@@ -139,6 +144,14 @@ def load_registry(path: Path) -> list[dict[str, Any]]:
             raise AssemblyError(f"Module {name} has invalid project_name")
         if project_name in project_names:
             raise AssemblyError(f"Duplicate project_name: {project_name}")
+        if not isinstance(viewer_url, str) or not VIEWER_URL_RE.fullmatch(viewer_url):
+            raise AssemblyError(
+                f"Module {name} has invalid viewer_url; expected an HTTPS "
+                "*.viewer.ydocs.io root without a path, query, fragment, or "
+                "trailing slash"
+            )
+        if viewer_url in viewer_urls:
+            raise AssemblyError(f"Duplicate viewer_url: {viewer_url}")
         if (
             not isinstance(languages, list)
             or not languages
@@ -162,6 +175,7 @@ def load_registry(path: Path) -> list[dict[str, Any]]:
             )
         names.add(name)
         project_names.add(project_name)
+        viewer_urls.add(viewer_url)
         prefixes.add(storage_prefix)
     return modules
 
@@ -230,18 +244,15 @@ def load_public_scalars(path: Path) -> dict[str, str]:
 def preview_docs_roots(
     modules: list[dict[str, Any]], variables: dict[str, str]
 ) -> dict[str, str]:
-    """Derive testing viewer roots from registry project names."""
-    overrides = {
-        f"{module['name']}-docs-root": (
-            f"https://{module['project_name']}.viewer.ydocs.io"
-        )
-        for module in modules
-        if f"{module['name']}-docs-root" in variables
-    }
-    if not overrides:
-        raise AssemblyError(
-            "Public revision preview has no registered <module>-docs-root variables"
-        )
+    """Read testing viewer roots from the module registry."""
+    overrides: dict[str, str] = {}
+    for module in modules:
+        variable = f"{module['name']}-docs-root"
+        if variable not in variables:
+            raise AssemblyError(
+                f"Public revision preview is missing registered {variable} variable"
+            )
+        overrides[variable] = module["viewer_url"]
     return overrides
 
 
@@ -689,6 +700,8 @@ def assemble_module(
     return {
         "name": name,
         "project_name": module["project_name"],
+        "viewer_url": module["viewer_url"],
+        "storage_prefix": module["storage_prefix"],
         "languages": module["languages"],
         "common": module["common"],
         "public_revision_preview": public_revision_preview,

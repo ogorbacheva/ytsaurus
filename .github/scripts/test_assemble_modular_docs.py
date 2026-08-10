@@ -75,6 +75,9 @@ class AssembleModularDocsTest(unittest.TestCase):
                         {
                             "name": "demo",
                             "project_name": "demo-docs",
+                            "viewer_url": (
+                                "https://demo-bucket---demo-docs.viewer.ydocs.io"
+                            ),
                             "languages": ["ru"],
                             "common": True,
                             "storage_prefix": "demo-docs",
@@ -263,8 +266,15 @@ class AssembleModularDocsTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn(
-            'demo-docs-root: "https://demo-docs.viewer.ydocs.io"',
+            'demo-docs-root: "https://demo-bucket---demo-docs.viewer.ydocs.io"',
             generated_presets,
+        )
+        manifest = json.loads(
+            (self.output / "assembly-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            manifest["modules"][0]["viewer_url"],
+            "https://demo-bucket---demo-docs.viewer.ydocs.io",
         )
 
         source = source_config.read_text(encoding="utf-8")
@@ -394,6 +404,7 @@ class AssembleModularDocsTest(unittest.TestCase):
             {
                 "name": "second",
                 "project_name": "second-docs",
+                "viewer_url": "https://second-docs.viewer.ydocs.io",
                 "languages": ["ru"],
                 "common": False,
                 "storage_prefix": "",
@@ -403,6 +414,67 @@ class AssembleModularDocsTest(unittest.TestCase):
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Duplicate storage_prefix", result.stderr)
+
+    def test_missing_viewer_url_blocks_assembly(self) -> None:
+        document = json.loads(self.registry.read_text(encoding="utf-8"))
+        del document["modules"][0]["viewer_url"]
+        self.registry.write_text(json.dumps(document), encoding="utf-8")
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid viewer_url", result.stderr)
+
+    def test_invalid_viewer_urls_block_assembly(self) -> None:
+        invalid_urls = (
+            "http://demo-docs.viewer.ydocs.io",
+            "https://demo-docs.viewer.ydocs.io/",
+            "https://demo-docs.viewer.ydocs.io/path",
+            "https://demo-docs.viewer.ydocs.io?preview=1",
+            "https://demo-docs.viewer.ydocs.io#preview",
+            "https://user@demo-docs.viewer.ydocs.io",
+            "https://demo-docs.viewer.ydocs.io:443",
+            "https://demo-docs.example.test",
+        )
+        for viewer_url in invalid_urls:
+            with self.subTest(viewer_url=viewer_url):
+                document = json.loads(self.registry.read_text(encoding="utf-8"))
+                document["modules"][0]["viewer_url"] = viewer_url
+                self.registry.write_text(json.dumps(document), encoding="utf-8")
+                result = self.run_script()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid viewer_url", result.stderr)
+
+    def test_duplicate_viewer_url_blocks_assembly(self) -> None:
+        document = json.loads(self.registry.read_text(encoding="utf-8"))
+        document["modules"].append(
+            {
+                "name": "second",
+                "project_name": "second-docs",
+                "viewer_url": document["modules"][0]["viewer_url"],
+                "languages": ["ru"],
+                "common": False,
+                "storage_prefix": "second-docs",
+            }
+        )
+        self.registry.write_text(json.dumps(document), encoding="utf-8")
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Duplicate viewer_url", result.stderr)
+
+    def test_preview_requires_every_registered_docs_root(self) -> None:
+        presets = self.source / "public" / "presets.yaml"
+        presets.write_text(
+            presets.read_text(encoding="utf-8").replace(
+                "  demo-docs-root: https://example.test/docs/demo\n", ""
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            "--docs-revision-query",
+            "?revision=abc123",
+            "--public-revision-preview",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing registered demo-docs-root", result.stderr)
 
     def test_clean_replaces_only_marked_output(self) -> None:
         first = self.run_script()

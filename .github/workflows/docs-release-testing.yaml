@@ -82,6 +82,15 @@ jobs:
       - name: Verify build contract
         run: |
           set -euo pipefail
+          viewer_url() {
+            jq -er --arg module "$1" \
+              '.modules[] | select(.name == $module) | .viewer_url' \
+              .github/docs-modules.json
+          }
+          core_url=$(viewer_url core)
+          spyt_url=$(viewer_url spyt)
+          chyt_url=$(viewer_url chyt)
+
           while IFS=$'\t' read -r module project_name; do
             test -f "${BUILD_OUTPUT_MD}/${module}/.yfm"
             test -f "${BUILD_OUTPUT_HTML}/${module}/index.html"
@@ -110,33 +119,33 @@ jobs:
 
           for language in ru en; do
             landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
-            expected_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/tutorials/quick-start?revision=${GITHUB_SHA}"
+            expected_url="${core_url}/${language}/user-guide/tutorials/quick-start?revision=${GITHUB_SHA}"
             grep -Fq "${expected_url}" "${landing_page}"
 
             core_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/reference/releases.html"
-            expected_chyt_url="https://ytsaurus-chyt.viewer.ydocs.io/${language}/user-guide/reference/release-notes?revision=${GITHUB_SHA}"
+            expected_chyt_url="${chyt_url}/${language}/user-guide/reference/release-notes?revision=${GITHUB_SHA}"
             grep -Fq "${expected_chyt_url}" "${core_page}"
 
             core_self_page="${BUILD_OUTPUT_HTML}/core/${language}/user-guide/reference/faq.html"
-            expected_core_self_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/reference/data-processing/operations/merge?revision=${GITHUB_SHA}"
+            expected_core_self_url="${core_url}/${language}/user-guide/reference/data-processing/operations/merge?revision=${GITHUB_SHA}"
             grep -Fq "${expected_core_self_url}" "${core_self_page}"
 
             core_audience_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/how-to-guides/install-excel.html"
-            expected_core_audience_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/explanation/excel?revision=${GITHUB_SHA}"
+            expected_core_audience_url="${core_url}/${language}/user-guide/explanation/excel?revision=${GITHUB_SHA}"
             grep -Fq "${expected_core_audience_url}" "${core_audience_page}"
 
             spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/user-guide/reference/data-types.html"
-            expected_core_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/reference/storage/data-types?revision=${GITHUB_SHA}"
+            expected_core_url="${core_url}/${language}/user-guide/reference/storage/data-types?revision=${GITHUB_SHA}"
             grep -Fq "${expected_core_url}" "${spyt_page}"
-            expected_spyt_self_url="https://ytsaurus-spyt.viewer.ydocs.io/${language}/user-guide/reference/read-options?revision=${GITHUB_SHA}#schema_hint"
+            expected_spyt_self_url="${spyt_url}/${language}/user-guide/reference/read-options?revision=${GITHUB_SHA}#schema_hint"
             grep -Fq "${expected_spyt_self_url}" "${spyt_page}"
 
             chyt_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/yt-tables.html"
-            expected_core_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/explanation/storage/static-tables?revision=${GITHUB_SHA}"
+            expected_core_url="${core_url}/${language}/user-guide/explanation/storage/static-tables?revision=${GITHUB_SHA}"
             grep -Fq "${expected_core_url}" "${chyt_page}"
 
             chyt_self_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/faq.html"
-            expected_chyt_self_url="https://ytsaurus-chyt.viewer.ydocs.io/${language}/user-guide/explanation/general?revision=${GITHUB_SHA}"
+            expected_chyt_self_url="${chyt_url}/${language}/user-guide/explanation/general?revision=${GITHUB_SHA}"
             grep -Fq "${expected_chyt_self_url}" "${chyt_self_page}"
           done
 
@@ -154,7 +163,7 @@ jobs:
           matrix=$(jq -c '{include: [.modules[] | {
             module: .name,
             "storage-suffix": (if .storage_prefix == "" then "" else "/" + .storage_prefix end),
-            "viewer-url": ("https://" + .project_name + ".viewer.ydocs.io")
+            viewer_url: .viewer_url
           }]}' .github/docs-modules.json)
           printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
         shell: bash
@@ -251,7 +260,7 @@ jobs:
       - name: Verify revision is served by viewer
         env:
           REVISION: ${{ github.sha }}
-          VIEWER_URL: ${{ matrix.viewer-url }}
+          VIEWER_URL: ${{ matrix.viewer_url }}
         run: |
           set -euo pipefail
           for language in ru en; do
@@ -261,6 +270,10 @@ jobs:
                 --silent \
                 --show-error \
                 --location \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --connect-timeout 10 \
+                --max-time 30 \
                 --output /dev/null \
                 --write-out '%{http_code}' \
                 "${url}" || true)
@@ -280,14 +293,11 @@ jobs:
 
   summary:
     name: Testing documentation links
-    needs: upload
+    needs: [build, upload]
     runs-on: ubuntu-latest
     env:
       REVISION: ${{ github.sha }}
-      LANDING_URL: https://ytsaurus.viewer.ydocs.io
-      CORE_URL: https://ytsaurus-core.viewer.ydocs.io
-      SPYT_URL: https://ytsaurus-spyt.viewer.ydocs.io
-      CHYT_URL: https://ytsaurus-chyt.viewer.ydocs.io
+      UPLOAD_MATRIX: ${{ needs.build.outputs.upload-matrix }}
     steps:
       - name: Write links to job summary
         run: |
@@ -297,9 +307,16 @@ jobs:
             printf 'Revision: `%s`\n\n' "${REVISION}"
             printf '| Project | RU | EN |\n'
             printf '| --- | --- | --- |\n'
-            printf '| Landing | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${LANDING_URL%/}" "${REVISION}" "${LANDING_URL%/}" "${REVISION}"
-            printf '| Core | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${CORE_URL%/}" "${REVISION}" "${CORE_URL%/}" "${REVISION}"
-            printf '| SPYT | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${SPYT_URL%/}" "${REVISION}" "${SPYT_URL%/}" "${REVISION}"
-            printf '| CHYT | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${CHYT_URL%/}" "${REVISION}" "${CHYT_URL%/}" "${REVISION}"
+            while IFS=$'\t' read -r module viewer_url; do
+              case "${module}" in
+                landing) title='Landing' ;;
+                core) title='Core' ;;
+                spyt) title='SPYT' ;;
+                chyt) title='CHYT' ;;
+                *) title="${module}" ;;
+              esac
+              printf '| %s | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' \
+                "${title}" "${viewer_url%/}" "${REVISION}" "${viewer_url%/}" "${REVISION}"
+            done < <(jq -r '.include[] | [.module, .viewer_url] | @tsv' <<<"${UPLOAD_MATRIX}")
           } >> "${GITHUB_STEP_SUMMARY}"
         shell: bash

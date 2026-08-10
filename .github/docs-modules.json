@@ -4,6 +4,7 @@
     {
       "name": "landing",
       "project_name": "ytsaurus",
+      "viewer_url": "https://ytsaurus.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": false,
       "storage_prefix": ""
@@ -11,6 +12,7 @@
     {
       "name": "core",
       "project_name": "ytsaurus-core",
+      "viewer_url": "https://ytsaurus---ytsaurus-core.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": true,
       "storage_prefix": "ytsaurus-core"
@@ -18,6 +20,7 @@
     {
       "name": "spyt",
       "project_name": "ytsaurus-spyt",
+      "viewer_url": "https://ytsaurus---ytsaurus-spyt.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": true,
       "storage_prefix": "ytsaurus-spyt"
@@ -25,6 +28,7 @@
     {
       "name": "chyt",
       "project_name": "ytsaurus-chyt",
+      "viewer_url": "https://ytsaurus---ytsaurus-chyt.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": true,
       "storage_prefix": "ytsaurus-chyt"
