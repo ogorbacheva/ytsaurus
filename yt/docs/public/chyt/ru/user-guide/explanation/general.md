@@ -1,0 +1,1 @@
+{% include [Концепции](../../common/_includes/user-guide/explanation/general.md) %}

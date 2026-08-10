@@ -1,0 +1,1 @@
+{% include [О {{product-name}}](_partials/overview/about.md) %}

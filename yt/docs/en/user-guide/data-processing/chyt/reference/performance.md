@@ -1,1 +1,0 @@
-{% include [Performance and recommendations](../../../../_includes/user-guide/data-processing/chyt/reference/performance.md) %}

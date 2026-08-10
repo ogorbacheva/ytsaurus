@@ -1,0 +1,1 @@
+{% include [Работа с таблицами {{product-name}}](../../common/_includes/user-guide/reference/yt-tables.md) %}

@@ -1,0 +1,1 @@
+{% include [Вставка из операций в динамические таблицы](../_partials/user-guide/dynamic-tables/bulk-insert.md) %}

@@ -1,0 +1,1 @@
+{% include [Java API](../../_partials/api/java/examples.md) %}

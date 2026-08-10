@@ -1,0 +1,1 @@
+{% include [rpc](../_partials/user-guide/proxy/rpc.md) %}

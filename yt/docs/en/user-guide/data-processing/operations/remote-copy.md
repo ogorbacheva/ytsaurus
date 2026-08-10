@@ -1,1 +1,0 @@
-{% include [Remote copy](../../../_includes/user-guide/data-processing/operations/remote-copy.md) %}

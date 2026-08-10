@@ -1,1 +1,0 @@
-{% include [Аннотации](../../_includes/user-guide/storage/annotations.md) %}

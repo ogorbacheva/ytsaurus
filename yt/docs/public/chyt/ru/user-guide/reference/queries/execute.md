@@ -1,0 +1,1 @@
+{% include [Выполнение запросов](../../../common/_includes/user-guide/reference/queries/execute.md) %}

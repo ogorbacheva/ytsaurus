@@ -1,0 +1,1 @@
+{% include [Compaction](../_partials/user-guide/dynamic-tables/compaction.md) %}

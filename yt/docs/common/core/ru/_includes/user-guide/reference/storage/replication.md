@@ -1,0 +1,1 @@
+{% include [Репликация и erasure-кодирование](../_partials/user-guide/storage/replication.md) %}

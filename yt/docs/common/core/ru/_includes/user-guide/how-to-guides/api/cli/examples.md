@@ -1,0 +1,1 @@
+{% include [Примеры](../../_partials/api/cli/examples.md) %}

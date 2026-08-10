@@ -1,1 +1,0 @@
-{% include [Фоновая компактификация](../../_includes/user-guide/dynamic-tables/compaction.md) %}

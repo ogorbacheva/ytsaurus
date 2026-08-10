@@ -1,3 +1,0 @@
-# Changing the cluster configuration
-
-

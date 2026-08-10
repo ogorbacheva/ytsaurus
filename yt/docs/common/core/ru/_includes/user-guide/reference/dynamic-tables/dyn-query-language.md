@@ -1,0 +1,1 @@
+{% include [Язык запросов](../_partials/user-guide/dynamic-tables/dyn-query-language.md) %}

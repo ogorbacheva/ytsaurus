@@ -1,2 +1,0 @@
-default:
-  feature_udf_noncpp: false

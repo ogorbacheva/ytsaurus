@@ -1,1 +1,0 @@
-{% include [Профилирование динтаблиц](../../_includes/user-guide/dynamic-tables/profiling.md) %}

@@ -1,0 +1,1 @@
+{% include [Data types](../../common/_includes/user-guide/reference/data-types.md) %}

@@ -1,0 +1,1 @@
+{% include [ССылки](../_partials/user-guide/storage/links.md) %}

@@ -1,0 +1,25 @@
+allowHTML: true
+apply-presets: true
+varsPreset: public
+langs: [ru, en]
+allow-custom-resources: true
+breaks: false
+search-by-toc: true
+
+docs-viewer:
+  project-name: ytsaurus-spyt
+  show-revision: true
+  langs: [ru, en]
+  themes: [light, dark]
+  github-url-prefix: https://github.com/ytsaurus/ytsaurus/tree/main/yt/docs/public/spyt
+  index-page:
+    hidden: true
+    title: SPYT
+    description: Apache Spark on YTsaurus
+
+search:
+  provider: local
+
+vcs:
+  remoteBase: https://github.com/ytsaurus/ytsaurus/tree/main/yt/docs/public/spyt
+  enabled: true

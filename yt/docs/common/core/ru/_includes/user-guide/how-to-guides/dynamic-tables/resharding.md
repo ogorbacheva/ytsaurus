@@ -1,0 +1,1 @@
+{% include [Шардирование](../_partials/user-guide/dynamic-tables/resharding.md) %}

@@ -1,0 +1,1 @@
+{% include [Настройки запроса](../../../common/_includes/user-guide/reference/queries/settings.md) %}

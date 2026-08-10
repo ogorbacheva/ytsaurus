@@ -1,1 +1,0 @@
-{% include [Вставка и удаление данных из консоли](../../../_includes/user-guide/dynamic-tables/tutorials/add-remove-line.md) %}

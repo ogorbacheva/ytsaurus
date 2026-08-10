@@ -1,0 +1,1 @@
+{% include [Файловый кеш](../_partials/user-guide/storage/file-cache.md) %}

@@ -1,1 +1,0 @@
-{% include [Превращение динтаблицы в статическую](../../../_includes/user-guide/dynamic-tables/tutorials/dynamic-to-static.md) %}

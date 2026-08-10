@@ -1,0 +1,13 @@
+allowHTML: true
+apply-presets: true
+varsPreset: public
+langs: [ru, en]
+
+docs-viewer:
+  project-name: ytsaurus
+  langs: [ru, en]
+  themes: [light, dark]
+  index-page:
+    hidden: false
+    title: Документация YTsaurus
+    description: Хаб по компонентам и основным сценариям YTsaurus

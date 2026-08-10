@@ -1,0 +1,1 @@
+{% include [Data types](../_partials/user-guide/storage/data-types.md) %}

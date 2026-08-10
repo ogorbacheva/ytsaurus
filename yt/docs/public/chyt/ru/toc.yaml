@@ -1,0 +1,98 @@
+title: CHYT
+href: index.md
+items:
+  - name: НАЧАЛО РАБОТЫ
+    labeled: true
+    items:
+      - name: О CHYT
+        href: user-guide/explanation/about-chyt.md
+      - name: Быстрый старт
+        href: user-guide/how-to-guides/try-chyt.md
+      - name: Основные понятия
+        items:
+          - name: Введение
+            href: user-guide/explanation/general.md
+          - name: Анатомия запроса
+            href: user-guide/explanation/queries/anatomy.md
+          - name: JOIN в CHYT
+            href: user-guide/explanation/queries/joins.md
+          - name: Клики
+            href: user-guide/explanation/cliques/overview.md
+  - name: Руководство пользователя
+    labeled: true
+    items:
+      - name: Клики
+        items:
+          - name: Управление кликой
+            items:
+              - name: Обзор сценариев
+                href: user-guide/how-to-guides/cliques/overview.md
+              - name: Создание, запуск и остановка
+                href: user-guide/how-to-guides/cliques/create-start-stop.md
+              - name: Управление ресурсами
+                href: user-guide/how-to-guides/cliques/manage-resources.md
+              - name: Управление доступом
+                href: user-guide/how-to-guides/cliques/manage-access.md
+              - name: Установка пользовательской версии
+                href: user-guide/how-to-guides/cliques/install-custom-version.md
+              - name: Продвинутые настройки
+                href: user-guide/how-to-guides/cliques/configure-advanced-settings.md
+          - name: Интерфейс и настройки
+            items:
+              - name: Веб-интерфейс клики
+                href: user-guide/reference/cliques/ui.md
+              - name: Клика как YT-операция
+                href: user-guide/reference/cliques/yt-operation-ui.md
+              - name: Настройки клики
+                href: user-guide/reference/cliques/configs.md
+              - name: Права доступа
+                href: user-guide/reference/cliques/access.md
+          - name: Устройство CHYT
+            items:
+              - name: Контроллер
+                href: user-guide/explanation/controller.md
+              - name: Ресурсы и вытеснение
+                href: user-guide/explanation/resources.md
+      - name: Запросы и данные
+        items:
+          - name: Работа с таблицами YTsaurus
+            href: user-guide/reference/yt-tables.md
+          - name: CLI и Python API
+            href: user-guide/reference/cli-and-api.md
+          - name: Выполнение запросов
+            href: user-guide/reference/queries/execute.md
+          - name: Выбор координатора
+            href: user-guide/reference/queries/instance-pick.md
+          - name: Настройки запросов
+            href: user-guide/reference/queries/settings.md
+          - name: Получение Query Logs
+            href: user-guide/how-to-guides/queries/get-query-logs.md
+          - name: Оптимизация производительности
+            href: user-guide/how-to-guides/optimize-performance.md
+          - name: Диагностика упавших джобов
+            href: user-guide/how-to-guides/troubleshoot-failed-jobs.md
+      - name: Справочник
+        items:
+          - name: Версии CHYT и ClickHouse
+            href: user-guide/how-to-guides/check-versions.md
+          - name: Конфигурация клики
+            href: user-guide/reference/cliques/configuration.md
+          - name: Типы данных
+            href: user-guide/reference/data-types.md
+          - name: Функции
+            href: user-guide/reference/functions.md
+          - name: Пользовательские функции (UDF)
+            href: user-guide/reference/user-defined-functions.md
+          - name: FAQ
+            href: user-guide/reference/faq.md
+          - name: История изменений
+            href: user-guide/reference/release-notes.md
+  - name: Руководство администратора
+    labeled: true
+    items:
+      - name: Установка CHYT
+        href: admin-guide/how-to-guides/install-chyt.md
+      - name: Обновление CHYT
+        href: admin-guide/how-to-guides/update-chyt.md
+      - name: Интеграция с внешними системами
+        href: admin-guide/how-to-guides/integrate-external-systems.md

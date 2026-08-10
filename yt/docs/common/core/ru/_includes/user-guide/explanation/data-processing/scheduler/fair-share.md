@@ -1,0 +1,1 @@
+{% include [Fair share ratio](../../_partials/user-guide/data-processing/scheduler/fair-share.md) %}

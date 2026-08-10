@@ -1,0 +1,1 @@
+{% include [Сортированные динтаблицы](../_partials/user-guide/dynamic-tables/sorted-dynamic-tables.md) %}

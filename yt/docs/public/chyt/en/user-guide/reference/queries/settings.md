@@ -1,0 +1,1 @@
+{% include [Query settings](../../../common/_includes/user-guide/reference/queries/settings.md) %}

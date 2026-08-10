@@ -1,0 +1,19 @@
+---
+metadata:
+    - property: 'og:title'
+      content: 'Установка Odin'
+    - property: 'og:description'
+      content: 'Инструкции ниже описывают, как развернуть {{product-name}} Odin в Kubernetes'
+    - property: 'og:type'
+      content: 'article'
+    - property: 'og:url'
+      content: '{{ docs_root }}/core/admin-guide/how-to-guides/install-odin'
+    - property: 'article:tag'
+      content: 'k8s'
+    - property: 'article:modified_time'
+      content: '2025-09-10T20:00:00+03:00'
+    - property: 'article:author'
+      content: 'Надежда Савченко'
+---
+
+{% include [Установка Odin](_partials/admin-guide/install-odin.md) %}

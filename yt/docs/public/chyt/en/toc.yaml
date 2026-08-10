@@ -1,0 +1,96 @@
+title: CHYT
+href: index.md
+items:
+  - name: GETTING STARTED
+    labeled: true
+    items:
+      - name: About CHYT
+        href: user-guide/explanation/about-chyt.md
+      - name: Quick start
+        href: user-guide/how-to-guides/try-chyt.md
+      - name: Core concepts
+        items:
+          - name: Introduction
+            href: user-guide/explanation/general.md
+          - name: Query anatomy
+            href: user-guide/explanation/queries/anatomy.md
+          - name: JOIN in CHYT
+            href: user-guide/explanation/queries/joins.md
+          - name: Cliques
+            href: user-guide/explanation/cliques/overview.md
+  - name: User guide
+    labeled: true
+    items:
+      - name: Cliques
+        items:
+          - name: Managing a clique
+            items:
+              - name: Scenario overview
+                href: user-guide/how-to-guides/cliques/overview.md
+              - name: Create, start, and stop
+                href: user-guide/how-to-guides/cliques/create-start-stop.md
+              - name: Manage resources
+                href: user-guide/how-to-guides/cliques/manage-resources.md
+              - name: Manage access
+                href: user-guide/how-to-guides/cliques/manage-access.md
+              - name: Install a custom version
+                href: user-guide/how-to-guides/cliques/install-custom-version.md
+              - name: Configure advanced settings
+                href: user-guide/how-to-guides/cliques/configure-advanced-settings.md
+          - name: Interface and settings
+            items:
+              - name: Clique web interface
+                href: user-guide/reference/cliques/ui.md
+              - name: Clique as a YT operation
+                href: user-guide/reference/cliques/yt-operation-ui.md
+              - name: Clique settings
+                href: user-guide/reference/cliques/configs.md
+              - name: Access permissions
+                href: user-guide/reference/cliques/access.md
+          - name: CHYT internals
+            items:
+              - name: Controller
+                href: user-guide/explanation/controller.md
+              - name: Resources and preemption
+                href: user-guide/explanation/resources.md
+      - name: Queries and data
+        items:
+          - name: Working with YTsaurus tables
+            href: user-guide/reference/yt-tables.md
+          - name: CLI and Python API
+            href: user-guide/reference/cli-and-api.md
+          - name: Executing queries
+            href: user-guide/reference/queries/execute.md
+          - name: Selecting a coordinator
+            href: user-guide/reference/queries/instance-pick.md
+          - name: Query settings
+            href: user-guide/reference/queries/settings.md
+          - name: Getting Query Logs
+            href: user-guide/how-to-guides/queries/get-query-logs.md
+          - name: Performance optimization
+            href: user-guide/how-to-guides/optimize-performance.md
+          - name: Troubleshooting failed jobs
+            href: user-guide/how-to-guides/troubleshoot-failed-jobs.md
+      - name: Reference
+        items:
+          - name: CHYT and ClickHouse versions
+            href: user-guide/how-to-guides/check-versions.md
+          - name: Clique configuration
+            href: user-guide/reference/cliques/configuration.md
+          - name: Data types
+            href: user-guide/reference/data-types.md
+          - name: Functions
+            href: user-guide/reference/functions.md
+          - name: User-defined functions (UDF)
+            href: user-guide/reference/user-defined-functions.md
+          - name: FAQ
+            href: user-guide/reference/faq.md
+          - name: Release notes
+            href: user-guide/reference/release-notes.md
+  - name: Admin guide
+    labeled: true
+    items:
+      - name: Install CHYT
+        href: admin-guide/how-to-guides/install-chyt.md
+      - name: Integrate external systems
+        href: admin-guide/how-to-guides/integrate-external-systems.md

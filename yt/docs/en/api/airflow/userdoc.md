@@ -1,1 +1,0 @@
-{% include [User documentation](../../_includes/api/airflow/userdoc.md) %}

@@ -1,0 +1,1 @@
+{% include [Кипарис](../_partials/user-guide/storage/cypress.md) %}

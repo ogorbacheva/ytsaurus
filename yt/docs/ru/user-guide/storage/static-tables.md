@@ -1,1 +1,0 @@
-{% include [Статические таблицы](../../_includes/user-guide/storage/static-tables.md) %}

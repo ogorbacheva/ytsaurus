@@ -1,1 +1,0 @@
-{% include [Apache Flink Connector YTsaurus](../../../_includes/user-guide/data-processing/flyt/flink-connector-ytsaurus.md) %}

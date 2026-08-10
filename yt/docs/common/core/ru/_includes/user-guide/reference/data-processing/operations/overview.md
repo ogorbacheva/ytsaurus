@@ -1,0 +1,1 @@
+{% include [Типы операций](../../_partials/user-guide/data-processing/operations/overview.md) %}

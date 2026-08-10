@@ -1,1 +1,0 @@
-{% include [Функции](../../../../_includes/user-guide/data-processing/chyt/reference/functions.md) %}

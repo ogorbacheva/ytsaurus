@@ -1,1 +1,0 @@
-{% include [Типы данных](../../../../_includes/user-guide/data-processing/chyt/reference/data-types.md) %}

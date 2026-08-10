@@ -1,0 +1,112 @@
+title: SPYT
+href: index.md
+items:
+  - name: GETTING STARTED
+    labeled: true
+    items:
+      - name: About SPYT
+        href: user-guide/explanation/overview.md
+      - name: Quick start
+        href: user-guide/how-to-guides/run-spark-jobs.md
+      - name: Core concepts
+        items:
+          - name: SPYT cluster architecture
+            href: user-guide/explanation/cluster-architecture.md
+          - name: Direct submit
+            href: user-guide/explanation/direct-submit.md
+          - name: Spark History Server
+            href: user-guide/explanation/history-server.md
+          - name: YTsaurus Shuffle Service
+            href: user-guide/explanation/ytsaurus-shuffle-service.md
+      - name: Glossary
+        href: user-guide/reference/glossary.md
+  - name: User guide
+    labeled: true
+    items:
+      - name: Import data
+        href: user-guide/how-to-guides/import-data.md
+      - name: Open Spark UI
+        href: user-guide/how-to-guides/open-spark-ui.md
+      - name: Application development
+        items:
+          - name: Python
+            href: user-guide/how-to-guides/develop/python.md
+          - name: Java
+            href: user-guide/how-to-guides/develop/java.md
+          - name: Scala
+            href: user-guide/how-to-guides/develop/scala.md
+          - name: Jupyter
+            href: user-guide/how-to-guides/develop/jupyter.md
+      - name: SPYT cluster
+        items:
+          - name: Start a cluster
+            href: user-guide/how-to-guides/cluster/start.md
+          - name: Configure a cluster
+            href: user-guide/how-to-guides/cluster/configure.md
+          - name: Configure logs
+            href: user-guide/how-to-guides/configure-logs.md
+          - name: Troubleshoot cluster startup
+            href: user-guide/how-to-guides/troubleshoot-cluster-start.md
+      - name: Direct submit
+        items:
+          - name: Configure dynamic allocation
+            href: user-guide/how-to-guides/direct-submit/dynamic-allocation.md
+          - name: Diagnose direct submit
+            href: user-guide/how-to-guides/direct-submit/diagnose.md
+          - name: Start Spark History Server
+            href: user-guide/how-to-guides/direct-submit/history-server.md
+      - name: Data and resources
+        items:
+          - name: Read and write in a transaction
+            href: user-guide/how-to-guides/read-write-in-transaction.md
+          - name: Use GPU
+            href: user-guide/how-to-guides/use-gpu.md
+      - name: Structured Streaming
+        items:
+          - name: How Structured Streaming works
+            href: user-guide/explanation/structured-streaming.md
+          - name: Exactly-once guarantee
+            href: user-guide/explanation/structured-streaming/exactly-once.md
+          - name: Configure an idempotent receiver
+            href: user-guide/how-to-guides/structured-streaming/idempotent-receiver.md
+          - name: Configure transactional mode
+            href: user-guide/how-to-guides/structured-streaming/transactional-mode.md
+      - name: Optimization
+        items:
+          - name: Optimize Spark jobs
+            href: user-guide/how-to-guides/optimize-jobs.md
+      - name: Reference
+        items:
+          - name: General
+            items:
+              - name: Versioning
+                href: user-guide/reference/versioning.md
+              - name: Release notes
+                href: user-guide/reference/release-notes.md
+          - name: Data and configuration
+            items:
+              - name: Configuration parameters
+                href: user-guide/reference/configuration.md
+              - name: Data types
+                href: user-guide/reference/data-types.md
+              - name: Read options
+                href: user-guide/reference/read-options.md
+              - name: Write options
+                href: user-guide/reference/write-options.md
+              - name: Streaming options
+                href: user-guide/reference/streaming-options.md
+          - name: Interfaces
+            items:
+              - name: Spark SQL
+                href: user-guide/reference/spark-sql.md
+              - name: Livy (legacy)
+                href: user-guide/reference/legacy/livy.md
+  - name: Administrator guide
+    labeled: true
+    items:
+      - name: Deployment
+        items:
+          - name: Install SPYT
+            href: admin-guide/how-to-guides/install-spyt.md
+          - name: Configure TCP proxy
+            href: admin-guide/how-to-guides/configure-tcp-proxy.md

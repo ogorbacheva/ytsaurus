@@ -1,0 +1,1 @@
+{% include [MapReduce](../../_partials/user-guide/data-processing/operations/mapreduce.md) %}

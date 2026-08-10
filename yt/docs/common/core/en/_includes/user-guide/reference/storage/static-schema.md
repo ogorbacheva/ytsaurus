@@ -1,0 +1,1 @@
+{% include [Data schema](../_partials/user-guide/storage/static-schema.md) %}

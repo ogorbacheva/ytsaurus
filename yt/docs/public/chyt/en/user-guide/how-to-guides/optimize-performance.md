@@ -1,0 +1,1 @@
+{% include [Performance and recommendations](../../common/_includes/user-guide/how-to-guides/optimize-performance.md) %}

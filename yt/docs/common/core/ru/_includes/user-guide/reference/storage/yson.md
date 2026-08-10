@@ -1,0 +1,1 @@
+{% include [YSON](../_partials/user-guide/storage/yson.md) %}

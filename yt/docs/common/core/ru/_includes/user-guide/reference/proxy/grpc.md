@@ -1,0 +1,1 @@
+{% include [grpc](../_partials/user-guide/proxy/grpc.md) %}

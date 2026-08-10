@@ -1,0 +1,1 @@
+{% include [Функции](../../common/_includes/user-guide/reference/functions.md) %}

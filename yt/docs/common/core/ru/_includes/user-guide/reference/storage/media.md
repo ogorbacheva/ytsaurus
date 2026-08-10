@@ -1,0 +1,1 @@
+{% include [Медиумы](../_partials/user-guide/storage/media.md) %}

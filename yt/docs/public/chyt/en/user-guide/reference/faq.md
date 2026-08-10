@@ -1,0 +1,1 @@
+{% include [FAQ](../../common/_includes/user-guide/reference/faq.md) %}

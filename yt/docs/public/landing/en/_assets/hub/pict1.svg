@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 176" role="img" aria-label="YTsaurus Core">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e9f2ff"/><stop offset="1" stop-color="#d9f7eb"/></linearGradient></defs>
+  <rect width="320" height="176" rx="20" fill="url(#bg)"/>
+  <g fill="none" stroke="#2667a8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="160" cy="51" rx="59" ry="22" fill="#fff"/>
+    <path d="M101 51v61c0 12 26 22 59 22s59-10 59-22V51M101 82c0 12 26 22 59 22s59-10 59-22" fill="#fff"/>
+    <path d="M80 88H48m224 0h-32M48 88l16-16M48 88l16 16m208-16-16-16m16 16-16 16"/>
+  </g>
+</svg>

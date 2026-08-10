@@ -1,0 +1,142 @@
+default:
+  ipa: _вай-ти-за́у-рус_
+
+public:
+  lang: ru
+  source-root: https://github.com/ytsaurus/ytsaurus/tree/main
+  prestable-cluster: <cluster-name>
+  testing-cluster: <cluster-name>
+  production-cluster: <cluster-name>
+  mr-clusters: <cluster-name>
+  package-name: ytsaurus-client
+  pool-tree: default
+  yt-docs-root: https://ytsaurus.tech/docs/ru
+  cluster-ui: https://<host-root>/<cluster-name>
+  community-tg: https://t.me/ytsaurus_ru
+  python-lib-qt: SystemPython3_8
+  web-interface: веб-интерфейс
+  pages:
+    try-yt:
+      mr-source: https://github.com/ytsaurus/ytsaurus/blob/main/yt/docs/code-examples/python/word-count.py
+  proxy-pages:
+    http:
+      mapreduce-example: '[GitHub](https://github.com/ytsaurus/ytsaurus/tree/main/yt/docs/code-examples/python/http-proxy.py)'
+      tmp-dir: '//tmp/yt_examples'
+    common:
+      heavy-proxy: <heavy-proxy>
+
+  # BEGIN CORE GENERATED AUDIENCE VARIANTS
+  core-admin-guide-how-to-guides-cluster-operations-md-audience-1: ""
+  core-admin-guide-how-to-guides-cluster-throttlers-md-audience-1: ""
+  core-admin-guide-how-to-guides-cluster-throttlers-md-audience-2: ""
+  core-admin-guide-how-to-guides-install-excel-md-audience-1: "\n\nИнструкции ниже описывают, как развернуть YTsaurus Excel-интеграцию в Kubernetes. Подробнее про функционал можно прочитать в разделе по [работе с данными Microsoft Excel](https://ytsaurus.tech/docs/core/user-guide/explanation/excel).\n\n"
+  core-admin-guide-how-to-guides-node-cri-md-audience-1: ""
+  core-admin-guide-how-to-guides-update-update-cron-md-audience-1: "Доступные версии Cron и изменения в них описаны в [релизах Cron](https://ytsaurus.tech/docs/core/admin-guide/reference/releases#cron)."
+  core-admin-guide-how-to-guides-update-update-odin-md-audience-1: "Доступные версии Odin и изменения в них описаны в [релизах Odin](https://ytsaurus.tech/docs/core/admin-guide/reference/releases#odin)"
+  core-admin-guide-how-to-guides-update-update-ytsaurus-md-audience-1: "Доступные версии смотрите в [списке релизов](https://ytsaurus.tech/docs/core/admin-guide/reference/releases#server)."
+  core-admin-guide-how-to-guides-update-update-ytsaurus-md-audience-2: " Проверьте совместимость по [таблице совместимости](https://ytsaurus.tech/docs/core/admin-guide/reference/compatibility)."
+  core-admin-guide-how-to-guides-update-update-ytsaurus-md-audience-3: "\nСписок релизов и совместимых версий смотрите на [странице релизов](https://ytsaurus.tech/docs/core/admin-guide/reference/releases#kubernetes-operator) и в [таблице совместимости](https://ytsaurus.tech/docs/core/admin-guide/reference/compatibility)."
+  core-admin-guide-how-to-guides-update-update-ytsaurus-md-audience-4: " в [таблице совместимости](https://ytsaurus.tech/docs/core/admin-guide/reference/compatibility)."
+  core-admin-guide-how-to-guides-update-update-ytsaurus-md-audience-5: "\n- Целевую версию выбирайте на [странице релизов](https://ytsaurus.tech/docs/core/admin-guide/reference/releases#server). Откройте нужный релиз и скопируйте тег образа `ghcr.io/ytsaurus/ytsaurus`."
+  core-admin-guide-reference-config-overrides-md-audience-1: "\n- `ytserver-yql-agent.yson` &mdash; YQL-агент\n"
+  core-user-guide-explanation-api-cpp-description-md-audience-1: "\n\n{% note warning %}\n\nC++ клиент предоставляется в текущем виде как есть, поэтому:\n- интерфейс клиента может меняться без обратной совместимости;\n- в текущей версии поддерживается только статическая линковка;\n- напишите на info@ytsaurus.tech если возникнут вопросы по сборке клиента.\n\n{% endnote %}\n\n"
+  core-user-guide-explanation-api-cpp-description-md-audience-2: ""
+  core-user-guide-explanation-api-cpp-description-md-audience-3: ""
+  core-user-guide-explanation-api-cpp-description-md-audience-4: ""
+  core-user-guide-explanation-data-processing-overview-md-audience-1: ""
+  core-user-guide-explanation-data-processing-scheduler-integral-guarantees-md-audience-1: ""
+  core-user-guide-explanation-dynamic-tables-chaos-dynamic-tables-md-audience-1: ""
+  core-user-guide-explanation-dynamic-tables-replicated-dynamic-tables-md-audience-1: "готовым инструментом"
+  core-user-guide-explanation-dynamic-tables-replicated-dynamic-tables-md-audience-2: ""
+  core-user-guide-explanation-dynamic-tables-sorted-dynamic-tables-md-audience-1: "значение нужно установить через [динамический конфиг нод](https://ytsaurus.tech/docs/core/admin-guide/how-to-guides/cluster-operations#ytdyncfgen) в поле data_node/block_cache/xor_filter/capacity. Это может сделать администратор кластера."
+  core-user-guide-explanation-excel-md-audience-1: "\n![](../../../../../../_images/user-guide/explanation/excel_upload_create.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-2: "\n![](../../../../../../_images/user-guide/explanation/excel_upload.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-3: "\n![](../../../../../../_images/user-guide/explanation/excel_upload_existing.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-4: "\n![](../../../../../../_images/user-guide/explanation/excel_upload_append.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-5: "\n![](../../../../../../_images/user-guide/explanation/excel_download.png){ .center }\n"
+  core-user-guide-explanation-locking-cypress-as-locking-service-p3-md-audience-1: "Лимиты могут быть увеличены администратором кластера."
+  core-user-guide-explanation-proxy-about-md-audience-1: ""
+  core-user-guide-explanation-proxy-about-md-audience-2: ""
+  core-user-guide-explanation-proxy-about-md-audience-3: ""
+  core-user-guide-explanation-storage-access-control-p2-md-audience-1: "администратору системы"
+  core-user-guide-how-to-guides-api-cpp-examples-md-audience-1: ""
+  core-user-guide-how-to-guides-api-cpp-examples-md-audience-2: ""
+  core-user-guide-how-to-guides-api-python-start-md-audience-1: ""
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-1: "https://github.com/ytsaurus/ytsaurus/blob/879946a82c766da78612ab4fe3637f7ea4da8292/yt/yt/client/tablet_client/public.h#L152"
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-2: "https://github.com/ytsaurus/ytsaurus/blob/879946a82c766da78612ab4fe3637f7ea4da8292/yt/yt/client/api/public.h#L53"
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-3: "https://github.com/ytsaurus/ytsaurus/blob/879946a82c766da78612ab4fe3637f7ea4da8292/yt/yt/client/tablet_client/public.h#L142"
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-4: ""
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-5: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-1: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-2: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-3: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-4: ""
+  core-user-guide-how-to-guides-dynamic-tables-mapreduce-md-audience-1: "стоит обсудить это с администраторами кластера"
+  core-user-guide-how-to-guides-dynamic-tables-tablet-balancing-md-audience-1: "В данный момент в opensource внешний балансировщик не поддерживается."
+  core-user-guide-how-to-guides-dynamic-tables-tablet-balancing-md-audience-2: ""
+  core-user-guide-reference-api-cli-commands-md-audience-1: ""
+  core-user-guide-reference-api-cli-commands-md-audience-2: ""
+  core-user-guide-reference-api-cli-install-p1-md-audience-1: ""
+  core-user-guide-reference-api-cli-install-p2-md-audience-1: ""
+  core-user-guide-reference-api-cli-install-p2-md-audience-2: ""
+  core-user-guide-reference-api-cpp-lambda-md-audience-1: "Подключите библиотеку [yt_lambda](https://github.com/ytsaurus/ytsaurus/blob/main/yt/cpp/mapreduce/library/lambda/yt_lambda.h)"
+  core-user-guide-reference-api-cpp-roren-md-audience-1: ""
+  core-user-guide-reference-api-cpp-roren-md-audience-2: "лучше использовать директорию внутри проектной квоты"
+  core-user-guide-reference-api-error-codes-md-audience-1: "[поискав](https://github.com/search?q=repo%3Aytsaurus%2Fytsaurus+path%3A%2F%5Eyt%5C%2F%2F+YT_DEFINE_ERROR_ENUM&type=code)"
+  core-user-guide-reference-api-python-dataclass-md-audience-1: "\n  * `typing_extensions`\n  * `ytsaurus-yson`\n  * `six`\n"
+  core-user-guide-reference-data-processing-operations-chunk-merger-md-audience-1: "\n\n## Атрибуты укрупнения на аккаунте\n\nКаждый аккаунт содержит атрибуты, позволяющие управлять механизмом укрупнения чанков:\n- `allow_using_chunk_merger` — разрешено ли мержить чанки для таблиц этого аккаунта;\n- `chunk_merger_node_traversal_concurrency` — количество таблиц, для которых можно одновременно запланировать мерж-джобы;\n- `merge_job_rate_limit` — количество джобов, которое можно планировать в секунду.\n\nПо умолчанию эти настройки выставлены так, что автоматическое укрупнение чанков для каждого аккаунта будет включено.\n"
+  core-user-guide-reference-data-processing-operations-chunk-merger-md-audience-2: "\n\n## Метрики в Prometheus\n\nДля сбора метрик по укрупнению чанков в Prometheus используются следующие временные ряды:\n- `yt.chunk_server.chunk_merger_account_queue_size` — поаккаунтные очереди на укрупнение чанков. Если очередь аккаунта пуста, стоит убедиться, что выставлен правильный атрибут для всех нужных таблиц. Также следует убедиться, что настройки аккаунта позволяют мержить таблицы: атрибут `allow_using_chunk_merger` переключен в `true`, а в атрибутах `chunk_merger_node_traversal_concurrency` и `merge_job_rate_limit` не выставлен 0.\n\n- `yt.chunk_server.chunk_merger_chunk_replacements_succeeded` — количество успешных мержей.\n\n- `yt.chunk_server.chunk_merger_chunk_replacements_failed` — количество неудавшихся мержей.\n\nНаличие определённого количества неудавшихся мержей — это нормально и полностью избавиться от них не получится, но если оно превышает количество успешных, то стоит обратить на это внимание. Возможно, мерж включен для таблиц, которые постоянно перезаписываются с нуля новыми данными, или очень недолгоживущих таблиц. В таком случае, автоматическое укрупнение для них лучше отключить.\n\n"
+  core-user-guide-reference-data-processing-operations-cluster-throttlers-md-audience-1: ""
+  core-user-guide-reference-data-processing-operations-cluster-throttlers-md-audience-2: ""
+  core-user-guide-reference-data-processing-operations-cluster-throttlers-md-audience-3: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-1: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-2: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-3: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-4: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-5: ""
+  core-user-guide-reference-data-processing-operations-overview-md-audience-1: "\n Например, чтобы читать с кластера `my-cluster`, нужно указать `<cluster=my-cluster>//path/to/table` или `my-cluster://path/to/table` качестве входной таблицы (см. также [RichYPath](https://ytsaurus.tech/docs/core/user-guide/reference/storage/ypath#rich_ypath)).\n Для того, чтобы кластер мог быть использован в качестве входного, он должен быть добавлен администратором в `//sys/clusters`.\n"
+  core-user-guide-reference-data-processing-operations-remote-copy-md-audience-1: ""
+  core-user-guide-reference-data-processing-operations-remote-copy-md-audience-2: ""
+  core-user-guide-reference-dynamic-tables-hunks-guide-md-audience-1: "\n- К таблице применяется versioned remote copy (или скрипт по добавлению реплик к реплицированной таблице). Сейчас для таблиц с ханковыми чанками не поддержана возможность делать versioned remote copy. Эта функциональность доступна начиная с версии 25.1. Тем не менее, в ручном режиме это возможно, см. [FAQ](#faq).\n"
+  core-user-guide-reference-dynamic-tables-hunks-guide-md-audience-2: ""
+  core-user-guide-reference-dynamic-tables-hunks-guide-md-audience-3: "\n#### Как применить versioned remote copy к таблице, содержащей ханковые чанки?\n\nПрименение versioned remote copy к таблицам, содержащим ханковые чанки, доступно начиная с версии 25.1. До этой версии для использования versioned remote copy необходимо сначала избавиться от ханковых чанков в таблице:\n- Заменяем значения `max_inline_hunk_size` в схеме на 9223372036854775807 (I64_MAX).\n- Запускаем forced compaction на таблице (если таблица большая, то потаблетно).\n- Убеждаемся, что ханковых чанков не осталось: например, с помощью чтения атрибута таблицы `@chunk_format_statistics` проверяем, что не осталось чанков типа `hunk_default`.\n"
+  core-user-guide-reference-dynamic-tables-queues-md-audience-1: ""
+  core-user-guide-reference-dynamic-tables-queues-md-audience-2: ""
+  core-user-guide-reference-dynamic-tables-queues-md-audience-3: ""
+  core-user-guide-reference-dynamic-tables-queues-md-audience-4: "\n### Экспорты очередей в статические таблицы\n\nQueue Agent позволяет настроить регулярный процесс экспорта данных из очереди в статические таблицы. При экспорте не происходит физического перекладывания данных из очереди в статическую таблицу, поскольку экспорт реализован на уровне метаинформации. Экспортированная таблица ссылается на те же чанки, что и в очереди, вместо создания новых чанков с теми же данными.\n\n#### Параметры экспорта\n- `export_directory` (обязательный) - директория, в которую будут попадать создаваемые статические таблицы.\n- `export_period` (обязательный) - регулярность экспорта. Должна быть кратна 1 секунде. Выражается числом миллисекунд, например, `export_period=300000` задает экспорт каждые 300 секунд.\n- `export_ttl` - [`expiration_timeout`](https://ytsaurus.tech/docs/core/user-guide/explanation/storage/cypress#TTL) для создаваемых таблиц.\n- `output_table_name_pattern`: шаблон имени таблицы. Значение по умолчанию - `%UNIX_TS-%PERIOD`. При использования значения, отличного от значения по умолчанию, для корректной работы экспортов необходимо, чтобы разные итерации экспорта генерировали различные имена таблиц, иначе поведение не определено. `output_table_name_pattern` поддерживает формат `strftime`, а так же дополнительно:\n  - `%UNIX_TS` - Unix Timestamp границы экспорта, конкретная граница определяется параметром `use_upper_bound_for_table_names`.\n  - `%PERIOD` - `export_period` в секундах\n  - `%ISO` - ISO 8601 форматированное время экспорта, например, `2015-11-21T23:30:27Z`.\n- `use_upper_bound_for_table_names` - определяет, какая временная граница используется в имени таблицы.  По умолчанию `false`. Значение `false` использует нижнюю границу экспорта, `true` - верхнюю.\n\nПолная конфигурация экспортов очереди выглядит как маппинг из названия экспорта в его параметры, например:\n```\n{\n    default={\n        export_period=60000;\n        export_directory=\"//path/to/export/dir\";\n    };\n    another_export={\n        export_period=300000;\n        export_directory=\"//path/to/another/export/dir\";\n    };\n}\n```\n\nДанная конфигурация выставляется в атрибут `static_export_config` очереди или в этот же атрибут реплики очереди в случае реплицированных и хаосных таблиц, например,\n```bash\n$ yt set //path/to/some/queue/@static_export_config '...'\n```\n\n#### Настройка директории экспорта\n\nДля проверки прав на создание статических таблиц в директорию экспорта необходимо на директорию выставить атрибут `queue_static_export_destination` с указанием id очереди:\n```bash\n$ yt get //path/to/your/queue/@id\n\"18f-50544-3ea0191-fc6c51c5\" # пример id очереди\n\n$ yt set //path/to/your/export/directory/@queue_static_export_destination \\\n    '{originating_queue_id=\"18f-50544-3ea0191-fc6c51c5\"}' # в originating_queue_id должен быть id вашей очереди\n```\n\n#### Прогресс экспортов\n\nQueue Agent использует атрибут `queue_static_export_progress` на директории экспорта для хранения внутренней информации о том, какие данные уже были экспортированы. Содержание этого атрибута не является частью публичного API. В нормальных случаях пользователь не должен никак менять этот атрибут или завязываться на его содержимое. При этом в случае изменения `originating_queue_id` директории экспорта для гарантии корректной работы стоит удалить этот атрибут:\n```bash\n$ yt remove //path/to/your/export/directory/@queue_static_export_progress\n```\n\n#### Автоматический трим по экспортам\n\nЭкспорт можно считать виртуальным витальным консьюмером очереди и при включении автоматического трима данные будут удаляться только если их прочли все витальные консьюмеры и они были экспортированы.\n\n#### Внутреннее устройство экспортов\n\nВременные границы итерации экспорта: данные для экспорта бьются по unix timestamp кратным `export_period`. Верхняя граница берется включительно, нижняя невключительно.\n\nС учетом этого в экспорт попадают все неэкспортированные (для этого экспорта) пофлашеные чанки с `max_timestamp` менее верхней границы итерации экспорта.\n\nВ силу этого включение экспорта для очереди, в которой уже есть большое количество данных, создаст первый большой экспорт, потому что все чанки не экспортированы, а начиная со следующей итерации, Queue Agent будет экспортировать пофлашенные данные записанные в очередь после предыдущего экспорта.\n\n{% note info %}\n\nТребования флаша данных подразумевает, что экспортировать данные можно не чаще, чем они флашатся. По умолчанию dynamic store flush происходит раз в 15 минут и без изменения параметров флаша очереди экспорты с периодом меньше 15 минут не имеют смысла и лишь создают лишнюю нагрузку на мастер сервер. [Документация](https://ytsaurus.tech/docs/core/user-guide/how-to-guides/dynamic-tables/compaction#flush_attributes) по настройке flush динамических таблиц.\n\n{% endnote %}\n\nДругое следствие внутреннего устройства экспортов в том, что Queue Agent не может предоставить строгие гарантии на timestamp данных, попадаемых в экспорты.  Чанк для экспорта берется целиком и может содержать данные, которые логически принадлежат различным итерациям экспорта.\n\nВ случае если очередная итерация экспорта завершилась неуспешно, данные будут экспортированы в следующей итерации экспорта и таблица-экспорт будет содержать данные за 2 итерации экспорта.\n\n"
+  core-user-guide-reference-dynamic-tables-queues-md-audience-5: "\nПредставленные примеры используют гипотетическую конфигурацию из нескольких кластеров, с адресам `<consumer-cluster>` и `<queue-cluster>`.\n"
+  core-user-guide-reference-dynamic-tables-queues-md-audience-6: ""
+  core-user-guide-reference-dynamic-tables-secondary-indices-md-audience-1: ""
+  core-user-guide-reference-faq-md-audience-1: ""
+  core-user-guide-reference-faq-md-audience-1-a491b2ee: "**Accounts** в веб-интерфейсе"
+  core-user-guide-reference-faq-md-audience-1-b9a733f5: ""
+  core-user-guide-reference-faq-md-audience-1-e0bf55a2: ""
+  core-user-guide-reference-faq-md-audience-2: "мусорке"
+  core-user-guide-reference-faq-md-audience-2-a491b2ee: "администратору системы"
+  core-user-guide-reference-faq-md-audience-2-b9a733f5: ""
+  core-user-guide-reference-faq-md-audience-3: ""
+  core-user-guide-reference-faq-md-audience-3-a491b2ee: ""
+  core-user-guide-reference-faq-md-audience-3-b9a733f5: "\nЕсли последний указанный узел не существует, создайте его с помощью команды:\n\n```bash\n$ yt create document //sys/controller_agents/config --attributes '{value={}}'\n```\n"
+  core-user-guide-reference-faq-md-audience-4: ""
+  core-user-guide-reference-faq-md-audience-4-a491b2ee: ""
+  core-user-guide-reference-proxy-http-md-audience-1: "\n\n- Для доступа к системе YTsaurus вам понадобится токен. Как его получить — написано в разделе [Аутентификация](https://ytsaurus.tech/docs/core/user-guide/reference/storage/auth).\n\n- Примеры рассчитаны для запуска в командной оболочке Bash. У вас должна быть установлена утилита [curl](https://en.wikipedia.org/wiki/CURL) — она понадобится для работы с YTsaurus через HTTP. В некоторых примерах также будет использоваться утилита [jq](https://jqlang.github.io/jq/) — чтобы сделать вывод команд более читабельным.\n\n"
+  core-user-guide-reference-proxy-http-md-audience-2: "\n\n```bash\nexport YT_PROXY=<cluster-host>\nexport YT_HOME=//tmp/yt_examples\nexport YT_TOKEN=`cat ~/.yt/token`\n```\n\n"
+  core-user-guide-reference-proxy-http-md-audience-3: ""
+  core-user-guide-reference-proxy-http-md-audience-4: "на"
+  core-user-guide-reference-proxy-http-reference-md-audience-1: ""
+  core-user-guide-reference-proxy-http-reference-md-audience-2: ""
+  core-user-guide-reference-proxy-rpc-md-audience-1: "ytsaurus-rpc-driver"
+  core-user-guide-reference-proxy-rpc-md-audience-2: ""
+  core-user-guide-reference-storage-accounts-md-audience-1: ""
+  core-user-guide-reference-storage-accounts-md-audience-2: " Создать аккаунт верхнего уровня можно в веб-интерфейсе YTsaurus, нажав **Create account** на странице **Accounts**. "
+  core-user-guide-reference-storage-accounts-md-audience-3: ""
+  core-user-guide-reference-storage-accounts-md-audience-4: ""
+  core-user-guide-reference-storage-accounts-md-audience-5: "[Как попробовать](https://ytsaurus.tech/docs/core/user-guide/tutorials/quick-start)"
+  core-user-guide-reference-storage-accounts-md-audience-6: ""
+  core-user-guide-reference-storage-attributes-md-audience-1: " То есть, если данные в атрибуте составляют более сотни килобайт, имеет смысл делать их непрозрачными. В таком случае при запросе всех атрибутов, они не будут возвращаться, а их чтение будет быстрее. Если требуется получить эти значения, нужно явно их запросить."
+  core-user-guide-reference-storage-formats-md-audience-1: ""
+  core-user-guide-reference-storage-quotas-md-audience-1: "\n\nВ том случае, когда проект использует динамические таблицы в production, для изоляции от других пользователей необходимо завести отдельный [таблет-селл бандл](https://ytsaurus.tech/docs/core/user-guide/explanation/dynamic-tables/concepts#tablet_cell_bundles). Таблет-селл бандл представляет собой группу контейнеров (инстансов), которая отвечает за обработку запросов к динамическим таблицам проекта.\n\n"
+  core-user-guide-reference-storage-quotas-md-audience-2: ""
+  core-user-guide-reference-storage-quotas-md-audience-3: ""
+  core-user-guide-reference-storage-static-schema-md-audience-1: "YQL"
+  # END CORE GENERATED AUDIENCE VARIANTS

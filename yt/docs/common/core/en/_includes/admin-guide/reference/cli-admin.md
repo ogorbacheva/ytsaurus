@@ -1,0 +1,1 @@
+{% include [CLI admin commands](_partials/admin-guide/cli-admin.md) %}

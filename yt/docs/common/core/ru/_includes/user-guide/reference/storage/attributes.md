@@ -1,0 +1,1 @@
+{% include [Атрибуты](../_partials/user-guide/storage/attributes.md) %}

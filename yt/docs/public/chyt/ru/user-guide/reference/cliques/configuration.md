@@ -1,0 +1,1 @@
+{% include [Конфигурация инстанса](../../../common/_includes/user-guide/reference/cliques/configuration.md) %}

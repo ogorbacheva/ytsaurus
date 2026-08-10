@@ -1,0 +1,106 @@
+fullScreen: true
+blocks:
+  - type: header-block
+    width: s
+    offset: default
+    title: 'Документация YTsaurus'
+    description: 'Масштабируемая платформа больших данных: распределённое хранилище, MapReduce, SQL, Spark и ClickHouse — в одном кластере.'
+    verticalOffset: l
+    buttons:
+      - text: 'Начать работу'
+        primary: true
+        theme: action
+        size: xl
+        url: '{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}'
+      - text: 'GitHub'
+        theme: outlined
+        size: xl
+        url: 'https://github.com/ytsaurus/ytsaurus'
+
+  - type: card-layout-block
+    title: 'Выбрать по задаче'
+    colSizes:
+      all: 12
+      md: 4
+      sm: 6
+    children:
+      - type: basic-card
+        title: 'Начать работу с YTsaurus'
+        text: 'Запустить локальный кластер и выполнить первые команды.'
+        url: '{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Хранить и организовывать данные'
+        text: 'Кипарис, статические таблицы, схемы, транзакции и файлы.'
+        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/cypress{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Построить low-latency сервис или очередь'
+        text: 'Динамические таблицы, транзакции, репликация и очереди.'
+        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Запустить пакетные вычисления'
+        text: 'Map, Reduce, MapReduce, Sort, Merge и Vanilla.'
+        url: '{{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/overview{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Выполнить SQL-запрос'
+        text: 'Запускать запросы и смотреть историю через Query Tracker.'
+        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Работать со Spark'
+        text: 'Запускать Spark-задачи поверх данных YTsaurus.'
+        url: '{{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Построить streaming pipeline'
+        text: 'Обрабатывать потоки через Spark Structured Streaming.'
+        url: '{{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/structured-streaming{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Подключиться через API и инструменты'
+        text: 'Начать работу с Python API и клиентскими библиотеками.'
+        url: '{{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}'
+      - type: basic-card
+        title: 'Установить и администрировать платформу'
+        text: 'Развернуть кластер, настроить компоненты и эксплуатацию.'
+        url: '{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/cluster-operations{{ docs-revision-query }}'
+
+  - type: card-layout-block
+    title: 'Выбрать компонент'
+    colSizes:
+      all: 12
+      md: 4
+      sm: 6
+    children:
+      - type: layout-item
+        content:
+          title: 'YTsaurus Core'
+          text: 'Кипарис, хранение, динамические таблицы, MapReduce, API и эксплуатация базового кластера.'
+          links:
+            - text: 'Открыть документацию'
+              url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}'
+              theme: normal
+              arrow: true
+        media:
+          image: '_assets/hub/pict1.svg'
+        border: true
+      - type: layout-item
+        content:
+          title: 'CHYT'
+          text: 'ClickHouse поверх YTsaurus: OLAP-запросы, клики, API, установка и эксплуатация.'
+          links:
+            - text: 'Открыть документацию'
+              url: '{{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}'
+              theme: normal
+              arrow: true
+        media:
+          image: '_assets/hub/pict3.svg'
+        border: true
+      - type: layout-item
+        content:
+          title: 'SPYT'
+          text: 'Apache Spark поверх YTsaurus: Spark SQL, Structured Streaming, кластеры и Jupyter.'
+          links:
+            - text: 'Открыть документацию'
+              url: '{{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}'
+              theme: normal
+              arrow: true
+        media:
+          image: '_assets/hub/pict4.svg'
+        border: true

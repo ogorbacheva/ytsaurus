@@ -1,1 +1,0 @@
-{% include [Настройки ввода/вывода](../../_includes/user-guide/storage/io-configuration.md) %}

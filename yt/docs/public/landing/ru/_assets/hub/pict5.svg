@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 176" role="img" aria-label="Динамические таблицы">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e5f8ef"/><stop offset="1" stop-color="#e8f2ff"/></linearGradient></defs>
+  <rect width="320" height="176" rx="20" fill="url(#bg)"/>
+  <rect x="65" y="37" width="190" height="102" rx="12" fill="#fff" stroke="#238765" stroke-width="6"/>
+  <g stroke="#83bda9" stroke-width="4"><path d="M65 70h190M65 103h190M126 37v102m65-102v102"/></g>
+  <rect x="69" y="74" width="53" height="25" rx="3" fill="#bcebd8"/><rect x="195" y="107" width="56" height="28" rx="3" fill="#bcebd8"/>
+  <path d="m47 88-18 16 18 16m226-64 18 16-18 16" fill="none" stroke="#238765" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

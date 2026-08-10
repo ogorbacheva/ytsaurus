@@ -1,0 +1,1 @@
+{% include [Примеры использования](../../_partials/api/cpp/examples.md) %}

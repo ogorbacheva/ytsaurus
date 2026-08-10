@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).with_name("assemble-modular-docs.py")
+
+
+class AssembleModularDocsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        self.source = self.root / "yt" / "docs"
+        self.registry = self.root / "modules.json"
+        self.output = self.root / "output"
+        (self.source / "public" / "demo" / "ru").mkdir(parents=True)
+        (self.source / "common" / "demo" / "ru" / "_includes").mkdir(
+            parents=True
+        )
+        (self.source / "public" / "presets.yaml").write_text(
+            "default: {}\n"
+            "public:\n"
+            "  product-name: Demo\n"
+            "  docs-root: https://example.test/docs\n"
+            "  landing-docs-root: https://example.test/docs\n"
+            "  core-docs-root: https://example.test/docs/core\n"
+            "  spyt-docs-root: https://example.test/docs/spyt\n"
+            "  chyt-docs-root: https://example.test/docs/chyt\n"
+            "  demo-docs-root: https://example.test/docs/demo\n"
+            "  docs-revision-query: \"\"\n",
+            encoding="utf-8",
+        )
+        (self.source / "public" / "demo" / ".yfm").write_text(
+            "langs: [ru]\n"
+            "docs-viewer:\n"
+            "  project-name: demo-docs\n"
+            "  langs: [ru]\n",
+            encoding="utf-8",
+        )
+        (self.source / "public" / "demo" / "ru" / "toc.yaml").write_text(
+            "title: Demo\nhref: index.yaml\n", encoding="utf-8"
+        )
+        (self.source / "public" / "demo" / "ru" / "presets.yaml").write_text(
+            "public:\n"
+            "  lang: ru\n"
+            "  generated-link: \"{{ docs-root }}/{{ lang }}/preset"
+            "{{ docs-revision-query }}\"\n",
+            encoding="utf-8",
+        )
+        (self.source / "public" / "demo" / "ru" / "index.yaml").write_text(
+            "blocks:\n"
+            "  - type: basic-card\n"
+            "    url: '{{ docs-root }}/{{ lang }}/start{{ docs-revision-query }}'\n",
+            encoding="utf-8",
+        )
+        (self.source / "common" / "demo" / "ru" / "_includes" / "note.md").write_text(
+            "See [guide]({{ docs_root }}/demo/guide.md#section) and "
+            "[hardcoded](https://ytsaurus.tech/docs/demo/guide.md#section).\n",
+            encoding="utf-8",
+        )
+        (self.source / "public" / "demo" / "ru" / "guide.md").write_text(
+            "# Guide {#section}\n", encoding="utf-8"
+        )
+        self.registry.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "modules": [
+                        {
+                            "name": "demo",
+                            "project_name": "demo-docs",
+                            "languages": ["ru"],
+                            "common": True,
+                            "storage_prefix": "demo-docs",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def run_script(self, *extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "python3",
+                str(SCRIPT),
+                "--registry",
+                str(self.registry),
+                "--source-root",
+                str(self.source),
+                "--output-root",
+                str(self.output),
+                *extra,
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+    def test_assembles_public_and_common_without_internal(self) -> None:
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.output / "demo" / "presets.yaml").is_file())
+        self.assertTrue(
+            (self.output / "demo" / "ru" / "common" / "_includes" / "note.md").is_file()
+        )
+        self.assertIn(
+            "{{ demo-docs-root }}/{{ lang }}/guide"
+            "{{ docs-revision-query }}#section",
+            (
+                self.output
+                / "demo"
+                / "ru"
+                / "common"
+                / "_includes"
+                / "note.md"
+            ).read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "https://ytsaurus.tech/docs/demo/guide.md",
+            (
+                self.output
+                / "demo"
+                / "ru"
+                / "common"
+                / "_includes"
+                / "note.md"
+            ).read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "{{ docs_root }}/demo/guide.md#section",
+            (
+                self.source
+                / "common"
+                / "demo"
+                / "ru"
+                / "_includes"
+                / "note.md"
+            ).read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "https://ytsaurus.tech/docs/demo/guide.md#section",
+            (
+                self.source
+                / "common"
+                / "demo"
+                / "ru"
+                / "_includes"
+                / "note.md"
+            ).read_text(encoding="utf-8"),
+        )
+
+    def test_canonical_metadata_url_is_not_rewritten(self) -> None:
+        page = self.source / "public" / "demo" / "ru" / "guide.md"
+        page.write_text(
+            "metadata:\n"
+            "    - property: 'og:url'\n"
+            "      content: 'https://ytsaurus.tech/docs/demo/ru/guide'\n",
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        generated = (self.output / "demo" / "ru" / "guide.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("https://ytsaurus.tech/docs/demo/ru/guide", generated)
+
+    def test_language_prefixed_content_url_is_rewritten(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[guide](https://ytsaurus.tech/docs/demo/ru/guide.md#section)\n",
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        generated = (self.output / "demo" / "ru" / "common" / "_includes" / "note.md")
+        self.assertIn(
+            "{{ demo-docs-root }}/{{ lang }}/guide"
+            "{{ docs-revision-query }}#section",
+            generated.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "https://example.test/docs/ru/start'",
+            (self.output / "demo" / "ru" / "index.yaml").read_text(encoding="utf-8"),
+        )
+        self.assertFalse((self.output / "internal").exists())
+
+    def test_renders_revision_query_for_page_constructor(self) -> None:
+        result = self.run_script("--docs-revision-query", "?revision=abc123")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = (self.output / "demo" / "ru" / "index.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("https://example.test/docs/ru/start?revision=abc123", content)
+        self.assertNotIn("{{", content)
+        presets = (self.output / "demo" / "ru" / "presets.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "https://example.test/docs/ru/preset?revision=abc123", presets
+        )
+
+    def test_missing_common_blocks_assembly(self) -> None:
+        missing = self.source / "common" / "demo" / "ru"
+        missing.rename(self.source / "common" / "demo" / "missing")
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing common/demo/ru", result.stderr)
+
+    def test_missing_language_preset_blocks_assembly(self) -> None:
+        (self.source / "public" / "demo" / "ru" / "presets.yaml").unlink()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("demo/ru presets.yaml", result.stderr)
+
+    def test_public_common_collision_blocks_assembly(self) -> None:
+        (self.source / "public" / "demo" / "ru" / "common").mkdir()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("collision", result.stderr)
+
+    def test_internal_source_blocks_assembly(self) -> None:
+        (self.source / "internal").mkdir()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not contain internal", result.stderr)
+
+    def test_nested_internal_path_blocks_assembly(self) -> None:
+        (self.source / "public" / "demo" / "ru" / "internal").mkdir()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Internal documentation paths are not allowed", result.stderr)
+
+    def test_unsafe_revision_query_blocks_assembly(self) -> None:
+        result = self.run_script(
+            "--docs-revision-query", "?revision=ok&redirect=https://example.test"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("docs-revision-query must be empty", result.stderr)
+
+    def test_public_revision_preview_is_generated_and_noindex(self) -> None:
+        source_config = self.source / "public" / "demo" / ".yfm"
+        result = self.run_script(
+            "--docs-revision-query",
+            "?revision=abc123",
+            "--public-revision-preview",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        generated = (self.output / "demo" / ".yfm").read_text(encoding="utf-8")
+        self.assertIn("unrestrict-revision-access: true", generated)
+        self.assertIn("no-index: true", generated)
+        generated_presets = (self.output / "demo" / "presets.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'demo-docs-root: "https://demo-docs.viewer.ydocs.io"',
+            generated_presets,
+        )
+
+        source = source_config.read_text(encoding="utf-8")
+        self.assertNotIn("unrestrict-revision-access", source)
+        self.assertNotIn("no-index", source)
+
+    def test_public_revision_preview_requires_revision(self) -> None:
+        result = self.run_script("--public-revision-preview")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires a non-empty", result.stderr)
+
+    def test_committed_preview_setting_blocks_assembly(self) -> None:
+        config = self.source / "public" / "demo" / ".yfm"
+        config.write_text(
+            config.read_text(encoding="utf-8") + "no-index: true\n",
+            encoding="utf-8",
+        )
+        result = self.run_script(
+            "--docs-revision-query",
+            "?revision=abc123",
+            "--public-revision-preview",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not be committed", result.stderr)
+
+    def test_unsafe_modular_route_blocks_assembly(self) -> None:
+        (self.source / "public" / "demo" / "ru" / "index.yaml").write_text(
+            "blocks:\n"
+            "  - type: basic-card\n"
+            "    url: '{{ core-docs-root }}/{{ lang }}/../outside"
+            "{{ docs-revision-query }}'\n",
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Modular route contains an unsafe path", result.stderr)
+
+    def test_missing_legacy_self_route_target_blocks_assembly(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[missing]({{ docs_root }}/demo/not-found.md)\n", encoding="utf-8"
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must resolve exactly once", result.stderr)
+
+    def test_malformed_legacy_self_route_fragment_blocks_assembly(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[guide]({{ docs_root }}/demo/guide.md##section)\n", encoding="utf-8"
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("multiple fragments", result.stderr)
+
+    def test_empty_legacy_self_route_fragment_blocks_assembly(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[guide]({{ docs_root }}/demo/guide.md#)\n", encoding="utf-8"
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("empty fragment", result.stderr)
+
+    def test_legacy_self_route_query_blocks_assembly(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[guide]({{ docs_root }}/demo/guide.md?x=1)\n", encoding="utf-8"
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already contains a query", result.stderr)
+
+    def test_unsafe_legacy_self_route_path_blocks_assembly(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[guide]({{ docs_root }}/demo/../guide.md)\n", encoding="utf-8"
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe path", result.stderr)
+
+    def test_legacy_self_route_cannot_target_common(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[common]({{ docs_root }}/demo/common/_includes/note.md)\n",
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must resolve exactly once", result.stderr)
+
+    def test_ambiguous_legacy_self_route_target_blocks_assembly(self) -> None:
+        (self.source / "public" / "demo" / "ru" / "guide.yaml").write_text(
+            "title: Guide\n", encoding="utf-8"
+        )
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[guide]({{ docs_root }}/demo/guide)\n", encoding="utf-8"
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must resolve exactly once", result.stderr)
+
+    def test_bare_legacy_self_route_blocks_assembly(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text("[root]({{ docs_root }}/demo)\n", encoding="utf-8")
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("remains after rewrite", result.stderr)
+
+    def test_unsafe_legacy_self_route_fragment_blocks_assembly(self) -> None:
+        note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[guide]({{ docs_root }}/demo/guide.md#{section})\n",
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsafe fragment", result.stderr)
+
+    def test_duplicate_base_storage_prefix_blocks_assembly(self) -> None:
+        document = json.loads(self.registry.read_text(encoding="utf-8"))
+        document["modules"][0]["name"] = "landing"
+        document["modules"][0]["storage_prefix"] = ""
+        document["modules"].append(
+            {
+                "name": "second",
+                "project_name": "second-docs",
+                "languages": ["ru"],
+                "common": False,
+                "storage_prefix": "",
+            }
+        )
+        self.registry.write_text(json.dumps(document), encoding="utf-8")
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Duplicate storage_prefix", result.stderr)
+
+    def test_clean_replaces_only_marked_output(self) -> None:
+        first = self.run_script()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second = self.run_script("--clean")
+        self.assertEqual(second.returncode, 0, second.stderr)
+
+    def test_clean_refuses_unmarked_output(self) -> None:
+        self.output.mkdir()
+        sentinel = self.output / "keep.txt"
+        sentinel.write_text("keep\n", encoding="utf-8")
+        result = self.run_script("--clean")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing to clean unmarked output root", result.stderr)
+        self.assertTrue(sentinel.is_file())
+
+
+if __name__ == "__main__":
+    unittest.main()

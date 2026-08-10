@@ -1,1 +1,0 @@
-{% include [Схема данных](../../_includes/user-guide/storage/static-schema.md) %}

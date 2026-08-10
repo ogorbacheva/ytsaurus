@@ -1,0 +1,1 @@
+{% include [Replicated tables](../_partials/user-guide/dynamic-tables/replicated-dynamic-tables.md) %}

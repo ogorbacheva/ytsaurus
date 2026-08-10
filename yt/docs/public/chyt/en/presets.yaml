@@ -1,0 +1,19 @@
+default:
+  ipa: "_wai-tee-saw-ruhs_"
+
+public:
+  lang: "en"
+  source-root: "https://github.com/ytsaurus/ytsaurus/tree/main"
+  package-name: "ytsaurus-client"
+  pool-tree: "default"
+  web-interface: "web interface"
+  cluster-ui: "https://<host-root>/<cluster-name>"
+  community-tg: "https://t.me/ytsaurus"
+  chyt-user-guide-explanation-about-chyt-md-audience-1: ""
+  chyt-user-guide-explanation-queries-anatomy-md-audience-1: ""
+  chyt-user-guide-explanation-queries-anatomy-md-audience-2: ""
+  chyt-user-guide-how-to-guides-cliques-create-start-stop-md-audience-1: "\nIf you can’t resolve the issue yourself, ask for help in the [YTsaurus chat](https://t.me/ytsaurus_ru) or in your personal support channel.\n"
+  chyt-user-guide-how-to-guides-try-chyt-md-audience-1: "Query Tracker"
+  chyt-user-guide-how-to-guides-try-chyt-md-audience-2: ""
+  chyt-user-guide-reference-cli-and-api-md-audience-1: "`ytsaurus-client`"
+  chyt-user-guide-reference-data-types-md-audience-1: "YTsaurus"

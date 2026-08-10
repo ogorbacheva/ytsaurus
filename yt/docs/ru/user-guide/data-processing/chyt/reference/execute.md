@@ -1,1 +1,0 @@
-{% include [Выполнение запросов](../../../../_includes/user-guide/data-processing/chyt/reference/execute.md) %}

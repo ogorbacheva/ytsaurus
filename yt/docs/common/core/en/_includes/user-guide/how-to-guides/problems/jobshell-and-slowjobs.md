@@ -1,0 +1,1 @@
+{% include [Диагностика медленных джобов](../_partials/user-guide/problems/jobshell-and-slowjobs.md) %}

@@ -1,0 +1,1 @@
+{% include [Планировщик и пулы](../../_partials/user-guide/data-processing/scheduler/scheduler-and-pools.md) %}

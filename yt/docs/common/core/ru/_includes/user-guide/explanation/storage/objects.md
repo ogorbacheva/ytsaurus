@@ -1,0 +1,1 @@
+{% include [Объекты](../_partials/user-guide/storage/objects.md) %}

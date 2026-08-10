@@ -1,0 +1,1 @@
+{% include [Аккаунты](../_partials/user-guide/storage/accounts.md) %}

@@ -1,1 +1,0 @@
-{% include [Настройки пула](../../../_includes/user-guide/data-processing/scheduler/pool-settings.md) %}

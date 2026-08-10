@@ -1,0 +1,1 @@
+{% include [Операции](../_partials/user-guide/dynamic-tables/operations.md) %}

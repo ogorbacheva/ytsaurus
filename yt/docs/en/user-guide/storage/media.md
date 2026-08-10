@@ -1,1 +1,0 @@
-{% include [Медиумы](../../_includes/user-guide/storage/media.md) %}

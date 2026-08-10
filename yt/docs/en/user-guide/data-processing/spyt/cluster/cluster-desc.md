@@ -1,1 +1,0 @@
-{% include [SPYT cluster](../../../../_includes/user-guide/data-processing/spyt/cluster/cluster-desc.md) %}

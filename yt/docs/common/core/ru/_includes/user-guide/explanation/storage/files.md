@@ -1,0 +1,1 @@
+{% include [Файлы](../_partials/user-guide/storage/files.md) %}

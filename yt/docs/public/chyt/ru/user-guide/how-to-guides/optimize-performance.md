@@ -1,0 +1,1 @@
+{% include [Производительность и рекомендации](../../common/_includes/user-guide/how-to-guides/optimize-performance.md) %}

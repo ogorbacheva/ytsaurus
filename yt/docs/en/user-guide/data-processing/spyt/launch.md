@@ -1,1 +1,0 @@
-{% include [Launching Spark tasks in {{product-name}}](../../../_includes/user-guide/data-processing/spyt/launch.md) %}

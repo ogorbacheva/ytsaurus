@@ -1,0 +1,1 @@
+{% include [Автоматическое укрупнение чанков](../../_partials/user-guide/data-processing/operations/chunk-merger.md) %}

@@ -1,1 +1,0 @@
-{% include [Использование GPU](../../../../_includes/user-guide/data-processing/spyt/thesaurus/gpu-usage.md) %}

@@ -1,117 +1,274 @@
-name: Docs manual Upload [to testing only]
+name: Docs modular upload [testing only]
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  DIPLODOC_CLI_VERSION: "5.50.6"
+  DOCS_SOURCE_ROOT: ./yt/docs
+  DOCS_INPUT_ROOT: ./_docs-input
+  BUILD_OUTPUT_HTML: ./build-output-html
+  BUILD_OUTPUT_MD: ./build-output-md
+  BUILD_LOGS: ./build-logs
+
 jobs:
   build:
+    name: Build all documentation modules
     runs-on: ubuntu-latest
-    permissions: write-all
-    env:
-      src-root: "./yt/docs"
-      build-root: "./_docs-build"
-      lint-root: "./_docs-lint"
-      revision: "${{ github.sha }}"
+    outputs:
+      upload-matrix: ${{ steps.upload-matrix.outputs.matrix }}
     steps:
-      - name: Checkout
+      - name: Checkout selected revision
         uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
-      - name: Install diplodoc
-        run: |
-          npm install -g @diplodoc/cli
-          npm install -g @diplodoc/algolia-extension
+      - name: Install pinned Diplodoc CLI
+        run: npm install --global "@diplodoc/cli@${DIPLODOC_CLI_VERSION}"
         shell: bash
 
-      - name: Delete search index
-        run: bash .github/scripts/delete_search_index.sh ${{ secrets.ALGOLIA_APP_ID }} ${{ secrets.ALGOLIA_API_KEY }}
-
-      - name: Build doc md2html
-        id: build-md2html
+      - name: Assemble isolated YFM projects
         env:
-          index-name: "ytsaurus-docs"
+          DOCS_REVISION: ${{ github.sha }}
         run: |
-          yfm -i ${{ env.src-root }} -o ${{ env.lint-root }} --extensions "$(npm root -g)/@diplodoc/algolia-extension" --index-name ${{ env.index-name }}-${{ env.revision }} --api-key ${{ secrets.ALGOLIA_API_KEY }} --app-id ${{ secrets.ALGOLIA_APP_ID }}  2>&1 | tee './build-html.log'
-
-          echo "exitcode=$?" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          python3 .github/scripts/assemble-modular-docs.py \
+            --source-root "${DOCS_SOURCE_ROOT}" \
+            --registry .github/docs-modules.json \
+            --output-root "${DOCS_INPUT_ROOT}" \
+            --docs-revision-query "?revision=${DOCS_REVISION}" \
+            --public-revision-preview \
+            --clean
         shell: bash
 
-
-      - name: Build md2md
-        id: build-md2md
+      - name: Build strict HTML and md2md outputs
+        env:
+          DOCS_REVISION: ${{ github.sha }}
         run: |
-          yfm -i ${{ env.src-root }} -o ${{ env.build-root }} --output-format md --add-map-file --allow-custom-resources 2>&1 | tee './build-md.log'
+          set -euo pipefail
+          mkdir -p "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}" "${BUILD_LOGS}"
+          build_vars="{\"docs-revision-query\":\"?revision=${DOCS_REVISION}\"}"
 
-          echo "exitcode=$?" >> $GITHUB_OUTPUT
+          while IFS= read -r module; do
+            log_file="${BUILD_LOGS}/${module}.log"
+            printf 'Building %s as strict HTML\n' "${module}" | tee "${log_file}"
+            yfm \
+              -i "${DOCS_INPUT_ROOT}/${module}" \
+              -o "${BUILD_OUTPUT_HTML}/${module}" \
+              --strict \
+              --vars "${build_vars}" \
+              2>&1 | tee -a "${log_file}"
+
+            printf '\nBuilding %s as strict md2md\n' "${module}" | tee -a "${log_file}"
+            yfm \
+              -i "${DOCS_INPUT_ROOT}/${module}" \
+              -o "${BUILD_OUTPUT_MD}/${module}" \
+              --output-format md \
+              --add-map-file \
+              --allow-custom-resources \
+              --no-search \
+              --strict \
+              --vars "${build_vars}" \
+              2>&1 | tee -a "${log_file}"
+          done < <(jq -r '.modules[].name' .github/docs-modules.json)
         shell: bash
 
-      - name: Save inputs
+      - name: Verify build contract
         run: |
-          mkdir -p ./inputs
-          echo ${{ env.revision }} > ./inputs/revision
-          echo ${{ github.event.number }} > ./inputs/pr-number
+          set -euo pipefail
+          while IFS=$'\t' read -r module project_name; do
+            test -f "${BUILD_OUTPUT_MD}/${module}/.yfm"
+            test -f "${BUILD_OUTPUT_HTML}/${module}/index.html"
+            test -s "${BUILD_LOGS}/${module}.log"
+            grep -Fq "project-name: ${project_name}" "${BUILD_OUTPUT_MD}/${module}/.yfm"
+            grep -Fq "unrestrict-revision-access: true" "${BUILD_OUTPUT_MD}/${module}/.yfm"
+            grep -Fq "no-index: true" "${BUILD_OUTPUT_MD}/${module}/.yfm"
+            for language in ru en; do
+              test -f "${BUILD_OUTPUT_MD}/${module}/${language}/llms.txt"
+              test -f "${BUILD_OUTPUT_MD}/${module}/${language}/llms-full.txt"
+            done
+          done < <(jq -r '.modules[] | [.name, .project_name] | @tsv' .github/docs-modules.json)
+
+          unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
+          if grep -R -n -E --exclude-dir=_bundle "${unresolved_route_vars}" \
+            "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; then
+            echo 'Unresolved modular routing variables found in build output.' >&2
+            exit 1
+          fi
+
+          legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt)([^A-Za-z0-9_-]|$)'
+          if grep -R -n -E "${legacy_self_routes}" "${DOCS_INPUT_ROOT}"; then
+            echo 'Legacy same-module routes remain in assembled inputs.' >&2
+            exit 1
+          fi
+
+          for language in ru en; do
+            landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
+            expected_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/tutorials/quick-start?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_url}" "${landing_page}"
+
+            core_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/reference/releases.html"
+            expected_chyt_url="https://ytsaurus-chyt.viewer.ydocs.io/${language}/user-guide/reference/release-notes?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_chyt_url}" "${core_page}"
+
+            core_self_page="${BUILD_OUTPUT_HTML}/core/${language}/user-guide/reference/faq.html"
+            expected_core_self_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/reference/data-processing/operations/merge?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_core_self_url}" "${core_self_page}"
+
+            core_audience_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/how-to-guides/install-excel.html"
+            expected_core_audience_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/explanation/excel?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_core_audience_url}" "${core_audience_page}"
+
+            spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/user-guide/reference/data-types.html"
+            expected_core_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/reference/storage/data-types?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_core_url}" "${spyt_page}"
+            expected_spyt_self_url="https://ytsaurus-spyt.viewer.ydocs.io/${language}/user-guide/reference/read-options?revision=${GITHUB_SHA}#schema_hint"
+            grep -Fq "${expected_spyt_self_url}" "${spyt_page}"
+
+            chyt_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/yt-tables.html"
+            expected_core_url="https://ytsaurus-core.viewer.ydocs.io/${language}/user-guide/explanation/storage/static-tables?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_core_url}" "${chyt_page}"
+
+            chyt_self_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/faq.html"
+            expected_chyt_self_url="https://ytsaurus-chyt.viewer.ydocs.io/${language}/user-guide/explanation/general?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_chyt_self_url}" "${chyt_self_page}"
+          done
+
+          if find "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}" \
+            -type f -path '*/internal/*' -print -quit | grep -q .; then
+            echo 'Internal documentation leaked into build output.' >&2
+            exit 1
+          fi
         shell: bash
 
-      - name: Upload inputs
+      - name: Generate upload matrix from module registry
+        id: upload-matrix
+        run: |
+          set -euo pipefail
+          matrix=$(jq -c '{include: [.modules[] | {
+            module: .name,
+            "storage-suffix": (if .storage_prefix == "" then "" else "/" + .storage_prefix end)
+          }]}' .github/docs-modules.json)
+          printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
+        shell: bash
+
+      - name: Save revision input
+        run: |
+          set -euo pipefail
+          mkdir -p inputs
+          printf '%s\n' "${GITHUB_SHA}" > inputs/revision
+        shell: bash
+
+      - name: Upload revision input
         uses: actions/upload-artifact@v4
         with:
           name: inputs
           path: inputs/
           include-hidden-files: true
-          retention-days: 1
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload build artifacts
+      - name: Upload md2md outputs
         uses: actions/upload-artifact@v4
         with:
           name: build-output-md
+          path: build-output-md/
           include-hidden-files: true
-          path: ${{ env.build-root }}
-          retention-days: 1
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload build html doc
+      - name: Upload HTML outputs
         uses: actions/upload-artifact@v4
         with:
           name: build-output-html
-          path: ${{ env.lint-root }}
-          retention-days: 1
+          path: build-output-html/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload build log
+      - name: Upload build logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-html
-          path: ./build-html.log
-          retention-days: 1
-
-      - name: Exit
-        run: |
-          exitcode=${{ steps.build-md2html.outputs.exitcode }}
-
-          if [ "$exitcode" -eq 0 ]; then
-              echo "Build exited successfully."
-          else
-            echo "Build exited with an error. Exit code: $exitcode"
-            exit $exitcode
-          fi
-        shell: bash
+          name: build-logs
+          path: build-logs/
+          if-no-files-found: error
+          retention-days: 7
 
   upload:
+    name: Upload ${{ matrix.module }} testing revision
     needs: build
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build.outputs.upload-matrix) }}
     steps:
-      - name: Show docs revision
+      - name: Validate storage configuration
+        env:
+          STORAGE_ENDPOINT: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
+          STORAGE_REGION: ${{ vars.DIPLODOC_STORAGE_REGION }}
+          STORAGE_BUCKET: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
+          STORAGE_ACCESS_KEY_ID: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
+          STORAGE_SECRET_ACCESS_KEY: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
         run: |
-          echo "Revision: "${{ github.sha }}
-      - name: Upload to testing
+          set -euo pipefail
+          for name in \
+            STORAGE_ENDPOINT \
+            STORAGE_REGION \
+            STORAGE_BUCKET \
+            STORAGE_ACCESS_KEY_ID \
+            STORAGE_SECRET_ACCESS_KEY; do
+            if [[ -z "${!name}" ]]; then
+              echo "Required GitHub variable or secret for ${name} is not configured." >&2
+              exit 1
+            fi
+          done
+        shell: bash
+
+      - name: Upload revision without changing production head
         uses: diplodoc-platform/docs-upload-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          version: "${{ github.ref_name }}"
+          stage: stable
+          docs-path: ${{ matrix.module }}
+          cli-version: ${{ env.DIPLODOC_CLI_VERSION }}
           storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
           storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
-          storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
+          storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}${{ matrix.storage-suffix }}"
           storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
           storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+
+  summary:
+    name: Testing documentation links
+    needs: upload
+    runs-on: ubuntu-latest
+    env:
+      REVISION: ${{ github.sha }}
+      LANDING_URL: https://ytsaurus.viewer.ydocs.io
+      CORE_URL: https://ytsaurus-core.viewer.ydocs.io
+      SPYT_URL: https://ytsaurus-spyt.viewer.ydocs.io
+      CHYT_URL: https://ytsaurus-chyt.viewer.ydocs.io
+    steps:
+      - name: Write links to job summary
+        run: |
+          set -euo pipefail
+          {
+            printf '## Modular documentation testing revision\n\n'
+            printf 'Revision: `%s`\n\n' "${REVISION}"
+            printf '| Project | RU | EN |\n'
+            printf '| --- | --- | --- |\n'
+            printf '| Landing | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${LANDING_URL%/}" "${REVISION}" "${LANDING_URL%/}" "${REVISION}"
+            printf '| Core | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${CORE_URL%/}" "${REVISION}" "${CORE_URL%/}" "${REVISION}"
+            printf '| SPYT | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${SPYT_URL%/}" "${REVISION}" "${SPYT_URL%/}" "${REVISION}"
+            printf '| CHYT | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' "${CHYT_URL%/}" "${REVISION}" "${CHYT_URL%/}" "${REVISION}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+        shell: bash

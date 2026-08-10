@@ -1,1 +1,0 @@
-{% include [Автоматическое слияние чанков на выходе операций](../../../_includes/user-guide/data-processing/operations/automerge.md) %}

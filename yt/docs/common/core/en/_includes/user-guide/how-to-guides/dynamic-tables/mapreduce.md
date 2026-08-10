@@ -1,0 +1,1 @@
+{% include [Running operations on dynamic tables](../_partials/user-guide/dynamic-tables/mapreduce.md) %}

@@ -1,0 +1,108 @@
+default:
+  ipa: _wai-tee-saw-ruhs_
+
+public:
+  lang: en
+  source-root: https://github.com/ytsaurus/ytsaurus/tree/main
+  prestable-cluster: <cluster-name>
+  testing-cluster: <cluster-name>
+  production-cluster: <cluster-name>
+  mr-clusters: <cluster-name>
+  package-name: ytsaurus-client
+  pool-tree: default
+  yt-docs-root: https://ytsaurus.tech/docs/en
+  cluster-ui: https://<host-root>/<cluster-name>
+  community-tg: https://t.me/ytsaurus
+  python-lib-qt: SystemPython3_8
+  web-interface: web interface
+  pages:
+    try-yt:
+      mr-source: https://github.com/ytsaurus/ytsaurus/blob/main/yt/docs/code-examples/python/word-count.py
+  proxy-pages:
+    http:
+      mapreduce-example: '[GitHub](https://github.com/ytsaurus/ytsaurus/tree/main/yt/docs/code-examples/python/http-proxy.py)'
+      tmp-dir: '//tmp/yt_examples'
+    common:
+      heavy-proxy: <heavy-proxy>
+
+  # BEGIN CORE GENERATED AUDIENCE VARIANTS
+  core-admin-guide-how-to-guides-cluster-operations-md-audience-1: ""
+  core-admin-guide-how-to-guides-cluster-throttlers-md-audience-1: ""
+  core-admin-guide-how-to-guides-cluster-throttlers-md-audience-2: ""
+  core-admin-guide-how-to-guides-install-excel-md-audience-1: "\n\nThe instructions below describe how to deploy YTsaurus Excel integration in Kubernetes. To learn more about the supported functionality, see [Working with Microsoft Excel tables](https://ytsaurus.tech/docs/core/user-guide/explanation/excel).\n\n"
+  core-admin-guide-how-to-guides-node-cri-md-audience-1: ""
+  core-admin-guide-reference-config-overrides-md-audience-1: "\n- `ytserver-yql-agent.yson` &mdash; YQL-agent\n"
+  core-user-guide-explanation-api-cpp-description-md-audience-1: "\n\n{% note warning %}\n\nThe C++ client is currently provided as is, so:\n- The client interface may undergo non-backward compatible changes.\n- The current version only supports static linking.\n- Contact info@ytsaurus.tech if you have any questions about building the client.\n\n{% endnote %}\n\n"
+  core-user-guide-explanation-api-cpp-description-md-audience-2: ""
+  core-user-guide-explanation-api-cpp-description-md-audience-3: ""
+  core-user-guide-explanation-api-cpp-description-md-audience-4: ""
+  core-user-guide-explanation-data-processing-overview-md-audience-1: ""
+  core-user-guide-explanation-data-processing-scheduler-integral-guarantees-md-audience-1: ""
+  core-user-guide-explanation-dynamic-tables-chaos-dynamic-tables-md-audience-1: ""
+  core-user-guide-explanation-dynamic-tables-replicated-dynamic-tables-md-audience-1: "replica copy tool"
+  core-user-guide-explanation-dynamic-tables-replicated-dynamic-tables-md-audience-2: ""
+  core-user-guide-explanation-dynamic-tables-sorted-dynamic-tables-md-audience-1: "use the [dynamic node config](https://ytsaurus.tech/docs/core/admin-guide/how-to-guides/cluster-operations#ytdyncfgen) to set the \"data_node/block_cache/xor_filter/capacity\" field value. This action is available to the cluster administrator."
+  core-user-guide-explanation-excel-md-audience-1: "\n![](../../../../../../_images/user-guide/explanation/excel_upload_create.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-2: "\n![](../../../../../../_images/user-guide/explanation/excel_upload.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-3: "\n![](../../../../../../_images/user-guide/explanation/excel_upload_existing.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-4: "\n![](../../../../../../_images/user-guide/explanation/excel_upload_append.png){ .center }\n"
+  core-user-guide-explanation-excel-md-audience-5: "\n![](../../../../../../_images/user-guide/explanation/excel_download.png){ .center }\n"
+  core-user-guide-explanation-locking-cypress-as-locking-service-p3-md-audience-1: "You can ask your cluster administrator to increase the limits."
+  core-user-guide-explanation-storage-access-control-p2-md-audience-1: "contact your system administrator"
+  core-user-guide-how-to-guides-api-cpp-examples-md-audience-1: ""
+  core-user-guide-how-to-guides-api-python-start-md-audience-1: ""
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-1: ""
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-2: "https://github.com/ytsaurus/ytsaurus/blob/879946a82c766da78612ab4fe3637f7ea4da8292/yt/yt/client/tablet_client/public.h#L152"
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-3: "https://github.com/ytsaurus/ytsaurus/blob/879946a82c766da78612ab4fe3637f7ea4da8292/yt/yt/client/api/public.h#L53"
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-4: "https://github.com/ytsaurus/ytsaurus/blob/879946a82c766da78612ab4fe3637f7ea4da8292/yt/yt/client/tablet_client/public.h#L142"
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-5: ""
+  core-user-guide-how-to-guides-dynamic-tables-bulk-insert-md-audience-6: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-1: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-2: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-3: ""
+  core-user-guide-how-to-guides-dynamic-tables-compaction-md-audience-4: ""
+  core-user-guide-how-to-guides-dynamic-tables-mapreduce-md-audience-1: "discuss it with the cluster administrators"
+  core-user-guide-how-to-guides-dynamic-tables-tablet-balancing-md-audience-1: "The external balancer is not currently supported in opensource."
+  core-user-guide-how-to-guides-dynamic-tables-tablet-balancing-md-audience-2: ""
+  core-user-guide-reference-api-cli-commands-md-audience-1: ""
+  core-user-guide-reference-api-cli-commands-md-audience-2: ""
+  core-user-guide-reference-api-cpp-lambda-md-audience-1: "Connect the [yt_lambda](https://github.com/ytsaurus/ytsaurus/blob/main/yt/cpp/mapreduce/library/lambda/yt_lambda.h)library"
+  core-user-guide-reference-api-python-dataclass-md-audience-1: "\n  * `typing_extensions`\n  * `ytsaurus-yson`\n  * `six`\n"
+  core-user-guide-reference-data-processing-operations-chunk-merger-md-audience-1: "\n\n## Merge attributes on the account\n\nEvery account contains attributes for controling the chunk merge mechanism:\n- `allow_using_chunk_merger`: Whether it is allowed to merge chunks for tables of this account.\n- `chunk_merger_node_traversal_concurrency`: The number of tables for which merge jobs can be scheduled concurrently.\n- `merge_job_rate_limit`: The number of jobs that can be scheduled per second.\n\nThe default settings allow automatic chunk merge for every account.\n"
+  core-user-guide-reference-data-processing-operations-chunk-merger-md-audience-2: "\n\n## Metrics in Prometheus\n\nThe following time series are used in Prometheus to collect chunk merge metrics:\n- `yt.chunk_server.chunk_merger_account_queue_size`: Account-based chunk merge queues. If the account queue is empty, make sure that the correct attribute is set for all required tables. Also make sure that the account settings allow table merges: the `allow_using_chunk_merger` attribute is set to `true` and the `chunk_merger_node_traversal_concurrency` and `merge_job_rate_limit` attributes aren't set to 0.\n\n- `yt.chunk_server.chunk_merger_chunk_replacements_succeeded`: The number of successful merges.\n\n- `yt.chunk_server.chunk_merger_chunk_replacements_failed`: The number of failed merges.\n\nHaving a certain number of failed merges is normal, and you can't get rid of them completely. But if there are more failed merges than successful ones, this is something that you want to take note of. One possible reason could be that chunk merge is enabled for tables that are constantly overwritten from scratch with new data or for tables with a short lifetime. In this case, it's best to disable automatic merge for such tables.\n\n"
+  core-user-guide-reference-data-processing-operations-cluster-throttlers-md-audience-1: ""
+  core-user-guide-reference-data-processing-operations-cluster-throttlers-md-audience-2: ""
+  core-user-guide-reference-data-processing-operations-cluster-throttlers-md-audience-3: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-1: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-2: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-3: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-4: ""
+  core-user-guide-reference-data-processing-operations-operations-options-md-audience-5: ""
+  core-user-guide-reference-data-processing-operations-remote-copy-md-audience-1: ""
+  core-user-guide-reference-dynamic-tables-queues-md-audience-1: ""
+  core-user-guide-reference-dynamic-tables-queues-md-audience-2: ""
+  core-user-guide-reference-dynamic-tables-queues-md-audience-3: ""
+  core-user-guide-reference-dynamic-tables-queues-md-audience-4: "\n### Queue exports to static tables\n\nWith Queue Agent, you can configure regular data export from queues to static tables. Exporting does not involve physical data transfer from the queue to the static table, since export works at the metainformation level. The exported table references the same chunks as in the queue instead of creating new chunks with the same data.\n\n#### Export parameters\n- `export_directory` (required): The destination directory for the created static tables.\n- `export_period` (required): Export frequency. It must be a multiple of 1 second and is expressed in milliseconds. For example, `export_period=300000` triggers export every 300 seconds.\n- `export_ttl`: [`expiration_timeout`](https://ytsaurus.tech/docs/core/user-guide/explanation/storage/cypress#TTL) for created tables.\n- `output_table_name_pattern`: Table name pattern. The default value is `%UNIX_TS-%PERIOD`. If you set a custom value, different export iterations must generate different table names to ensure proper export operation; otherwise, behavior is undefined. `output_table_name_pattern` supports the `strftime` format and:\n  - `%UNIX_TS`: Unix timestamp of the export boundary; the exact boundary is determined by the `use_upper_bound_for_table_names` parameter.\n  - `%PERIOD`: `export_period` in seconds.\n  - `%ISO`: Export time in ISO 8601 format, such as `2015-11-21T23:30:27Z`.\n- `use_upper_bound_for_table_names`: Determines the time boundary used in the table name.  The default value is `false`. When set to `false`, the lower boundary is used; `true` indicates the upper boundary.\n\nThe complete queue export configuration appears as a mapping from export names to their parameters, for example:\n```\n{\n    default={\n        export_period=60000;\n        export_directory=\"//path/to/export/dir\";\n    };\n    another_export={\n        export_period=300000;\n        export_directory=\"//path/to/another/export/dir\";\n    };\n}\n```\n\nThis configuration is assigned to the `static_export_config` attribute of the queue or, for replicated and сhaos tables, to the corresponding attribute of the queue replica, for example:\n```bash\n$ yt set //path/to/some/queue/@static_export_config '...'\n```\n\n#### Configuring the export directory\n\nTo verify permissions for creating static tables in the export directory, set the `queue_static_export_destination` attribute for the directory, specifying the queue ID:\n```bash\n$ yt get //path/to/your/queue/@id\n\"18f-50544-3ea0191-fc6c51c5\" # sample queue ID\n\n$ yt set //path/to/your/export/directory/@queue_static_export_destination \\\n    '{originating_queue_id=\"18f-50544-3ea0191-fc6c51c5\"}' # originating_queue_id must contain your queue ID\n```\n\n#### Export progress\n\nQueue Agent uses the `queue_static_export_progress` attribute on the export directory to store internal information about already exported data. The contents of this attribute are not part of the public API. In typical scenarios, users should neither change this attribute nor depend on its contents. If `originating_queue_id` of the export directory is changed, the above mentioned attribute should be deleted to ensure proper operation:\n```bash\n$ yt remove //path/to/your/export/directory/@queue_static_export_progress\n```\n\n#### Automatic export trimming\n\nExport can be considered a virtual vital consumer of the queue. When automatic trimming is enabled, data is deleted only if it has been read by all vital consumers and successfully exported.\n\n#### Export structure\n\nTime boundaries for the export iteration: export data is segmented based on Unix timestamps multiple of `export_period`. The upper boundary is inclusive while the lower one is exclusive.\n\nConsidering the above, all non-exported (for this export) flushed chunks with a `max_timestamp` less than the upper boundary of the export iteration are included in the export.\n\nDue to this, enabling export for a queue that contains a large amount of data will result in a first massive export, since all chunks are non-exported. Starting from the next iteration, Queue Agent will export flushed data written to the queue after the previous export.\n\n{% note info %}\n\nThe data flush requirements imply that data can't be exported more often than it gets flushed. By default, dynamic store flush occurs every 15 minutes. Export operations with intervals less than 15 minutes make no sense without changing queue flush parameters and only create excessive load on the master server. See the [documentation](https://ytsaurus.tech/docs/core/user-guide/how-to-guides/dynamic-tables/compaction#flush_attributes) for configuring dynamic table flush.\n\n{% endnote %}\n\nDue to the export structure, Queue Agent cannot provide strict timestamp gurantees for exported data.  Each export chunk is processed as a whole and may contain data that logically belongs to different export iterations.\n\nIf an export iteration fails, the data is exported during the next iteration, resulting in the export table containing data from two export iterations.\n\n"
+  core-user-guide-reference-dynamic-tables-queues-md-audience-5: "\nThese examples use a hypothetical configuration with multiple clusters named `<consumer-cluster>` and `<queue-cluster>`.\n"
+  core-user-guide-reference-dynamic-tables-queues-md-audience-6: ""
+  core-user-guide-reference-dynamic-tables-secondary-indices-md-audience-1: ""
+  core-user-guide-reference-faq-md-audience-1: ""
+  core-user-guide-reference-faq-md-audience-1-4a03e6e6: ""
+  core-user-guide-reference-faq-md-audience-1-9a9aebe0: "**Accounts** page in the web interface"
+  core-user-guide-reference-faq-md-audience-2: "\n\n#### **Q: What do I do if a query from the python wrapper fails with \"gaierror(-2, 'Name or service not known')\"?** {#name-service-unknown}\n\n**A:** If you are getting an error that looks like\n`has failed with error <class 'yt.packages.requests.exceptions.ConnectionError'>, message: '('Connection aborted.', gaierror(-2, 'Name or service not known'))'`, or\n\"Name or service not known\", it is a DNS error that indicates that the requested DNS record is not found.\nGiven YTsaurus and reliable DNS, this most probably means that your service is attempting to resolve a record for a YTsaurus host but YTsaurus is an ipv6 only service, hence this is not working. You service should work properly with an ipv6 network. In addition, the YT_FORCE_IPV4 environment variable may be set switching yt.wrapper to the ipv4 only mode. It must be eliminated.\nTo view the YTsaurus environment variable, run the following command in your terminal:\n`env | grep YT_`\nTo remove the YT_FORCE_IPV4 variable from the environment:\n`unset YT_FORCE_IPV4`\n\n"
+  core-user-guide-reference-faq-md-audience-2-4a03e6e6: ""
+  core-user-guide-reference-faq-md-audience-2-9a9aebe0: "the system administrator"
+  core-user-guide-reference-faq-md-audience-3: "\nIf the last specified node doesn't exist, create it using the following command:\n\n```bash\n$ yt create document //sys/controller_agents/config --attributes '{value={}}'\n```\n"
+  core-user-guide-reference-faq-md-audience-4: ""
+  core-user-guide-reference-proxy-http-md-audience-1: ""
+  core-user-guide-reference-proxy-http-reference-md-audience-1: ""
+  core-user-guide-reference-proxy-http-reference-md-audience-2: ""
+  core-user-guide-reference-proxy-rpc-md-audience-1: ""
+  core-user-guide-reference-storage-accounts-md-audience-1: ""
+  core-user-guide-reference-storage-attributes-md-audience-1: " In practical terms, if the value of an attribute is 100 KB or more, you should probably make it opaque. In this case, when all attributes are requested, it will not be returned, making it fast to read all attributes. To get the value of an opaque attribute, you must explicitly request it."
+  core-user-guide-reference-storage-formats-md-audience-1: ""
+  core-user-guide-reference-storage-quotas-md-audience-1: "\n\nIf a project uses dynamic tables for production, you need to have a separate [tablet cell bundle](https://ytsaurus.tech/docs/core/user-guide/explanation/dynamic-tables/concepts#tablet_cell_bundles) to isolate from other users. A tablet cell bundle is a group of containers (instances) that processes queries to a project's dynamic tables.\n\n"
+  core-user-guide-reference-storage-quotas-md-audience-2: ""
+  core-user-guide-reference-storage-quotas-md-audience-3: ""
+  core-user-guide-reference-storage-static-schema-md-audience-1: "YQL"
+  # END CORE GENERATED AUDIENCE VARIANTS

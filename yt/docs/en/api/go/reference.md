@@ -1,1 +1,0 @@
-{% include [Go API](../../_includes/api/go/reference.md) %}

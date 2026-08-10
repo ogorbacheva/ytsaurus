@@ -1,0 +1,1 @@
+{% include [Сжатие](../_partials/user-guide/storage/compression.md) %}

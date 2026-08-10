@@ -1,0 +1,1 @@
+{% include [Интегральные гарантии](../../_partials/user-guide/data-processing/scheduler/integral-guarantees.md) %}

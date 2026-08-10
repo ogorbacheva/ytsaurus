@@ -1,0 +1,1 @@
+{% include [Бинарные данные в таблицах](../_partials/user-guide/storage/blobtables.md) %}

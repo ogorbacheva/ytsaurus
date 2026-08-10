@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "modules": [
+    {
+      "name": "landing",
+      "project_name": "ytsaurus",
+      "languages": ["ru", "en"],
+      "common": false,
+      "storage_prefix": ""
+    },
+    {
+      "name": "core",
+      "project_name": "ytsaurus-core",
+      "languages": ["ru", "en"],
+      "common": true,
+      "storage_prefix": "ytsaurus-core"
+    },
+    {
+      "name": "spyt",
+      "project_name": "ytsaurus-spyt",
+      "languages": ["ru", "en"],
+      "common": true,
+      "storage_prefix": "ytsaurus-spyt"
+    },
+    {
+      "name": "chyt",
+      "project_name": "ytsaurus-chyt",
+      "languages": ["ru", "en"],
+      "common": true,
+      "storage_prefix": "ytsaurus-chyt"
+    }
+  ]
+}

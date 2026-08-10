@@ -1,0 +1,1 @@
+{% include [JOIN в CHYT](../../../common/_includes/user-guide/explanation/queries/joins.md) %}

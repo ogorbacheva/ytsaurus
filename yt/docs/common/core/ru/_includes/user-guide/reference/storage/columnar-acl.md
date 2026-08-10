@@ -1,0 +1,1 @@
+{% include [Управление доступом к колонкам таблиц](../_partials/user-guide/storage/columnar-acl.md) %}

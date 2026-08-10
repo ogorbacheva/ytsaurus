@@ -1,1 +1,0 @@
-{% include [Скифф](../../_includes/user-guide/storage/skiff.md) %}

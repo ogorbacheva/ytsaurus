@@ -1,0 +1,1 @@
+{% include [Working with {{product-name}} tables](../../common/_includes/user-guide/reference/yt-tables.md) %}

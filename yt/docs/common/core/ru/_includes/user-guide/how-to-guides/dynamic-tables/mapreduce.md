@@ -1,0 +1,1 @@
+{% include [Запуск операций по динамическим таблицам](../_partials/user-guide/dynamic-tables/mapreduce.md) %}

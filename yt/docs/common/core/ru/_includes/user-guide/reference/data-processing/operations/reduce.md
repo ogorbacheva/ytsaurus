@@ -1,0 +1,1 @@
+{% include [Reduce](../../_partials/user-guide/data-processing/operations/reduce.md) %}

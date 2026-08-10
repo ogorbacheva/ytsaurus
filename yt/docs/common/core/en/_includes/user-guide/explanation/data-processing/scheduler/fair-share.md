@@ -1,0 +1,1 @@
+{% include [Вычисление fair share ratio](../../_partials/user-guide/data-processing/scheduler/fair-share.md) %}

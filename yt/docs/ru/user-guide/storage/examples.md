@@ -1,1 +1,0 @@
-{% include [Примеры работы с объектами Кипариса](../../_includes/user-guide/storage/examples.md) %}
