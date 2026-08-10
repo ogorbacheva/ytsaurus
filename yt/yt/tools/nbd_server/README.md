@@ -6,12 +6,13 @@ chosen backend type. Each device is described with a polymorphic YSON struct —
 
 ## Supported device backends
 
-| `type`          | Backing store             | Mode | Needs a client |
-|-----------------|---------------------------|------|----------------|
-| `memory`        | process memory            | RW   | no             |
-| `dynamic_table` | a mounted dynamic table   | RW   | yes            |
-| `file`          | a Cypress file (its bytes)| RO   | yes (native)   |
-| `chunk`         | a data node chunk         | RW   | yes (native)   |
+| `type`          | Backing store             | Mode | Trim | Needs a client |
+|-----------------|---------------------------|------|------|----------------|
+| `memory`        | process memory            | RW   | no   | no             |
+| `dynamic_table` | a mounted dynamic table   | RW   | no   | yes            |
+| `file`          | a Cypress file (its bytes)| RO   | no   | yes (native)   |
+| `chunk`         | a data node chunk         | RW   | no   | yes (native)   |
+| `journal`       | YT journal chunks         | RW   | yes  | yes (native)   |
 
 The `file` backend serves the raw bytes of a Cypress file read-only — point it at
 a filesystem image and mount the device directly, no `mkfs`. It reads the file's
@@ -29,6 +30,55 @@ The chunk's medium is set with `medium` (a medium name, e.g. `"default"` or
 `"ssd_nbd"`) — resolved to an index via the cluster's medium directory. The
 numeric `medium_index` is still accepted as a fallback when no cluster client is
 available, but `medium` is preferred.
+
+The `journal` backend stores each device block in a YT journal chunk, buffering
+writes in memory and flushing them to the journal in the background. The server
+stages the chunks under a per-device master transaction (`transaction_timeout`
+sets its lease), so they are reclaimed if the server dies.
+
+A journal device is either **fresh** or **restored**, and exactly one of these
+must be given:
+
+- `device_options` — a fresh device's geometry and storage: `device_size`,
+  `block_size` (4 KB–64 KB, a power of two, and a divisor of `device_size`),
+  `account`, `medium_name`.
+- `initial_snapshot_path` — restore the contents from a snapshot table written
+  earlier (see below). The geometry is reconstructed from the table, so
+  `device_options` must be omitted.
+
+Snapshots are point-in-time and taken while the device serves I/O; see
+`POST /devices/<name>/snapshot` in the HTTP API below. The rows reference the
+device's journal chunks as hunks rather than copying block data, so a snapshot is
+cheap and the table pins the chunks it references.
+
+Optional `block_compactor` (absent disables it) turns on background compaction,
+which relocates the surviving blocks out of mostly-dead chunks so the old ones
+can be reclaimed. A device restored from a snapshot needs it to ever release the
+snapshot's chunks; since the table pins them, they are freed only once it is removed.
+
+## Trim
+
+Backends marked trimmable in the table above advertise `NBD_FLAG_SEND_TRIM`, so
+the kernel issues discards for them — `blkdiscard`, `mount -o discard`, or
+`fstrim`:
+
+```bash
+# Discard an explicit byte range, or the whole device.
+sudo blkdiscard -o $((4 * 1024 * 1024)) -l $((8 * 1024 * 1024)) /dev/nbd0
+sudo blkdiscard /dev/nbd0
+
+# Or let the filesystem do it: continuously, or in one batch.
+sudo mount -o discard /dev/nbd0 ~/mnt
+sudo fstrim -v ~/mnt
+```
+
+Discarded bytes read back as zeroes. Trim is advisory, so a device may discard
+less than asked: the `journal` backend discards only the blocks a range fully
+covers, leaving a partially covered block at either end untouched. Its trimmed
+blocks stop being referenced, which is what lets a journal chunk go dead and be
+reclaimed; they are also absent from any later snapshot. A backend that is not
+trimmable does not advertise the flag, and a discard against it fails in the
+kernel with `Operation not supported` rather than reaching the server.
 
 ## Client
 
@@ -51,6 +101,7 @@ Example configs live in [configs/](configs/):
 - [configs/dynamic_table.yson](configs/dynamic_table.yson) — a dynamic-table device; needs a cluster + TVM.
 - [configs/file.yson](configs/file.yson) — a read-only device over a Cypress file; needs a cluster + TVM.
 - [configs/chunk.yson](configs/chunk.yson) — a read-write chunk device on a data node; needs a cluster + TVM.
+- [configs/journal.yson](configs/journal.yson) — a journal-backed device; needs a cluster + TVM.
 
 For the `dynamic_table` device, first create and mount the table:
 
@@ -108,6 +159,19 @@ Devices are a REST resource under `/devices`, keyed by name:
 | `GET /devices/<name>`  | one device's orchid             | 200     | 404 if unknown          |
 | `PUT /devices/<name>`  | add a device; body is its config| 201     | 409 if it already exists|
 | `DELETE /devices/<name>`| remove a device                | 204     | 404 if unknown          |
+| `POST /devices/<name>/snapshot`| snapshot a `journal` device to a table | 200 | 404 if unknown; 405 if the backend has no snapshots |
+
+`POST /devices/<name>/snapshot` takes a `path` in its body — the Cypress table
+the snapshot is written to, created recursively under a transaction the server
+commits only once the rows are in. It replies with the `block_count` written and
+the `chunk_count` they reference. Point a later device's `initial_snapshot_path`
+at that table to restore from it.
+
+```bash
+curl -X POST http://localhost:9000/devices/journal_disk/snapshot \
+    -H 'Content-Type: application/json' \
+    -d '{"path":"//tmp/nbd_snapshot"}'
+```
 
 `GET /status` dumps the full server orchid (`server_id`, `address`, the
 `connections` submap and the `devices` submap); subpaths navigate into it, e.g.
@@ -141,7 +205,7 @@ ya make yt/yt/tools/nbd_server -r
 # Memory device (no cluster):
 ./yt/yt/tools/nbd_server/nbd_server --config .../configs/memory.yson
 
-# Cluster-backed device (dynamic_table / file / chunk) — cluster via YT_PROXY, TVM secret from a file:
+# Cluster-backed device (dynamic_table / file / chunk / journal) — cluster via YT_PROXY, TVM secret from a file:
 YT_PROXY=hume YT_USER="$USER" YT_TOKEN="$(cat ~/.yt/token)" TVM_CLIENT_SECRET="$(cat ~/.tvm/client_secret)" \
     ./yt/yt/tools/nbd_server/nbd_server --config .../configs/dynamic_table.yson
 ```
@@ -155,6 +219,7 @@ sudo nbd-client localhost 10809 -l
 # Connect one to /dev/nbd0 (device name is the key from `devices`).
 sudo nbd-client localhost 10809 -N ram_disk /dev/nbd0
 sudo mkfs -t ext4 /dev/nbd0
+# Add -o discard on a trimmable backend to release freed space as you go.
 mkdir ~/mnt && sudo mount /dev/nbd0 ~/mnt
 # ... use ~/mnt ...
 sudo umount ~/mnt

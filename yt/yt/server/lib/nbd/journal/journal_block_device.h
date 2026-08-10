@@ -54,6 +54,13 @@ struct IJournalBlockDevice
      *  commits that transaction.
      */
     virtual TFuture<TSnapshotSaveResult> SaveSnapshot(const TSnapshotSaveSpec& spec) = 0;
+
+    //! Flushes every block written as of this call into the store.
+    /*!
+     *  Until flushed a block is a dirty pool resident, not a journal record. Fails if the flusher
+     *  has failed or has been stopped by #Finalize.
+     */
+    virtual TFuture<void> FlushBlocks() = 0;
 };
 
 DEFINE_REFCOUNTED_TYPE(IJournalBlockDevice)

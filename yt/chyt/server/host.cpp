@@ -9,6 +9,7 @@
 #include "health_checker.h"
 #include "helpers.h"
 #include "invoker_liveness_checker.h"
+#include "materialized_view_coordinator.h"
 #include "memory_watchdog.h"
 #include "query_context.h"
 #include "query_registry.h"
@@ -244,6 +245,15 @@ public:
     {
         YT_VERIFY(context_ && context.expired());
         context = context_;
+        if (CypressObjectRepository_ && ElectionManager_ && Config_->MaterializedViews) {
+            MaterializedViewCoordinator_ = New<TMaterializedViewCoordinator>(
+                Owner_,
+                CypressObjectRepository_,
+                Config_->MaterializedViews,
+                ChannelFactory_);
+        } else if (CypressObjectRepository_ && Config_->MaterializedViews) {
+            YT_LOG_WARNING("Materialized view background processing is disabled because no election manager is configured");
+        }
     }
 
     void InitQueryRegistry()
@@ -300,6 +310,10 @@ public:
 
         if (ElectionManager_) {
             ElectionManager_->Start();
+        }
+
+        if (MaterializedViewCoordinator_) {
+            MaterializedViewCoordinator_->Start();
         }
 
         CreateOrchidNode();
@@ -566,7 +580,7 @@ public:
 
     TClusterNodes GetNodes(bool alwaysIncludeLocal) const
     {
-        auto nodeList = FilterNodesByCliqueId(Discovery_->List());
+        auto nodeList = GetDiscoveryNodes();
         TClusterNodes result;
         result.reserve(nodeList.size());
 
@@ -592,6 +606,11 @@ public:
         }
 
         return result;
+    }
+
+    TDiscoveryNodes GetDiscoveryNodes() const
+    {
+        return FilterNodesByCliqueId(Discovery_->List());
     }
 
     IClusterNodePtr GetLocalNode() const
@@ -918,6 +937,9 @@ public:
 
         auto& accessControl = getContext()->getAccessControl();
         auto userId = accessControl.find(DB::AccessEntityType::USER, userName);
+        if (!userId) {
+            return;
+        }
         auto entity = accessControl.read(*userId);
         auto user = std::static_pointer_cast<DB::User>(entity->clone());
 
@@ -982,6 +1004,7 @@ private:
     IMultiReaderMemoryManagerPtr ParallelReaderMemoryManager_;
 
     TCypressObjectRepositoryPtr CypressObjectRepository_;
+    TMaterializedViewCoordinatorPtr MaterializedViewCoordinator_;
     IDictionaryAccessControlPtr DictionaryAccessControl_;
 
     NProfiling::TEventTimer AttributeFetchTimeCounter_;
@@ -1084,9 +1107,9 @@ private:
         YT_UNUSED_FUTURE(Discovery_->UpdateList());
     }
 
-    THashMap<std::string, NYTree::IAttributeDictionaryPtr> FilterNodesByCliqueId(const THashMap<std::string, NYTree::IAttributeDictionaryPtr>& nodes) const
+    TDiscoveryNodes FilterNodesByCliqueId(const TDiscoveryNodes& nodes) const
     {
-        THashMap<std::string, NYTree::IAttributeDictionaryPtr> result;
+        TDiscoveryNodes result;
         for (const auto& [key, attributes] : nodes) {
             if (!attributes || !attributes->Contains("clique_id")) {
                 continue;
@@ -1360,6 +1383,11 @@ TClusterNodes THost::GetNodes(bool alwaysIncludeLocal) const
     return Impl_->GetNodes(alwaysIncludeLocal);
 }
 
+TDiscoveryNodes THost::GetDiscoveryNodes() const
+{
+    return Impl_->GetDiscoveryNodes();
+}
+
 IClusterNodePtr THost::GetLocalNode() const
 {
     return Impl_->GetLocalNode();
@@ -1461,7 +1489,6 @@ NTableClient::TTableColumnarStatisticsCachePtr THost::GetTableColumnarStatistics
 }
 
 THost::~THost() = default;
-
 
 bool THost::HasUserDefinedSqlObjectStorage() const
 {

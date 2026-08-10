@@ -1,6 +1,7 @@
 #pragma once
 
 #include "companion_computation_base.h"
+#include "companion_model.h"
 #include "public.h"
 
 #include <yt/yt/flow/library/cpp/computation/computation_base.h>
@@ -32,22 +33,6 @@ struct TCompanionDynamicParameters
 
     static void Register(TRegistrar registrar);
 };
-
-////////////////////////////////////////////////////////////////////////////////
-
-struct TCompanionState
-    : public NYTree::TYsonStruct
-{
-    std::optional<std::string> Payload;
-
-    REGISTER_YSON_STRUCT(TCompanionState);
-
-    static void Register(TRegistrar registrar);
-};
-
-using TCompanionStatePtr = TIntrusivePtr<TCompanionState>;
-
-////////////////////////////////////////////////////////////////////////////////
 
 class TTransformCompanionComputation
     : public TCompanionComputationBaseAdapter<TTransformComputation>

@@ -352,8 +352,9 @@ TEST_F(TBlockFlusherTest, RequestFlushBarrierDrainsBelowResidentFraction)
     EXPECT_EQ(Observer_->GetFlushedCount(), 4);
 
     // An eager flush ignores the target and drains everything enqueued so far.
-    Flusher_->RequestFlushBarrier();
-    ASSERT_TRUE(WaitUntil([&] { return Pool_->GetSize() == 0; }));
+    WaitFor(Flusher_->RequestFlushBarrier())
+        .ThrowOnError();
+    EXPECT_EQ(Pool_->GetSize(), 0);
     EXPECT_EQ(Observer_->GetFlushedCount(), 12);
     EXPECT_FALSE(Observer_->HasFailed());
 
@@ -381,8 +382,9 @@ TEST_F(TBlockFlusherTest, RequestFlushBarrierIsBoundedToTheLatchedTail)
     Flusher_->Start();
 
     // Eagerly flush the 8 enqueued so far; the pool empties despite being below the resident target.
-    Flusher_->RequestFlushBarrier();
-    ASSERT_TRUE(WaitUntil([&] { return Observer_->GetFlushedCount() == 8; }));
+    WaitFor(Flusher_->RequestFlushBarrier())
+        .ThrowOnError();
+    EXPECT_EQ(Observer_->GetFlushedCount(), 8);
     EXPECT_EQ(Pool_->GetSize(), 0);
 
     // Blocks enqueued after the latched tail are not chased by that eager flush: still below the
@@ -414,6 +416,89 @@ TEST_F(TBlockFlusherTest, PersistentFailureFiresFailedAndKeepsBlocks)
     Sleep(TDuration::MilliSeconds(300));
     EXPECT_EQ(Pool_->GetSize(), 16);
     EXPECT_EQ(Observer_->GetFlushedCount(), 0);
+}
+
+TEST_F(TBlockFlusherTest, RequestFlushBarrierOnEmptyPoolSucceedsWithoutFlushing)
+{
+    CreateFlusher(/*poolCapacity*/ 16, /*threshold*/ 0.25);
+    Flusher_->Start();
+
+    WaitFor(Flusher_->RequestFlushBarrier())
+        .ThrowOnError();
+    EXPECT_EQ(Store_->GetWriteCallCount(), 0);
+    EXPECT_EQ(Observer_->GetFlushedCount(), 0);
+}
+
+TEST_F(TBlockFlusherTest, MultipleFlushBarriersAllResolve)
+{
+    CreateFlusher(/*poolCapacity*/ 16, /*threshold*/ 0.5);
+    PutBlocks(4);
+
+    auto firstFlushBarrierFuture = Flusher_->RequestFlushBarrier();
+    PutBlocks(4, /*baseIndex*/ 4);
+    auto secondFlushBarrierFuture = Flusher_->RequestFlushBarrier();
+
+    Flusher_->Start();
+
+    // Both barriers are drained despite the pool never exceeding the resident target of 8.
+    WaitFor(firstFlushBarrierFuture)
+        .ThrowOnError();
+    WaitFor(secondFlushBarrierFuture)
+        .ThrowOnError();
+    EXPECT_EQ(Observer_->GetFlushedCount(), 8);
+    EXPECT_EQ(Pool_->GetSize(), 0);
+}
+
+TEST_F(TBlockFlusherTest, RequestFlushBarrierFailsOnFlushFailure)
+{
+    CreateFlusher(/*poolCapacity*/ 16, /*threshold*/ 0.25);
+    Store_->SetFailing(true);
+    PutBlocks(16);
+
+    // Requested before the start, so it is pending when the failing flush fails it.
+    auto flushBarrierFuture = Flusher_->RequestFlushBarrier();
+    Flusher_->Start();
+
+    EXPECT_FALSE(WaitFor(flushBarrierFuture).IsOK());
+    EXPECT_EQ(Pool_->GetSize(), 16);
+
+    // A barrier requested after the failure is refused outright.
+    EXPECT_FALSE(WaitFor(Flusher_->RequestFlushBarrier()).IsOK());
+}
+
+TEST_F(TBlockFlusherTest, FlushFailureReleasesParkedPut)
+{
+    CreateFlusher(/*poolCapacity*/ 16, /*threshold*/ 0.25);
+    Store_->SetFailing(true);
+    PutBlocks(16);
+
+    // The pool is full, so this put parks until space frees up -- which the failing flush never does.
+    auto extraBlock = New<TDirtyBlock>(16, TSharedRef::FromString(TString("block")));
+    auto parkedFuture = Pool_->Put(TRange(&extraBlock, 1));
+    ASSERT_FALSE(parkedFuture.IsSet());
+
+    Flusher_->Start();
+
+    EXPECT_FALSE(WaitFor(parkedFuture).IsOK());
+}
+
+TEST_F(TBlockFlusherTest, RequestFlushBarrierFailsOnStop)
+{
+    CreateFlusher(/*poolCapacity*/ 16, /*threshold*/ 0.25);
+    PutBlocks(16);
+
+    // Never started, so nothing drains and the barrier stays pending until Stop resolves it.
+    auto flushBarrierFuture = Flusher_->RequestFlushBarrier();
+    Flusher_->Stop();
+
+    EXPECT_FALSE(WaitFor(flushBarrierFuture).IsOK());
+
+    // A barrier requested after the stop is refused rather than left pending forever.
+    EXPECT_FALSE(WaitFor(Flusher_->RequestFlushBarrier()).IsOK());
+
+    // The stop releases parked writers too.
+    auto extraBlock = New<TDirtyBlock>(16, TSharedRef::FromString(TString("block")));
+    EXPECT_FALSE(WaitFor(Pool_->Put(TRange(&extraBlock, 1))).IsOK());
 }
 
 ////////////////////////////////////////////////////////////////////////////////

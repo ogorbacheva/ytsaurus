@@ -102,6 +102,8 @@ void TTestingSettings::Register(TRegistrar registrar)
         .Default(false);
     registrar.Parameter("throw_exception_in_writer_finish", &TThis::ThrowExceptionInWriterFinish)
         .Default(false);
+    registrar.Parameter("throw_exception_after_refresh_query", &TThis::ThrowExceptionAfterRefreshQuery)
+        .Default(false);
     registrar.Parameter("subquery_allocation_size", &TThis::SubqueryAllocationSize)
         .Default(0);
 
@@ -532,6 +534,21 @@ void TCypressObjectRepositoryConfig::Register(TRegistrar registrar)
         .Default(TDuration::Seconds(30));
 }
 
+void TMaterializedViewsConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("root_path", &TThis::RootPath)
+        .NonEmpty();
+    registrar.Parameter("scan_period", &TThis::ScanPeriod)
+        .Default(TDuration::Minutes(5));
+    registrar.Parameter("max_rows_per_refresh", &TThis::MaxRowsPerRefresh)
+        .GreaterThanOrEqual(0)
+        .Default(0);
+    registrar.Parameter("query_timeout", &TThis::QueryTimeout)
+        .Default(TDuration::Minutes(20));
+    registrar.Parameter("transaction_timeout", &TThis::TransactionTimeout)
+        .Default(TDuration::Minutes(30));
+}
+
 void TDictionaryAccessControlConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("cache_config", &TThis::CacheConfig)
@@ -729,6 +746,9 @@ void TYtConfig::Register(TRegistrar registrar)
     registrar.Parameter("object_repository", &TThis::CypressObjectRepository)
         // COMPAT(buyval01)
         .Alias("dictionary_repository")
+        .Default();
+
+    registrar.Parameter("materialized_views", &TThis::MaterializedViews)
         .Default();
 
     registrar.Parameter("dictionary_access_control", &TThis::DictionaryAccessControl)

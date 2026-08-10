@@ -56,11 +56,12 @@ DEFINE_REFCOUNTED_TYPE(TStorageContext)
 ////////////////////////////////////////////////////////////////////////////////
 
 DB::ContextMutablePtr PrepareContextForQuery(
-        std::shared_ptr<DB::Session> session,
-        const std::string& dataBaseUser,
-        TDuration timeout,
-        THost* host,
-        std::string traceContextRoot);
+    std::shared_ptr<DB::Session> session,
+    const std::string& dataBaseUser,
+    TDuration timeout,
+    THost* host,
+    std::string traceContextRoot,
+    NTransactionClient::TTransactionId parentTransactionId = {});
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -92,7 +93,7 @@ public:
     std::optional<TString> YqlOperationId;
 
     // Transactionality
-    //! It is the id of some external acording to chyt query transaction that was passed to the query.
+    //! Id of an external transaction passed in as a query parameter.
     NTransactionClient::TTransactionId ParentTransactionId;
     //! ReadTransactionId is the id of the query transaction in which snapshot locks are taken.
     NTransactionClient::TTransactionId ReadTransactionId;
