@@ -153,7 +153,8 @@ jobs:
           set -euo pipefail
           matrix=$(jq -c '{include: [.modules[] | {
             module: .name,
-            "storage-suffix": (if .storage_prefix == "" then "" else "/" + .storage_prefix end)
+            "storage-suffix": (if .storage_prefix == "" then "" else "/" + .storage_prefix end),
+            "viewer-url": ("https://" + .project_name + ".viewer.ydocs.io")
           }]}' .github/docs-modules.json)
           printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
         shell: bash
@@ -246,6 +247,36 @@ jobs:
           storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}${{ matrix.storage-suffix }}"
           storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
           storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+
+      - name: Verify revision is served by viewer
+        env:
+          REVISION: ${{ github.sha }}
+          VIEWER_URL: ${{ matrix.viewer-url }}
+        run: |
+          set -euo pipefail
+          for language in ru en; do
+            url="${VIEWER_URL%/}/${language}/?revision=${REVISION}"
+            for attempt in $(seq 1 12); do
+              status=$(curl \
+                --silent \
+                --show-error \
+                --location \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                "${url}" || true)
+              if [[ "${status}" == 200 ]]; then
+                printf '%s is available\n' "${url}"
+                break
+              fi
+              if [[ "${attempt}" == 12 ]]; then
+                printf 'Viewer check failed after %s attempts: %s returned HTTP %s\n' \
+                  "${attempt}" "${url}" "${status:-no response}" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+        shell: bash
 
   summary:
     name: Testing documentation links
