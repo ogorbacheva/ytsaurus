@@ -7,7 +7,7 @@ breaks: false
 search-by-toc: true
 
 docs-viewer:
-  project-name: ytsaurus-spyt
+  project-name: spyt
   show-revision: true
   langs: [ru, en]
   themes: [light, dark]

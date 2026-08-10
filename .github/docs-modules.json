@@ -11,27 +11,27 @@
     },
     {
       "name": "core",
-      "project_name": "ytsaurus-core",
-      "viewer_url": "https://ytsaurus---ytsaurus-core.viewer.ydocs.io",
+      "project_name": "core",
+      "viewer_url": "https://ytsaurus---core.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": true,
-      "storage_prefix": "ytsaurus-core"
+      "storage_prefix": "core"
     },
     {
       "name": "spyt",
-      "project_name": "ytsaurus-spyt",
-      "viewer_url": "https://ytsaurus---ytsaurus-spyt.viewer.ydocs.io",
+      "project_name": "spyt",
+      "viewer_url": "https://ytsaurus---spyt.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": true,
-      "storage_prefix": "ytsaurus-spyt"
+      "storage_prefix": "spyt"
     },
     {
       "name": "chyt",
-      "project_name": "ytsaurus-chyt",
-      "viewer_url": "https://ytsaurus---ytsaurus-chyt.viewer.ydocs.io",
+      "project_name": "chyt",
+      "viewer_url": "https://ytsaurus---chyt.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": true,
-      "storage_prefix": "ytsaurus-chyt"
+      "storage_prefix": "chyt"
     }
   ]
 }

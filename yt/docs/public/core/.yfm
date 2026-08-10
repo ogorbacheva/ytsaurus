@@ -7,7 +7,7 @@ breaks: false
 search-by-toc: true
 
 docs-viewer:
-  project-name: ytsaurus-core
+  project-name: core
   show-revision: true
   langs: [ru, en]
   themes: [light, dark]
