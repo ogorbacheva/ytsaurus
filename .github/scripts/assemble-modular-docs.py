@@ -576,6 +576,12 @@ def validate_modular_routes(source_root: Path, modules: list[dict[str, Any]]) ->
                 if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
                     continue
                 text = path.read_text(encoding="utf-8")
+                relative_parts = path.relative_to(root).parts
+                source_language = (
+                    relative_parts[0]
+                    if relative_parts and relative_parts[0] in module["languages"]
+                    else None
+                )
                 route_roots = list(ROUTE_ROOT_RE.finditer(text))
                 routes = list(MODULAR_ROUTE_RE.finditer(text))
                 if len(route_roots) != len(routes):
@@ -593,11 +599,19 @@ def validate_modular_routes(source_root: Path, modules: list[dict[str, Any]]) ->
                         raise AssemblyError(
                             f"Modular route references unregistered module {target_module}: {path}"
                         )
+                    target_languages = target["languages"]
+                    if source_language is not None:
+                        if source_language not in target_languages:
+                            raise AssemblyError(
+                                f"Modular route has no matching {source_language} target "
+                                f"language in {path}"
+                            )
+                        target_languages = [source_language]
                     validate_route_target(
                         source_root,
                         target_module,
                         target_path,
-                        target["languages"],
+                        target_languages,
                     )
 
                 for match in DOCS_ROOT_PREFIX_RE.finditer(text):
@@ -666,6 +680,23 @@ def assemble_module(
             shutil.copytree(
                 common_language, common_destination, copy_function=shutil.copy2
             )
+
+        shared_images = common_module / "_images"
+        if shared_images.exists():
+            if not shared_images.is_dir():
+                raise AssemblyError(
+                    f"Module {name} common _images must be a directory: {shared_images}"
+                )
+            for language in module["languages"]:
+                images_destination = destination / language / "_images"
+                if images_destination.exists():
+                    raise AssemblyError(
+                        f"Public/shared image collision for {name}/{language}: "
+                        f"{images_destination}"
+                    )
+                shutil.copytree(
+                    shared_images, images_destination, copy_function=shutil.copy2
+                )
     elif common_module.exists():
         raise AssemblyError(
             f"Module {name} declares common=false but common source exists: {common_module}"

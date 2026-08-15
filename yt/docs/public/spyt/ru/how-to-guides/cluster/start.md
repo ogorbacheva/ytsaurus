@@ -1,0 +1,1 @@
+{% include [Starting a Spark cluster](../../common/_includes/how-to-guides/cluster/start.md) %}

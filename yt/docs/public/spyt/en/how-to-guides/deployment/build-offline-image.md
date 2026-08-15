@@ -1,0 +1,1 @@
+{% include [Building an offline SPYT Docker image](../../common/_includes/how-to-guides/deployment/build-offline-image.md) %}

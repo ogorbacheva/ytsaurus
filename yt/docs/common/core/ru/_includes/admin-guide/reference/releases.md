@@ -23,7 +23,7 @@ Thanks to multiple outside contributors for the active participation in {{produc
 
 ## SPYT {#spyt}
 
-[SPYT]({{ spyt-docs-root }}/{{ lang }}/user-guide/reference/release-notes{{ docs-revision-query }})
+[SPYT]({{ spyt-docs-root }}/{{ lang }}/reference/release-notes{{ docs-revision-query }})
 
 ## Kubernetes operator {#kubernetes-operator}
 

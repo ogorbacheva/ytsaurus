@@ -1,0 +1,1 @@
+{% include [SPYT cluster](../common/_includes/concepts/cluster-architecture.md) %}

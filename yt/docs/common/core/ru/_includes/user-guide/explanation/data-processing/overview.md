@@ -86,4 +86,4 @@ Exec-ноды кластера умеют исполнять вычислени�
 
 ### Разнообразные интерфейсы обработки данных
 
-Система обработки данных {{product-name}} не только реализует парадигму MapReduce, но и позволяет поверх общих вычислительных ресурсов запускать другие приложения для обработки данных. Например, поверх {{product-name}} можно запускать [YQL]({{ docs_root }}/yql)-запросы, поднимать [ClickHouse-клики]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}) и [Spark-кластеры]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}).
+Система обработки данных {{product-name}} не только реализует парадигму MapReduce, но и позволяет поверх общих вычислительных ресурсов запускать другие приложения для обработки данных. Например, поверх {{product-name}} можно запускать [YQL]({{ docs_root }}/yql)-запросы, поднимать [ClickHouse-клики]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}) и [Spark-кластеры]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}).

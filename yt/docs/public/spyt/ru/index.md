@@ -2,6 +2,6 @@
 
 SPYT позволяет запускать Apache Spark на вычислительных мощностях YTsaurus.
 
-- [Обзор](user-guide/explanation/overview.md)
-- [Запуск Spark-задач](user-guide/how-to-guides/run-spark-jobs.md)
-- [Установка SPYT](admin-guide/how-to-guides/install-spyt.md)
+- [Основные понятия]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }})
+- [Практические руководства]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/index{{ docs-revision-query }})
+- [Справочник]({{ spyt-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }})

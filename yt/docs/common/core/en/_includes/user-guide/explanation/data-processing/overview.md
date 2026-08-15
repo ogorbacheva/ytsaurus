@@ -87,4 +87,4 @@ Internally, GPU resource is represented as a single integer indicating the numbe
 
 ### Support for multiple data processing interfaces
 
-The {{product-name}} data processing system not only implements the MapReduce paradigm, but also supports running other data processing applications over shared computational resources. For example, you can run [YQL]({{ docs_root }}/yql) queries over {{product-name}} or create [ClickHouse cliques]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}) and [Spark clusters]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}).
+The {{product-name}} data processing system not only implements the MapReduce paradigm, but also supports running other data processing applications over shared computational resources. For example, you can run [YQL]({{ docs_root }}/yql) queries over {{product-name}} or create [ClickHouse cliques]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}) and [Spark clusters]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}).

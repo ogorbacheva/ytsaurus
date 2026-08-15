@@ -134,10 +134,10 @@ jobs:
             expected_core_audience_url="${core_url}/${language}/user-guide/explanation/excel?revision=${GITHUB_SHA}"
             grep -Fq "${expected_core_audience_url}" "${core_audience_page}"
 
-            spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/user-guide/reference/data-types.html"
+            spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/reference/data-types.html"
             expected_core_url="${core_url}/${language}/user-guide/reference/storage/data-types?revision=${GITHUB_SHA}"
             grep -Fq "${expected_core_url}" "${spyt_page}"
-            expected_spyt_self_url="${spyt_url}/${language}/user-guide/reference/read-options?revision=${GITHUB_SHA}#schema_hint"
+            expected_spyt_self_url="${spyt_url}/${language}/reference/read-options?revision=${GITHUB_SHA}#schema_hint"
             grep -Fq "${expected_spyt_self_url}" "${spyt_page}"
 
             chyt_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/yt-tables.html"

@@ -5,7 +5,7 @@ description: A single entry point for accessing web services within {{product-na
 
 # Task proxy
 
-{{product-name}} operations often require deploying web services. These can be debugging UIs (such as Spark UI in [SPYT]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }})), ML model inference servers, or APIs inside jobs.
+{{product-name}} operations often require deploying web services. These can be debugging UIs (such as Spark UI in [SPYT]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }})), ML model inference servers, or APIs inside jobs.
 
 Operation jobs run on cluster exec nodes, so services bind to network ports on these nodes &mdash; to receive incoming traffic. However, when attempting to directly access services inside a job, difficulties arise:
 
@@ -72,8 +72,8 @@ Below is an example of the table contents. Each row describes its own service:
 
 - The first row represents a [vanilla]({{ docs_root }}/core/user-guide/reference/data-processing/operations/vanilla) operation with an HTTP server example.
 - The second is a [gRPC server example](https://github.com/ytsaurus/ytsaurus-task-proxy/tree/main/examples/grpc-service). On how to launch it using the extended Task proxy annotation format, read [further](#exp).
-- The third and fourth rows correspond to a SPYT [standalone]({{ spyt-docs-root }}/{{ lang }}/user-guide/how-to-guides/cluster/start{{ docs-revision-query }}) cluster launched with history server.
-- The fifth row relates to SPYT [direct submit]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/direct-submit{{ docs-revision-query }}).
+- The third and fourth rows correspond to a SPYT [standalone]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/start{{ docs-revision-query }}) cluster launched with history server.
+- The fifth row relates to SPYT [direct submit]({{ spyt-docs-root }}/{{ lang }}/concepts/direct-submit{{ docs-revision-query }}).
 
 ## Methods of connecting to services {#connection-methods}
 To access a service, authentication is required. Supported:

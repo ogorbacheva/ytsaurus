@@ -1,0 +1,1 @@
+{% include [Использование GPU](../common/_includes/how-to-guides/use-gpu.md) %}

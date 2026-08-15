@@ -1,0 +1,321 @@
+common:
+  - from: /admin-guide/cluster-access-proxy/spyt.md
+    to: /how-to-guides/deployment/configure-tcp-proxy.md
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/build-offline-image.md
+    to: /how-to-guides/deployment/build-offline-image.md
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/configure-tcp-proxy.md
+    to: /how-to-guides/deployment/configure-tcp-proxy.md
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-spyt.md
+    to: /how-to-guides/deployment/install-spyt.md
+    type: redirect
+
+  - from: /admin-guide/install-spyt.md
+    to: /how-to-guides/deployment/install-spyt.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/API/spyt-java.md
+    to: /how-to-guides/development/java.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/API/spyt-jupyter.md
+    to: /how-to-guides/development/jupyter.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/API/spyt-python.md
+    to: /how-to-guides/development/python.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/API/spyt-scala.md
+    to: /how-to-guides/development/scala.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/best-practices.md
+    to: /how-to-guides/optimize-jobs.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/cluster/cluster-desc.md
+    to: /concepts/cluster-architecture.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/cluster/cluster-start.md
+    to: /how-to-guides/cluster/start.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/cluster/configuration.md
+    to: /how-to-guides/cluster/configure.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/cluster/livy.md
+    to: /reference/livy.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/cluster/shs.md
+    to: /concepts/history-server.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/connect.md
+    to: /how-to-guides/use-spyt-connect.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/direct-submit/desc.md
+    to: /concepts/direct-submit.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/direct-submit/diagnostics.md
+    to: /how-to-guides/direct-submit/diagnose.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/direct-submit/dyn-allocation.md
+    to: /how-to-guides/direct-submit/dynamic-allocation.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/direct-submit/shs.md
+    to: /how-to-guides/direct-submit/history-server.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/glossary.md
+    to: /reference/glossary.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/launch.md
+    to: /how-to-guides/run-spark-jobs.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/logs.md
+    to: /how-to-guides/cluster/configure-logs.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/offline-image.md
+    to: /how-to-guides/deployment/build-offline-image.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/overview.md
+    to: /concepts/index.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/problems.md
+    to: /how-to-guides/cluster/troubleshoot-start.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/read-transaction.md
+    to: /how-to-guides/read-write-in-transaction.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/shuffle.md
+    to: /concepts/ytsaurus-shuffle-service.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/spark-sql.md
+    to: /reference/spark-sql.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/spark-ui.md
+    to: /how-to-guides/cluster/open-spark-ui.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/structured-streaming.md
+    to: /concepts/structured-streaming/index.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/structured-streaming/exactly-once/idempotent-receiver.md
+    to: /how-to-guides/structured-streaming/idempotent-receiver.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/structured-streaming/exactly-once/index.md
+    to: /concepts/structured-streaming/exactly-once.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/structured-streaming/exactly-once/transactional-mode.md
+    to: /how-to-guides/structured-streaming/transactional-mode.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/structured-streaming/index.md
+    to: /concepts/structured-streaming/index.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/thesaurus/configuration.md
+    to: /reference/configuration.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/thesaurus/data-types.md
+    to: /reference/data-types.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/thesaurus/gpu-usage.md
+    to: /how-to-guides/use-gpu.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/thesaurus/read-options.md
+    to: /reference/read-options.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/thesaurus/streaming-options.md
+    to: /reference/streaming-options.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/thesaurus/write-options.md
+    to: /reference/write-options.md
+    type: redirect
+
+  - from: /user-guide/data-processing/spyt/version.md
+    to: /reference/versioning.md
+    type: redirect
+
+  - from: /user-guide/explanation/cluster-architecture.md
+    to: /concepts/cluster-architecture.md
+    type: redirect
+
+  - from: /user-guide/explanation/direct-submit.md
+    to: /concepts/direct-submit.md
+    type: redirect
+
+  - from: /user-guide/explanation/history-server.md
+    to: /concepts/history-server.md
+    type: redirect
+
+  - from: /user-guide/explanation/overview.md
+    to: /concepts/index.md
+    type: redirect
+
+  - from: /user-guide/explanation/structured-streaming.md
+    to: /concepts/structured-streaming/index.md
+    type: redirect
+
+  - from: /user-guide/explanation/structured-streaming/exactly-once.md
+    to: /concepts/structured-streaming/exactly-once.md
+    type: redirect
+
+  - from: /user-guide/explanation/ytsaurus-shuffle-service.md
+    to: /concepts/ytsaurus-shuffle-service.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/cluster/configure.md
+    to: /how-to-guides/cluster/configure.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/cluster/start.md
+    to: /how-to-guides/cluster/start.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/configure-logs.md
+    to: /how-to-guides/cluster/configure-logs.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/develop/java.md
+    to: /how-to-guides/development/java.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/develop/jupyter.md
+    to: /how-to-guides/development/jupyter.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/develop/python.md
+    to: /how-to-guides/development/python.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/develop/scala.md
+    to: /how-to-guides/development/scala.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/direct-submit/diagnose.md
+    to: /how-to-guides/direct-submit/diagnose.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/direct-submit/dynamic-allocation.md
+    to: /how-to-guides/direct-submit/dynamic-allocation.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/direct-submit/history-server.md
+    to: /how-to-guides/direct-submit/history-server.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/import-data.md
+    to: /how-to-guides/import-data.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/open-spark-ui.md
+    to: /how-to-guides/cluster/open-spark-ui.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/optimize-jobs.md
+    to: /how-to-guides/optimize-jobs.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/read-write-in-transaction.md
+    to: /how-to-guides/read-write-in-transaction.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/run-spark-jobs.md
+    to: /how-to-guides/run-spark-jobs.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/structured-streaming/idempotent-receiver.md
+    to: /how-to-guides/structured-streaming/idempotent-receiver.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/structured-streaming/transactional-mode.md
+    to: /how-to-guides/structured-streaming/transactional-mode.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/troubleshoot-cluster-start.md
+    to: /how-to-guides/cluster/troubleshoot-start.md
+    type: redirect
+
+  - from: /user-guide/how-to-guides/use-gpu.md
+    to: /how-to-guides/use-gpu.md
+    type: redirect
+
+  - from: /user-guide/import.md
+    to: /how-to-guides/import-data.md
+    type: redirect
+
+  - from: /user-guide/reference/configuration.md
+    to: /reference/configuration.md
+    type: redirect
+
+  - from: /user-guide/reference/data-types.md
+    to: /reference/data-types.md
+    type: redirect
+
+  - from: /user-guide/reference/glossary.md
+    to: /reference/glossary.md
+    type: redirect
+
+  - from: /user-guide/reference/legacy/livy.md
+    to: /reference/livy.md
+    type: redirect
+
+  - from: /user-guide/reference/read-options.md
+    to: /reference/read-options.md
+    type: redirect
+
+  - from: /user-guide/reference/release-notes.md
+    to: /reference/release-notes.md
+    type: redirect
+
+  - from: /user-guide/reference/spark-sql.md
+    to: /reference/spark-sql.md
+    type: redirect
+
+  - from: /user-guide/reference/streaming-options.md
+    to: /reference/streaming-options.md
+    type: redirect
+
+  - from: /user-guide/reference/versioning.md
+    to: /reference/versioning.md
+    type: redirect
+
+  - from: /user-guide/reference/write-options.md
+    to: /reference/write-options.md
+    type: redirect
+
+ru:
+  - from: /admin-guide/update/update-spyt.md
+    to: /how-to-guides/deployment/update-spyt.md
+    type: redirect

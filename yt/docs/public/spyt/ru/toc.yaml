@@ -5,112 +5,113 @@ items:
     labeled: true
     items:
       - name: О SPYT
-        href: user-guide/explanation/overview.md
+        href: concepts/index.md
       - name: Быстрый старт
-        href: user-guide/how-to-guides/run-spark-jobs.md
-      - name: Основные понятия
-        items:
-          - name: Архитектура SPYT-кластера
-            href: user-guide/explanation/cluster-architecture.md
-          - name: Прямой сабмит
-            href: user-guide/explanation/direct-submit.md
-          - name: Spark History Server
-            href: user-guide/explanation/history-server.md
-          - name: YTsaurus Shuffle Service
-            href: user-guide/explanation/ytsaurus-shuffle-service.md
-      - name: Глоссарий
-        href: user-guide/reference/glossary.md
-  - name: Руководство пользователя
-    labeled: true
+        href: how-to-guides/run-spark-jobs.md
+      - name: SPYT Connect
+        href: how-to-guides/use-spyt-connect.md
+  - name: Основные понятия
+    href: concepts/index.md
     items:
-      - name: Импорт данных
-        href: user-guide/how-to-guides/import-data.md
-      - name: Доступ к Spark UI
-        href: user-guide/how-to-guides/open-spark-ui.md
-      - name: Разработка приложений
+      - name: Архитектура SPYT-кластера
+        href: concepts/cluster-architecture.md
+      - name: Прямой сабмит
+        href: concepts/direct-submit.md
+      - name: Spark History Server
+        href: concepts/history-server.md
+      - name: YTsaurus Shuffle Service
+        href: concepts/ytsaurus-shuffle-service.md
+      - name: Structured Streaming
+        href: concepts/structured-streaming/index.md
         items:
-          - name: Python
-            href: user-guide/how-to-guides/develop/python.md
-          - name: Java
-            href: user-guide/how-to-guides/develop/java.md
-          - name: Scala
-            href: user-guide/how-to-guides/develop/scala.md
-          - name: Jupyter
-            href: user-guide/how-to-guides/develop/jupyter.md
+          - name: Гарантия exactly-once
+            href: concepts/structured-streaming/exactly-once.md
+  - name: Практические руководства
+    href: how-to-guides/index.md
+    items:
+      - name: Запуск Spark-задач
+        href: how-to-guides/run-spark-jobs.md
+      - name: Импорт данных
+        href: how-to-guides/import-data.md
+      - name: SPYT Connect
+        href: how-to-guides/use-spyt-connect.md
       - name: SPYT-кластер
+        href: how-to-guides/cluster/index.md
         items:
           - name: Запуск кластера
-            href: user-guide/how-to-guides/cluster/start.md
+            href: how-to-guides/cluster/start.md
           - name: Конфигурация кластера
-            href: user-guide/how-to-guides/cluster/configure.md
+            href: how-to-guides/cluster/configure.md
           - name: Логи
-            href: user-guide/how-to-guides/configure-logs.md
+            href: how-to-guides/cluster/configure-logs.md
+          - name: Spark UI
+            href: how-to-guides/cluster/open-spark-ui.md
           - name: Решение проблем запуска
-            href: user-guide/how-to-guides/troubleshoot-cluster-start.md
-      - name: Прямой сабмит
-        items:
-          - name: Динамическая аллокация
-            href: user-guide/how-to-guides/direct-submit/dynamic-allocation.md
-          - name: Диагностика
-            href: user-guide/how-to-guides/direct-submit/diagnose.md
-          - name: Spark History Server
-            href: user-guide/how-to-guides/direct-submit/history-server.md
-      - name: Данные и ресурсы
-        items:
-          - name: Чтение и запись под транзакцией
-            href: user-guide/how-to-guides/read-write-in-transaction.md
-          - name: Использование GPU
-            href: user-guide/how-to-guides/use-gpu.md
-      - name: Structured Streaming
-        items:
-          - name: Как работает Structured Streaming
-            href: user-guide/explanation/structured-streaming.md
-          - name: Гарантия exactly-once
-            href: user-guide/explanation/structured-streaming/exactly-once.md
-          - name: Идемпотентный приёмник
-            href: user-guide/how-to-guides/structured-streaming/idempotent-receiver.md
-          - name: Транзакционный режим
-            href: user-guide/how-to-guides/structured-streaming/transactional-mode.md
-      - name: Диагностика и оптимизация
-        items:
-          - name: Диагностика производительности
-            href: user-guide/how-to-guides/diagnose-performance.md
-          - name: Оптимизация Spark-задач
-            href: user-guide/how-to-guides/optimize-jobs.md
-      - name: Справочник
-        items:
-          - name: Общие сведения
-            items:
-              - name: Версионирование
-                href: user-guide/reference/versioning.md
-              - name: История изменений
-                href: user-guide/reference/release-notes.md
-          - name: Данные и конфигурация
-            items:
-              - name: Параметры конфигурации
-                href: user-guide/reference/configuration.md
-              - name: Типы данных
-                href: user-guide/reference/data-types.md
-              - name: Опции чтения
-                href: user-guide/reference/read-options.md
-              - name: Опции записи
-                href: user-guide/reference/write-options.md
-              - name: Опции стриминга
-                href: user-guide/reference/streaming-options.md
-          - name: Интерфейсы
-            items:
-              - name: Spark SQL
-                href: user-guide/reference/spark-sql.md
-              - name: Livy (legacy)
-                href: user-guide/reference/legacy/livy.md
-  - name: Руководство администратора
-    labeled: true
-    items:
+            href: how-to-guides/cluster/troubleshoot-start.md
       - name: Развёртывание
+        href: how-to-guides/deployment/index.md
         items:
           - name: Установка SPYT
-            href: admin-guide/how-to-guides/install-spyt.md
+            href: how-to-guides/deployment/install-spyt.md
+          - name: Обновление SPYT
+            href: how-to-guides/deployment/update-spyt.md
           - name: Сборка offline-образа
-            href: admin-guide/how-to-guides/build-offline-image.md
+            href: how-to-guides/deployment/build-offline-image.md
           - name: Настройка TCP proxy
-            href: admin-guide/how-to-guides/configure-tcp-proxy.md
+            href: how-to-guides/deployment/configure-tcp-proxy.md
+      - name: Разработка приложений
+        href: how-to-guides/development/index.md
+        items:
+          - name: Python
+            href: how-to-guides/development/python.md
+          - name: Java
+            href: how-to-guides/development/java.md
+          - name: Scala
+            href: how-to-guides/development/scala.md
+          - name: Jupyter
+            href: how-to-guides/development/jupyter.md
+      - name: Прямой сабмит
+        href: how-to-guides/direct-submit/index.md
+        items:
+          - name: Динамическая аллокация
+            href: how-to-guides/direct-submit/dynamic-allocation.md
+          - name: Диагностика
+            href: how-to-guides/direct-submit/diagnose.md
+          - name: Spark History Server
+            href: how-to-guides/direct-submit/history-server.md
+      - name: Structured Streaming
+        href: how-to-guides/structured-streaming/index.md
+        items:
+          - name: Идемпотентный приёмник
+            href: how-to-guides/structured-streaming/idempotent-receiver.md
+          - name: Транзакционный режим
+            href: how-to-guides/structured-streaming/transactional-mode.md
+      - name: Оптимизация Spark-задач
+        href: how-to-guides/optimize-jobs.md
+      - name: Чтение и запись под транзакцией
+        href: how-to-guides/read-write-in-transaction.md
+      - name: Использование GPU
+        href: how-to-guides/use-gpu.md
+  - name: Справочник
+    href: reference/index.md
+    items:
+      - name: Версионирование
+        href: reference/versioning.md
+      - name: История изменений
+        href: reference/release-notes.md
+      - name: Параметры конфигурации
+        href: reference/configuration.md
+      - name: Типы данных
+        href: reference/data-types.md
+      - name: Опции чтения
+        href: reference/read-options.md
+      - name: Опции записи
+        href: reference/write-options.md
+      - name: Опции стриминга
+        href: reference/streaming-options.md
+      - name: Spark SQL
+        href: reference/spark-sql.md
+      - name: Livy
+        href: reference/livy.md
+      - name: Глоссарий
+        href: reference/glossary.md

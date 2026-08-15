@@ -28,7 +28,7 @@ Query Tracker позволяет:
   + Запрос исполняется в YQL агентах. Они разбивают запрос в YT операции (map, reduce, ...), запускают их, собирают и возвращают результат.
 + [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }})
   + Запрос исполняется в клике.
-+ [SPYT]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }})
++ [SPYT]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }})
   + Запрос исполняется в Spark кластере.
 
 ## API {#api}
@@ -49,7 +49,7 @@ Query Tracker позволяет:
 + `files` — список файлов для запроса в формате YSON.
 + `settings` — дополнительные параметры для запроса в формате YSON.
   + В [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}) необходимо указывать параметр `clique` — алиас клики. По умолчанию используется публичная клика.
-  + В [SPYT]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}) необходимо указывать параметр `discovery_path` — директория для служебных данных существующего кластера Spark.
+  + В [SPYT]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}) необходимо указывать параметр `discovery_path` — директория для служебных данных существующего кластера Spark.
   + В [YQL]({{ docs_root }}/yql/index) можно запускать запрос в разных режимах с помощью параметра `execution_mode`. Допустимые значения — `run`, `validate`, `optimize`. Значение по умолчанию — `run`.
 + `draft` — является ли запрос черновиком. Такие запросы завершаются автоматически без исполнения.
 + `annotations` — произвольные аннотации к запросу. Позволяют осуществлять удобный поиск по запросам. В формате YSON.

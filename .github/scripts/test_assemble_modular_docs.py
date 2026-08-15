@@ -23,6 +23,10 @@ class AssembleModularDocsTest(unittest.TestCase):
         (self.source / "common" / "demo" / "ru" / "_includes").mkdir(
             parents=True
         )
+        (self.source / "common" / "demo" / "_images").mkdir()
+        (self.source / "common" / "demo" / "_images" / "shared.png").write_bytes(
+            b"shared image"
+        )
         (self.source / "public" / "presets.yaml").write_text(
             "default: {}\n"
             "public:\n"
@@ -109,12 +113,48 @@ class AssembleModularDocsTest(unittest.TestCase):
             capture_output=True,
         )
 
+    def make_bilingual_core_fixture(self) -> tuple[Path, Path]:
+        public_demo = self.source / "public" / "demo"
+        config = public_demo / ".yfm"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace("[ru]", "[ru, en]"),
+            encoding="utf-8",
+        )
+
+        english = public_demo / "en"
+        english.mkdir()
+        (english / "toc.yaml").write_text(
+            "title: Demo\nhref: index.yaml\n", encoding="utf-8"
+        )
+        (english / "presets.yaml").write_text(
+            "public:\n  lang: en\n", encoding="utf-8"
+        )
+        (english / "index.yaml").write_text("title: Demo\n", encoding="utf-8")
+
+        common_demo = self.source / "common" / "demo"
+        (common_demo / "en").mkdir()
+
+        public_core = self.source / "public" / "core"
+        common_core = self.source / "common" / "core"
+        public_demo.rename(public_core)
+        common_demo.rename(common_core)
+
+        document = json.loads(self.registry.read_text(encoding="utf-8"))
+        document["modules"][0]["name"] = "core"
+        document["modules"][0]["languages"] = ["ru", "en"]
+        self.registry.write_text(json.dumps(document), encoding="utf-8")
+        return public_core, common_core
+
     def test_assembles_public_and_common_without_internal(self) -> None:
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.output / "demo" / "presets.yaml").is_file())
         self.assertTrue(
             (self.output / "demo" / "ru" / "common" / "_includes" / "note.md").is_file()
+        )
+        self.assertEqual(
+            (self.output / "demo" / "ru" / "_images" / "shared.png").read_bytes(),
+            b"shared image",
         )
         self.assertIn(
             "{{ demo-docs-root }}/{{ lang }}/guide"
@@ -231,6 +271,12 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("collision", result.stderr)
 
+    def test_public_shared_image_collision_blocks_assembly(self) -> None:
+        (self.source / "public" / "demo" / "ru" / "_images").mkdir()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Public/shared image collision", result.stderr)
+
     def test_internal_source_blocks_assembly(self) -> None:
         (self.source / "internal").mkdir()
         result = self.run_script()
@@ -320,6 +366,43 @@ class AssembleModularDocsTest(unittest.TestCase):
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must resolve exactly once", result.stderr)
+
+    def test_language_specific_modular_route_only_requires_matching_language(self) -> None:
+        public_core, common_core = self.make_bilingual_core_fixture()
+        ru_only = public_core / "ru" / "ru-only.md"
+        ru_only.write_text("# Только RU\n", encoding="utf-8")
+        note = common_core / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[RU]({{ core-docs-root }}/{{ lang }}/ru-only"
+            "{{ docs-revision-query }})\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        generated_note = (
+            self.output / "core" / "ru" / "common" / "_includes" / "note.md"
+        )
+        self.assertTrue(generated_note.is_file())
+
+    def test_language_specific_modular_route_rejects_missing_matching_language(
+        self,
+    ) -> None:
+        public_core, common_core = self.make_bilingual_core_fixture()
+        (public_core / "ru" / "ru-only.md").write_text(
+            "# Только RU\n", encoding="utf-8"
+        )
+        english_includes = common_core / "en" / "_includes"
+        english_includes.mkdir()
+        (english_includes / "note.md").write_text(
+            "[missing]({{ core-docs-root }}/{{ lang }}/ru-only"
+            "{{ docs-revision-query }})\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Modular route target is missing: core/en/ru-only", result.stderr)
 
     def test_malformed_legacy_self_route_fragment_blocks_assembly(self) -> None:
         note = self.source / "common" / "demo" / "ru" / "_includes" / "note.md"

@@ -1,0 +1,1 @@
+{% include [Запуск Spark задач на выполнение](../common/_includes/how-to-guides/run-spark-jobs.md) %}

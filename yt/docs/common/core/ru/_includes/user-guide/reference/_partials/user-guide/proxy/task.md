@@ -5,7 +5,7 @@ description: Единая точка входа для доступа к веб-
 
 # Task-прокси
 
-В операциях {{product-name}} часто требуется разворачивать веб-сервисы. Это могут быть UI для отладки (например, Spark UI в [SPYT]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }})), серверы для инференса ML-моделей или API внутри джобов.
+В операциях {{product-name}} часто требуется разворачивать веб-сервисы. Это могут быть UI для отладки (например, Spark UI в [SPYT]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }})), серверы для инференса ML-моделей или API внутри джобов.
 
 Джобы операций исполняются на exec-нодах кластера, поэтому сервисы привязываются к сетевым портам этих нод &mdash; для приёма входящего трафика. Но при попытке прямого обращения к сервисам внутри джоба возникают сложности:
 
@@ -70,8 +70,8 @@ yt vanilla \
 
 - Первая строка представляет [vanilla]({{ docs_root }}/core/user-guide/reference/data-processing/operations/vanilla)-операцию с примером HTTP-сервера.
 - Вторая — [пример](https://github.com/ytsaurus/ytsaurus-task-proxy/tree/main/examples/grpc-service) gRPC-сервера. О том, как запустить его с использованием расширенного формата аннотации Task-прокси, читайте [далее](#exp).
-- Третья и четвёртая строки соответствуют [standalone]({{ spyt-docs-root }}/{{ lang }}/user-guide/how-to-guides/cluster/start{{ docs-revision-query }})-кластеру SPYT, запущенному с History Server.
-- Пятая строка относится к SPYT [direct submit]({{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/direct-submit{{ docs-revision-query }}).
+- Третья и четвёртая строки соответствуют [standalone]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/start{{ docs-revision-query }})-кластеру SPYT, запущенному с History Server.
+- Пятая строка относится к SPYT [direct submit]({{ spyt-docs-root }}/{{ lang }}/concepts/direct-submit{{ docs-revision-query }}).
 
 ## Способы подключения к сервисам {#connection-methods}
 

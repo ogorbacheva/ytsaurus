@@ -1,0 +1,58 @@
+# Livy server
+
+{% note alert %}
+
+Начиная с SPYT 2.10.0 и Query Tracker 0.4 интеграция через Livy больше не поддерживается. Если вы используете Livy, перейдите на [SPYT Connect]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/use-spyt-connect{{ docs-revision-query }}#migration).
+
+{% endnote %}
+
+Начиная с версии 1.74.0 в SPYT доступен сервис [Livy](https://livy.apache.org/), который позволяет осуществлять общение между клиентом и Spark кластером через REST интерфейс. Этот функционал используется в модуле [Query tracker]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}) для выполнения Spark SQL запросов в {{product-name}}.
+
+Дистрибутив Livy уже включен в релизный образ SPYT и помещается на кластер {{product-name}} по пути `//home/spark/livy/livy.tgz`.
+
+## Запуск {#start}
+
+Для запуска Livy сервера необходимо в команде запуска кластера SPYT указать опцию `--enable-livy`. Максимальное количество одновременных соединений с сервером регулируется опцией `--livy-max-sessions`. Попытка установить соединение сверх лимита повлечет ошибку.
+
+Драйвер для Spark задач, запущенных через Livy, поднимается в том же контейнере, что и сервер. Поэтому для корректного подсчета и резервирования ресурсов в {{product-name}} количество ядер и размер памяти драйвера устанавливаются при старте кластера — с помощью опций `--livy-driver-cores` и `--livy-driver-memory`.
+
+```bash
+$ spark-launch-yt ... --enable-livy --livy-max-sessions 5 --livy-driver-cores 1 --livy-driver-memory 1G
+```
+
+Узнать адрес Livy сервера, как и других компонент, можно через `spark-discovery-yt`.
+
+## Использование в Query tracker {#query-tracker}
+
+К запущенному SPYT кластеру можно выполнять запросы из Query tracker (вкладка SPYT) на языке Spark SQL. В `settings` необходимо задать поля `cluster` (если в инсталляции {{product-name}} не установлен кластер по умолчанию) и `discovery_path`. Кроме того, в поле `spark_conf` может быть передана произвольная конфигурация Spark сессии в виде yson словаря.
+
+В QT версии 0.0.5 была добавлена поддержка аутентификации и переиспользования сессий:
+
+1. В момент начала исполнения запроса Query tracker выпускает для пользователя временный [токен]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/auth{{ docs-revision-query }}), время жизни которого ограничено десятками минут. Полученный токен будет использован при выполнении запроса на SPYT кластере для аутентификации пользователя в {{product-name}}, что позволит соблюдать [права]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/access-control{{ docs-revision-query }}#authorization) при чтении/записи данных. В случае длительных запросов временный токен будет периодически пролонгироваться.
+
+2. Если в `settings` поле `session_reuse = true` (значение по умолчанию), тогда запросы не будут закрывать установленное соединение с кластером и по возможности будут переиспользовать его в будущем. Это сокращает время исполнения запроса на 10-20 секунд, однако бездействующие сессии также учитываются в лимите количества одновременных соединений с кластером — `livy-max-sessions`. Сессия автоматически завершается, если в течение 10 минут не поступает новых запросов.
+
+## Настройка сессии при подключении к серверу напрямую {#direct-connect}
+
+Эндпоинты Livy сервера описаны в [официальной документации](https://livy.apache.org/docs/latest/rest-api.html).
+
+Для работы с {{product-name}} при инициализации Livy сессии в `spark_conf` необходимо указать два конфигурационных параметра — путь к Java (`spark.yt.jars`) и Python (`spark.yt.pyFiles`) библиотекам:
+
+```python
+data = {'kind': 'spark', 'conf': {'spark.yt.version': '{{spyt-version}}', 'spark.yt.jars': 'yt:///home/spark/spyt/releases/{{spyt-version}}/spark-yt-data-source.jar', 'spark.yt.pyFiles': 'yt:///home/spark/spyt/releases/{{spyt-version}}/spyt.zip'}}
+req = requests.post(host + '/sessions', data=json.dumps(data))
+resp = req.json()
+```
+
+## Sparkmagic {#sparkmagic}
+
+К серверу Livy можно подключиться через [Sparkmagic](https://github.com/jupyter-incubator/sparkmagic), который позволяет работать с SPYT кластером в Jupyter ноутбуке посредством REST интерфейса. Это сокращает количество сетевых доступов, требуемых для интерактивной работы на Python, сохраняя функционал. Помимо языка Python в Sparkmagic поддержаны Scala и SQL.
+
+## Запуск отдельного Livy сервиса { #livy-launch-yt }
+
+Для запуска Livy сервера можно использовать команду `livy-launch-yt`, входящую в дистрибутив SPYT. Её основные параметры повторяют параметры команды [spark-launch-yt]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/start{{ docs-revision-query }}#spark-launch-yt-params) с небольшими отличиями, приведёнными в таблице:
+
+| **Параметр** | **Обязательный** | **Значение по умолчанию** | **Описание** | **С какой версии** |
+| ------------ | ---------------- | ------------------------- | ------------ | ------------------ |
+| `--spark-master-address` | да | - | Адрес Spark мастера, который будет использован для запуска экзекьюторов. Может быть `ytsaurus://<Cluster endpoint>` для запуска задач, используя планировщик {{product-name}} | - |
+| `--master-group-id` | нет | - | Название группы в {{product-name}} Discovery server, используется при запуске через Strawberry | - |

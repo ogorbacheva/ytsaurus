@@ -47,11 +47,11 @@ blocks:
       - type: basic-card
         title: 'Work with Spark'
         text: 'Run Spark workloads over data stored in YTsaurus.'
-        url: '{{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}'
+        url: '{{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}'
       - type: basic-card
         title: 'Build a streaming pipeline'
         text: 'Process streams with Spark Structured Streaming.'
-        url: '{{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/structured-streaming{{ docs-revision-query }}'
+        url: '{{ spyt-docs-root }}/{{ lang }}/concepts/structured-streaming/index{{ docs-revision-query }}'
       - type: basic-card
         title: 'Connect through APIs and tools'
         text: 'Get started with the Python API and client libraries.'
@@ -98,7 +98,7 @@ blocks:
           text: 'Apache Spark on YTsaurus: Spark SQL, Structured Streaming, clusters, and Jupyter.'
           links:
             - text: 'Open documentation'
-              url: '{{ spyt-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}'
+              url: '{{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}'
               theme: normal
               arrow: true
         media:
