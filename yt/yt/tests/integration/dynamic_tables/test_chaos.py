@@ -6571,6 +6571,7 @@ class TestChaosMetaClusterNativeProxy(TestChaosMetaCluster):
 
         set("//sys/chaos_cell_bundles/c/@metadata_cell_id", cell_id)
         wait(lambda: len(get(f"#{cell_id}/@peers")) != 0)
+        wait(lambda: get(f"#{cell_id}/@peers/0/state") == "leading")
 
         sorted_schema = self._get_schemas_by_name(["sorted_simple"])[0]
         create("chaos_replicated_table", "//tmp/crt", attributes={"chaos_cell_bundle": "c", "schema": sorted_schema})
@@ -7228,7 +7229,7 @@ class TestChaosWriteRetries(WriteRetriesBase, ChaosTestBase):
             {"cluster_name": "primary", "content_type": "data", "mode": "sync", "enabled": True, "replica_path": replica_path},
             {"cluster_name": "primary", "content_type": "queue", "mode": "sync", "enabled": True, "replica_path": queue_path},
             {"cluster_name": "remote_0", "content_type": "data", "mode": "sync", "enabled": True, "replica_path": replica_path},
-            {"cluster_name": "remote_0", "content_type": "queue", "mode": "sync", "enabled": True, "replica_path": queue_path}
+            {"cluster_name": "remote_0", "content_type": "queue", "mode": "sync", "enabled": True, "replica_path": queue_path},
         ]
         replica_ids = self._create_chaos_table_replicas(replicas, table_path=path)
         self._create_replica_tables(replicas, replica_ids, create_tablet_cells=False, schema=schema, mount_tables=False)

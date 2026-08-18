@@ -58,7 +58,7 @@ using NNodeTrackerClient::NProto::TDiskResources;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "JobResourceManager");
+static YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, Logger, "JobResourceManager");
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -594,8 +594,8 @@ public:
         THROW_ERROR_EXCEPTION_IF(
             !acquireResult.IsOK(),
             TError("GPU slot acquisition failed")
-                << TErrorAttribute("gpu_count", gpuCount)
-                << acquireResult);
+                .With("gpu_count", gpuCount)
+                .With(acquireResult));
 
         auto result = acquireResult.Value();
 

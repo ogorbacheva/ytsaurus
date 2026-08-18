@@ -106,7 +106,7 @@ void ProcessRowset(TFinishedQueryResultPartial& newRecord, TWireRowset wireSchem
         try {
             rows = reader->ReadSchemafulRowset(schemaData, /*captureValues*/ false);
         } catch (const std::exception& ex) {
-            THROW_ERROR_EXCEPTION("Failed to read resulting rowset. Try using INSERT INTO to save result") << ex;
+            THROW_ERROR_EXCEPTION("Failed to read resulting rowset. Try using INSERT INTO to save result").With(ex);
         }
         TDataStatistics dataStatistics;
         dataStatistics.set_row_count(rows.size());
@@ -135,7 +135,7 @@ void ProcessRowset(TFinishedQueryResultPartial& newRecord, TWireRowset wireSchem
         newRecord.Schema = ConvertToYsonString(TString());
         newRecord.DataStatistics = ConvertToYsonString(TDataStatistics());
         newRecord.IsTruncated = true;
-        newRecord.Error = TError("Failed to save rowset") << ex;
+        newRecord.Error = TError("Failed to save rowset").With(ex);
         newRecord.Rowset = TString();
     }
 }
@@ -151,8 +151,7 @@ TQueryHandlerBase::TQueryHandlerBase(
     const NYPath::TYPath& stateRoot,
     const IInvokerPtr controlInvoker,
     const TEngineConfigBasePtr& config,
-    const NQueryTrackerClient::NRecords::TActiveQuery& activeQuery,
-    const TDuration notIndexedQueriesTTL)
+    const NQueryTrackerClient::NRecords::TActiveQuery& activeQuery)
     : StateClient_(stateClient)
     , StateRoot_(stateRoot)
     , ControlInvoker_(std::move(controlInvoker))
@@ -170,7 +169,6 @@ TQueryHandlerBase::TQueryHandlerBase(
         .WithTag("QueryId", activeQuery.Key.QueryId)
         .WithTag("Engine", activeQuery.Engine))
     , ProgressWriter_(New<TPeriodicExecutor>(ControlInvoker_, BIND(&TQueryHandlerBase::TryWriteProgress, MakeWeak(this)), Config_->QueryProgressWritePeriod))
-    , NotIndexedQueriesTTL_(notIndexedQueriesTTL)
 {
     YT_LOG_INFO("Query handler instantiated");
 }
@@ -442,7 +440,9 @@ bool TQueryHandlerBase::TryWriteQueryState(EQueryState state, EQueryState previo
                     },
                 };
                 if (!record.IsIndexed) {
-                    newRecord.TTL = NotIndexedQueriesTTL_.MilliSeconds();
+                    if (auto ttl = Config_->NotIndexedQueriesTtl) {
+                        newRecord.Ttl = ttl->MilliSeconds();
+                    }
                 }
                 if (wireRowsetOrError.IsOK()) {
                     NDetail::ProcessRowset(newRecord, wireRowsetOrError.Value(), Config_->ResultingRowsetValueLengthLimit);

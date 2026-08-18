@@ -51,7 +51,7 @@ struct IPushBasedPartitionReader
     : public virtual TRefCounted
 {
     //! Drains up to MaxBytesPerRead from ready chunks. Cross-chunk order is
-    //! unspecified. Deduplicates by (MapperId, StartRow) before decompression.
+    //! unspecified. Deduplicates by (WriterId, StartRow) before decompression.
     //! An empty batch may have Finished=false.
     //!
     //! Reads must not overlap. Canceling a read cancels the reader; subsequent
@@ -67,16 +67,21 @@ struct IPushBasedPartitionReader
         i64 startRecordIndex = 0,
         std::optional<i64> rangeEndRecordIndex = {}) = 0;
 
-    //! Declare partition done. Idempotent; silently ignored after a terminal
-    //! error.
+    //! Declares that no additional chunks will be added. Idempotent; silently
+    //! ignored after a terminal error.
     virtual void SetNoMoreChunks() = 0;
+
+    //! Finishes each chunk reader at its current quorum-confirmed record count.
+    //! Must be called after SetNoMoreChunks(). Silently ignored after a terminal
+    //! error.
+    virtual void FinishAtCurrentCommittedRecordCount() = 0;
 };
 
 DEFINE_REFCOUNTED_TYPE(IPushBasedPartitionReader)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-//! Optionally appends header-derived mapper and row identity values.
+//! Optionally appends header-derived writer and row identity values.
 IPushBasedPartitionReaderPtr CreatePushBasedPartitionReader(
     TPartitionReaderConfigPtr config,
     NApi::NNative::IClientPtr client,

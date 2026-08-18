@@ -261,7 +261,7 @@ public:
             auto operation = result.Operations[0];
             if (!operation.Id) {
                 THROW_ERROR_EXCEPTION("Operation doesn't have an Id field")
-                    << TErrorAttribute("operation", operation);
+                    .With("operation", operation);
             }
             auto operationId = *operation.Id;
             auto runningOpSettingsHash = GetAnnotation(operation, "settings_hash");
@@ -689,7 +689,7 @@ private:
                 "Unexpected HTTP status code from Spark Master: expected %Qlv, actual %Qlv",
                 expected,
                 response->GetStatusCode())
-                    << TErrorAttribute("response_body", response->ReadAll().ToStringBuf());
+                    .With("response_body", response->ReadAll().ToStringBuf());
         }
     }
 
@@ -724,9 +724,8 @@ public:
         const IInvokerPtr& controlInvoker,
         const TSpytEngineConfigPtr& config,
         const TActiveQuery& activeQuery,
-        const TClusterDirectoryPtr& clusterDirectory,
-        const TDuration notIndexedQueriesTTL)
-        : TQueryHandlerBase(stateClient, stateRoot, controlInvoker, config, activeQuery, notIndexedQueriesTTL)
+        const TClusterDirectoryPtr& clusterDirectory)
+        : TQueryHandlerBase(stateClient, stateRoot, controlInvoker, config, activeQuery)
         , Settings_(ConvertTo<TSpytSettingsPtr>(SettingsNode_))
         , Config_(config)
         , Cluster_(Settings_->Cluster.value_or(Config_->DefaultCluster))
@@ -856,7 +855,7 @@ private:
                         arrowSchema = ipcReader->schema();
                     } else {
                         THROW_ERROR_EXCEPTION("An error has occured during arrow schema reading")
-                            << TErrorAttribute("error", ipcReaderResult.status().ToString());
+                            .With("error", ipcReaderResult.status().ToString());
                     }
                 }
             }
@@ -866,8 +865,8 @@ private:
 
         if (!status.ok()) {
             THROW_ERROR_EXCEPTION("gRPC request failed")
-                << TErrorAttribute("status", static_cast<i32>(status.error_code()))
-                << TErrorAttribute("message", status.error_message());
+                .With("status", static_cast<i32>(status.error_code()))
+                .With("message", status.error_message());
         }
 
         if (!arrowSchema) {
@@ -1019,14 +1018,12 @@ public:
             ControlQueue_->GetInvoker(),
             Config_,
             activeQuery,
-            ClusterDirectory_,
-            NotIndexedQueriesTtl_);
+            ClusterDirectory_);
     }
 
-    void Reconfigure(const TEngineConfigBasePtr& config, const TDuration notIndexedQueriesTTL) override
+    void Reconfigure(const TEngineConfigBasePtr& config) override
     {
         Config_ = DynamicPointerCast<TSpytEngineConfig>(config);
-        NotIndexedQueriesTtl_ = notIndexedQueriesTTL;
         ProxyEngineProvider_->Reconfigure(Config_->ProxyConfig);
     }
 
@@ -1041,7 +1038,6 @@ private:
     const TActionQueuePtr ControlQueue_;
     const TClusterDirectoryPtr ClusterDirectory_;
     const TProxySpytEngineProviderPtr ProxyEngineProvider_;
-    TDuration NotIndexedQueriesTtl_;
 
     TSpytEngineConfigPtr Config_;
 };

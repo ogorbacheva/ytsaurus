@@ -169,8 +169,7 @@ public:
                 continue;
             }
 
-            if (!includeNonOnlineReplicas && !location->IsRegisteredOrOnline())
-            {
+            if (!includeNonOnlineReplicas && !location->IsRegisteredOrOnline()) {
                 YT_LOG_TRACE("Found Sequoia chunk replica on non-online node, ignoring replica (ChunkId: %v, NodeAddress: %v, NodeState: %v)",
                     chunkId,
                     node->GetDefaultAddress(),
@@ -828,7 +827,7 @@ private:
         const TColumnFilter& columnFilter,
         TTimestamp timestamp,
         ISequoiaTransactionPtr transaction,
-        const std::vector<TErrorCode> retriableErrorCodes,
+        const std::vector<TErrorCode>& retriableErrorCodes,
         const std::function<NYson::TYsonString(const NRecords::TChunkReplicas&)>& extractReplicas) const
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
@@ -850,7 +849,7 @@ private:
         }
 
         return replicaRecordsFuture
-            .Apply(BIND([extractReplicas, retriableErrorCodes] (const TErrorOr<std::vector<std::optional<NRecords::TChunkReplicas>>>& replicaRecordsOrError) {
+            .Apply(BIND([extractReplicas, retriableErrorCodes = retriableErrorCodes] (const TErrorOr<std::vector<std::optional<NRecords::TChunkReplicas>>>& replicaRecordsOrError) {
                 ThrowOnSequoiaReplicasError(replicaRecordsOrError, retriableErrorCodes);
                 const auto& replicas = replicaRecordsOrError.ValueOrThrow();
                 return ParseReplicas(replicas, extractReplicas);

@@ -994,6 +994,7 @@ public:
         std::vector<i64> ReferencedDataWeightPerChunk;
         std::vector<i64> ReferencedDataSizePerChunk;
         TMasterTableSchema* MasterTableSchema = nullptr;
+        TError ValidationError;
     };
 
     TConfirmChunkSuccessfulValidationResult ValidateConfirmChunk(
@@ -1014,7 +1015,13 @@ public:
         const auto& tableManager = Bootstrap_->GetTableManager();
         // TODO(h0pless): Maybe think of a better exception here.
         if (GetDynamicConfig()->EnableChunkSchemas && schemaId != NullTableSchemaId) {
-            result.MasterTableSchema = tableManager->GetMasterTableSchemaOrThrow(schemaId);
+            if (!tableManager->FindMasterTableSchema(schemaId)) {
+                result.ValidationError = TError(NYTree::EErrorCode::ResolveError,
+                    "No such schema %v",
+                    schemaId);
+                return result;
+            }
+            result.MasterTableSchema = tableManager->GetMasterTableSchema(schemaId);
         }
 
         // NB: Figure out and validate all hunk chunks we are about to reference _before_ confirming
@@ -1025,9 +1032,10 @@ public:
                 auto hunkChunkId = FromProto<TChunkId>(protoRef.chunk_id());
                 auto* hunkChunk = FindChunk(hunkChunkId);
                 if (!IsObjectAlive(hunkChunk)) {
-                    THROW_ERROR_EXCEPTION("Cannot confirm chunk %v since it references an unknown hunk chunk %v",
+                    result.ValidationError = TError("Cannot confirm chunk %v since it references an unknown hunk chunk %v",
                         id,
                         hunkChunkId);
+                    return result;
                 }
                 result.ReferencedHunkChunks.push_back(hunkChunk);
                 result.ReferencedDataWeightPerChunk.push_back(protoRef.total_hunk_length());
@@ -1036,7 +1044,8 @@ public:
         }
 
         if (validateChunkMeta) {
-            ValidateChunkMetaOnConfirmation(chunkMeta);
+            auto error = ValidateChunkMetaOnConfirmation(chunkMeta);
+            result.ValidationError = error;
         }
 
         return result;
@@ -1351,6 +1360,7 @@ public:
             GetObjectId(transaction));
 
         THashMap<TChunkId, TConfirmChunkSuccessfulValidationResult> chunkToConfirmationValidationResult;
+        THashMap<TGuid, TError> batchConfirmErrors;
         chunkToConfirmationValidationResult.reserve(request->chunk_confirmations_size());
         for (const auto& protoChunkInfo : request->chunk_confirmations()) {
             auto chunkId = FromProto<TChunkId>(protoChunkInfo.chunk_id());
@@ -1358,6 +1368,7 @@ public:
                 chunkId);
 
             auto schemaId = FromProto<TMasterTableSchemaId>(protoChunkInfo.schema_id());
+            auto requestId = protoChunkInfo.has_request_id() ? TGuid{} : FromProto<TGuid>(protoChunkInfo.request_id());
             auto* chunk = FindChunk(chunkId);
             if (!IsObjectAlive(chunk)) {
                 // Chunk is dead, but we consider it a "success" here, so that we don't fail
@@ -1373,10 +1384,34 @@ public:
                 schemaId,
                 /*validateChunkMeta*/ false);
 
-            if (!chunkToConfirmationValidationResult.emplace(chunkId, result).second) {
-                YT_LOG_ALERT_AND_THROW("A chunk was found in confirmation batch multiple times (ChunkId: %v)",
-                    chunkId);
+            if (!result.ValidationError.IsOK()) {
+                auto error = TError("Chunk %v validation failed", chunkId) << result.ValidationError;
+                YT_LOG_DEBUG(error);
+                batchConfirmErrors.emplace(requestId, error);
+                continue;
             }
+
+            if (!chunkToConfirmationValidationResult.emplace(chunkId, result).second) {
+                YT_LOG_ALERT("A chunk was found in confirmation batch multiple times (ChunkId: %v)",
+                    chunkId);
+                batchConfirmErrors.emplace(requestId, TError(NRpc::EErrorCode::TransientFailure, "Chunk %v confirmation failed",
+                    chunkId));
+                continue;
+            }
+        }
+
+        if (!batchConfirmErrors.empty()) {
+            TError batchError(NRpc::EErrorCode::TransientFailure, "Chunk confirm batch failed");
+            for (const auto& [requestId, confirmError] : batchConfirmErrors) {
+                batchError.MutableInnerErrors()->push_back(confirmError);
+
+                if (!requestId.IsEmpty()) {
+                    ChunkConfirmErrors_.emplace(requestId, confirmError);
+                } else {
+                    YT_LOG_ALERT("Chunk without request id found in confirmation batch");
+                }
+            }
+            YT_LOG_ALERT_AND_THROW(batchError);
         }
 
        for (const auto& protoChunkInfo : request->chunk_confirmations()) {
@@ -2478,7 +2513,7 @@ public:
                 if (!IsMediumType(specifiedType)) {
                     if (throwOnInvalidId) {
                         THROW_ERROR_EXCEPTION("Invalid medium id")
-                            << TErrorAttribute("medium_id", mediumId);
+                            .With("medium_id", mediumId);
                     }
                     return nullptr;
                 }
@@ -2747,7 +2782,7 @@ public:
         if (enable) {
             if (std::ssize(VerboselyLoggedChunks_) >= GetDynamicConfig()->MaxVerboselyLoggedChunks) {
                 THROW_ERROR_EXCEPTION("Too many chunks with verbose logging enabled")
-                    << TErrorAttribute("limit", GetDynamicConfig()->MaxVerboselyLoggedChunks);
+                    .With("limit", GetDynamicConfig()->MaxVerboselyLoggedChunks);
             }
 
             VerboselyLoggedChunks_[chunkId] = GetCurrentMutationContext()->GetTimestamp();
@@ -2845,8 +2880,9 @@ private:
 
     TPeriodicExecutorPtr SequoiaChunkBatchConfirmExecutor_;
 
-    std::vector<TReqConfirmChunk> WaitingConfirmRequests_;
+    std::vector<std::pair<TReqConfirmChunk, TGuid>> WaitingConfirmRequests_;
     TPromise<void> BatchConfirmTransactionCommitPromise_;
+    THashMap<TGuid, TError> ChunkConfirmErrors_;
 
     TPeriodicExecutorPtr SequoiaBatchIncrementalHeartbeatExecutor_;
 
@@ -2994,13 +3030,13 @@ private:
 
                 if (failOnLocationByIndexAndUuidMismatch) {
                     THROW_ERROR_EXCEPTION("UUID and index for the same location points to different locations")
-                        << TErrorAttribute("chunk_id", chunkId)
-                        << TErrorAttribute("node_id", node->GetId())
-                        << TErrorAttribute("node_address", node->GetDefaultAddress())
-                        << TErrorAttribute("location_index", locationIndex)
-                        << TErrorAttribute("location_uuid", locationUuid)
-                        << TErrorAttribute("location_by_index_id", locationByIndex.value() ? locationByIndex.value()->GetId() : NullObjectId)
-                        << TErrorAttribute("location_by_uuid_id", locationByUuid.value() ? locationByUuid.value()->GetId() : NullObjectId);
+                        .With("chunk_id", chunkId)
+                        .With("node_id", node->GetId())
+                        .With("node_address", node->GetDefaultAddress())
+                        .With("location_index", locationIndex)
+                        .With("location_uuid", locationUuid)
+                        .With("location_by_index_id", locationByIndex.value() ? locationByIndex.value()->GetId() : NullObjectId)
+                        .With("location_by_uuid_id", locationByUuid.value() ? locationByUuid.value()->GetId() : NullObjectId);
                 } else {
                     // NB: If locations mismatch and we cannot throw, better to return nullptr.
                     return nullptr;
@@ -3909,12 +3945,12 @@ private:
             promise.IsSet(),
             "Chunk confirmation promise is already set (Result: %v)",
             promise.TryGet());
-        auto requests = std::exchange(WaitingConfirmRequests_, std::vector<TReqConfirmChunk>());
+        auto requests = std::exchange(WaitingConfirmRequests_, std::vector<std::pair<TReqConfirmChunk, TGuid>>());
 
         const auto& nodeTracker = Bootstrap_->GetNodeTracker();
         // COMPAT(cherepashka): remove this after 25.4.
         THashMap<TChunkId, std::vector<TChunkReplicaWithLocationIndexAndState>> sequoiaChunkReplicas;
-        for (const auto& request : requests) {
+        for (const auto& [request, id] : requests) {
             auto chunkId = FromProto<TChunkId>(request.chunk_id());
 
             for (const auto& protoReplica : request.replicas()) {
@@ -3967,11 +4003,11 @@ private:
                 // sequoiaChunkReplicas might actually contain replicas from separate confirm requests,
                 // I hope they are the same and I am okay with this for now.
                 SortUniqueBy(requests, [] (const auto& request) {
-                    return FromProto<TChunkId>(request.chunk_id());
+                    return FromProto<TChunkId>(request.first.chunk_id());
                 });
 
                 NProto::TReqConfirmMultipleChunks confirmChunksRequest;
-                for (const auto& request : requests) {
+                for (const auto& [request, id] : requests) {
                     auto* chunkConfirmation = confirmChunksRequest.add_chunk_confirmations();
                     *chunkConfirmation->mutable_chunk_id() = request.chunk_id();
 
@@ -3983,6 +4019,7 @@ private:
                     *chunkConfirmation->mutable_chunk_meta() = std::move(request.chunk_meta());
                     *chunkConfirmation->mutable_chunk_info() = std::move(request.chunk_info());
                     *chunkConfirmation->mutable_schema_id() = request.schema_id();
+                    ToProto(chunkConfirmation->mutable_request_id(), id);
 
                     auto it = sequoiaChunkReplicas.find(chunkId);
                     const auto& replicas = it == sequoiaChunkReplicas.end() ? std::vector<TChunkReplicaWithLocationIndexAndState>() : it->second;
@@ -4021,7 +4058,7 @@ private:
         promise.SetFrom(std::move(future));
     }
 
-    TFuture<void> ConfirmSequoiaChunkBatched(TReqConfirmChunk request) override
+    TFuture<void> ConfirmSequoiaChunkBatched(TReqConfirmChunk request, NRpc::TRequestId requestId) override
     {
         const auto& config = GetDynamicConfig()->SequoiaChunkReplicas;
         if (std::ssize(WaitingConfirmRequests_) > config->ConfirmBatchSize) {
@@ -4030,7 +4067,7 @@ private:
             OnSequoiaReplicaConfirm();
         }
 
-        WaitingConfirmRequests_.push_back(std::move(request));
+        WaitingConfirmRequests_.emplace_back(std::move(request), requestId);
         if (!BatchConfirmTransactionCommitPromise_) {
             YT_LOG_ALERT("Confirm transaction promise was not created");
             BatchConfirmTransactionCommitPromise_ = NewPromise<void>();
@@ -4134,13 +4171,22 @@ private:
             }).AsyncVia(NRpc::TDispatcher::Get()->GetHeavyInvoker()));
     }
 
+    TError ExtractConfirmSequoiaChunkError(TGuid requestId) override
+    {
+        if (auto errorIt = ChunkConfirmErrors_.find(requestId); errorIt != ChunkConfirmErrors_.end()) {
+            auto chunkConfirmError = errorIt->second;
+            ChunkConfirmErrors_.erase(errorIt);
+            return chunkConfirmError;
+        }
+        return {};
+    }
+
     void RemoveOutdatedRecentlyConfirmedChunks()
     {
         const auto& config = GetDynamicConfig();
         auto oldestConfirmTime = GetCpuInstant() - DurationToCpuDuration(config->ReplicaApproveTimeout);
 
-        while (!RecentlyConfirmedChunksByConfirmTime_.empty())
-        {
+        while (!RecentlyConfirmedChunksByConfirmTime_.empty()) {
             auto [chunkId, confirmTime] = RecentlyConfirmedChunksByConfirmTime_.front();
             if (confirmTime >= oldestConfirmTime) {
                 break;
@@ -5760,6 +5806,7 @@ private:
             subrequest->chunk_meta(),
             schemaId,
             /*validateChunkMeta*/ true);
+        validationResult.ValidationError.ThrowOnError();
         ConfirmChunk(
             chunk,
             replicas,
@@ -6387,7 +6434,7 @@ private:
                 continue;
             }
 
-            VisitAllAncestorsInHunkTree(chunk, [&] (TChunkList* chunkList, bool firstOccurrence) {
+            VisitHunkTreeAncestors(chunk, [&] (TChunkList* chunkList, bool firstOccurrence) {
                 if (firstOccurrence) {
                     chunkList->AccumulateHunkStatistics(chunk, /*force*/ true);
                 }
@@ -7879,7 +7926,7 @@ private:
             return channel;
         } else {
             THROW_ERROR_EXCEPTION("Chunk replicator for chunk %v is not alive", chunk->GetId())
-                << TErrorAttribute("shard_index", chunk->GetShardIndex());
+                .With("shard_index", chunk->GetShardIndex());
         }
     }
 
@@ -7954,7 +8001,7 @@ private:
                 cellStatistics.set_oldest_part_missing_chunk_count(0);
                 cellStatistics.set_quorum_missing_chunk_count(0);
                 cellStatistics.set_inconsistently_placed_chunk_count(0);
-                if (onlineNodeCount.has_value()) {
+                if (onlineNodeCount) {
                     cellStatistics.set_online_node_count(*onlineNodeCount);
                 }
 
@@ -8012,9 +8059,9 @@ private:
         for (const auto& [chunkId, enabledAt] : VerboselyLoggedChunks_) {
             if (enabledAt + maxDuration < now) {
                 alerts.push_back(TError("Chunk stays in verbose logging set for too long")
-                    << TErrorAttribute("chunk_id", chunkId)
-                    << TErrorAttribute("enabled_at", enabledAt)
-                    << TErrorAttribute("max_duration", maxDuration));
+                    .With("chunk_id", chunkId)
+                    .With("enabled_at", enabledAt)
+                    .With("max_duration", maxDuration));
             }
         }
 

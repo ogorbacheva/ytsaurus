@@ -9,6 +9,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import shlex
 import subprocess
@@ -49,6 +50,21 @@ def _load_logslice():
 
 
 logslice = _load_logslice()
+
+
+def _find_fixture_dir():
+    relative_path = "yt/yt/tools/logslice/unittests/py/fixtures/ytadmin_13061"
+    try:
+        import yatest.common
+        return yatest.common.source_path(relative_path)
+    except ImportError:
+        return os.path.join(
+            os.path.dirname(os.path.realpath(__file__)),
+            "fixtures",
+            "ytadmin_13061")
+
+
+FIXTURE_DIR = _find_fixture_dir()
 
 
 def _ssh_localhost_works():
@@ -268,6 +284,133 @@ class SemicolonQuotingTest(unittest.TestCase):
                 remote = self._assemble(head, stages)
                 expected = list(head) + ["|"] + stages[0]
                 self.assertEqual(shlex.split(remote), expected)
+
+
+class PipelineStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.ssh = logslice.Ssh("unused")
+
+    def _result(self, returncode, stderr, stdout=None):
+        result = mock.Mock()
+        result.returncode = returncode
+        result.stderr = stderr
+        result.stdout = stdout
+        return result
+
+    def test_grep_no_match_does_not_fail_logslice(self):
+        result = self._result(0, "__LOGSLICE_PIPESTATUS__:0 1\n")
+        with mock.patch.object(logslice.subprocess, "run", return_value=result):
+            self.assertEqual(
+                self.ssh.run_pipeline(["logslice", "file"], [["grep", "x"]]),
+                0,
+            )
+
+    def test_head_failure_is_reported_with_stderr(self):
+        result = self._result(
+            1,
+            "cannot decode block\n__LOGSLICE_PIPESTATUS__:1 1\n",
+        )
+        stderr = io.StringIO()
+        with mock.patch.object(logslice.subprocess, "run", return_value=result), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(
+                self.ssh.run_pipeline(["logslice", "file"], [["grep", "x"]]),
+                1,
+            )
+        self.assertIn("cannot decode block", stderr.getvalue())
+        self.assertNotIn("PIPESTATUS", stderr.getvalue())
+
+    def test_non_grep_filter_failure_is_preserved(self):
+        result = self._result(0, "__LOGSLICE_PIPESTATUS__:0 1\n")
+        with mock.patch.object(logslice.subprocess, "run", return_value=result):
+            self.assertEqual(
+                self.ssh.run_pipeline(["logslice", "file"], [["wc", "-x"]]),
+                1,
+            )
+
+    def test_result_retains_grep_no_match_after_presentation_stage(self):
+        result = self._result(
+            0, "__LOGSLICE_PIPESTATUS__:0 1 0\n", stdout="0\n")
+        with mock.patch.object(logslice.subprocess, "run", return_value=result):
+            completed = self.ssh.run_pipeline_result(
+                ["logslice", "file"], [["grep", "x"], ["wc", "-l"]])
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(completed.operational_returncode, 0)
+        self.assertEqual(completed.stdout, "0\n")
+
+
+class MultiTypeAndOutcomeTest(unittest.TestCase):
+    def test_parse_log_types_accepts_all_and_comma_list(self):
+        self.assertEqual(
+            logslice.parse_log_types("debug,error,info"),
+            ["debug", "error", "info"])
+        self.assertEqual(
+            logslice.parse_log_types("all"),
+            ["debug", "info", "error"])
+        with self.assertRaisesRegex(ValueError, "unknown log type"):
+            logslice.parse_log_types("debug,warning")
+
+    def test_fixture_merges_severities_by_timestamp(self):
+        outputs = []
+        for name in ("debug.log", "info.log", "error.log"):
+            with open(os.path.join(FIXTURE_DIR, name)) as stream:
+                outputs.append(stream.read())
+        merged = logslice.merge_timestamped_outputs(outputs)
+        stamps = [
+            line.split()[1].replace(",", ".")
+            for line in merged.splitlines()
+        ]
+        self.assertEqual(stamps, sorted(stamps))
+        self.assertEqual(merged.count(
+            "1a6f70ac-1cbee4dc-5d4cc759-2ee628e1"), 5)
+
+    def test_merge_keeps_multiline_record_with_its_timestamp(self):
+        merged = logslice.merge_timestamped_outputs([
+            "2026-08-11 06:16:54,000001 first\n  first continuation\n",
+            "2026-08-11 06:16:53,000001 second\n  second continuation\n",
+        ])
+        self.assertEqual(merged, (
+            "2026-08-11 06:16:53,000001 second\n"
+            "  second continuation\n"
+            "2026-08-11 06:16:54,000001 first\n"
+            "  first continuation\n"))
+
+    def test_fixture_distinguishes_match_no_match_and_failure(self):
+        with open(os.path.join(FIXTURE_DIR, "rotation_outcomes.json")) as stream:
+            fixture = json.load(stream)
+        results = []
+        for item in fixture:
+            status = logslice.classify_slice_result(
+                item["returncode"], item["stdout"], item["stderr"])
+            self.assertEqual(status, item["expected"], item["file"])
+            results.append({
+                "status": status,
+                "failure_class": logslice.slice_failure_class(
+                    item["returncode"], item["stderr"]),
+            })
+        self.assertEqual(logslice.slice_exit_code(results[:2]), 0)
+        self.assertEqual(
+            logslice.slice_exit_code([results[1]]),
+            logslice.GLOBAL_NO_MATCH_EXIT)
+        self.assertEqual(
+            logslice.slice_exit_code(results),
+            logslice.OPERATIONAL_FAILURE_EXIT)
+        self.assertEqual(results[2]["failure_class"], "decompression")
+
+    def test_grep_no_match_stays_no_match_after_wc_output(self):
+        self.assertEqual(
+            logslice.classify_slice_result(1, "0\n", ""),
+            "no_match")
+
+    def test_broad_debug_window_requires_explicit_override(self):
+        start = datetime(2026, 8, 11, 5, 0, 0)
+        end = datetime(2026, 8, 11, 6, 30, 0)
+        with self.assertRaisesRegex(ValueError, "narrow it"):
+            logslice.validate_debug_window(["debug"], start, end)
+        logslice.validate_debug_window(
+            ["debug"], start, end, allow_broad=True)
+        logslice.validate_debug_window(
+            ["error"], None, None, allow_broad=False)
 
 
 class ParseUserTimeTest(unittest.TestCase):
@@ -659,6 +802,14 @@ class SshRunTest(unittest.TestCase):
 class SshOptionsTest(unittest.TestCase):
     """SSH socket and timeout settings are configurable with stable defaults."""
 
+    def test_skill_mcp_environment_supplies_shared_long_lived_socket(self):
+        with mock.patch.dict(os.environ, {
+                logslice.CONTROL_PATH_ENV: "/tmp/shared/%C",
+                logslice.CONTROL_PERSIST_ENV: "86400"}):
+            ssh = logslice.Ssh("h")
+        self.assertEqual(ssh._control_path, "/tmp/shared/%C")
+        self.assertIn("ControlPersist=86400", ssh._base_opts)
+
     def test_uses_supplied_control_socket(self):
         ssh = logslice.Ssh("h", control_socket="/tmp/socket")
         self.assertIn("ControlPath=/tmp/socket", ssh._base_opts)
@@ -836,6 +987,133 @@ class ArchiveParsingTest(unittest.TestCase):
     def test_index_sidecar_rejected(self):
         self.assertIsNone(
             logslice.parse_log_name("master.debug.log.1.zst.trindex", LIVE_DIR))
+
+
+class ComponentRoutingTest(unittest.TestCase):
+    def test_tablet_node_hostname_maps_to_node_base(self):
+        self.assertEqual(
+            logslice.infer_host_component(
+                "sas5-5383-tab-node-ada.sas.yp-c.yandex.net"
+            ),
+            ("tablet-node", "node"),
+        )
+
+    def test_master_hostname_maps_to_master_base(self):
+        self.assertEqual(
+            logslice.infer_host_component("m001-zeno.vla.yp-c.yandex.net"),
+            ("master", "master"),
+        )
+
+    def test_master_cache_hostname_maps_to_master_cache_base(self):
+        self.assertEqual(
+            logslice.infer_host_component(
+                "master-cache-0a42-zeno-9d1f.vla.yp-c.yandex.net"
+            ),
+            ("master-cache", "master-cache"),
+        )
+
+    def test_rpc_proxy_hostname_maps_to_rpc_proxy_base(self):
+        self.assertEqual(
+            logslice.infer_host_component(
+                "vla0-0261-flow-dev-003-rpc-zeno.vla.yp-c.yandex.net"
+            ),
+            ("rpc-proxy", "proxy-vla0-0261"),
+        )
+
+    def test_http_proxy_hostname_maps_to_http_proxy_base(self):
+        self.assertEqual(
+            logslice.infer_host_component(
+                "vla0-6979-proxy-zeno.vla.yp-c.yandex.net"
+            ),
+            ("http-proxy", "proxy-vla0-6979"),
+        )
+
+    def test_clock_hostname_maps_to_clock_base(self):
+        self.assertEqual(
+            logslice.infer_host_component(
+                "clock01-pythia.sas.yp-c.yandex.net"
+            ),
+            ("clock", "clock"),
+        )
+
+    def test_master_candidate_selection_beats_more_numerous_sidecar(self):
+        parsed = [
+            logslice.parse_log_name("master-vla2-1217.debug.log"),
+            logslice.parse_log_name("push-client.debug.log"),
+            logslice.parse_log_name("push-client.debug.log.1.zst"),
+            logslice.parse_log_name("push-client.debug.log.2.zst"),
+        ]
+        route = logslice.resolve_component_route(
+            "m001-zeno.vla.yp-c.yandex.net",
+            None,
+            ["master-vla2-1217", "push-client"],
+        )
+        base, files = logslice.order_series(
+            parsed, "debug", route["base"]
+        )
+        self.assertEqual(route["component"], "master")
+        self.assertEqual(route["base"], "master-vla2-1217")
+        self.assertEqual(base, "master-vla2-1217")
+        self.assertEqual(
+            [item.name for item in files], ["master-vla2-1217.debug.log"]
+        )
+
+    def test_push_client_has_lower_fallback_priority(self):
+        parsed = [
+            logslice.parse_log_name("node.debug.log"),
+            logslice.parse_log_name("push-client.debug.log"),
+            logslice.parse_log_name("push-client.debug.log.1.zst"),
+        ]
+        base, _ = logslice.order_series(parsed, "debug")
+        self.assertEqual(base, "node")
+
+    def test_rpc_proxy_route_uses_deployed_log_base(self):
+        route = logslice.resolve_component_route(
+            "vla0-0261-flow-dev-003-rpc-zeno.vla.yp-c.yandex.net",
+            None,
+            ["proxy-vla0-0261", "push-client"],
+        )
+        self.assertEqual(route["component"], "proxy-vla0-0261")
+        self.assertEqual(route["base"], "proxy-vla0-0261")
+
+    def test_explicit_component_takes_precedence(self):
+        route = logslice.resolve_component_route(
+            "m001-zeno.vla.yp-c.yandex.net",
+            "push-client",
+            ["master-vla2-1217", "push-client"],
+        )
+        self.assertEqual(route["component"], "push-client")
+        self.assertEqual(route["base"], "push-client")
+        self.assertEqual(route["source"], "--component")
+
+    def test_unknown_hostname_fails_with_candidates(self):
+        with self.assertRaisesRegex(ValueError, "master, push-client"):
+            logslice.resolve_component_route(
+                "mystery-pod.sas.yp-c.yandex.net",
+                None,
+                ["push-client", "master"],
+            )
+
+    def test_metadata_names_route_and_roots(self):
+        route = logslice.resolve_component_route(
+            "m001-zeno.vla.yp-c.yandex.net", None, ["master-vla2-1217"]
+        )
+        self.assertEqual(
+            logslice.routing_metadata(route, ["logs", "/archive/2026-08-05"]),
+            [
+                "Log routing: role=master component=master "
+                "base=master-vla2-1217 source=hostname confidence=high",
+                "Resolved log roots: logs, /archive/2026-08-05",
+            ],
+        )
+
+    def test_master_archive_is_only_used_for_master_routes(self):
+        self.assertTrue(logslice.should_use_master_archive(
+            "m001-zeno.vla.yp-c.yandex.net", None))
+        self.assertFalse(logslice.should_use_master_archive(
+            "sas5-5383-tab-node-ada.sas.yp-c.yandex.net", None))
+        self.assertFalse(logslice.should_use_master_archive(
+            "master-cache-0a42-zeno-9d1f.vla.yp-c.yandex.net", None))
 
 
 class ArchiveDayDirsTest(unittest.TestCase):

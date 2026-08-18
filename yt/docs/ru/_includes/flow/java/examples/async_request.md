@@ -59,19 +59,19 @@ Stateless-компьютейшен: получает запрос из стри�
 
 {% endlist %}
 
-### NodeCompanionMain
+### PipelineMain
 
-Точка входа компаньона на основе Spring Boot:
+Единственная точка входа (запускает пайплайн или обслуживает его как компаньон — по `YT_FLOW_MODE`):
 
 {% list tabs group=lang %}
 
 - Java
 
-  {% code '/yt/yt/flow/examples/java/async_request/async_request/src/main/java/tech/ytsaurus/flow/examples/asyncrequest/NodeCompanionMain.java' lang='java' lines='[BEGIN main]-[END main]' keep-indents %}
+  {% code '/yt/yt/flow/examples/java/async_request/async_request/src/main/java/tech/ytsaurus/flow/examples/asyncrequest/PipelineMain.java' lang='java' lines='[BEGIN main]-[END main]' keep-indents %}
 
 - Kotlin
 
-  {% code '/yt/yt/flow/examples/kotlin/async_request/async_request/src/main/kotlin/tech/ytsaurus/flow/examples/asyncrequest/NodeCompanionMain.kt' lang='kotlin' lines='[BEGIN main]-[END main]' keep-indents %}
+  {% code '/yt/yt/flow/examples/kotlin/async_request/async_request/src/main/kotlin/tech/ytsaurus/flow/examples/asyncrequest/PipelineMain.kt' lang='kotlin' lines='[BEGIN main]-[END main]' keep-indents %}
 
 {% endlist %}
 
@@ -82,10 +82,4 @@ Stateless-компьютейшен: получает запрос из стри�
 - **ExternalStateAccessor с PayloadBuilder** — поле `total_length` обновляется точечно: `current.toBuilder()` → изменение → `stateAccessor.set(updated.finish())`.
 - **Конфигурация через Spring Boot** — компьютейшены регистрируются аннотацией `@FlowComputation`; `flow-spring-boot-starter` управляет жизненным циклом gRPC-сервера.
 
-## См. также
 
-- [Быстрый старт (Java)](../../../../flow/java/getting-started.md)
-- [Computation (Java)](../../../../flow/java/computation.md)
-- [Stateful processing](../../../../flow/concepts/stateful.md)
-- [Аналогичный пример на C++](../../../../flow/cpp/examples/async_request.md)
-- [Расширенная версия с ретраями](../../../../flow/java/examples/retryable_async_request.md)

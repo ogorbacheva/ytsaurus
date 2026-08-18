@@ -11,7 +11,9 @@ namespace NYT::NFlow::NCompanionServer {
 DECLARE_REFCOUNTED_CLASS(TCompanionRuntimeContext);
 
 //! Companion-side IRuntimeContext: the production context minus worker-only
-//! facilities (distributed throttlers, the epoch timestamp).
+//! facilities (distributed throttlers, the epoch timestamp) and minus
+//! #TComputationStreamSpecStorage::ComputeKey() for a computed group-by schema:
+//! process functions take the key from the input, which arrives with it.
 class TCompanionRuntimeContext
     : public TComputationRuntimeContext
 {
@@ -23,6 +25,10 @@ public:
     //! The epoch timestamp does not travel to the companion; throwing beats
     //! silently returning zero (which would misdate every relative timer).
     TSystemTimestamp GetCurrentTimestamp() const override;
+
+    //! Likewise the epoch sequence number: it is minted by the worker's epoch loop and
+    //! never crosses the wire.
+    TUniqueSeqNo GetEpochUniqueSeqNo() const override;
 };
 
 DEFINE_REFCOUNTED_TYPE(TCompanionRuntimeContext);

@@ -45,6 +45,7 @@ public:
     void Restart();
 
     //! Stops auto-restartable companion process.
+    //! Never blocks and never throws: it is called from a destructor.
     virtual void Shutdown();
 
 protected:
@@ -73,6 +74,9 @@ private:
     //! startup grace period. Health check failures are expected within this window
     //! and must not trigger a restart.
     bool IsWithinStartupGracePeriod();
+
+    //! Validates that the companion port is configured.
+    void ValidateCompanionPort() const;
 
     //! Starts a new process incarnation and subscribes to its completion for auto-restart.
     void DoStart();

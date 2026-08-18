@@ -355,10 +355,6 @@ public:
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
-        if (!GetDynamicConfig()->EnablePerLocationFullHeartbeats) {
-            THROW_ERROR_EXCEPTION("Per-location full data node heartbeats are disabled");
-        }
-
         ValidateHeartbeatRequest(node, context->Request());
 
         auto locationUuid = FromProto<TChunkLocationUuid>(context->Request().location_uuid());
@@ -747,7 +743,7 @@ public:
             SerializeMediumOverrides(node, dataNodeInfoExt->mutable_medium_overrides());
 
             dataNodeInfoExt->set_require_location_uuids(false);
-            dataNodeInfoExt->set_per_location_full_heartbeats_enabled(GetDynamicConfig()->EnablePerLocationFullHeartbeats);
+            dataNodeInfoExt->set_per_location_full_heartbeats_enabled(true);
             dataNodeInfoExt->set_location_indexes_in_heartbeats_enabled(
                 GetDynamicConfig()->EnableLocationIndexesInDataNodeHeartbeats
                 && request->location_indexes_in_heartbeats_supported());
@@ -1119,7 +1115,7 @@ private:
                 uuid);
             THROW_ERROR_EXCEPTION(
                 "Heartbeats with unknown location in location directory are invalid")
-                << TErrorAttribute("location_uuid", uuid);
+                .With("location_uuid", uuid);
         }
 
         auto locationNode = location->GetNode();
@@ -1133,7 +1129,7 @@ private:
                 uuid);
             THROW_ERROR_EXCEPTION(
                 "Heartbeats with dangling locations in location directory are invalid")
-                << TErrorAttribute("location_uuid", uuid);
+                .With("location_uuid", uuid);
         }
 
         if (locationNode != node) {
@@ -1147,8 +1143,8 @@ private:
                 locationNode->GetDefaultAddress());
             THROW_ERROR_EXCEPTION(
                 "Heartbeat's location directory cannot contain location which belongs to other node")
-                << TErrorAttribute("location_uuid", uuid)
-                << TErrorAttribute("node", locationNode->GetDefaultAddress());
+                .With("location_uuid", uuid)
+                .With("node", locationNode->GetDefaultAddress());
         }
         return location;
     }
@@ -1365,10 +1361,10 @@ private:
                                 isSequoiaChunk = sequoiaChunkReplicasConfig->GhostFullHeartbeats;
                             }
                         }
-
                     }
 
                     if (isSequoiaChunk) {
+                        YT_VERIFY(isSequoiaEnabled || isGhostSequoiaEnabled);
                         if constexpr (std::is_same_v<TChunkInfo, NChunkClient::NProto::TChunkAddInfo>) {
                             if (isMasterOnlyChunk) {
                                 sequoiaRequest->add_added_chunks()->CopyFrom(chunkInfo);
@@ -1720,10 +1716,10 @@ private:
                 diskFamilyWhitelist,
                 diskFamily);
             LocationAlerts_[locationUuid] = TError("Inconsistent medium")
-                << TErrorAttribute("location_uuid", locationUuid)
-                << TErrorAttribute("medium_name", medium->GetName())
-                << TErrorAttribute("disk_family_whitelist", diskFamilyWhitelist)
-                << TErrorAttribute("disk_family", diskFamily);
+                .With("location_uuid", locationUuid)
+                .With("medium_name", medium->GetName())
+                .With("disk_family_whitelist", diskFamilyWhitelist)
+                .With("disk_family", diskFamily);
         } else {
             LocationAlerts_.erase(locationUuid);
         }
@@ -1741,7 +1737,7 @@ private:
                 locationUuid);
             THROW_ERROR_EXCEPTION(
                 "Chunk statistics reports with unknown location are invalid")
-                << TErrorAttribute("location_uuid", locationUuid);
+                .With("location_uuid", locationUuid);
         }
         location->Statistics() = statistics;
         UpdateLocationDiskFamilyAlert(location);
@@ -1790,7 +1786,7 @@ private:
         }
 
         if (oldConfig->ChunkManager->DataNodeTracker->EnableValidationFullHeartbeats &&
-            (!GetDynamicConfig()->EnablePerLocationFullHeartbeats || !GetDynamicConfig()->EnableValidationFullHeartbeats))
+            !GetDynamicConfig()->EnableValidationFullHeartbeats)
         {
             ResetScheduledValidationFullHeartbeats();
         }
@@ -1836,9 +1832,9 @@ private:
                     location->GetUuid());
                 THROW_ERROR_EXCEPTION(
                     "Restarted node has disappeared location")
-                    << TErrorAttribute("node_address", node->GetDefaultAddress())
-                    << TErrorAttribute("node_id", node->GetId())
-                    << TErrorAttribute("location_uuid", location->GetUuid());
+                    .With("node_address", node->GetDefaultAddress())
+                    .With("node_id", node->GetId())
+                    .With("location_uuid", location->GetUuid());
             }
         }
         node->ChunkLocations().clear();

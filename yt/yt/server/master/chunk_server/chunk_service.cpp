@@ -570,10 +570,10 @@ private:
                 auto* medium = chunkManager->GetMediumByIndexOrThrow(sessionId.MediumIndex);
                 if (medium->IsOffshore()) {
                     THROW_ERROR_EXCEPTION("Write targets allocation for offshore media is forbidden")
-                        << TErrorAttribute("chunk_id", sessionId.ChunkId)
-                        << TErrorAttribute("medium_index", medium->GetIndex())
-                        << TErrorAttribute("medium_name", medium->GetName())
-                        << TErrorAttribute("medium_type", medium->GetType());
+                        .With("chunk_id", sessionId.ChunkId)
+                        .With("medium_index", medium->GetIndex())
+                        .With("medium_name", medium->GetName())
+                        .With("medium_type", medium->GetType());
                 }
 
                 TNodeList forbiddenNodes;
@@ -619,7 +619,7 @@ private:
                     // This is really weird.
                     if (it == replicas.end()) {
                         THROW_ERROR_EXCEPTION("Replicas were not fetched for chunk")
-                            << TErrorAttribute("chunk_id", sessionId.ChunkId);
+                            .With("chunk_id", sessionId.ChunkId);
                     }
 
                     const auto& chunkReplicas = it->second
@@ -1009,7 +1009,7 @@ private:
         ValidateClusterInitialized();
         ValidatePeer(EPeerKind::Leader);
 
-        ValidateChunkMetaOnConfirmation(request->chunk_meta());
+        ValidateChunkMetaOnConfirmation(request->chunk_meta()).ThrowOnError();
         auto schemaId = FromProto<TMasterTableSchemaId>(request->schema_id());
 
         auto doConfirmChunks = [
@@ -1058,9 +1058,15 @@ private:
             if (chunkSequoiaConfig.StoreInSequoia) {
                 auto requestStatistics = context->Request().request_statistics();
                 if (sequoiaChunkReplicasConfig->BatchChunkConfirmation) {
-                    auto result = WaitFor(chunkManager->ConfirmSequoiaChunkBatched(std::move(context->Request())));
+                    auto requestId = context->GetRequestId();
+                    auto result = WaitFor(chunkManager->ConfirmSequoiaChunkBatched(std::move(context->Request()), requestId));
                     if (!result.IsOK()) {
-                        return result;
+                        if (auto error = chunkManager->ExtractConfirmSequoiaChunkError(requestId); !error.IsOK()) {
+                            return error;
+                        } else {
+                            return TError(NRpc::EErrorCode::TransientFailure, "Chunk batched confirmation failed due to another chunk")
+                                << result;
+                        }
                     }
                 } else {
                     auto result = WaitFor(chunkManager->ConfirmSequoiaChunk(&context->Request()));

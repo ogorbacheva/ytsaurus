@@ -130,8 +130,8 @@ TErrorOr<IChangelogPtr> TCommitterBase::ExtractNextChangelog(TVersion version)
         auto changelogOrError = WaitFor(changelogFuture);
         if (!changelogOrError.IsOK()) {
             LoggingFailed_.Fire(TError("Error opening changelog")
-                << TErrorAttribute("changelog_id", changelogId)
-                << changelogOrError);
+                .With("changelog_id", changelogId)
+                .With(changelogOrError));
         }
         return changelogOrError;
     }
@@ -143,8 +143,8 @@ TErrorOr<IChangelogPtr> TCommitterBase::ExtractNextChangelog(TVersion version)
     auto openResult = WaitFor(EpochContext_->ChangelogStore->TryOpenChangelog(changelogId));
     if (!openResult.IsOK()) {
         LoggingFailed_.Fire(TError("Error opening changelog")
-            << TErrorAttribute("changelog_id", changelogId)
-            << openResult);
+            .With("changelog_id", changelogId)
+            .With(openResult));
         return openResult;
     }
 
@@ -167,8 +167,8 @@ TErrorOr<IChangelogPtr> TCommitterBase::ExtractNextChangelog(TVersion version)
     auto createResultOrError = WaitFor(EpochContext_->ChangelogStore->CreateChangelog(changelogId, /*meta*/ {}, {.CreateWriterEagerly = true}));
     if (!createResultOrError.IsOK()) {
         LoggingFailed_.Fire(TError("Error creating changelog")
-            << TErrorAttribute("changelog_id", changelogId)
-            << createResultOrError);
+            .With("changelog_id", changelogId)
+            .With(createResultOrError));
         return createResultOrError;
     }
 
@@ -238,8 +238,8 @@ void TCommitterBase::CloseChangelog(const IChangelogPtr& changelog)
     changelog->Close()
         .Subscribe(BIND([this, this_ = MakeStrong(this), changelog = changelog] (const TError& error) {
             if (error.IsOK()) {
-                YT_LOG_DEBUG("Changelog closed successfully (ChangelogId: %v)",
-                    changelog->GetId());
+                YT_TLOG_DEBUG("Changelog closed successfully")
+                    .With("ChangelogId", changelog->GetId());
             } else {
                 YT_LOG_WARNING(error, "Failed to close changelog (ChangelogId: %v)",
                     changelog->GetId());
@@ -315,7 +315,7 @@ void TLeaderCommitter::SerializeMutations(TMutationDraftQueue* mutationDraftQueu
     YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
     if (RotatingChangelog_) {
-        YT_LOG_DEBUG("Skip serializing mutations as changelog is being rotated");
+        YT_TLOG_DEBUG("Skip serializing mutations as changelog is being rotated");
         return;
     }
 
@@ -332,7 +332,7 @@ void TLeaderCommitter::SerializeMutations(TMutationDraftQueue* mutationDraftQueu
 
     if (EpochContext_->LeaderSwitchStarted) {
         // This check is also monotonic (see above).
-        YT_LOG_INFO("Cannot serialize mutation while leader switch is in progress");
+        YT_TLOG_INFO("Cannot serialize mutation while leader switch is in progress");
         return;
     }
 
@@ -508,9 +508,9 @@ void TLeaderCommitter::FlushMutations()
 
         auto& followerState = PeerStates_[followerId];
         if (followerState.Mode == EAcceptMutationsMode::Slow && followerState.InFlightRequestCount > 0) {
-            YT_LOG_DEBUG("Skipping sending mutations to follower since there are in-flight requests (FollowerId: %v, InFlightRequestCount: %v)",
-                followerId,
-                followerState.InFlightRequestCount);
+            YT_TLOG_DEBUG("Skipping sending mutations to follower since there are in-flight requests")
+                .With("FollowerId", followerId)
+                .With("InFlightRequestCount", followerState.InFlightRequestCount);
             continue;
         }
 
@@ -520,12 +520,11 @@ void TLeaderCommitter::FlushMutations()
             followerState.InFlightMutationCount > config->MaxInFlightMutationCount ||
             followerState.InFlightMutationDataSize > config->MaxInFlightMutationDataSize))
         {
-            YT_LOG_DEBUG("Skipping sending mutations to follower since in-flight limits are violated (FollowerId: %v, "
-                "InFlightRequestCount: %v, InFlightMutationCount: %v, InFlightMutationDataSize: %v)",
-                followerId,
-                followerState.InFlightRequestCount,
-                followerState.InFlightMutationCount,
-                followerState.InFlightMutationDataSize);
+            YT_TLOG_DEBUG("Skipping sending mutations to follower since in-flight limits are violated")
+                .With("FollowerId", followerId)
+                .With("InFlightRequestCount", followerState.InFlightRequestCount)
+                .With("InFlightMutationCount", followerState.InFlightMutationCount)
+                .With("InFlightMutationDataSize", followerState.InFlightMutationDataSize);
             continue;
         }
 
@@ -596,11 +595,11 @@ void TLeaderCommitter::FlushMutations()
             snapshotRequest->set_read_only(LastSnapshotInfo_->ReadOnly);
         }
 
-        YT_LOG_DEBUG("Sending mutations to follower (PeerId: %v, NextExpectedSequenceNumber: %v, MutationCount: %v, CommittedState: %v)",
-            followerId,
-            followerState.NextExpectedSequenceNumber,
-            mutationCount,
-            CommittedState_);
+        YT_TLOG_DEBUG("Sending mutations to follower")
+            .With("PeerId", followerId)
+            .With("NextExpectedSequenceNumber", followerState.NextExpectedSequenceNumber)
+            .With("MutationCount", mutationCount)
+            .With("CommittedState", CommittedState_);
 
         BatchSizeSummary_.Record(mutationCount);
 
@@ -765,9 +764,9 @@ void TLeaderCommitter::MaybePromoteCommittedSequenceNumber()
 
     auto committedSequenceNumber = loggedNumbers[CellManager_->GetQuorumPeerCount() - 1];
 
-    YT_LOG_DEBUG("Trying to promote committed sequence number (NewCommittedSequenceNumber: %v, OldCommittedSequenceNumber: %v)",
-        committedSequenceNumber,
-        CommittedState_.SequenceNumber);
+    YT_TLOG_DEBUG("Trying to promote committed sequence number")
+        .With("NewCommittedSequenceNumber", committedSequenceNumber)
+        .With("OldCommittedSequenceNumber", CommittedState_.SequenceNumber);
     if (committedSequenceNumber == -1 || CommittedState_.SequenceNumber >= committedSequenceNumber) {
         return;
     }
@@ -782,9 +781,9 @@ void TLeaderCommitter::MaybePromoteCommittedSequenceNumber()
     YT_VERIFY(committedSequenceNumber >= CommittedState_.SequenceNumber);
 
     TReachableState committedState(segmentId, committedSequenceNumber);
-    YT_LOG_DEBUG("Committed sequence number promoted (Previous: %v, Current: %v)",
-        CommittedState_,
-        committedState);
+    YT_TLOG_DEBUG("Committed sequence number promoted")
+        .With("Previous", CommittedState_)
+        .With("Current", committedState);
     CommittedState_ = committedState;
 
     OnCommittedSequenceNumberUpdated();
@@ -823,8 +822,8 @@ void TLeaderCommitter::DrainQueue()
         const auto& mutation = MutationQueue_.front();
         if (mutation->SequenceNumber > CommittedState_.SequenceNumber) {
             LoggingFailed_.Fire(TError("Mutation queue mutation count limit exceeded, but the first mutation in queue is still uncommitted")
-                << TErrorAttribute("mutation_count", MutationQueue_.size())
-                << TErrorAttribute("mutation_sequence_number", mutation->SequenceNumber));
+                .With("mutation_count", MutationQueue_.size())
+                .With("mutation_sequence_number", mutation->SequenceNumber));
             return;
         }
         popMutationQueue();
@@ -834,8 +833,8 @@ void TLeaderCommitter::DrainQueue()
         const auto& mutation = MutationQueue_.front();
         if (mutation->SequenceNumber > CommittedState_.SequenceNumber) {
             LoggingFailed_.Fire(TError("Mutation queue data size limit exceeded, but the first mutation in queue is still uncommitted")
-                << TErrorAttribute("queue_data_size", MutationQueueDataSize_)
-                << TErrorAttribute("mutation_sequence_number", mutation->SequenceNumber));
+                .With("queue_data_size", MutationQueueDataSize_)
+                .With("mutation_sequence_number", mutation->SequenceNumber));
             return;
         }
         popMutationQueue();
@@ -947,7 +946,7 @@ void TLeaderCommitter::OnSnapshotsComplete()
 
     if (successCount == 0) {
         LastSnapshotInfo_->Promise.TrySet(TError("Error building snapshot")
-            << TErrorAttribute("snapshot_id", LastSnapshotInfo_->SnapshotId));
+            .With("snapshot_id", LastSnapshotInfo_->SnapshotId));
     } else {
         LastSnapshotInfo_->Promise.TrySet(LastSnapshotInfo_->SnapshotId);
     }
@@ -1042,7 +1041,7 @@ void TLeaderCommitter::OnChangelogAcquired(const TErrorOr<IChangelogPtr>& change
         }
         YT_LOG_ERROR(changelogsOrError);
         LoggingFailed_.Fire(TError("Error acquiring changelog")
-            << changelogsOrError);
+            .With(changelogsOrError));
         AcquiringChangelog_ = false;
         return;
     }
@@ -1059,8 +1058,8 @@ void TLeaderCommitter::OnChangelogAcquired(const TErrorOr<IChangelogPtr>& change
     auto preparationResult = PrepareNextChangelog(newNextLoggedVersion);
     if (!preparationResult.IsOK()) {
         LoggingFailed_.Fire(TError("Error opening changelog")
-            << TErrorAttribute("changelog_id", changelogId)
-            << preparationResult);
+            .With("changelog_id", changelogId)
+            .With(preparationResult));
         AcquiringChangelog_ = false;
         return;
     }
@@ -1098,8 +1097,8 @@ void TLeaderCommitter::OnChangelogAcquired(const TErrorOr<IChangelogPtr>& change
 
     if (!result.IsOK()) {
         LoggingFailed_.Fire(TError("Error logging mutations")
-            << TErrorAttribute("changelog_id", oldChangelog->GetId())
-            << result);
+            .With("changelog_id", oldChangelog->GetId())
+            .With(result));
         THROW_ERROR(result);
     }
 
@@ -1159,12 +1158,12 @@ void TLeaderCommitter::LogMutations(std::vector<TMutationDraft> mutationDrafts)
         NextLoggedVersion_ = NextLoggedVersion_.Advance();
         ++NextLoggedSequenceNumber_;
 
-        YT_LOG_DEBUG("Logging mutation at leader (SequenceNumber: %v, Version: %v, RandomSeed: %x, MutationType: %v, MutationId: %v)",
-            mutation->SequenceNumber,
-            mutation->Version,
-            mutation->RandomSeed,
-            mutation->Request.Type,
-            mutation->Request.MutationId);
+        YT_TLOG_DEBUG("Logging mutation at leader")
+            .With("SequenceNumber", mutation->SequenceNumber)
+            .With("Version", mutation->Version)
+            .WithFormat("RandomSeed", "%x", mutation->RandomSeed)
+            .With("MutationType", mutation->Request.Type)
+            .With("MutationId", mutation->Request.MutationId);
 
         if (!MutationQueue_.empty()) {
             YT_VERIFY(MutationQueue_.back()->SequenceNumber + 1 == mutation->SequenceNumber);
@@ -1199,13 +1198,12 @@ void TLeaderCommitter::OnMutationsLogged(
 
     if (!error.IsOK()) {
         LoggingFailed_.Fire(TError("Error logging mutations")
-            << error);
+            .With(error));
         return;
     }
 
-    YT_LOG_DEBUG("Mutations logged at leader (SequenceNumbers: %v-%v)",
-        firstSequenceNumber,
-        lastSequenceNumber);
+    YT_TLOG_DEBUG("Mutations logged at leader")
+        .WithFormat("SequenceNumbers", "%v-%v", firstSequenceNumber, lastSequenceNumber);
 
     auto& selfState = PeerStates_[CellManager_->GetSelfPeerId()];
     selfState.LastLoggedSequenceNumber = std::max(selfState.LastLoggedSequenceNumber, lastSequenceNumber);
@@ -1235,7 +1233,7 @@ void TLeaderCommitter::OnCommittedSequenceNumberUpdated()
                 queueIndex,
                 std::ssize(MutationQueue_));
             LoggingFailed_.Fire(TError("Mutation is lost")
-                << TErrorAttribute("sequence_number", sequenceNumber));
+                .With("sequence_number", sequenceNumber));
             return;
         }
         YT_VERIFY(MutationQueue_[queueIndex]->LocalCommitPromise);
@@ -1469,8 +1467,8 @@ void TFollowerCommitter::LogMutations()
             auto preparationResult = PrepareNextChangelog(version);
             if (!preparationResult.IsOK()) {
                 LoggingFailed_.Fire(TError("Error opening changelog")
-                    << TErrorAttribute("version", ToString(version))
-                    << preparationResult);
+                    .With("version", ToString(version))
+                    .With(preparationResult));
             }
             preparationResult.ThrowOnError();
         }
@@ -1522,7 +1520,7 @@ void TFollowerCommitter::OnMutationsLogged(
 
     if (!error.IsOK()) {
         LoggingFailed_.Fire(TError("Error logging mutations at follower")
-            << error);
+            .With(error));
         return;
     }
 
@@ -1589,8 +1587,8 @@ TFuture<void> TFollowerCommitter::TruncateChangelog(i64 lastSequenceNumber)
 
     if (CommittedSequenceNumber_ > lastSequenceNumber) {
         THROW_ERROR_EXCEPTION("Cannot truncate committed mutations records")
-            << TErrorAttribute("committed_sequence_number", CommittedSequenceNumber_)
-            << TErrorAttribute("last_sequence_number", lastSequenceNumber);
+            .With("committed_sequence_number", CommittedSequenceNumber_)
+            .With("last_sequence_number", lastSequenceNumber);
     }
 
     if (!Changelog_) {
@@ -1619,9 +1617,9 @@ TFuture<void> TFollowerCommitter::TruncateChangelog(i64 lastSequenceNumber)
 
     if (lastSequenceNumber + 1 < firstSequenceNumber) {
         THROW_ERROR_EXCEPTION("Last sequence number is out of current changelog range")
-            << TErrorAttribute("changelog_id", Changelog_->GetId())
-            << TErrorAttribute("last_sequence_number", lastSequenceNumber)
-            << TErrorAttribute("first_sequence_number", firstSequenceNumber);
+            .With("changelog_id", Changelog_->GetId())
+            .With("last_sequence_number", lastSequenceNumber)
+            .With("first_sequence_number", firstSequenceNumber);
     }
 
     auto adjustedRecordCount = lastSequenceNumber + 1 - firstSequenceNumber;

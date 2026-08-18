@@ -104,6 +104,10 @@ void TProcessManagerBase::Start()
         RestartOnStop_ = true;
     }
 
+    // The port is captured at construction and never changes, so check it once here —
+    // and before KillZombieProcessesOnPort() probes it.
+    ValidateCompanionPort();
+
     // Check if the companion port is already in use and kill any zombie process.
     KillZombieProcessesOnPort();
 
@@ -145,8 +149,11 @@ void TProcessManagerBase::Shutdown()
             Started_ = false;
         }
         StopIncarnation();
-        Y_UNUSED(NConcurrency::WaitFor(HealthCheckExecutor_->Stop()));
-        Y_UNUSED(NConcurrency::WaitFor(MetricsCollectionExecutor_->Stop()));
+        // #TCompanionManager's destructor calls this, and a resource is released inside a
+        // context-switch-forbidden region, so waiting for an in-flight callback would crash.
+        // The executors hold only weak references, so an outstanding one is harmless.
+        YT_UNUSED_FUTURE(HealthCheckExecutor_->Stop());
+        YT_UNUSED_FUTURE(MetricsCollectionExecutor_->Stop());
     } catch (const std::exception& ex) {
         YT_TLOG_ERROR("Failed to shutdown auto-restartable companion process")
             .With(ex);
@@ -229,6 +236,15 @@ bool TProcessManagerBase::IsWithinStartupGracePeriod()
     return incarnationAge < StartupGracePeriod_;
 }
 
+void TProcessManagerBase::ValidateCompanionPort() const
+{
+    // Without a port the spawned process refuses to serve and the worker dials nowhere,
+    // so say up front where the port comes from instead of looping over dead incarnations.
+    THROW_ERROR_EXCEPTION_UNLESS(CompanionConfig_->Port > 0,
+        "Companion port is not configured; set companion.port in the node config or request "
+        "three ports for the vanilla task (port_count = 3) to receive it via YT_PORT_2");
+}
+
 void TProcessManagerBase::DoStart()
 {
     TFuture<void> spawnFuture;
@@ -245,7 +261,7 @@ void TProcessManagerBase::DoStart()
         try {
             ValidateParameters();
         } catch (const std::exception& ex) {
-            auto error = TError("Companion process parameters are invalid") << TError(ex);
+            auto error = TError("Companion process parameters are invalid").With(TError(ex));
             ErrorState_->SetError(error);
             THROW_ERROR error;
         }
@@ -282,7 +298,7 @@ void TProcessManagerBase::OnProcessStopped(const TError& error, const std::strin
     auto exitCode = error.Attributes().Find<int>("exit_code");
 
     auto stopError = TError("Companion process was stopped")
-        << error;
+        .With(error);
     if (exitCode) {
         stopError <<= TErrorAttribute("exit_code", *exitCode);
     }

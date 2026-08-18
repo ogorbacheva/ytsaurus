@@ -24,6 +24,7 @@ IMapNodePtr BuildVanillaOperationSpec(const TVanillaSpec& spec)
         .BeginMap()
             .Item("max_speculative_job_count_per_task").Value(0)
             .Item("max_failed_job_count").Value(spec.MaxFailedJobCount)
+            .Item("max_stderr_count").Value(spec.MaxStderrCount)
             .Item("alias").Value(spec.Alias)
             .Item("secret_env").Value(spec.SecretEnv)
             .DoIf(spec.Pool.has_value(), [&] (auto fluent) {
@@ -77,6 +78,9 @@ IMapNodePtr BuildVanillaOperationSpec(const TVanillaSpec& spec)
                     .DoIf(task.SystemLayerPath.has_value(), [&] (auto fluent) {
                         fluent.Item("system_layer_path").Value(*task.SystemLayerPath);
                     })
+                    .DoIf(task.DockerImage.has_value(), [&] (auto fluent) {
+                        fluent.Item("docker_image").Value(*task.DockerImage);
+                    })
                     .DoIf(task.NetworkProject.has_value(), [&] (auto fluent) {
                         fluent.Item("network_project").Value(*task.NetworkProject);
                     })
@@ -86,6 +90,26 @@ IMapNodePtr BuildVanillaOperationSpec(const TVanillaSpec& spec)
     // clang-format on
 
     return node->AsMap();
+}
+
+namespace {
+
+TString GetSecretEnvOrThrow(const std::string& name)
+{
+    auto value = GetEnv(TString(name));
+    THROW_ERROR_EXCEPTION_IF(value.empty(),
+        "Secret environment variable %Qv (declared in \"secret_env\") is not set",
+        name);
+    return value;
+}
+
+} // namespace
+
+void ValidateSecretEnv(const std::vector<std::string>& secretEnv)
+{
+    for (const auto& name : secretEnv) {
+        GetSecretEnvOrThrow(name);
+    }
 }
 
 void InjectSecureVaultFromEnv(const IMapNodePtr& spec)
@@ -99,11 +123,7 @@ void InjectSecureVaultFromEnv(const IMapNodePtr& spec)
     auto secureVault = GetEphemeralNodeFactory()->CreateMap();
     secureVault->AddChild("YT_TOKEN", ConvertToNode(NAuth::LoadToken().value()));
     for (const auto& name : secretEnv) {
-        auto value = GetEnv(TString(name));
-        THROW_ERROR_EXCEPTION_IF(value.empty(),
-            "Secret environment variable %Qv (declared in \"secret_env\") is not set",
-            name);
-        secureVault->AddChild(TString(name), ConvertToNode(value));
+        secureVault->AddChild(TString(name), ConvertToNode(GetSecretEnvOrThrow(name)));
     }
     spec->AddChild("secure_vault", secureVault);
 }

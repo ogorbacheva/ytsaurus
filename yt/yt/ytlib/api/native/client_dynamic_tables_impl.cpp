@@ -284,9 +284,9 @@ TTimestamp ExtractTimestampFromPulledRow(TVersionedRow row)
 
     if (writeTimestampCount > 1 || deleteTimestampCount > 1) {
         THROW_ERROR_EXCEPTION("Unexpected timestamps in pulled rows")
-            << TErrorAttribute("write_timestamp_count", writeTimestampCount)
-            << TErrorAttribute("delete_timestamp_count", deleteTimestampCount)
-            << TErrorAttribute("key", ToOwningKey(row));
+            .With("write_timestamp_count", writeTimestampCount)
+            .With("delete_timestamp_count", deleteTimestampCount)
+            .With("key", ToOwningKey(row));
     }
 
     if (writeTimestampCount > 0 && deleteTimestampCount > 0) {
@@ -294,9 +294,9 @@ TTimestamp ExtractTimestampFromPulledRow(TVersionedRow row)
         auto deleteTimestamp = row.DeleteTimestamps()[0];
         if (writeTimestamp != deleteTimestamp) {
             THROW_ERROR_EXCEPTION("Timestamps mismatch in pulled row")
-                << TErrorAttribute("write_timestamp", writeTimestamp)
-                << TErrorAttribute("delete_timestamp", deleteTimestamp)
-                << TErrorAttribute("key", ToOwningKey(row));
+                .With("write_timestamp", writeTimestamp)
+                .With("delete_timestamp", deleteTimestamp)
+                .With("key", ToOwningKey(row));
         }
 
         return writeTimestamp;
@@ -310,7 +310,7 @@ TTimestamp ExtractTimestampFromPulledRow(TVersionedRow row)
     }
 
     THROW_ERROR_EXCEPTION("Pulled a row without timestamps")
-        << TErrorAttribute("key", ToOwningKey(row));
+        .With("key", ToOwningKey(row));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -382,9 +382,9 @@ std::vector<TTabletInfo> GetChaosTabletInfosImpl(
 
     if (tabletInfoFutures.empty()) {
         THROW_ERROR_EXCEPTION("No sync replicas found")
-            << TErrorAttribute("table_path", tableInfo->Path)
-            << TErrorAttribute("table_id", tableInfo->TableId)
-            << TErrorAttribute("table_replication_card_id", tableInfo->ReplicationCardId);
+            .With("table_path", tableInfo->Path)
+            .With("table_id", tableInfo->TableId)
+            .With("table_replication_card_id", tableInfo->ReplicationCardId);
     }
 
     auto result = WaitFor(AllSucceeded(std::move(tabletInfoFutures)).AsUnique())
@@ -518,8 +518,8 @@ private:
                     false);
             } catch (const std::exception& ex) {
                 auto error = TError(NTabletClient::EErrorCode::TableSchemaIncompatible, "Schema validation failed during replica fallback")
-                    << TErrorAttribute(std::string(UpstreamReplicaIdAttributeName), tableInfo->UpstreamReplicaId)
-                    << ex;
+                    .With(std::string(UpstreamReplicaIdAttributeName), tableInfo->UpstreamReplicaId)
+                    .With(ex);
 
                 THROW_ERROR error;
             }
@@ -1043,8 +1043,8 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
 {
     if (options.RetentionTimestamp > options.Timestamp) {
         THROW_ERROR_EXCEPTION("Retention timestamp cannot be greater than read timestamp")
-            << TErrorAttribute("retention_timestamp", options.RetentionTimestamp)
-            << TErrorAttribute("timestamp", options.Timestamp);
+            .With("retention_timestamp", options.RetentionTimestamp)
+            .With("timestamp", options.Timestamp);
     }
 
     const auto connectionConfig = Connection_->GetConfig();
@@ -1173,13 +1173,11 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
                         ? options.Timestamp
                         : SyncLastCommittedTimestamp);
 
-                YT_LOG_DEBUG(
-                    "Picked in-sync replicas for lookup "
-                    "(ReplicaIds: %v, Timestamp: %v, ReplicationCard: %v, EnableReadFromInSyncAsyncReplicas: %v)",
-                    replicaIds,
-                    options.Timestamp,
-                    *replicationCard,
-                    connectionConfig->EnableReadFromInSyncAsyncReplicas);
+                YT_TLOG_DEBUG("Picked in-sync replicas for lookup")
+                    .With("ReplicaIds", replicaIds)
+                    .With("Timestamp", options.Timestamp)
+                    .With("ReplicationCard", *replicationCard)
+                    .With("EnableReadFromInSyncAsyncReplicas", connectionConfig->EnableReadFromInSyncAsyncReplicas);
 
                 TTableReplicaInfoPtrList inSyncReplicas;
                 for (auto replicaId : replicaIds) {
@@ -1245,7 +1243,7 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
                     NTabletClient::EErrorCode::NoInSyncReplicas,
                     "No working in-sync replicas found for table %v",
                     tableInfo->Path)
-                    << TErrorAttribute("banned_replicas", bannedSyncReplicaIds);
+                    .With("banned_replicas", bannedSyncReplicaIds);
                 *error.MutableInnerErrors() = std::move(replicaErrors);
                 THROW_ERROR error;
             }
@@ -1261,8 +1259,9 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
                 resultOrError <<= TErrorAttribute("replica_path", replicaFallbackInfo.Path);
             }
 
-            YT_LOG_DEBUG(resultOrError, "Fallback to replica failed (ReplicaId: %v)",
-                replicaFallbackInfo.ReplicaId);
+            YT_TLOG_DEBUG("Fallback to replica failed")
+                .With("ReplicaId", replicaFallbackInfo.ReplicaId)
+                .With(resultOrError);
 
             if (bannedReplicaTracker) {
                 if (auto banReplicaDirective = TReplicaBanDirective::FromError(resultOrError);
@@ -1523,7 +1522,7 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
                     servantNotActiveErrors[0].ThrowOnError();
                 } else {
                     THROW_ERROR_EXCEPTION("Some lookup subrequests failed because tablet servants are not active")
-                        << servantNotActiveErrors;
+                        .With(servantNotActiveErrors);
                 }
             }
         }
@@ -1864,7 +1863,8 @@ bool HeavyRangeInferenceImprovesJoinSubquery(
         ? MakeAndExpression(inExpression, subquery->WhereClause)
         : inExpression;
 
-    YT_LOG_DEBUG("Created subquery for range optimization (Subquery: %v)", InferName(subquery));
+    YT_TLOG_DEBUG("Created subquery for range optimization")
+        .With("Subquery", InferName(subquery));
 
     auto inferredResult = InferRanges(
         columnEvaluatorCache,
@@ -1904,8 +1904,8 @@ TSelectRowsResult TClient::DoSelectRowsOnce(
 {
     if (options.RetentionTimestamp > options.Timestamp) {
         THROW_ERROR_EXCEPTION("Retention timestamp cannot be greater than read timestamp")
-            << TErrorAttribute("retention_timestamp", options.RetentionTimestamp)
-            << TErrorAttribute("timestamp", options.Timestamp);
+            .With("retention_timestamp", options.RetentionTimestamp)
+            .With("timestamp", options.Timestamp);
     }
 
     auto parsedQuery = ParseSource(
@@ -2037,7 +2037,7 @@ TSelectRowsResult TClient::DoSelectRowsOnce(
         const auto& ast = std::get<NAst::TQuery>(parsedQuery->AstHead.Ast);
         THROW_ERROR_EXCEPTION("Foreign table key is not used in the join clause; "
             "the query is inefficient, consider rewriting it")
-            << TErrorAttribute("source", NAst::FormatJoin(std::get<NAst::TJoin>(ast.Joins[index])));
+            .With("source", NAst::FormatJoin(std::get<NAst::TJoin>(ast.Joins[index])));
     }
 
     auto permissionCacheWaitTime = CheckPermissionsForQuery(*fragment, options, mountCache);
@@ -2090,14 +2090,14 @@ TSelectRowsResult TClient::DoSelectRowsOnce(
                 NTabletClient::EErrorCode::QueryInputRowCountLimitExceeded,
                 "Query terminated prematurely due to excessive input; "
                 "consider rewriting your query or changing input limit")
-                << TErrorAttribute("input_row_limit", queryOptions.InputRowLimit);
+                .With("input_row_limit", queryOptions.InputRowLimit);
         }
         if (statistics.IncompleteOutput) {
             THROW_ERROR_EXCEPTION(
                 NTabletClient::EErrorCode::QueryOutputRowCountLimitExceeded,
                 "Query terminated prematurely due to excessive output; "
                 "consider rewriting your query or changing output limit")
-                << TErrorAttribute("output_row_limit", queryOptions.OutputRowLimit);
+                .With("output_row_limit", queryOptions.OutputRowLimit);
         }
     }
 
@@ -2528,11 +2528,11 @@ void TClient::DoReshardTableWithTabletCount(
             return;
         } catch (const TErrorException& ex) {
             if (ex.Error().FindMatching(NChunkClient::EErrorCode::TooManyChunksToFetch)) {
-                YT_LOG_DEBUG(ex,
-                    "Too many chunks have been requested to fetch, fallback to reshard without slicing");
+                YT_TLOG_DEBUG("Too many chunks have been requested to fetch, fallback to reshard without slicing")
+                    .With(ex);
             } else if (dynamicConfig->EnableReshardWithSlicingByDefault) {
-                YT_LOG_DEBUG(ex,
-                    "Failed to pick pivot keys with slicing, fallback to reshard without slicing");
+                YT_TLOG_DEBUG("Failed to pick pivot keys with slicing, fallback to reshard without slicing")
+                    .With(ex);
             } else {
                 throw;
             }
@@ -2605,8 +2605,8 @@ void TClient::DoAlterTable(
         if (options.Schema) {
             if (options.ConstrainedSchema->TableSchema() != *options.Schema) {
                 THROW_ERROR_EXCEPTION("Both \"schema\" and \"constrained_schema\" specified and the schemas do not match")
-                    << TErrorAttribute("schema", *options.Schema)
-                    << TErrorAttribute("constrained_schema", *options.ConstrainedSchema);
+                    .With("schema", *options.Schema)
+                    .With("constrained_schema", *options.ConstrainedSchema);
             }
         }
 
@@ -2816,7 +2816,8 @@ std::vector<TTabletActionId> TClient::DoBalanceTabletCells(
             auto tabletActionsFromCell = FromProto<std::vector<TTabletActionId>>(rsp->tablet_actions());
             tabletActions.insert(tabletActions.end(), tabletActionsFromCell.begin(), tabletActionsFromCell.end());
         } else {
-            YT_LOG_DEBUG(errorOrRsp, "Tablet cell balancing subrequest failed");
+            YT_TLOG_DEBUG("Tablet cell balancing subrequest failed")
+                .With(errorOrRsp);
         }
     }
 
@@ -2993,7 +2994,7 @@ IQueueRowsetPtr TClient::DoPullQueueImplOnce(
                     NTabletClient::EErrorCode::NoInSyncReplicas,
                     "No working in-sync replicas found for table %v",
                     tableInfo->Path)
-                    << TErrorAttribute("banned_replicas", bannedSyncReplicaIds);
+                    .With("banned_replicas", bannedSyncReplicaIds);
                 *error.MutableInnerErrors() = std::move(replicaErrors);
                 THROW_ERROR error;
             }
@@ -3015,10 +3016,9 @@ IQueueRowsetPtr TClient::DoPullQueueImplOnce(
                 return resultOrError.Value();
             }
 
-            YT_LOG_DEBUG(
-                resultOrError,
-                "Fallback to replica failed (ReplicaId: %v)",
-                replicaFallbackInfo.ReplicaId);
+            YT_TLOG_DEBUG("Fallback to replica failed")
+                .With("ReplicaId", replicaFallbackInfo.ReplicaId)
+                .With(resultOrError);
 
             if (bannedReplicaTracker) {
                 if (auto banReplicaDirective = TReplicaBanDirective::FromError(resultOrError);
@@ -3241,11 +3241,10 @@ IQueueRowsetPtr TClient::DoPullQueueConsumer(
         auto partitions = WaitFor(subConsumerClient->CollectPartitions(std::vector<int>{partitionIndex}))
             .ValueOrThrow();
         if (partitions.size() < 1) {
-            YT_LOG_DEBUG(
-                "Consumer partition was not found during offset calculation (PartitionIndex: %v, ConsumerPath: %v, QueuePath: %v)",
-                partitionIndex,
-                consumerPath,
-                queuePath);
+            YT_TLOG_DEBUG("Consumer partition was not found during offset calculation")
+                .With("PartitionIndex", partitionIndex)
+                .With("ConsumerPath", consumerPath)
+                .With("QueuePath", queuePath);
 
             THROW_ERROR_EXCEPTION(
                 "Failed to calculate current offset for consumer %v for queue %v",
@@ -3291,12 +3290,11 @@ void TClient::DoRegisterQueueConsumer(
     auto registrationCache = Connection_->GetQueueConsumerRegistrationManagerOrThrow();
     registrationCache->RegisterQueueConsumer(queuePath, consumerPath, vital, options.Partitions);
 
-    YT_LOG_DEBUG(
-        "Registered queue consumer (Queue: %v, Consumer: %v, Vital: %v, Partitions: %v)",
-        queuePath,
-        consumerPath,
-        vital,
-        options.Partitions);
+    YT_TLOG_DEBUG("Registered queue consumer")
+        .With("Queue", queuePath)
+        .With("Consumer", consumerPath)
+        .With("Vital", vital)
+        .With("Partitions", options.Partitions);
 }
 
 void TClient::DoUnregisterQueueConsumer(
@@ -3339,7 +3337,9 @@ void TClient::DoUnregisterQueueConsumer(
     auto registrationCache = Connection_->GetQueueConsumerRegistrationManagerOrThrow();
     registrationCache->UnregisterQueueConsumer(queuePath, consumerPath);
 
-    YT_LOG_DEBUG("Unregistered queue consumer (Queue: %v, Consumer: %v)", queuePath, consumerPath);
+    YT_TLOG_DEBUG("Unregistered queue consumer")
+        .With("Queue", queuePath)
+        .With("Consumer", consumerPath);
 }
 
 std::vector<TListQueueConsumerRegistrationsResult> TClient::DoListQueueConsumerRegistrations(
@@ -3421,10 +3421,10 @@ TCreateQueueProducerSessionResult TClient::DoCreateQueueProducerSession(
             ? record.SystemMeta->MutationId
             : std::nullopt;
 
-        YT_LOG_DEBUG("Fetched previous queue producer session info (SequenceNumber: %v, Epoch: %v, MutationId: %v)",
-            record.SequenceNumber,
-            record.Epoch,
-            previousMutationId);
+        YT_TLOG_DEBUG("Fetched previous queue producer session info")
+            .With("SequenceNumber", record.SequenceNumber)
+            .With("Epoch", record.Epoch)
+            .With("MutationId", previousMutationId);
 
         lastSequenceNumber = TQueueProducerSequenceNumber(record.SequenceNumber);
 
@@ -3436,7 +3436,7 @@ TCreateQueueProducerSessionResult TClient::DoCreateQueueProducerSession(
             responseUserMeta = ConvertTo<INodePtr>(*record.UserMeta);
         }
     } else {
-        YT_LOG_DEBUG("No info was available for this queue producer session, initializing");
+        YT_TLOG_DEBUG("No info was available for this queue producer session, initializing");
     }
 
     TQueueProducerSystemMeta resultSystemMeta;
@@ -3458,9 +3458,9 @@ TCreateQueueProducerSessionResult TClient::DoCreateQueueProducerSession(
     WaitFor(transaction->Commit())
         .ValueOrThrow();
 
-    YT_LOG_DEBUG("Created queue producer session (SequenceNumber: %v, Epoch: %v)",
-        lastSequenceNumber,
-        epoch);
+    YT_TLOG_DEBUG("Created queue producer session")
+        .With("SequenceNumber", lastSequenceNumber)
+        .With("Epoch", epoch);
 
     return TCreateQueueProducerSessionResult{
         .SequenceNumber = lastSequenceNumber,
@@ -3699,16 +3699,16 @@ private:
             auto* ext = req->Header().MutableExtension(NQueryClient::NProto::TReqExecuteExt::req_execute_ext);
             ext->set_execution_tag(ToString(Options_.SelfTabletId));
 
-            YT_LOG_DEBUG("Issuing pull rows request (Progress: %v, StartRowIndex: %v)",
-                ReplicationProgress_,
-                ReplicationRowIndex_);
+            YT_TLOG_DEBUG("Issuing pull rows request")
+                .With("Progress", ReplicationProgress_)
+                .With("StartRowIndex", ReplicationRowIndex_);
 
             return req->Invoke()
                 .Apply(BIND(&TTabletPullRowsSession::OnPullRowsResponse, MakeWeak(this))
                     .AsyncVia(Invoker_));
 
         } catch (const std::exception& ex) {
-            OnPullRowsResponse(TError("Failed to prepare request") << ex);
+            OnPullRowsResponse(TError("Failed to prepare request").With(ex));
             return OKFuture;
         }
     }
@@ -3717,7 +3717,8 @@ private:
     {
         ResultOrError_ = resultOrError;
         if (!resultOrError.IsOK()) {
-            YT_LOG_DEBUG(resultOrError, "Pull rows request failed");
+            YT_TLOG_DEBUG("Pull rows request failed")
+                .With(resultOrError);
             return;
         }
 
@@ -3734,11 +3735,11 @@ private:
         DataWeight_ += result->data_weight();
         RowCount_ += result->row_count();
 
-        YT_LOG_DEBUG("Got pull rows response (RowCount: %v, DataWeight: %v, EndReplicationRowIndex: %v, Progress: %v)",
-            result->row_count(),
-            result->data_weight(),
-            ReplicationRowIndex_,
-            ReplicationProgress_);
+        YT_TLOG_DEBUG("Got pull rows response")
+            .With("RowCount", result->row_count())
+            .With("DataWeight", result->data_weight())
+            .With("EndReplicationRowIndex", ReplicationRowIndex_)
+            .With("Progress", ReplicationProgress_);
     }
 
     std::vector<TTypeErasedRow> DoGetRows(TTimestamp maxTimestamp, const TRowBufferPtr& outputRowBuffer)
@@ -3819,10 +3820,9 @@ private:
 
         auto progressMinTimestamp = GetReplicationProgressMaxTimestamp(progress);
         if (progressMinTimestamp >= options.UpperTimestamp) {
-            YT_LOG_DEBUG("Skipping pulling rows because upper timestamp has been reached "
-                "(UpperTimestamp: %v, ProgressMinTimestamp: %v)",
-                options.UpperTimestamp,
-                progressMinTimestamp);
+            YT_TLOG_DEBUG("Skipping pulling rows because upper timestamp has been reached")
+                .With("UpperTimestamp", options.UpperTimestamp)
+                .With("ProgressMinTimestamp", progressMinTimestamp);
             return true;
         }
 
@@ -3862,12 +3862,12 @@ TPullRowsResult TClient::DoPullRows(
         THROW_ERROR_EXCEPTION("Invalid replication progress: more than one segment while ordering by timestamp requested");
     }
 
-    YT_LOG_DEBUG("Pulling rows (OrderedByTimestamp: %v, UpperTimestamp: %v, Progress: %v, StartRowIndexes: %v, Sorted: %v)",
-        options.OrderRowsByTimestamp,
-        options.UpperTimestamp,
-        options.ReplicationProgress,
-        options.StartReplicationRowIndexes,
-        tableInfo->IsSorted());
+    YT_TLOG_DEBUG("Pulling rows")
+        .With("OrderedByTimestamp", options.OrderRowsByTimestamp)
+        .With("UpperTimestamp", options.UpperTimestamp)
+        .With("Progress", options.ReplicationProgress)
+        .With("StartRowIndexes", options.StartReplicationRowIndexes)
+        .With("Sorted", tableInfo->IsSorted());
 
     auto getStartReplicationRowIndex = [&] (int tabletIndex) -> std::optional<i64> {
         const auto& tabletInfo = tableInfo->Tablets[tabletIndex];
@@ -3909,8 +3909,8 @@ TPullRowsResult TClient::DoPullRows(
 
         if (index >= std::ssize(tableInfo->Tablets)) {
             THROW_ERROR_EXCEPTION("Target queue has no corresponding tablet")
-                << TErrorAttribute("tablet_index", index)
-                << TErrorAttribute("tablet_count", std::ssize(tableInfo->Tablets));
+                .With("tablet_index", index)
+                .With("tablet_count", std::ssize(tableInfo->Tablets));
         }
 
         requests.push_back({
@@ -3965,8 +3965,8 @@ TPullRowsResult TClient::DoPullRows(
         for (const auto& session : sessions) {
             if (session->GetReplicationProgress().Segments.size() != 1) {
                 THROW_ERROR_EXCEPTION("Invalid replication progress in pull rows session")
-                    << TErrorAttribute("tablet_id", session->GetTabletInfo()->TabletId)
-                    << TErrorAttribute("replication_progress", session->GetReplicationProgress());
+                    .With("tablet_id", session->GetTabletInfo()->TabletId)
+                    .With("replication_progress", session->GetReplicationProgress());
             }
             maxTimestamp = std::min(maxTimestamp, GetReplicationProgressMinTimestamp(session->GetReplicationProgress()));
         }
@@ -4049,9 +4049,9 @@ TPullRowsResult TClient::DoPullRows(
         MakeSharedRange(std::move(resultRows), std::move(outputRowBuffer)));
     combinedResult.Versioned = tableInfo->IsSorted();
 
-    YT_LOG_DEBUG("Pulled rows (ReplicationProgress: %v, EndRowIndexes: %v)",
-        combinedResult.ReplicationProgress,
-        combinedResult.EndReplicationRowIndexes);
+    YT_TLOG_DEBUG("Pulled rows")
+        .With("ReplicationProgress", combinedResult.ReplicationProgress)
+        .With("EndRowIndexes", combinedResult.EndReplicationRowIndexes);
 
     return combinedResult;
 }
@@ -4099,9 +4099,9 @@ TReplicationCardPtr TClient::DoGetReplicationCard(
     auto replicationCard = New<TReplicationCard>();
     FromProto(replicationCard.Get(), rsp->replication_card());
 
-    YT_LOG_DEBUG("Got replication card (ReplicationCardId: %v, ReplicationCard: %v)",
-        replicationCardId,
-        *replicationCard);
+    YT_TLOG_DEBUG("Got replication card")
+        .With("ReplicationCardId", replicationCardId)
+        .With("ReplicationCard", *replicationCard);
 
     return replicationCard;
 }
@@ -4176,16 +4176,15 @@ void TClient::DoAlterReplicationCard(
         YT_VERIFY(options.ReplicationCardCollocationId);
         auto collocationId = *options.ReplicationCardCollocationId;
 
-        YT_LOG_DEBUG("Failed to attach replication card to collocation in local mode, trying distributed mode"
-            " (ReplicationCardId: %v, CollocationId: %v)",
-            replicationCardId,
-            collocationId);
+        YT_TLOG_DEBUG("Failed to attach replication card to collocation in local mode, trying distributed mode")
+            .With("ReplicationCardId", replicationCardId)
+            .With("CollocationId", collocationId);
 
         if (options.ReplicatedTableOptions || options.EnableReplicatedTableTracker || options.CollocationOptions) {
             THROW_ERROR_EXCEPTION("Could not alter replication card since it requires forced migration and too many options are set")
-                << TErrorAttribute("replicated_table_options", options.ReplicatedTableOptions)
-                << TErrorAttribute("enable_replicated_table_tracker", options.EnableReplicatedTableTracker)
-                << TErrorAttribute("collocation_options", options.CollocationOptions);
+                .With("replicated_table_options", options.ReplicatedTableOptions)
+                .With("enable_replicated_table_tracker", options.EnableReplicatedTableTracker)
+                .With("collocation_options", options.CollocationOptions);
         }
 
         const auto& residencyCache = Connection_->GetChaosResidencyCache();
@@ -4203,7 +4202,7 @@ void TClient::DoAlterReplicationCard(
             if (!descriptor) {
                 THROW_ERROR_EXCEPTION("Chaos cell for %v is absent from cell directory",
                     description)
-                    << TErrorAttribute("cell_tag", cellTag);
+                    .With("cell_tag", cellTag);
             }
 
             return descriptor->CellId;
@@ -4215,18 +4214,17 @@ void TClient::DoAlterReplicationCard(
         if (replicationCardCellId == collocationCellId) {
             THROW_ERROR_EXCEPTION("Failed to attach replication card to collocation in distributed mode:"
                 " they are located on the same chaos cell")
-                << TErrorAttribute("replication_card_id", replicationCardId)
-                << TErrorAttribute("replication_card_collocation_id", collocationId)
-                << TErrorAttribute("replication_card_cell_id", replicationCardCellId)
-                << TErrorAttribute("replication_card_collocation_cell_id", collocationCellId);
+                .With("replication_card_id", replicationCardId)
+                .With("replication_card_collocation_id", collocationId)
+                .With("replication_card_cell_id", replicationCardCellId)
+                .With("replication_card_collocation_cell_id", collocationCellId);
         }
 
-        YT_LOG_DEBUG("Attaching replication card to collocation in distributed mode"
-            " (ReplicationCardId: %v, ReplicationCardCellId: %v, CollocationId: %v, CollocationCellId: %v)",
-            replicationCardId,
-            replicationCardCellId,
-            collocationId,
-            collocationCellId);
+        YT_TLOG_DEBUG("Attaching replication card to collocation in distributed mode")
+            .With("ReplicationCardId", replicationCardId)
+            .With("ReplicationCardCellId", replicationCardCellId)
+            .With("CollocationId", collocationId)
+            .With("CollocationCellId", collocationCellId);
 
         auto transaction = WaitFor(StartNativeTransaction(ETransactionType::Tablet, {}))
             .ValueOrThrow();
@@ -4251,19 +4249,18 @@ void TClient::DoAlterReplicationCard(
 
         if (!result.IsOK()) {
             THROW_ERROR_EXCEPTION("Failed to attach replication card to collocation in distributed mode")
-                << TErrorAttribute("replication_card_id", replicationCardId)
-                << TErrorAttribute("replication_card_collocation_id", options.ReplicationCardCollocationId)
-                << TErrorAttribute("replication_card_cell_id", replicationCardCellId)
-                << TErrorAttribute("replication_card_collocation_cell_id", collocationCellId)
-                << result;
+                .With("replication_card_id", replicationCardId)
+                .With("replication_card_collocation_id", options.ReplicationCardCollocationId)
+                .With("replication_card_cell_id", replicationCardCellId)
+                .With("replication_card_collocation_cell_id", collocationCellId)
+                .With(result);
         }
 
-        YT_LOG_DEBUG("Attached replication card to collocation in distributed mode"
-            " (ReplicationCardId: %v, ReplicationCardCellId: %v, CollocationId: %v, CollocationCellId: %v)",
-            replicationCardId,
-            replicationCardCellId,
-            collocationId,
-            collocationCellId);
+        YT_TLOG_DEBUG("Attached replication card to collocation in distributed mode")
+            .With("ReplicationCardId", replicationCardId)
+            .With("ReplicationCardCellId", replicationCardCellId)
+            .With("CollocationId", collocationId)
+            .With("CollocationCellId", collocationCellId);
     } else {
         result.ThrowOnError();
     }

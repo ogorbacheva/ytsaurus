@@ -341,10 +341,16 @@ private:
         auto blockCount = request->has_block_count() ? std::make_optional(request->block_count()) : std::nullopt;
         bool ignoreMissingSession = request->ignore_missing_session();
 
-        context->SetRequestInfo("ChunkId: %v, BlockCount: %v, IgnoreMissingSession: %v",
+        auto ioConsumed = YT_OPTIONAL_FROM_PROTO(*request, io_consumed);
+        auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
+        auto fairShareState = MakeIOFairShareState(ioConsumed, ioFairShareWeight);
+
+        context->SetRequestInfo("ChunkId: %v, BlockCount: %v, IgnoreMissingSession: %v, IOConsumed: %v, IOFairShareWeight: %v",
             chunkId,
             blockCount,
-            ignoreMissingSession);
+            ignoreMissingSession,
+            ioConsumed,
+            ioFairShareWeight);
 
         ValidateOnline();
 
@@ -363,7 +369,7 @@ private:
         auto meta = request->has_chunk_meta()
             ? New<TRefCountedChunkMeta>(std::move(*request->mutable_chunk_meta()))
             : nullptr;
-        session->Finish(meta, blockCount)
+        session->Finish(meta, blockCount, fairShareState)
             .Subscribe(BIND([
                 =,
                 this,
@@ -520,6 +526,7 @@ private:
         i64 cumulativeBlockSize = request->cumulative_block_size();
         auto ioConsumed = YT_OPTIONAL_FROM_PROTO(*request, io_consumed);
         auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
+        auto fairShareState = MakeIOFairShareState(ioConsumed, ioFairShareWeight);
 
         ValidateOnline();
 
@@ -562,6 +569,7 @@ private:
             firstBlockIndex,
             GetRpcAttachedBlocks(request, /*validateChecksums*/ false),
             cumulativeBlockSize,
+            fairShareState,
             populateCache);
 
         auto voidResult = result.AsVoid();
@@ -626,6 +634,7 @@ private:
         auto targetDescriptor = FromProto<TNodeDescriptor>(request->target_descriptor());
         auto ioConsumed = YT_OPTIONAL_FROM_PROTO(*request, io_consumed);
         auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
+        auto fairShareState = MakeIOFairShareState(ioConsumed, ioFairShareWeight);
 
         context->SetRequestInfo(
             "ChunkId: %v, Blocks: %v, CumulativeBlockSize: %v, Target: %v, IoConsumed: %v, IoFairShareWeight: %v",
@@ -663,7 +672,14 @@ private:
 
         auto fraction = GetFallbackTimeoutFraction().value_or(1);
         auto timeout = *context->GetTimeout() * fraction;
-        context->ReplyFrom(session->SendBlocks(firstBlockIndex, blockCount, cumulativeBlockSize, ioConsumed, ioFairShareWeight, timeout, enableSendBlocksNetThrottling, targetDescriptor)
+        context->ReplyFrom(session->SendBlocks(
+            firstBlockIndex,
+            blockCount,
+            cumulativeBlockSize,
+            fairShareState,
+            timeout,
+            enableSendBlocksNetThrottling,
+            targetDescriptor)
             .Apply(BIND([=] (const TErrorOr<ISession::TSendBlocksResult>& rspOrError) {
                 if (rspOrError.IsOK()) {
                     const auto& rsp = rspOrError.Value();
@@ -685,7 +701,7 @@ private:
                         NChunkClient::EErrorCode::SendBlocksFailed,
                         "Error putting blocks to %v",
                         targetDescriptor.GetDefaultAddress())
-                        << rspOrError;
+                        .With(rspOrError);
                 }
             })));
     }
@@ -750,14 +766,14 @@ private:
         auto blocks = GetRpcAttachedBlocks(request, true /*validateChecksums*/);
         if (std::ssize(blocks) != request->block_indexes_size()) {
             THROW_ERROR_EXCEPTION("Number of attached blocks is different from blocks field length")
-                << TErrorAttribute("attached_block_count", blocks.size())
-                << TErrorAttribute("blocks_length", request->block_indexes_size());
+                .With("attached_block_count", blocks.size())
+                .With("blocks_length", request->block_indexes_size());
         }
 
         if (request->chunk_ids_size() != request->chunk_block_count_size()) {
             THROW_ERROR_EXCEPTION("Invalid block count")
-                << TErrorAttribute("chunk_count", request->chunk_ids_size())
-                << TErrorAttribute("block_count", request->chunk_block_count_size());
+                .With("chunk_count", request->chunk_ids_size())
+                .With("block_count", request->chunk_block_count_size());
         }
 
         int j = 0;
@@ -956,13 +972,11 @@ private:
         bool enableP2P = request->enable_p2p();
         bool fetchNodeDescriptors = request->fetch_node_descriptors();
 
-        context->SetRequestInfo("ChunkId: %v, Blocks: %v, BlockCount: %v, Workload: %v, IoConsumed: %v, IoFairShareWeight: %v",
+        context->SetRequestInfo("ChunkId: %v, Blocks: %v, BlockCount: %v, Workload: %v",
             chunkId,
             MakeCompactIntervalView(blockIndexes),
             blockIndexes.size(),
-            workloadDescriptor,
-            request->io_consumed(),
-            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
+            workloadDescriptor);
 
         ValidateOnline();
 
@@ -1075,6 +1089,9 @@ private:
         options.ChunkReaderStatistics = chunkReaderStatistics;
         options.ReadSessionId = FromProto<TReadSessionId>(request->read_session_id());
         options.MemoryUsageTracker = Bootstrap_->GetReadBlockMemoryUsageTracker();
+        options.FairShareState = MakeIOFairShareState(
+            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
+            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         if (context->GetTimeout() && context->GetStartTime()) {
             options.ReadBlocksDeadline =
@@ -1252,6 +1269,18 @@ private:
         return options;
     }
 
+    template <class TContext, class TRequest>
+    TChunkReadOptions BuildReadMetaOption(
+        const TIntrusivePtr<TContext>& context,
+        const TRequest* request)
+    {
+        auto options = BuildReadMetaOption(context);
+        options.FairShareState = MakeIOFairShareState(
+            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
+            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
+        return options;
+    }
+
     DECLARE_RPC_SERVICE_METHOD(NChunkClient::NProto, GetBlockSet)
     {
         auto chunkId = FromProto<TChunkId>(request->chunk_id());
@@ -1273,7 +1302,7 @@ private:
             fetchFromCache,
             fetchFromDisk,
             workloadDescriptor,
-            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
             YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
@@ -1416,7 +1445,7 @@ private:
             FormatBlocks(firstBlockIndex, firstBlockIndex + blockCount - 1),
             populateCache,
             workloadDescriptor,
-            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
             YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
@@ -1995,15 +2024,13 @@ private:
         const auto& schemaData = request->schema_data();
 
         context->SetRequestInfo("ChunkId: %v, ReadSessionId: %v, Workload: %v, "
-            "PopulateCache: %v, EnableHashChunkIndex: %v, ContainsSchema: %v, IoConsumed: %v, IoFairShareWeight: %v",
+            "PopulateCache: %v, EnableHashChunkIndex: %v, ContainsSchema: %v",
             chunkId,
             readSessionId,
             workloadDescriptor,
             populateCache,
             enableHashChunkIndex,
-            schemaData.has_schema(),
-            request->io_consumed(),
-            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
+            schemaData.has_schema());
 
         ValidateOnline();
 
@@ -2133,7 +2160,7 @@ private:
             partitionTags,
             workloadDescriptor,
             enableThrottling,
-            request->io_consumed(),
+            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
             YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
@@ -2152,7 +2179,7 @@ private:
         const auto& chunkRegistry = Bootstrap_->GetChunkRegistry();
         auto chunk = chunkRegistry->GetChunkOrThrow(chunkId, AllMediaIndex);
 
-        auto options = BuildReadMetaOption(context);
+        auto options = BuildReadMetaOption(context, request);
 
         struct TReadMetaResult
         {
@@ -2192,7 +2219,7 @@ private:
                     NChunkClient::EErrorCode::UnsupportedChunkFeature,
                     "Chunk %v has unknown features",
                     chunkId)
-                    << TErrorAttribute("chunk_features", meta->features());
+                    .With("chunk_features", meta->features());
             }
 
             ValidateChunkFeatures(chunkId, chunkFeatures, supportedChunkFeatures);
@@ -2927,7 +2954,7 @@ private:
 
             YT_LOG_DEBUG("Columnar statistics extracted from chunk meta (ChunkId: %v)", chunkId);
         } catch (const std::exception& ex) {
-            auto error = TError("Error fetching columnar statistics for chunk %v", chunkId) << ex;
+            auto error = TError("Error fetching columnar statistics for chunk %v", chunkId).With(ex);
             YT_LOG_WARNING(error);
             ToProto(subresponse->mutable_error(), error);
         }
@@ -2984,7 +3011,7 @@ private:
             THROW_ERROR_EXCEPTION(
                 NChunkClient::EErrorCode::WriteThrottlingActive,
                 "Pending network in throttling queue size exceeds throttling limit")
-                << TErrorAttribute("net_queue_size", netThrottling.QueueSize);
+                .With("net_queue_size", netThrottling.QueueSize);
         }
     }
 

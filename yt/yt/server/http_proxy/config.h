@@ -54,6 +54,8 @@ struct TProfilingEndpointProviderConfig
     : public NYTree::TYsonStruct
 {
     EClusterComponentType ComponentType;
+    //! Name this provider is registered and filtered by, defaults to the component type.
+    std::optional<std::string> Name;
     //! This monitoring port will be used with all hosts discovered for the configured component.
     int MonitoringPort;
     //! A list of native solomon shards names to pull.
@@ -64,6 +66,8 @@ struct TProfilingEndpointProviderConfig
     //! If set to true, instance names will contain the discovered main port of the corresponding service.
     //! Set to false by default. Mostly useful in tests, real clusters have anti-affinity rules.
     bool IncludePortInInstanceName;
+
+    std::string GetName() const;
 
     REGISTER_YSON_STRUCT(TProfilingEndpointProviderConfig);
 
@@ -416,6 +420,8 @@ struct TProxyDynamicConfig
     NCellMasterClient::TCellDirectorySynchronizerOverrideDynamicConfigPtr MasterCellDirectorySynchronizer;
 
     TNodeMemoryTrackerConfigPtr MemoryTracker;
+
+    NAuth::TAuthenticationManagerDynamicConfigPtr Auth;
 
     REGISTER_YSON_STRUCT(TProxyDynamicConfig);
 

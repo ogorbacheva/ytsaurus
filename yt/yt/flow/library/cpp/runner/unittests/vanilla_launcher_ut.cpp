@@ -1,5 +1,10 @@
+#include <yt/yt/flow/library/cpp/runner/config.h>
 #include <yt/yt/flow/library/cpp/runner/root_clients_cache.h>
 #include <yt/yt/flow/library/cpp/runner/vanilla_launcher.h>
+
+#include <yt/yt/flow/library/cpp/companion/config.h>
+
+#include <yt/yt/flow/library/cpp/vanilla/spec.h>
 
 #include <yt/yt/core/test_framework/framework.h>
 
@@ -12,9 +17,15 @@
 #include <yt/yt/client/cache/cache.h>
 #include <yt/yt/client/cache/config.h>
 
+#include <yt/yt/core/logging/config.h>
+
 #include <yt/yt/core/yson/string.h>
 
 #include <yt/yt/core/ytree/convert.h>
+
+#include <util/system/env.h>
+
+#include <set>
 
 namespace NYT::NFlow {
 namespace {
@@ -39,6 +50,44 @@ TEST(TVanillaConfigTest, EntityDisablesDefaultNetworkProject)
         TYsonStringBuf(R"({pool=test;worker={count=1};network_project=#})"));
 
     EXPECT_FALSE(config->NetworkProject.has_value());
+}
+
+TEST(TVanillaConfigTest, AllowsPerTaskDockerImage)
+{
+    auto config = ConvertTo<TVanillaConfigPtr>(
+        TYsonStringBuf(R"({pool=test;worker={count=1;docker_image="registry.example.com/image:tag"}})"));
+
+    EXPECT_EQ(config->Worker->DockerImage, std::optional<std::string>("registry.example.com/image:tag"));
+    EXPECT_FALSE(config->Controller->DockerImage.has_value());
+}
+
+// Without a network project the jobs share the exec node's network, where the fixed ports of
+// co-located flow jobs collide — the out-of-the-box launch must ask YT for ports instead.
+TEST(TVanillaConfigTest, DefaultsPortCountsWithoutNetworkProject)
+{
+    auto config = ConvertTo<TVanillaConfigPtr>(
+        TYsonStringBuf(R"({pool=test;worker={count=1};network_project=#})"));
+
+    EXPECT_EQ(config->Controller->PortCount, std::optional<int>(2));
+    EXPECT_EQ(config->Worker->PortCount, std::optional<int>(3));
+}
+
+TEST(TVanillaConfigTest, KeepsFixedPortsUnderNetworkProject)
+{
+    auto config = ConvertTo<TVanillaConfigPtr>(
+        TYsonStringBuf(R"({pool=test;worker={count=1};network_project=custom})"));
+
+    EXPECT_FALSE(config->Controller->PortCount.has_value());
+    EXPECT_FALSE(config->Worker->PortCount.has_value());
+}
+
+TEST(TVanillaConfigTest, ExplicitZeroPortCountKeepsFixedPorts)
+{
+    auto config = ConvertTo<TVanillaConfigPtr>(TYsonStringBuf(
+        R"({pool=test;controller={count=1;port_count=0};worker={count=1;port_count=0};network_project=#})"));
+
+    EXPECT_EQ(config->Controller->PortCount, std::optional<int>(0));
+    EXPECT_EQ(config->Worker->PortCount, std::optional<int>(0));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -106,6 +155,77 @@ DEFINE_REFCOUNTED_TYPE(TAssertClientsCache)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// The companion is dialed on a fixed in-job port, just like rpc and monitoring: a companion
+// pipeline must not have to request YT-allocated ports to run in a vanilla job.
+TEST(TVanillaNodeConfigTest, CarriesCompanionPort)
+{
+    auto nodeConfig = BuildDefaultVanillaNodeConfig(
+        MakePipelinePath(),
+        /*proxyRole*/ std::nullopt,
+        /*workerPortCount*/ std::nullopt);
+
+    ASSERT_TRUE(nodeConfig->Companion);
+    EXPECT_GT(nodeConfig->Companion->Port, 0);
+}
+
+// A worker on YT-allocated ports runs where fixed ones collide, so the fixed companion port
+// would point at whatever neighbouring job took it. It is left out: with `port_count = 3` the
+// port comes from YT_PORT_2, and with fewer the companion refuses to start.
+TEST(TVanillaNodeConfigTest, OmitsCompanionPortForYtAllocatedPorts)
+{
+    auto nodeConfig = BuildDefaultVanillaNodeConfig(
+        MakePipelinePath(),
+        /*proxyRole*/ std::nullopt,
+        /*workerPortCount*/ 2);
+
+    EXPECT_FALSE(nodeConfig->Companion);
+}
+
+// The sandbox is discarded with the operation, so the job stderr — the one artifact YT retains
+// for finished jobs — must carry the info-level pipeline history, not just crash traces.
+TEST(TVanillaNodeConfigTest, MirrorsInfoLogToStderr)
+{
+    auto nodeConfig = BuildDefaultVanillaNodeConfig(
+        MakePipelinePath(),
+        /*proxyRole*/ std::nullopt,
+        /*workerPortCount*/ std::nullopt);
+    auto loggingConfig = nodeConfig->GetSingletonConfig<NLogging::TLogManagerConfig>();
+
+    auto writersFor = [&] (TStringBuf category, NLogging::ELogLevel level) {
+        std::set<std::string> writers;
+        for (const auto& rule : loggingConfig->Rules) {
+            if (rule->IsApplicable(category, level, NLogging::ELogFamily::PlainText)) {
+                writers.insert(rule->Writers.begin(), rule->Writers.end());
+            }
+        }
+        return writers;
+    };
+
+    EXPECT_EQ(writersFor("Worker", NLogging::ELogLevel::Info), (std::set<std::string>{"file", "stderr"}));
+    // Chatty infrastructure categories: the info-level stream is dropped, errors still reach stderr.
+    EXPECT_EQ(writersFor("Bus", NLogging::ELogLevel::Info), std::set<std::string>{});
+    EXPECT_EQ(writersFor("Bus", NLogging::ELogLevel::Error), std::set<std::string>{"stderr"});
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Ten, the scheduler default, would drop most jobs' stderrs; the runner defaults to the scheduler
+// cap so every job's stderr survives the operation.
+TEST(TVanillaConfigTest, RetainsStderrOfEveryJobByDefault)
+{
+    EXPECT_EQ(MakeVanillaConfig()->MaxStderrCount, DefaultMaxStderrCount);
+    EXPECT_EQ(MakeVanillaConfig("max_stderr_count=7")->MaxStderrCount, 7);
+}
+
+TEST(TVanillaSpecTest, CarriesMaxStderrCount)
+{
+    auto spec = BuildVanillaOperationSpec(TVanillaSpec{.MaxStderrCount = 7});
+
+    EXPECT_EQ(ConvertTo<int>(spec->GetChildOrThrow("max_stderr_count")), 7);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 TEST(TVanillaLauncherClientsTest, TakesPipelineClientFromClientsCache)
 {
     auto cache = New<TAssertClientsCache>(/*expectedCluster*/ TStringBuf(), MakeCacheWithPinnedProxy());
@@ -162,6 +282,38 @@ TEST(TVanillaLauncherClientsTest, PipelineClientUsesTheConfiguredConnection)
     EXPECT_EQ(
         std::vector<std::string>{std::string(PinnedProxyAddress)},
         ConvertTo<std::vector<std::string>>(connectionConfig->GetChildOrThrow("proxy_addresses")));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! The secure vault is only assembled once the binary is uploaded, so a missing secret is reported
+//! up front: the launch names the variable rather than stopping at the first cluster it asks for.
+TEST(TVanillaLauncherSecretEnvTest, RejectsUnsetSecretEnvBeforeReachingCluster)
+{
+    auto cache = New<TAssertClientsCache>(/*expectedCluster*/ TStringBuf(), MakeCacheWithPinnedProxy());
+
+    EXPECT_THROW_WITH_SUBSTRING(
+        LaunchInVanillaJob(
+            MakePipelinePath(),
+            /*proxyRole*/ {},
+            MakeVanillaConfig("secret_env=[FLOW_UT_UNSET_SECRET]"),
+            cache),
+        "FLOW_UT_UNSET_SECRET");
+}
+
+TEST(TVanillaLauncherSecretEnvTest, AcceptsSetSecretEnv)
+{
+    SetEnv("FLOW_UT_SECRET", "value");
+    auto cache = New<TAssertClientsCache>(/*expectedCluster*/ TStringBuf(), MakeCacheWithPinnedProxy());
+
+    // Stopped at the cluster, i.e. the declared secret let the launch through.
+    EXPECT_THROW_WITH_SUBSTRING(
+        LaunchInVanillaJob(
+            MakePipelinePath(),
+            /*proxyRole*/ {},
+            MakeVanillaConfig("secret_env=[FLOW_UT_SECRET]"),
+            cache),
+        Format("%v \"pipeline-cluster\"", StopMarker));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

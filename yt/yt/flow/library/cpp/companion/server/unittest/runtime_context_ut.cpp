@@ -2,7 +2,6 @@
 
 #include <yt/yt/flow/library/cpp/companion/server/runtime_context.h>
 
-#include <yt/yt/flow/library/cpp/common/column_evaluator_cache.h>
 #include <yt/yt/flow/library/cpp/common/flow_view.h>
 #include <yt/yt/flow/library/cpp/common/spec.h>
 #include <yt/yt/flow/library/cpp/common/stream_spec_storage.h>
@@ -37,7 +36,7 @@ TCompanionRuntimeContextPtr MakeRuntimeContext()
     }
     auto streamSpecs = New<TStreamSpecs>(streamSpecMap);
 
-    auto converterCache = CreatePayloadConverterCache(CreateFastColumnEvaluatorCache());
+    auto converterCache = CreatePayloadConverterCache(/*evaluatorCache*/ nullptr);
     auto storage = New<TComputationStreamSpecStorage>(streamSpecs, schema, converterCache);
 
     return New<TCompanionRuntimeContext>(
@@ -96,6 +95,15 @@ TEST(TCompanionRuntimeContextTest, CurrentTimestampThrows)
     context->RefreshEpochState(BuildWatermarkState({}), nullptr);
     EXPECT_THROW_WITH_SUBSTRING(
         Y_UNUSED(context->GetCurrentTimestamp()),
+        "not available in a companion process");
+}
+
+TEST(TCompanionRuntimeContextTest, EpochUniqueSeqNoThrows)
+{
+    auto context = MakeRuntimeContext();
+    context->RefreshEpochState(BuildWatermarkState({}), nullptr);
+    EXPECT_THROW_WITH_SUBSTRING(
+        Y_UNUSED(context->GetEpochUniqueSeqNo()),
         "not available in a companion process");
 }
 

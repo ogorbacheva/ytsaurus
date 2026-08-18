@@ -3,7 +3,7 @@
 
 #include <library/cpp/yt/logging/logger.h>
 
-#include <library/cpp/yt/misc/global.h>
+#include <library/cpp/yt/misc/leaky_global.h>
 
 #include <util/stream/file.h>
 
@@ -15,7 +15,7 @@ namespace NYT::NCGroups {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "CGroups");
+static YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, Logger, "CGroups");
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -54,8 +54,8 @@ THashMap<std::string, i64> ReadAndParseStatFile(const TString& fileName)
         auto [_, emplaced] = statistics.emplace(fields[0], FromString<i64>(fields[1]));
         if (!emplaced) {
             THROW_ERROR_EXCEPTION("Failed to collect CGroup statistics: key already exists")
-                << TErrorAttribute("filename", fileName)
-                << TErrorAttribute("key", fields[0]);
+                .With("filename", fileName)
+                .With("key", fields[0]);
         }
     }
 
@@ -459,8 +459,8 @@ public:
         resolved[ECGroupController::CpuAcct] = Cpu_.CpuAcctLocation;
         resolved[ECGroupController::IO] = IO_.Location;
         resolved[ECGroupController::Pids] = Pids_.Location;
-        YT_LOG_INFO("CGroups statistics fetcher initialized (Controllers: %v)",
-            resolved);
+        YT_TLOG_INFO("CGroups statistics fetcher initialized")
+            .With("Controllers", resolved);
     }
 
     bool IsControllerV2(ECGroupController controller) const override
@@ -532,7 +532,9 @@ TString ReadProcFile(const TString& path)
     try {
         return TFileInput(path).ReadAll();
     } catch (const std::exception& ex) {
-        YT_LOG_WARNING("Failed to read %v (Error: %v)", path, ex.what());
+        YT_TLOG_WARNING("Failed to read cgroup statistics")
+            .With("Path", path)
+            .With(TError(ex));
         return {};
     }
 }

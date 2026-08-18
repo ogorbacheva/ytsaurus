@@ -259,8 +259,8 @@ using NTransactionServer::ITransactionManagerPtr;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "MasterBoot");
-static YT_DEFINE_GLOBAL(const NLogging::TLogger, DryRunLogger, "MasterDryRun");
+static YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, Logger, "MasterBoot");
+static YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, DryRunLogger, "MasterDryRun");
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -764,9 +764,9 @@ void TBootstrap::DoInitialize()
         expectedLocalHostName != actualLocalHostName)
     {
         THROW_ERROR_EXCEPTION("Local address differs from expected address specified in config")
-            << TErrorAttribute("local_address", actualLocalHostName)
-            << TErrorAttribute("localhost_name", Config_->ExpectedLocalHostName)
-            << TErrorAttribute("localhost_name_override", addressResolverConfig->LocalHostNameOverride);
+            .With("local_address", actualLocalHostName)
+            .With("localhost_name", Config_->ExpectedLocalHostName)
+            .With("localhost_name_override", addressResolverConfig->LocalHostNameOverride);
     }
 
     auto localAddress = BuildServiceAddress(expectedLocalHostName, Config_->RpcPort);

@@ -119,11 +119,17 @@ public:
     {
         Config_ = config;
         AcquisitionExecutor_->SetPeriod(config->ActiveQueryAcquisitionPeriod);
-        Engines_[EQueryEngine::Mock]->Reconfigure(config->MockEngine, Config_->NotIndexedQueriesTTL);
-        Engines_[EQueryEngine::Ql]->Reconfigure(config->QLEngine, Config_->NotIndexedQueriesTTL);
-        Engines_[EQueryEngine::Yql]->Reconfigure(config->YqlEngine, Config_->NotIndexedQueriesTTL);
-        Engines_[EQueryEngine::Chyt]->Reconfigure(config->ChytEngine, Config_->NotIndexedQueriesTTL);
-        Engines_[EQueryEngine::Spyt]->Reconfigure(config->SpytEngine, Config_->NotIndexedQueriesTTL);
+
+        auto engines = {
+            EQueryEngine::Mock,
+            EQueryEngine::Ql,
+            EQueryEngine::Yql,
+            EQueryEngine::Chyt,
+            EQueryEngine::Spyt,
+        };
+        for (const auto engine : engines) {
+            Engines_[engine]->Reconfigure(GetConfigByEngine(Config_, engine));
+        }
     }
 
     IYPathServicePtr GetOrchidService() const override
@@ -194,8 +200,8 @@ private:
             int stateVersion = ConvertTo<int>(rspOrError.Value());
             if (stateVersion < MinRequiredStateVersion_) {
                 auto alert = TError(NAlerts::EErrorCode::QueryTrackerInvalidState, "Min required state version is not met")
-                    << TErrorAttribute("version", stateVersion)
-                    << TErrorAttribute("min_required_version", MinRequiredStateVersion_);
+                    .With("version", stateVersion)
+                    .With("min_required_version", MinRequiredStateVersion_);
                 AlertCollector_->StageAlert(CreateAlert(
                     NAlerts::EErrorCode::QueryTrackerInvalidState,
                     "Erroneous query tracker state",
@@ -577,8 +583,8 @@ private:
 
         if (finalState == EQueryState::Aborted || finalState == EQueryState::Failed) {
             error = TError("Query %v %lv", queryId, finalState)
-                << error
-                << TErrorAttribute("query_id", queryId);
+                .With(error)
+                .With("query_id", queryId);
         }
 
         while (true) {
@@ -654,7 +660,9 @@ private:
                     .IsTutorial = activeQueryRecord->IsTutorial,
                 };
                 if (!activeQueryRecord->IsIndexed) {
-                    newRecord.TTL = Config_->NotIndexedQueriesTTL.MilliSeconds();
+                    if (auto ttl = GetConfigByEngine(Config_, activeQueryRecord->Engine)->NotIndexedQueriesTtl) {
+                        newRecord.Ttl = ttl->MilliSeconds();
+                    }
                 }
                 std::vector newRows = {
                     newRecord.ToUnversionedRow(rowBuffer, TFinishedQueryDescriptor::Get()->GetPartialIdMapping()),
@@ -700,8 +708,8 @@ private:
                 "Query incarnation mismatch: expected %v, actual %v",
                 expectedIncarnation,
                 record.Incarnation)
-                    << TErrorAttribute("expected_incarnation", expectedIncarnation)
-                    << TErrorAttribute("actual_incarnation", record.Incarnation);
+                    .With("expected_incarnation", expectedIncarnation)
+                    .With("actual_incarnation", record.Incarnation);
         }
     }
 

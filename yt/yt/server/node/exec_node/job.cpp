@@ -120,6 +120,8 @@
 
 #include <yt/yt_proto/yt/client/chunk_client/proto/chunk_spec.pb.h>
 
+#include <library/cpp/yt/cpu_clock/clock.h>
+
 #include <library/cpp/yt/error/error_helpers.h>
 
 #include <library/cpp/yt/system/handle_eintr.h>
@@ -181,8 +183,6 @@ static constexpr auto DisableSandboxCleanupEnv = "YT_DISABLE_SANDBOX_CLEANUP";
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace {
-
-////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -415,8 +415,8 @@ void TJob::DoStart(TErrorOr<std::vector<TNameWithAddress>>&& resolvedNodeAddress
 
             if (!resolvedNodeAddresses.IsOK() || (CommonConfig_->Testing && CommonConfig_->Testing->FailAddressResolve)) {
                 THROW_ERROR TError("Failed to resolve node addresses")
-                    << TErrorAttribute("abort_reason", EAbortReason::AddressResolveFailed)
-                    << std::move(resolvedNodeAddresses);
+                    .With("abort_reason", EAbortReason::AddressResolveFailed)
+                    .With(std::move(resolvedNodeAddresses));
             }
 
             ResolvedNodeAddresses_ = std::move(resolvedNodeAddresses.Value());
@@ -518,8 +518,8 @@ void TJob::Start() noexcept
             slot->ValidateEnabled();
         } catch (const std::exception& ex) {
             auto error = TError("Can not start job")
-                << TErrorAttribute("abort_reason", EAbortReason::UserSlotDisabled)
-                << ex;
+                .With("abort_reason", EAbortReason::UserSlotDisabled)
+                .With(ex);
             YT_LOG_WARNING(error);
             Abort(std::move(error));
             return;
@@ -640,7 +640,7 @@ void TJob::PrepareArtifact(
             auto fcntlResult = HandleEintr(::fcntl, pipeFd, F_SETFL, O_WRONLY | O_CLOEXEC);
             if (fcntlResult < 0) {
                 THROW_ERROR_EXCEPTION("Failed to disable O_NONBLOCK for artifact pipe")
-                    << TError::FromSystem();
+                    .With(TError::FromSystem());
             }
 
             ValidateJobPhase(EJobPhase::PreparingArtifacts);
@@ -669,13 +669,18 @@ void TJob::PrepareArtifact(
                 auto downloadOptions = MakeArtifactDownloadOptions();
                 auto producer = artifactCache->MakeArtifactDownloadProducer(artifact.Key, downloadOptions);
 
+                auto bypassCpuStartTime = GetCpuInstant();
                 ArtifactPrepareFutures_.push_back(
                     GetUserSlot()->MakeFile(
                         Id_,
                         artifact.Name,
                         artifact.SandboxKind,
                         producer,
-                        pipe));
+                        pipe)
+                        .Apply(BIND([this, bypassCpuStartTime, this_ = MakeStrong(this)] {
+                            ArtifactStatistics_.FilesDownloadCpuDuration +=
+                                GetCpuInstant() - bypassCpuStartTime;
+                        }).Via(Invoker_)));
             } else if (artifact.CopyFile) {
                 const auto& preparedArtifact = FSSecretary_->GetArtifactByName(artifact.Name);
 
@@ -686,6 +691,8 @@ void TJob::PrepareArtifact(
                     artifact.SandboxKind,
                     artifact.Key.GetCompressedDataSize());
 
+                auto copyCpuStartTime = GetCpuInstant();
+                auto compressedDataSize = artifact.Key.GetCompressedDataSize();
                 ArtifactPrepareFutures_.push_back(
                     GetUserSlot()->MakeCopy(
                         Id_,
@@ -693,7 +700,12 @@ void TJob::PrepareArtifact(
                         artifact.SandboxKind,
                         TString(preparedArtifact->GetFileName()),
                         pipe,
-                        preparedArtifact->GetLocation()));
+                        preparedArtifact->GetLocation())
+                        .Apply(BIND([this, copyCpuStartTime, compressedDataSize, this_ = MakeStrong(this)] {
+                            ArtifactStatistics_.FilesCopyCpuDuration +=
+                                GetCpuInstant() - copyCpuStartTime;
+                            ArtifactStatistics_.FilesCopiedSize += compressedDataSize;
+                        }).Via(Invoker_)));
             }
         });
 }
@@ -1405,11 +1417,11 @@ void TJob::SetCoreInfos(TCoreInfos value)
     CoreInfos_ = std::move(value);
 }
 
-const TArtifactCacheStatistics& TJob::GetArtifactCacheStatistics() const
+const TArtifactStatistics& TJob::GetArtifactStatistics() const
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
-    return ArtifactCacheStatistics_;
+    return ArtifactStatistics_;
 }
 
 TYsonString TJob::GetStatistics() const
@@ -1639,7 +1651,7 @@ std::vector<TChunkId> TJob::DumpInputContext(TTransactionId transactionId)
         return GetJobProbeOrThrow()->DumpInputContext(transactionId);
     } catch (const std::exception& ex) {
         THROW_ERROR_EXCEPTION("Error requesting input contexts dump from job proxy")
-            << ex;
+            .With(ex);
     }
 }
 
@@ -1660,7 +1672,7 @@ std::optional<TGetJobStderrResponse> TJob::GetStderr(const TGetJobStderrOptions&
             return GetJobProbeOrThrow()->GetStderr(options);
         } catch (const std::exception& ex) {
             THROW_ERROR_EXCEPTION("Error requesting stderr from job proxy")
-                << ex;
+                .With(ex);
         }
     }
 
@@ -1719,13 +1731,13 @@ TPollJobShellResponse TJob::PollJobShell(
             THROW_ERROR_EXCEPTION(
                 NExecNode::EErrorCode::JobProxyConnectionFailed,
                 "No connection to job proxy")
-                << ex;
+                .With(ex);
         }
         THROW_ERROR_EXCEPTION("Error polling job shell")
-            << ex;
+            .With(ex);
     } catch (const std::exception& ex) {
         THROW_ERROR_EXCEPTION("Error polling job shell")
-            << ex;
+            .With(ex);
     }
 }
 
@@ -1812,8 +1824,8 @@ void TJob::AbortJobAfterInterruptionCallFailed(TError internalError)
 {
     if (JobPhase_.load() == NControllerAgent::EJobPhase::Running) {
         auto error = TError(NExecNode::EErrorCode::InterruptionFailed, "Error interrupting job on job proxy")
-            << TErrorAttribute("interruption_reason", InterruptionReason_)
-            << std::move(internalError);
+            .With("interruption_reason", InterruptionReason_)
+            .With(std::move(internalError));
         Abort(std::move(error));
     }
 }
@@ -1860,19 +1872,19 @@ void TJob::DoInterrupt(
         YT_LOG_DEBUG("Job is not interruptible and will be aborted");
 
         auto error = TError(NJobProxy::EErrorCode::InterruptionUnsupported, "Uninterruptible job aborted")
-            << TErrorAttribute("interruption_reason", InterruptionReason_)
-            << TErrorAttribute("abort_reason", EAbortReason::InterruptionUnsupported);
+            .With("interruption_reason", InterruptionReason_)
+            .With("abort_reason", EAbortReason::InterruptionUnsupported);
 
         if (interruptionReason == EInterruptionReason::Preemption) {
-            error = TError("Job preempted") << error;
+            error = TError("Job preempted").With(error);
             error = error
-                << TErrorAttribute("preemption_reason", preemptionReason)
-                << TErrorAttribute("abort_reason", EAbortReason::Preemption);
+                .With("preemption_reason", preemptionReason)
+                .With("abort_reason", EAbortReason::Preemption);
         }
 
         if (interruptionReason == EInterruptionReason::JobsDisabledOnNode) {
             error = TError("Jobs disabled on node")
-                << error;
+                .With(error);
         }
 
         ReportJobInterruptionInfo(now, timeout, interruptionReason, preemptionReason, preemptedFor);
@@ -1883,13 +1895,13 @@ void TJob::DoInterrupt(
 
     if (JobPhase_.load() < EJobPhase::Running) {
         auto error = TError(NJobProxy::EErrorCode::InterruptionFailed, "Interrupting job that has not started yet")
-            << TErrorAttribute("interruption_reason", InterruptionReason_);
+            .With("interruption_reason", InterruptionReason_);
 
         if (interruptionReason == EInterruptionReason::Preemption) {
-            error = TError("Job preempted") << error;
+            error = TError("Job preempted").With(error);
             error = error
-                << TErrorAttribute("preemption_reason", preemptionReason)
-                << TErrorAttribute("abort_reason", EAbortReason::Preemption);
+                .With("preemption_reason", preemptionReason)
+                .With("abort_reason", EAbortReason::Preemption);
         }
 
         ReportJobInterruptionInfo(now, timeout, interruptionReason, preemptionReason, preemptedFor);
@@ -1949,7 +1961,7 @@ void TJob::DoFail(TError error)
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
     if (JobPhase_.load() != EJobPhase::Running) {
-        error = TError("Failing job that is not running") << std::move(error);
+        error = TError("Failing job that is not running").With(std::move(error));
 
         Terminate(EJobState::Failed, std::move(error));
 
@@ -1960,8 +1972,8 @@ void TJob::DoFail(TError error)
         GetJobProbeOrThrow()->Fail(error);
     } catch (const std::exception& ex) {
         auto abortionError = TError("Error failing job on job proxy")
-            << ex
-            << std::move(error);
+            .With(ex)
+            .With(std::move(error));
 
         Abort(std::move(abortionError));
     }
@@ -1996,7 +2008,7 @@ void TJob::DoRequestGracefulAbort(TError error)
         GetJobProbeOrThrow()->GracefulAbort(error);
     } catch (const std::exception& ex) {
         auto abortionError = TError("Error failing job on job proxy")
-            << ex;
+            .With(ex);
         abortionError <<= std::move(error);
         Abort(std::move(abortionError));
     }
@@ -2092,15 +2104,15 @@ void TJob::OnJobInterruptionTimeout(
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
     auto error = TError(NJobProxy::EErrorCode::InterruptionTimeout, "Interruption is timed out")
-        << TErrorAttribute("interruption_reason", InterruptionReason_)
-        << TErrorAttribute("interruption_timeout", interruptionTimeout)
-        << TErrorAttribute("abort_reason", EAbortReason::InterruptionTimeout);
+        .With("interruption_reason", InterruptionReason_)
+        .With("interruption_timeout", interruptionTimeout)
+        .With("abort_reason", EAbortReason::InterruptionTimeout);
 
     if (interruptionReason == EInterruptionReason::Preemption) {
-        error = TError("Job preempted") << error;
+        error = TError("Job preempted").With(error);
         error = error
-            << TErrorAttribute("preemption_reason", preemptionReason)
-            << TErrorAttribute("abort_reason", EAbortReason::Preemption);
+            .With("preemption_reason", preemptionReason)
+            .With("abort_reason", EAbortReason::Preemption);
     }
 
     Abort(std::move(error));
@@ -2204,8 +2216,8 @@ void TJob::ValidateJobRunning() const
             EJobPhase::Running);
 
         THROW_ERROR_EXCEPTION(NJobProberClient::EErrorCode::JobIsNotRunning, "Job %v is not running", Id_)
-            << TErrorAttribute("job_state", JobState_)
-            << TErrorAttribute("job_phase", JobPhase_.load());
+            .With("job_state", JobState_)
+            .With("job_phase", JobPhase_.load());
     }
 }
 
@@ -2363,9 +2375,9 @@ void TJob::ValidateJobPhase(EJobPhase expectedPhase) const
             expectedPhase);
 
         THROW_ERROR_EXCEPTION("Unexpected job phase")
-            << TErrorAttribute("expected_phase", expectedPhase)
-            << TErrorAttribute("actual_phase", JobPhase_.load())
-            << TErrorAttribute("abort_reason", EAbortReason::UnexpectedNodeJobPhase);
+            .With("expected_phase", expectedPhase)
+            .With("actual_phase", JobPhase_.load())
+            .With("abort_reason", EAbortReason::UnexpectedNodeJobPhase);
     }
 }
 
@@ -2621,9 +2633,9 @@ void TJob::OnWorkspacePreparationFinished(TJobWorkspaceBuilderPtr workspaceBuild
         [&] {
             if (!result.LastBuildError.IsOK()) {
                 THROW_ERROR_EXCEPTION("Job preparation failed")
-                    << TErrorAttribute("job_id", GetId())
-                    << TErrorAttribute("operation_id", GetOperationId())
-                    << result.LastBuildError;
+                    .With("job_id", GetId())
+                    .With("operation_id", GetOperationId())
+                    .With(result.LastBuildError);
             }
 
             RunJobProxy();
@@ -2655,10 +2667,10 @@ void TJob::OnExtraGpuCheckCommandFinished(const TError& error)
         JobResultExtension_.reset();
 
         auto checkError = TError(NExecNode::EErrorCode::GpuCheckCommandFailed, "Extra GPU check command failed")
-            << error
-            << initialError
-            << TErrorAttribute("job_id", GetId())
-            << TErrorAttribute("operation_id", GetOperationId());
+            .With(error)
+            .With(initialError)
+            .With("job_id", GetId())
+            .With("operation_id", GetOperationId());
 
         YT_LOG_WARNING(checkError, "Extra GPU check command executed after job failure is also failed");
         Finalize(std::move(checkError));
@@ -2742,9 +2754,9 @@ void TJob::OnJobPreparationTimeout(TDuration prepareTimeLimit, bool fatal)
         auto error = TError(
             fatal ? NExecNode::EErrorCode::FatalJobPreparationTimeout : NExecNode::EErrorCode::JobPreparationTimeout,
             "Failed to prepare job within timeout")
-            << TErrorAttribute("prepare_time_limit", prepareTimeLimit)
-            << TErrorAttribute("job_creation_time", CreationTime_)
-            << TErrorAttribute("job_phase", JobPhase_.load());
+            .With("prepare_time_limit", prepareTimeLimit)
+            .With("job_creation_time", CreationTime_)
+            .With("job_phase", JobPhase_.load());
 
         if (fatal) {
             Fail(std::move(error));
@@ -2762,9 +2774,9 @@ void TJob::OnWaitingForCleanupTimeout()
         auto timeout = CommonConfig_->WaitingForJobCleanupTimeout;
 
         auto error = TError(NExecNode::EErrorCode::WaitingForJobCleanupTimeout, "Failed to wait for job cleanup within timeout")
-            << TErrorAttribute("job_id", Id_)
-            << TErrorAttribute("operation_id", OperationId_)
-            << TErrorAttribute("waiting_for_job_cleanup_timeout", timeout);
+            .With("job_id", Id_)
+            .With("operation_id", OperationId_)
+            .With("waiting_for_job_cleanup_timeout", timeout);
         Bootstrap_->GetSlotManager()->OnWaitingForJobCleanupTimeout(std::move(error));
     }
 }
@@ -2776,9 +2788,9 @@ void TJob::OnCleanupTimeout()
     auto timeout = CommonConfig_->JobCleanupTimeout;
 
     auto error = TError(NExecNode::EErrorCode::JobCleanupTimeout, "Failed to process job cleanup within timeout")
-        << TErrorAttribute("job_id", Id_)
-        << TErrorAttribute("operation_id", OperationId_)
-        << TErrorAttribute("job_cleanup_timeout", timeout);
+        .With("job_id", Id_)
+        .With("operation_id", OperationId_)
+        .With("job_cleanup_timeout", timeout);
 
     Bootstrap_->GetSlotManager()->OnJobCleanupTimeout(std::move(error));
 }
@@ -3560,6 +3572,7 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
         proxyInternalConfig->PipeReaderTimeoutThreshold = proxyDynamicConfig->PipeReaderTimeoutThreshold;
         proxyInternalConfig->AdaptiveRowCountUpperBound = proxyDynamicConfig->AdaptiveRowCountUpperBound;
         proxyInternalConfig->OomScoreAdjOnExceededMemoryReserve = proxyDynamicConfig->OomScoreAdjOnExceededMemoryReserve;
+        proxyInternalConfig->ReadOomScoreAdjBeforeUpdate = proxyDynamicConfig->ReadOomScoreAdjBeforeUpdate;
         proxyInternalConfig->UseNewDeliveryFencedConnection = proxyDynamicConfig->UseNewDeliveryFencedConnection;
         proxyInternalConfig->EnablePerClusterChunkReaderStatistics = proxyDynamicConfig->EnablePerClusterChunkReaderStatistics;
         proxyInternalConfig->DumpSingleLocalClusterStatistics = proxyDynamicConfig->DumpSingleLocalClusterStatistics;
@@ -3616,7 +3629,7 @@ void TJob::BuildVirtualSandbox()
     auto nbdServer = Bootstrap_->GetNbdServer();
     if (!nbdServer) {
         THROW_ERROR_EXCEPTION("NBD server is not present")
-            << TErrorAttribute("device_id", nbdDeviceId);
+            .With("device_id", nbdDeviceId);
     }
 
     auto readerHost = Bootstrap_->GetFileReaderHost();
@@ -3682,7 +3695,7 @@ TUserSandboxOptions TJob::BuildUserSandboxOptions()
     return options;
 }
 
-TArtifactDownloadOptions TJob::MakeArtifactDownloadOptions() const
+TArtifactDownloadOptions TJob::MakeArtifactDownloadOptions()
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
@@ -3694,6 +3707,13 @@ TArtifactDownloadOptions TJob::MakeArtifactDownloadOptions() const
 
     auto options = TArtifactDownloadOptions{
         .TrafficMeter = TrafficMeter_,
+        .OnLayerDownloaded = BIND_NO_PROPAGATE([this, this_ = MakeStrong(this)] (
+            TCpuDuration downloadCpuDuration,
+            TCpuDuration importCpuDuration)
+        {
+            ArtifactStatistics_.LayersDownloadCpuDuration += downloadCpuDuration;
+            ArtifactStatistics_.LayersImportCpuDuration += importCpuDuration;
+        }).Via(Invoker_),
     };
 
     return options;
@@ -3709,7 +3729,8 @@ TFuture<std::vector<TArtifactPtr>> TJob::DownloadArtifacts()
     // Account for bypassed artifacts.
     for (const auto& artifact : FSSecretary_->GetArtifactDescriptors()) {
         if (artifact.BypassArtifactCache) {
-            ArtifactCacheStatistics_.CacheBypassedArtifactsSize += artifact.Key.GetCompressedDataSize();
+            ArtifactStatistics_.CacheBypassedArtifactsSize += artifact.Key.GetCompressedDataSize();
+            ArtifactStatistics_.FilesDownloadedSize += artifact.Key.GetCompressedDataSize();
         }
     }
 
@@ -3725,12 +3746,15 @@ TFuture<std::vector<TArtifactPtr>> TJob::DownloadArtifacts()
 
         auto downloadOptions = MakeArtifactDownloadOptions();
         bool fetchedFromCache = false;
+        auto downloadCpuStart = GetCpuInstant();
         auto asyncArtifact = artifactCache->DownloadArtifact(artifact.Key, downloadOptions, &fetchedFromCache)
             .Apply(BIND(
                 [
                     fileName = artifact.Name,
                     this,
-                    this_ = MakeStrong(this)
+                    this_ = MakeStrong(this),
+                    downloadCpuStart,
+                    fetchedFromCache
                 ] (const TErrorOr<TArtifactPtr>& chunkOrError) {
                     THROW_ERROR_EXCEPTION_IF_FAILED(
                         chunkOrError,
@@ -3744,12 +3768,20 @@ TFuture<std::vector<TArtifactPtr>> TJob::DownloadArtifacts()
                         fileName,
                         chunk->GetLocation()->GetId(),
                         chunk->GetId());
+                    if (!fetchedFromCache) {
+                        auto downloadCpuFinish = GetCpuInstant();
+                        Invoker_->Invoke(BIND_NO_PROPAGATE(
+                            [this, this_ = MakeStrong(this), downloadCpuStart, downloadCpuFinish] {
+                                ArtifactStatistics_.FilesDownloadCpuDuration +=
+                                    downloadCpuFinish - downloadCpuStart;
+                            }));
+                    }
                     return chunk;
             }));
 
         asyncArtifacts.push_back(std::move(asyncArtifact));
 
-        UpdateArtifactStatistics(artifact.Key.GetCompressedDataSize(), fetchedFromCache);
+        UpdateArtifactStatistics(artifact.Key.GetCompressedDataSize(), fetchedFromCache, /*isLayer*/ false);
     }
 
     return AllSucceeded(std::move(asyncArtifacts))
@@ -3766,7 +3798,7 @@ TError TJob::BuildJobProxyError(const TError& spawnError)
     auto jobProxyError = TError(
         NExecNode::EErrorCode::JobProxyFailed,
         "Job proxy failed")
-        << spawnError;
+        .With(spawnError);
 
     if (spawnError.GetCode() == EProcessErrorCode::NonZeroExitCode) {
         // Try to translate the numeric exit code into some human readable reason.
@@ -4148,9 +4180,49 @@ void TJob::EnrichStatisticsWithDiskInfo(TStatistics* statistics)
 
 void TJob::EnrichStatisticsWithArtifactsInfo(TStatistics* statistics)
 {
-    statistics->AddSample("/exec_agent/artifacts/cache_hit_artifacts_size"_SP, ArtifactCacheStatistics_.CacheHitArtifactsSize);
-    statistics->AddSample("/exec_agent/artifacts/cache_miss_artifacts_size"_SP, ArtifactCacheStatistics_.CacheMissArtifactsSize);
-    statistics->AddSample("/exec_agent/artifacts/cache_bypassed_artifacts_size"_SP, ArtifactCacheStatistics_.CacheBypassedArtifactsSize);
+    statistics->AddSample("/exec_agent/artifacts/cache_hit_artifacts_size"_SP, ArtifactStatistics_.CacheHitArtifactsSize);
+    statistics->AddSample("/exec_agent/artifacts/cache_miss_artifacts_size"_SP, ArtifactStatistics_.CacheMissArtifactsSize);
+    statistics->AddSample("/exec_agent/artifacts/cache_bypassed_artifacts_size"_SP, ArtifactStatistics_.CacheBypassedArtifactsSize);
+
+    // Bytes served from cache (cache hit).
+    statistics->AddSample(
+        "/exec_agent/artifacts/files_cached_size"_SP,
+        ArtifactStatistics_.FilesCachedSize);
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_cached_size"_SP,
+        ArtifactStatistics_.LayersCachedSize);
+
+    // Bytes downloaded from data nodes (excludes cache hits).
+    // Files: cache miss bytes + bypass bytes.
+    statistics->AddSample(
+        "/exec_agent/artifacts/files_downloaded_size"_SP,
+        ArtifactStatistics_.FilesDownloadedSize);
+    // Files: bytes copied from cache to sandbox (copy_file=true artifacts).
+    statistics->AddSample(
+        "/exec_agent/artifacts/files_copied_size"_SP,
+        ArtifactStatistics_.FilesCopiedSize);
+    // Layers: cache miss bytes.
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_downloaded_size"_SP,
+        ArtifactStatistics_.LayersDownloadedSize);
+
+    // Download durations; monotonic CPU clock is used to avoid NTP jumps.
+    // Files: sum of per-file download durations (cache miss + bypass).
+    statistics->AddSample(
+        "/exec_agent/artifacts/files_downloaded_total_duration"_SP,
+        CpuDurationToDuration(ArtifactStatistics_.FilesDownloadCpuDuration).MilliSeconds());
+    // Files: sum of per-file copy durations (copy_file=true, copying from cache to sandbox).
+    statistics->AddSample(
+        "/exec_agent/artifacts/files_copied_total_duration"_SP,
+        CpuDurationToDuration(ArtifactStatistics_.FilesCopyCpuDuration).MilliSeconds());
+    // Layers: sum of per-layer network download durations (DownloadArtifact), excludes porto import.
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_downloaded_total_duration"_SP,
+        CpuDurationToDuration(ArtifactStatistics_.LayersDownloadCpuDuration).MilliSeconds());
+    // Layers: sum of per-layer porto import durations (ImportLayer).
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_import_total_duration"_SP,
+        CpuDurationToDuration(ArtifactStatistics_.LayersImportCpuDuration).MilliSeconds());
 }
 
 void TJob::UpdateIOStatistics(const TStatistics& statistics)
@@ -4202,12 +4274,25 @@ void TJob::UpdateIOStatistics(const TStatistics& statistics)
     IORequestsWritten_ = newIORequestsWritten;
 }
 
-void TJob::UpdateArtifactStatistics(i64 compressedDataSize, bool cacheHit)
+void TJob::UpdateArtifactStatistics(
+    i64 compressedDataSize,
+    bool cacheHit,
+    bool isLayer)
 {
     if (cacheHit) {
-        ArtifactCacheStatistics_.CacheHitArtifactsSize += compressedDataSize;
+        ArtifactStatistics_.CacheHitArtifactsSize += compressedDataSize;
+        if (isLayer) {
+            ArtifactStatistics_.LayersCachedSize += compressedDataSize;
+        } else {
+            ArtifactStatistics_.FilesCachedSize += compressedDataSize;
+        }
     } else {
-        ArtifactCacheStatistics_.CacheMissArtifactsSize += compressedDataSize;
+        ArtifactStatistics_.CacheMissArtifactsSize += compressedDataSize;
+        if (isLayer) {
+            ArtifactStatistics_.LayersDownloadedSize += compressedDataSize;
+        } else {
+            ArtifactStatistics_.FilesDownloadedSize += compressedDataSize;
+        }
     }
 }
 

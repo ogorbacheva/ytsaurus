@@ -418,6 +418,7 @@ private:
         TNetworkAddress PeerAddress_;
 
         TRequestId RequestId_;
+        std::optional<i64> StartTime_;
         std::string User_ = RootUserName;
         std::optional<std::string> UserTag_;
         std::optional<std::string> UserAgent_;
@@ -475,6 +476,7 @@ private:
             New<TCallHandler>(Owner_);
 
             ParseRequestId();
+            ParseStartTime();
 
             if (!TryParsePeerAddress()) {
                 YT_TLOG_WARNING("Malformed peer address")
@@ -651,10 +653,32 @@ private:
             }
         }
 
+        void ParseStartTime()
+        {
+            auto startTimeString = CallMetadata_.Find(StartTimeMetadataKey);
+            if (!startTimeString) {
+                return;
+            }
+
+            i64 startTime;
+            if (!TryFromString(*startTimeString, startTime)) {
+                YT_TLOG_WARNING("Failed to parse start time from request metadata")
+                    .With("RequestId", RequestId_);
+                return;
+            }
+
+            StartTime_ = startTime;
+        }
+
         void ParseUser()
         {
             auto userString = CallMetadata_.Find(UserMetadataKey);
             if (!userString) {
+                return;
+            }
+
+            // COMPAT(bulatman): old gRPC clients send an empty yt-user when no user is specified.
+            if (userString->empty()) {
                 return;
             }
 
@@ -947,6 +971,9 @@ private:
 
             auto header = std::make_unique<NRpc::NProto::TRequestHeader>();
             ToProto(header->mutable_request_id(), RequestId_);
+            if (StartTime_) {
+                header->set_start_time(*StartTime_);
+            }
             if (User_ != RootUserName) {
                 header->set_user(User_);
             }
@@ -1043,8 +1070,9 @@ private:
                 auto error = TError(
                     NRpc::EErrorCode::NoSuchService,
                     "Service is not registered")
-                    << TErrorAttribute("service", ServiceName_);
-                YT_LOG_WARNING(error);
+                    .With("service", ServiceName_);
+                YT_TLOG_WARNING("Request failed")
+                    .With(error);
 
                 auto responseMessage = CreateErrorResponseMessage(RequestId_, error);
                 YT_UNUSED_FUTURE(ReplyBus_->Send(std::move(responseMessage)));

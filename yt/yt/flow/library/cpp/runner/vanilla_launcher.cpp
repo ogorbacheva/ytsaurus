@@ -61,6 +61,12 @@ namespace {
 // and ephemeral (>=32768) ranges. The user can still override them via the node_config patch.
 constexpr int DefaultRpcPort = 10080;
 constexpr int DefaultMonitoringPort = 10081;
+constexpr int DefaultCompanionPort = 10082;
+
+// Default `port_count` for tasks without a network project: rpc + monitoring for the
+// controller, plus the companion port for the worker.
+constexpr int DefaultControllerPortCount = 2;
+constexpr int DefaultWorkerPortCount = 3;
 
 // In-job file names for the binary and the node config; also the keys under vanilla/files.
 constexpr TStringBuf BinaryFileName = "flow_server";
@@ -138,10 +144,29 @@ void ShutdownPriorVanillaOperation(
 }
 
 //! Logging config for a vanilla job: a rotated, zstd-compressed info-level log under the job
-//! sandbox's `logs/` directory so a job-shell user sees the full controller/worker history
-//! (the job stderr only keeps a short tail), plus a stderr writer for crash traces.
+//! sandbox's `logs/` directory so a job-shell user sees the full controller/worker history, and
+//! the same info-level stream mirrored to stderr. The job stderr is size-capped by YT (head plus
+//! tail), yet it is the only artifact that survives the operation — the sandbox is discarded —
+//! so it must carry the pipeline history, not just crash traces.
 NLogging::TLogManagerConfigPtr BuildVanillaJobLoggingConfig()
 {
+    // Chatty infrastructure categories: their info-level stream is dropped so the log budget
+    // holds pipeline history, but their errors still reach stderr.
+    const std::vector<std::string> chattyCategories{
+        "BufferMetrics",
+        "Bus",
+        "Concurrency",
+        "Dns",
+        "Jaeger",
+        "Monitoring",
+        "Net",
+        "Profiling",
+        "QueryClient",
+        "RpcClient",
+        "RpcProxyClient",
+        "RpcServer",
+        "Solomon",
+    };
     // clang-format off
     auto node = BuildYsonNodeFluently()
         .BeginMap()
@@ -166,26 +191,15 @@ NLogging::TLogManagerConfigPtr BuildVanillaJobLoggingConfig()
             .Item("rules").BeginList()
                 .Item().BeginMap()
                     .Item("min_level").Value("info")
-                    // Drop chatty infrastructure categories so the budget holds pipeline history.
-                    .Item("exclude_categories").BeginList()
-                        .Item().Value("BufferMetrics")
-                        .Item().Value("Bus")
-                        .Item().Value("Concurrency")
-                        .Item().Value("Dns")
-                        .Item().Value("Jaeger")
-                        .Item().Value("Monitoring")
-                        .Item().Value("Net")
-                        .Item().Value("Profiling")
-                        .Item().Value("QueryClient")
-                        .Item().Value("RpcClient")
-                        .Item().Value("RpcProxyClient")
-                        .Item().Value("RpcServer")
-                        .Item().Value("Solomon")
+                    .Item("exclude_categories").Value(chattyCategories)
+                    .Item("writers").BeginList()
+                        .Item().Value("file")
+                        .Item().Value("stderr")
                     .EndList()
-                    .Item("writers").BeginList().Item().Value("file").EndList()
                 .EndMap()
                 .Item().BeginMap()
                     .Item("min_level").Value("error")
+                    .Item("include_categories").Value(chattyCategories)
                     .Item("writers").BeginList().Item().Value("stderr").EndList()
                 .EndMap()
             .EndList()
@@ -253,6 +267,7 @@ TVanillaTaskSpec BuildTaskSpec(
         : Format("./%v --config %v", BinaryFileName, NodeConfigFileName);
     taskSpec.NetworkProject = networkProject;
     taskSpec.SystemLayerPath = task.SystemLayerPath;
+    taskSpec.DockerImage = task.DockerImage;
     taskSpec.Environment = task.Environment;
     for (const auto& layer : task.Layers) {
         taskSpec.Layers.push_back(NYPath::TYPath(layer));
@@ -293,7 +308,7 @@ void TVanillaTaskConfig::Register(TRegistrar registrar)
         .GreaterThan(0)
         .Default();
     registrar.Parameter("port_count", &TThis::PortCount)
-        .GreaterThan(0)
+        .GreaterThanOrEqual(0)
         .Default();
     registrar.Parameter("local_files", &TThis::LocalFiles)
         .Default();
@@ -302,6 +317,8 @@ void TVanillaTaskConfig::Register(TRegistrar registrar)
     registrar.Parameter("layers", &TThis::Layers)
         .Default();
     registrar.Parameter("system_layer_path", &TThis::SystemLayerPath)
+        .Default();
+    registrar.Parameter("docker_image", &TThis::DockerImage)
         .Default();
 }
 
@@ -335,6 +352,8 @@ void TVanillaConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("max_failed_job_count", &TThis::MaxFailedJobCount)
         .Default(10000);
+    registrar.Parameter("max_stderr_count", &TThis::MaxStderrCount)
+        .Default(DefaultMaxStderrCount);
     registrar.Parameter("wait_timeout", &TThis::WaitTimeout)
         .Default(TDuration::Minutes(5));
     registrar.Parameter("solomon_resolver_tag", &TThis::SolomonResolverTag)
@@ -355,14 +374,36 @@ void TVanillaConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("node_config", &TThis::NodeConfigPatch)
         .Default();
+
+    registrar.Postprocessor([] (TThis* config) {
+        // Without a network project the jobs share the exec node's network, where the fixed
+        // ports of co-located flow jobs collide — so default to YT-allocated ports there.
+        // An explicit `port_count = 0` keeps the fixed ports.
+        if (!config->NetworkProject) {
+            if (!config->Controller->PortCount) {
+                config->Controller->PortCount = DefaultControllerPortCount;
+            }
+            if (!config->Worker->PortCount) {
+                config->Worker->PortCount = DefaultWorkerPortCount;
+            }
+        }
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 TFlowNodeConfigPtr BuildDefaultVanillaNodeConfig(
     const NYPath::TRichYPath& pipelinePath,
-    std::optional<std::string> proxyRole)
+    std::optional<std::string> proxyRole,
+    std::optional<int> workerPortCount)
 {
+    // Only the worker hosts a companion, and only a worker left on fixed ports may keep the
+    // fixed companion port: once the task asks YT for ports it runs on a host where fixed ones
+    // collide, and there 10082 could well be a neighbouring worker's companion. Requesting
+    // fewer than three ports then leaves the companion without one — a failure the companion
+    // manager reports, rather than a silent cross-wiring.
+    bool useFixedCompanionPort = workerPortCount.value_or(0) == 0;
+
     // clang-format off
     auto node = BuildYsonNodeFluently()
         .BeginMap()
@@ -373,6 +414,11 @@ TFlowNodeConfigPtr BuildDefaultVanillaNodeConfig(
             })
             .Item("rpc_port").Value(DefaultRpcPort)
             .Item("monitoring_port").Value(DefaultMonitoringPort)
+            .DoIf(useFixedCompanionPort, [&] (auto fluent) {
+                fluent.Item("companion").BeginMap()
+                    .Item("port").Value(DefaultCompanionPort)
+                .EndMap();
+            })
             .Item("abort_on_unrecognized_options").Value(false)
         .EndMap();
     // clang-format on
@@ -393,7 +439,11 @@ void LaunchInVanillaJob(
         return;
     }
 
-    auto nodeConfig = BuildDefaultVanillaNodeConfig(pipelinePath, proxyRole);
+    // The vault is only assembled right before the operation starts, i.e. after the binary has been
+    // uploaded; checking the names up front makes a missing variable fail before any of that.
+    ValidateSecretEnv(vanillaConfig->SecretEnv);
+
+    auto nodeConfig = BuildDefaultVanillaNodeConfig(pipelinePath, proxyRole, vanillaConfig->Worker->PortCount);
     if (vanillaConfig->NodeConfigPatch) {
         nodeConfig = ConvertTo<TFlowNodeConfigPtr>(
             PatchNode(ConvertToNode(nodeConfig), vanillaConfig->NodeConfigPatch));
@@ -441,6 +491,7 @@ void LaunchInVanillaJob(
         task.CypressFiles = config->CypressFiles;
         task.Layers = config->Layers;
         task.SystemLayerPath = config->SystemLayerPath;
+        task.DockerImage = config->DockerImage;
         if (aliasingConfig) {
             task.Environment["YT_PROXY_URL_ALIASING_CONFIG"] = *aliasingConfig;
         }
@@ -484,6 +535,7 @@ void LaunchInVanillaJob(
         spec.Alias = alias;
         spec.Title = vanillaConfig->Title;
         spec.MaxFailedJobCount = static_cast<int>(vanillaConfig->MaxFailedJobCount);
+        spec.MaxStderrCount = vanillaConfig->MaxStderrCount;
         spec.SolomonResolverTag = vanillaConfig->SolomonResolverTag;
         spec.MonitoringPort = nodeConfig->MonitoringPort;
         // Layers require porto nodes.
@@ -622,6 +674,7 @@ std::string StartFlowVanillaOperation(const TFlowVanillaOptions& options)
     spec.Alias = options.Alias.value_or(BuildVanillaOperationAlias(pipelinePath));
     spec.Title = options.Title;
     spec.MaxFailedJobCount = options.MaxFailedJobCount;
+    spec.MaxStderrCount = options.MaxStderrCount;
     spec.SolomonResolverTag = options.SolomonResolverTag;
     spec.MonitoringPort = nodeConfig->MonitoringPort;
     spec.Description = options.Description;

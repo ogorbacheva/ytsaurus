@@ -131,6 +131,7 @@ public:
                 Bootstrap_->GetRpcServer(),
                 electionManagerThunk,
                 Bootstrap_->GetCellManager()->GetCellId(),
+                Bootstrap_->GetCellManager()->GetTotalPeerCount(),
                 Bootstrap_->GetChangelogStoreFactory(),
                 Bootstrap_->GetSnapshotStore(),
                 Bootstrap_->GetNativeAuthenticator(),
@@ -319,7 +320,7 @@ public:
                     replyCallback = std::move(replyCallback)
                 ] (TErrorOr<TAsyncSemaphoreGuard>&& guardOrError) {
                     if (!guardOrError.IsOK()) {
-                        context->Reply(TError("Failed to acquire semaphore") << guardOrError);
+                        context->Reply(TError("Failed to acquire semaphore").With(guardOrError));
                         return;
                     }
 

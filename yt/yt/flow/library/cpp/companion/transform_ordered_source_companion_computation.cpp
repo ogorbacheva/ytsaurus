@@ -66,7 +66,6 @@ void TTransformOrderedSourceCompanionComputation::DoProcess(
     THashMap<TMessageId, TInputMessageConstPtr> messageMap;
     THashMap<TStreamId, NTableClient::TTableSchemaPtr> sourceStreamsSchemas;
     THashMap<std::string, THashMap<TKey, TStateAccessor<TCompanionState>>> internalStateMap;
-    THashMap<std::string, THashSet<TKey>> joinedStateKeys;
 
     auto addInternalStatesForKey = [&] (const TKey& key) {
         for (const auto& [stateName, stateClient] : InternalStateClients_) {
@@ -89,39 +88,14 @@ void TTransformOrderedSourceCompanionComputation::DoProcess(
         }
     };
 
-    auto addJoinedStatesForMessage = [&] (const TInputMessageConstPtr& message) {
-        for (const auto& [stateName, stateClient] : ExternalStateJoiners_) {
-            auto key = stateClient.ResolveKey(message);
-            if (!joinedStateKeys[stateName].insert(key).second) {
-                continue;
-            }
-            auto stateHandle = stateClient.GetState(key);
-            const auto* joinedState = stateHandle.Get();
-            if (joinedState) {
-                GetOrInsert(
-                    request->JoinedExternalStates,
-                    stateName,
-                    [&] {
-                        return TStateHolder<TPayload>{
-                            .StateName = stateName,
-                            .Schema = joinedState->Schema,
-                        };
-                    })
-                    .StateItems.push_back({
-                        .Key = key,
-                        .State = joinedState->Payload,
-                    });
-            }
-        }
-    };
-
     for (const auto& message : input->GetMessages()) {
         request->Messages.push_back(message);
         messageMap[message->MessageId] = message;
         sourceStreamsSchemas[message->StreamId] = message->PayloadSchema;
         addInternalStatesForKey(message->Key);
-        addJoinedStatesForMessage(message);
     }
+
+    AddJoinedExternalStates(request, ExternalStateJoiners_, input);
 
     request->OverrideStreamSpecs = CreateLocalStreamSpecs(
         sourceStreamsSchemas,
@@ -149,7 +123,7 @@ void TTransformOrderedSourceCompanionComputation::DoProcess(
             auto it = messageMap.find(parentId);
             if (it == messageMap.end()) {
                 THROW_ERROR_EXCEPTION("Parent message not found")
-                    << TErrorAttribute("parent_id", parentId);
+                    .With("parent_id", parentId);
             }
             groupParents.push_back(it->second);
         }
@@ -165,15 +139,15 @@ void TTransformOrderedSourceCompanionComputation::DoProcess(
         auto stateMapIt = internalStateMap.find(state.StateName);
         if (stateMapIt == internalStateMap.end()) {
             THROW_ERROR_EXCEPTION("Internal state is not found for state name")
-                << TErrorAttribute("state_name", state.StateName);
+                .With("state_name", state.StateName);
         }
 
         for (const auto& stateItem : state.StateItems) {
             auto stateIt = stateMapIt->second.find(stateItem.Key);
             if (stateIt == stateMapIt->second.end()) {
                 THROW_ERROR_EXCEPTION("Internal state is not found for key")
-                    << TErrorAttribute("state_name", state.StateName)
-                    << TErrorAttribute("key", stateItem.Key);
+                    .With("state_name", state.StateName)
+                    .With("key", stateItem.Key);
             }
             if (stateItem.Reset) {
                 stateIt->second.Clear();

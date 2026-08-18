@@ -47,10 +47,10 @@ using NYT::ToProto;
 
 namespace {
 
-YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "JobTracker");
-YT_DEFINE_GLOBAL(const NProfiling::TProfiler, JobTrackerProfiler, ControllerAgentProfiler().WithPrefix("/job_tracker"));
-YT_DEFINE_GLOBAL(const NProfiling::TProfiler, NodeHeartbeatProfiler, JobTrackerProfiler().WithPrefix("/node_heartbeat"));
-YT_DEFINE_GLOBAL(const NProfiling::TProfiler, SettleJobRequestProfiler, JobTrackerProfiler().WithPrefix("/settle_job"));
+YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, Logger, "JobTracker");
+YT_DEFINE_LEAKY_GLOBAL(const NProfiling::TProfiler, JobTrackerProfiler, ControllerAgentProfiler().WithPrefix("/job_tracker"));
+YT_DEFINE_LEAKY_GLOBAL(const NProfiling::TProfiler, NodeHeartbeatProfiler, JobTrackerProfiler().WithPrefix("/node_heartbeat"));
+YT_DEFINE_LEAKY_GLOBAL(const NProfiling::TProfiler, SettleJobRequestProfiler, JobTrackerProfiler().WithPrefix("/settle_job"));
 
 EJobStage JobStageFromJobState(EJobState jobState) noexcept
 {
@@ -1276,7 +1276,7 @@ void TJobTracker::SettleJob(const TJobTracker::TCtxSettleJobPtr& context)
             YT_LOG_INFO("Node is not registered in job tracker; skip settle job request");
 
             THROW_ERROR_EXCEPTION("Node is not registered in job tracker")
-                << TErrorAttribute("incarnation_id", IncarnationId_);
+                .With("incarnation_id", IncarnationId_);
         }
 
         auto* allocationInfo = nodeInfo->Jobs.FindAllocation(allocationId);
@@ -1346,7 +1346,7 @@ void TJobTracker::SettleJob(const TJobTracker::TCtxSettleJobPtr& context)
             YT_LOG_INFO("Node has been unregistered from job tracker during settle job request processing");
 
             THROW_ERROR_EXCEPTION("Node has been unregistered from job tracker during settle job request processing")
-                << TErrorAttribute("incarnation_id", IncarnationId_);
+                .With("incarnation_id", IncarnationId_);
         }
 
         // NB(pogorelov): Allocation may finish concurrently.

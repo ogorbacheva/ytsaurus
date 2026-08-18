@@ -26,14 +26,15 @@ IResourcePtr TComputationContextBase::GetStaticResource(const TResourceId& resou
     auto resource = GetOrDefault(StaticResources, resourceId);
     if (!resource) {
         THROW_ERROR_EXCEPTION("Static resource is not found")
-            << TErrorAttribute("resource_id", resourceId);
+            .With("resource_id", resourceId);
     }
     return resource;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void IComputationRunContext::MarkPersisted(const std::vector<TInputMessageConstPtr>& messages)
+void IComputationRunContext::MarkPersisted(
+    const std::vector<TInputMessageConstPtr>& messages)
 {
     std::vector<TMessageId> messageIds;
     messageIds.reserve(messages.size());
@@ -46,6 +47,22 @@ void IComputationRunContext::MarkPersisted(const std::vector<TInputMessageConstP
 void IComputationRunContext::MarkPersisted(TMessageId messageId)
 {
     MarkPersisted(std::span<const TMessageId>(&messageId, 1));
+}
+
+void IComputationRunContext::MarkDeduplicated(
+    const std::vector<TInputMessageConstPtr>& messages)
+{
+    std::vector<TMessageId> messageIds;
+    messageIds.reserve(messages.size());
+    for (const auto& message : messages) {
+        messageIds.push_back(message->MessageId);
+    }
+    MarkDeduplicated(std::span<const TMessageId>(messageIds));
+}
+
+void IComputationRunContext::MarkDeduplicated(TMessageId messageId)
+{
+    MarkDeduplicated(std::span<const TMessageId>(&messageId, 1));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

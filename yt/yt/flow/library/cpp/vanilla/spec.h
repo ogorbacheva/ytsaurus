@@ -38,6 +38,7 @@ struct TVanillaTaskSpec
     std::vector<TVanillaJobFile> Files;
     std::vector<NYPath::TYPath> Layers;
     std::optional<std::string> SystemLayerPath;
+    std::optional<std::string> DockerImage;
     std::optional<std::string> NetworkProject;
     //! Extra environment variables for the job, in addition to YT_FLOW_MODE (e.g.
     //! YT_PROXY_URL_ALIASING_CONFIG, or a YT_FLOW_CONFIG override for external launchers).
@@ -51,6 +52,8 @@ struct TVanillaSpec
     std::string Alias;
     std::optional<std::string> Title;
     int MaxFailedJobCount = 0;
+    //! Number of jobs whose stderr the scheduler retains after they finish.
+    int MaxStderrCount = 0;
     std::string SolomonResolverTag;
     int MonitoringPort = 0;
     //! Optional operation `description` annotation (shown in the YT UI).
@@ -67,6 +70,10 @@ struct TVanillaSpec
 //! directly so the launcher and reanimate submit it via `StartOperation`). The result carries only
 //! the `secret_env` names; call InjectSecureVaultFromEnv right before starting to add the vault.
 NYTree::IMapNodePtr BuildVanillaOperationSpec(const TVanillaSpec& spec);
+
+//! Checks that every name in |secretEnv| is set in the environment; throws otherwise. Called at the
+//! start of a launch, so a missing variable is reported before the binary is uploaded.
+void ValidateSecretEnv(const std::vector<std::string>& secretEnv);
 
 //! Replaces the spec's `secret_env` field with a `secure_vault` rebuilt from the environment, so
 //! secret values never have to be stored in Cypress. YT_TOKEN is always delivered; the rest are the

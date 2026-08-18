@@ -1,5 +1,6 @@
 #include "cypress_object_repository.h"
 
+#include "materialized_view_coordinator.h"
 #include "storage_yt_materialized_view.h"
 
 #include "config.h"
@@ -7,6 +8,7 @@
 #include "query_context.h"
 
 #include <yt/yt/client/api/cypress_client.h>
+#include <yt/yt/client/api/transaction.h>
 
 #include <yt/yt/core/concurrency/periodic_executor.h>
 
@@ -50,7 +52,6 @@ struct TPersistedMaterializedViewConfiguration
     std::string Creator;
     TObjectId SourceObjectId;
     TObjectId TargetObjectId;
-    i64 InitialSourceRowCount = 0;
 
     REGISTER_YSON_STRUCT(TPersistedMaterializedViewConfiguration);
 
@@ -62,8 +63,6 @@ struct TPersistedMaterializedViewConfiguration
         registrar.Parameter("creator", &TThis::Creator);
         registrar.Parameter("source_object_id", &TThis::SourceObjectId);
         registrar.Parameter("target_object_id", &TThis::TargetObjectId);
-        registrar.Parameter("initial_source_row_count", &TThis::InitialSourceRowCount)
-            .Default(0);
     }
 };
 
@@ -167,7 +166,6 @@ struct TCypressObjectRepository::TObjectSnapshot
             .ObjectId = entry.ObjectId,
             .SourceObjectId = config->SourceObjectId,
             .TargetObjectId = config->TargetObjectId,
-            .InitialSourceRowCount = config->InitialSourceRowCount,
             .Revision = entry.Revision,
         };
     }
@@ -221,8 +219,8 @@ TCypressObjectRepository::TObjectSnapshotPtr TCypressObjectRepository::BuildSnap
 
         auto value = attributes.Find<std::string>("value");
         if (!value) {
-            YT_LOG_WARNING("Clique object node is missing \"value\" attribute, skipping (Name: %v)",
-                name);
+            YT_TLOG_WARNING("Clique object node is missing \"value\" attribute, skipping")
+                .With("Name", name);
             continue;
         }
 
@@ -242,9 +240,9 @@ TCypressObjectRepository::TObjectSnapshotPtr TCypressObjectRepository::BuildSnap
         snapshot->Entries.emplace(std::move(name), std::move(entry));
     }
 
-    YT_LOG_DEBUG("Cypress object snapshot built (RootPath: %v, ObjectCount: %v)",
-        RootPath_,
-        snapshot->Entries.size());
+    YT_TLOG_DEBUG("Cypress object snapshot built")
+        .With("RootPath", RootPath_)
+        .With("ObjectCount", snapshot->Entries.size());
 
     return snapshot;
 }
@@ -256,8 +254,9 @@ void TCypressObjectRepository::RefreshSnapshot()
         auto guard = WriterGuard(SnapshotLock_);
         Snapshot_ = std::move(snapshot);
     } catch (const std::exception& ex) {
-        YT_LOG_WARNING(ex, "Failed to refresh Cypress object snapshot (RootPath: %v)",
-            RootPath_);
+        YT_TLOG_WARNING("Failed to refresh Cypress object snapshot")
+            .With("RootPath", RootPath_)
+            .With(TError(ex));
     }
 }
 
@@ -350,7 +349,7 @@ void TCypressObjectRepository::WriteDictionary(
 
     auto resultOrError = WaitFor(client->CreateNode(path, NCypressClient::EObjectType::Document, options));
     if (!resultOrError.IsOK()) {
-        THROW_ERROR_EXCEPTION("Error while writing dictionary %Qv", configName) << resultOrError;
+        THROW_ERROR_EXCEPTION("Error while writing dictionary %Qv", configName).With(resultOrError);
     }
 
     RefreshSnapshot();
@@ -377,17 +376,37 @@ void TCypressObjectRepository::WriteMaterializedView(
     persistedConfig->Creator = context->getClientInfo().initial_user;
     persistedConfig->SourceObjectId = config.SourceObjectId;
     persistedConfig->TargetObjectId = config.TargetObjectId;
-    persistedConfig->InitialSourceRowCount = config.InitialSourceRowCount;
 
     TCreateNodeOptions options;
     options.Attributes = CreateEphemeralAttributes();
-    options.Attributes->Set("value", ConvertToYsonString(persistedConfig).ToString());
+    options.Attributes->Set("value", ConvertToYsonString(persistedConfig, EYsonFormat::Text).ToString());
     options.Attributes->Set("chyt_object_type", ERepositoryObjectType::MaterializedView);
 
-    auto resultOrError = WaitFor(client->CreateNode(GetObjectPath(objectName), EObjectType::Document, options));
-    if (!resultOrError.IsOK()) {
-        THROW_ERROR_EXCEPTION("Error while writing materialized view %Qv", storageId.getFullTableName())
-            << resultOrError;
+    auto transaction = WaitFor(client->StartTransaction(ETransactionType::Master))
+        .ValueOrThrow();
+    try {
+        auto resultOrError = WaitFor(transaction->CreateNode(
+            GetObjectPath(objectName),
+            EObjectType::Document,
+            options));
+        if (!resultOrError.IsOK()) {
+            THROW_ERROR_EXCEPTION("Error while writing materialized view %Qv", storageId.getFullTableName())
+                .With(resultOrError);
+        }
+
+        host->GetMaterializedViewCoordinator()->InitializeProgress(
+            transaction,
+            resultOrError.Value(),
+            config.SourceObjectId);
+        WaitFor(transaction->Commit()).ThrowOnError();
+    } catch (const std::exception&) {
+        auto abortError = WaitFor(transaction->Abort());
+        if (!abortError.IsOK()) {
+            YT_TLOG_WARNING("Failed to abort materialized view creation transaction")
+                .With("View", storageId.getFullTableName())
+                .With(abortError);
+        }
+        throw;
     }
 
     RefreshSnapshot();
@@ -473,7 +492,7 @@ void TCypressObjectRepository::RemoveObject(
     auto resultOrError = WaitFor(client->RemoveNode(path, options));
     if (!resultOrError.IsOK()) {
         THROW_ERROR_EXCEPTION("Failed to remove clique object %Qv due to concurrent object overwrite", objectName)
-            << resultOrError;
+            .With(resultOrError);
     }
 }
 

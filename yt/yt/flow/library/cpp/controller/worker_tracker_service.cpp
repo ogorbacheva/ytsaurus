@@ -77,13 +77,13 @@ private:
             auto actualIncarnationId = ConvertTo<TIncarnationId>(TYsonStringBuf(orchidRequestResult.Value()->value()));
             if (actualIncarnationId != workerNodeInfo.IncarnationId) {
                 THROW_ERROR_EXCEPTION("Worker node incarnation ids mismatch")
-                    << TErrorAttribute("actual_incarnation_id", actualIncarnationId)
-                    << TErrorAttribute("expected_incarnation_id", workerNodeInfo.IncarnationId);
+                    .With("actual_incarnation_id", actualIncarnationId)
+                    .With("expected_incarnation_id", workerNodeInfo.IncarnationId);
             }
         } catch (const std::exception& ex) {
             THROW_ERROR_EXCEPTION("Worker node incarnation id check failed")
-                << TError(ex)
-                << TErrorAttribute("worker_identifying_string", workerNodeInfo.GetIdentifyingString());
+                .With(TError(ex))
+                .With("worker_identifying_string", workerNodeInfo.GetIdentifyingString());
         }
     }
 
@@ -179,7 +179,7 @@ private:
                     statuses[jobId] = jobStatus;
                 } catch (const std::exception& ex) {
                     // Job would be dropped anyway after LostJobTimeout.
-                    YT_TLOG_EVENT_FLUENT(PublicControllerLogger, NLogging::ELogLevel::Error, "Job sent invalid status, ignored")
+                    YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Error, "Job sent invalid status, ignored")
                         .With("WorkerIdentifyingString", workerInfo.GetIdentifyingString())
                         .With("JobId", jobId)
                         .With(ex);

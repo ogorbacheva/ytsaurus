@@ -262,6 +262,9 @@ items:
         - name: Образы ФС
           when: audience == "public"
           href: user-guide/data-processing/layers/layer-paths.md
+        - name: Файловое окружение джобов
+          when: audience == "public"
+          href: user-guide/data-processing/layers/nbd-squashfs-layers.md
         - name: Переключение таблиц
           when: audience == "public"
           href: user-guide/data-processing/operations/table-switch.md
@@ -494,6 +497,10 @@ items:
       - name: Работа с Jupyter Notebooks
         when: audience == "public"
         href: user-guide/jupyt.md
+      - name: AI-инструменты
+        items:
+          - name: Работа с MCP-сервером
+            href: user-guide/ai/mcp-server.md
   - name: API и справочник
     when: audience == "public"
     items:
@@ -515,7 +522,7 @@ items:
                 href: api/python/start.md
               - name: Пользовательская документация
                 href: api/python/userdoc.md
-              - name: Справочник
+              - name: Справочник 🔗
                 href: https://pydoc.ytsaurus.tech
               - name: Датаклассы
                 href: api/python/dataclass.md
@@ -533,10 +540,12 @@ items:
                 href: api/cpp/lambda.md
               - name: Примеры использования
                 href: api/cpp/examples.md
-              #- name: Справочник
-              #  href: api/cpp/reference.md
+              #- name: Справочник 🔗
+              #  href: https://ytsaurus.tech/docs/c++/index.html
           - name: Go API
-            href: api/go/reference.md
+            items:
+              - name: Справочник 🔗
+                href: https://pkg.go.dev/go.ytsaurus.tech/yt/go
           - name: Java API
             href: api/java/examples.md
           - name: JavaScript Wrapper
@@ -573,6 +582,9 @@ items:
             href: admin-guide/install-monitoring.md
           - name: Task-прокси
             href: admin-guide/install-task-proxy.md
+          - name: MCP-сервер
+            when: audience == "public"
+            href: admin-guide/install-mcp.md
       - name: Обновление кластера
         items:
           - name: Стратегии обновления
@@ -646,6 +658,8 @@ items:
         href: admin-guide/native-encryption.md
       - name: Квотирование межкластерной сетевой полосы
         href: admin-guide/cluster-throttlers.md
+      - name: NBD на кластере
+        href: admin-guide/nbd.md
       - name: Прочее
         items:
           - name: Чтение с удаленных кластеров через RPC Proxy

@@ -378,7 +378,8 @@ void TComputationBase::SubscribeOnReconfigure(NYT::TCallback<void()> callback, I
 bool TComputationBase::UpdateTraverse(
     TSystemTimestamp reportTime,
     TSystemTimestamp systemWatermark,
-    const THashMap<TStreamId, TInflightStreamTraverseDataPtr>& inflights)
+    const THashMap<TStreamId, TInflightStreamTraverseDataPtr>& inflights,
+    i64 iterationCycle)
 {
     YT_ASSERT_SERIALIZED_INVOKER_AFFINITY(GetContext()->SerializedInvoker);
 
@@ -389,6 +390,7 @@ bool TComputationBase::UpdateTraverse(
 
     auto traverseData = New<TNodeTraverseData>();
     traverseData->ReportTime = reportTime;
+    traverseData->IterationCycle = iterationCycle;
 
     // Deep copy because traverseData->Streams will be mutated.
     for (const auto& [streamId, streamTraverseData] : GetInputTraverse()) {
@@ -419,13 +421,14 @@ bool TComputationBase::UpdateTraverse(
         }
 
         auto parentStream = MergeStreamTraverseData(input, EInflightMerge::None);
-        // Parent system watermark is ignored due to new messages system timestamp independent from parent messages.
-        parentStream->SystemWatermark = systemWatermark;
+        if (!GetSpec()->InputStreamIds.contains(streamId)) {
+            // Computation-created messages have system timestamps independent from their parents.
+            parentStream->SystemWatermark = systemWatermark;
+        }
 
         traverseData->Streams[streamId] = ApplyInflightTraverseData(
             parentStream,
-            GetOrCrash(inflights, streamId),
-            systemWatermark);
+            GetOrCrash(inflights, streamId));
     }
 
     bool isFinished = true;
@@ -861,7 +864,11 @@ bool TUniversalComputationBase::UpdateStatus(
 
     NTracing::TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Accounting"));
 
-    bool isFinished = UpdateTraverse(reportTime, systemWatermark, inflights);
+    const bool isFinished = UpdateTraverse(
+        reportTime,
+        systemWatermark,
+        inflights,
+        RunIteration_);
 
     auto inputLimits = GetExtraInputLimits();
 
@@ -1177,7 +1184,8 @@ TSystemTimestamp TUniversalComputationBase::GetEpochWatermark(const TStreamId& s
     return GetWatermark(streamId, timeType);
 }
 
-THashMap<TStreamId, TInflightStreamTraverseDataPtr> TUniversalComputationBase::BuildInflights() const
+THashMap<TStreamId, TInflightStreamTraverseDataPtr> TUniversalComputationBase::BuildInflights(
+    const IComputationRunContextPtr& context) const
 {
     const auto emptyStream = New<TInflightStreamTraverseData>();
     emptyStream->Empty = true;
@@ -1241,6 +1249,18 @@ THashMap<TStreamId, TInflightStreamTraverseDataPtr> TUniversalComputationBase::B
             inflights[streamId] = CloneYsonStruct(emptyStream);
         }
     }
+
+    if (!GetSpec()->InputStreamIds.empty()) {
+        const auto inputInflightMetrics = WaitFor(context->GetInputInflightMetrics())
+            .ValueOrThrow();
+        for (const auto& streamId : GetSpec()->InputStreamIds) {
+            auto inflight = New<TInflightStreamTraverseData>();
+            inflight->InflightMetrics = GetOrCrash(inputInflightMetrics, streamId);
+            inflight->Empty = inflight->InflightMetrics->Count == 0;
+            inflights[streamId] = std::move(inflight);
+        }
+    }
+
     return inflights;
 }
 
@@ -1407,6 +1427,9 @@ TUniversalComputationBase::TRunIterationGuard TUniversalComputationBase::StartRu
     }));
     // Apply pending state before any computation in this iteration.
     ApplyPendingStates();
+    // Drop the previous epoch's number: a loop that mints none must not leak a stale one
+    // into user code through IRuntimeContext.
+    EpochUniqueSeqNo_.reset();
 
     if (TimerStore_) {
         TimerStore_->UpdateWatermarkState(GetWatermarkState());
@@ -1515,9 +1538,16 @@ void TUniversalComputationBase::Commit(IComputationRunContextPtr context, IRetry
     {
         TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("PostCommit"));
         ObserveEpochEventLags(TInstant::Now());
+        OutputStore_->Commit();
         context->Commit();
         if (ActiveSource_) {
             ActiveSource_->Commit();
+        }
+        if (TimerStore_) {
+            TimerStore_->Commit();
+        }
+        for (const auto& [_, visitor] : KeyVisitors_) {
+            visitor->Commit();
         }
         for (const auto& [sinkId, key, sink] : GetAllSinks()) {
             sink->Commit();
@@ -1675,7 +1705,20 @@ void TUniversalComputationBase::ValidateTimerStoreLimits(const TDynamicComputati
 ITimeProvider::TGlobalUniqueSeqNo TUniversalComputationBase::GenerateGlobalUniqueSeqNo()
 {
     NTracing::TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("GenerateGlobalUniqueSeqNo"));
-    return WaitFor(GetTimeProvider()->GenerateGlobalUniqueSeqNo()).ValueOrThrow();
+    auto result = WaitFor(GetTimeProvider()->GenerateGlobalUniqueSeqNo()).ValueOrThrow();
+
+    // Publish right where the number is minted, so no epoch loop can forget to.
+    YT_ASSERT_SERIALIZED_INVOKER_AFFINITY(GetContext()->SerializedInvoker);
+    EpochUniqueSeqNo_ = result.UniqueSeqNo;
+
+    return result;
+}
+
+std::optional<TUniqueSeqNo> TUniversalComputationBase::GetEpochUniqueSeqNo() const
+{
+    YT_ASSERT_SERIALIZED_INVOKER_AFFINITY(GetContext()->SerializedInvoker);
+
+    return EpochUniqueSeqNo_;
 }
 
 void TUniversalComputationBase::InitOutputStoreDistribution(const IComputationRunContextPtr& context)
@@ -1807,7 +1850,7 @@ void TUniversalComputationBase::DoInterrupt(const IComputationRunContextPtr& con
     {
         auto iterGuard = StartRunIteration(context);
         const auto [now, uniqueSeqNo] = GenerateGlobalUniqueSeqNo();
-        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights());
+        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights(context));
         FinishRunIteration();
     }
 
@@ -1823,7 +1866,7 @@ void TUniversalComputationBase::DoInterrupt(const IComputationRunContextPtr& con
         auto tx = PrepareTransaction(context);
         Commit(context, tx);
 
-        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights());
+        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights(context));
         FinishRunIteration();
         TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Distribute.InterruptedPartitionOutputMessages"));
         TDelayedExecutor::WaitForDuration(dynamicSpec->EmptyBatchBackoff);
@@ -1848,7 +1891,7 @@ void TUniversalComputationBase::DoComplete(const IComputationRunContextPtr& cont
         {
             auto iterGuard = StartRunIteration(context);
             const auto [now, uniqueSeqNo] = GenerateGlobalUniqueSeqNo();
-            isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights());
+            isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights(context));
             FinishRunIteration();
         }
 
@@ -1863,7 +1906,7 @@ void TUniversalComputationBase::DoComplete(const IComputationRunContextPtr& cont
             auto tx = PrepareTransaction(context);
             Commit(context, tx);
 
-            isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights());
+            isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, BuildInflights(context));
             FinishRunIteration();
             TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Distribute.CompletingPartitionOutputMessages"));
             TDelayedExecutor::WaitForDuration(dynamicSpec->EmptyBatchBackoff);

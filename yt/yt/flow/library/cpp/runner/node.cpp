@@ -5,6 +5,7 @@
 #include "config.h"
 #include "debug_build_warning.h"
 #include "endpoint_provider.h"
+#include "network_bandwidth.h"
 #include "node_info.h"
 #include "porto_tracker.h"
 #include "private.h"
@@ -159,7 +160,7 @@ protected:
             auto error = TError(ex);
             YT_TLOG_ERROR("Flow node failed")
                 .With(error);
-            THROW_ERROR_EXCEPTION("Flow node failed") << error;
+            THROW_ERROR_EXCEPTION("Flow node failed").With(error);
         }
     }
 
@@ -237,7 +238,8 @@ private:
         // Ports come from the config by default. When the operation requests YT-allocated
         // ports (port_count > 0, e.g. on a shared-network host), YT exposes them via
         // YT_PORT_<i> — honor those over the config: YT_PORT_0 → rpc_port (and bus_server.port),
-        // YT_PORT_1 → monitoring_port, YT_PORT_2 → companion.port (python/java workers only).
+        // YT_PORT_1 → monitoring_port, YT_PORT_2 → companion.port (any worker running an
+        // out-of-process companion).
         if (const char* port0Env = std::getenv("YT_PORT_0")) {
             int rpcPort = FromString<int>(port0Env);
             Config_->RpcPort = rpcPort;
@@ -286,6 +288,8 @@ private:
         if (Config_->EnablePortoResourceTracker) {
             TryEnablePortoResourceTracker(NodeInfo_->VcpuFactor, Logger());
         }
+
+        TryExportNetworkBandwidthGuarantee();
 
         ControlQueue_ = NConcurrency::CreateEnumIndexedFairShareActionQueue<NController::EControlQueue>("Control");
 
@@ -669,8 +673,8 @@ private:
             return ParseEnum<EFlowRunMode>(modeStr);
         } catch (const std::exception& ex) {
             THROW_ERROR_EXCEPTION("Error parsing %Qv variable",
-                    FlowModeEnvVarName)
-                << ex;
+                FlowModeEnvVarName)
+                .With(ex);
         }
     }
 

@@ -1,5 +1,7 @@
 #include "helpers.h"
 
+#include "config.h"
+
 #include <yt/yt/ytlib/query_tracker_client/helpers.h>
 #include <yt/yt/ytlib/query_tracker_client/records/query.record.h>
 
@@ -105,7 +107,7 @@ THashSet<std::string> GetUserSubjects(const std::string& user, const IClientPtr&
             return {};
         }
         THROW_ERROR_EXCEPTION("Error while fetching user membership for the user %Qv", user)
-            << userSubjectsOrError;
+            .With(userSubjectsOrError);
     }
     return ConvertTo<THashSet<std::string>>(userSubjectsOrError.Value());
 }
@@ -196,6 +198,26 @@ std::string Decompress(const std::string& data)
     TMemoryInput input(data.begin(), data.size());
     TZstdDecompress decompressStream(&input);
     return decompressStream.ReadAll();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TEngineConfigBasePtr GetConfigByEngine(const TQueryTrackerDynamicConfigPtr& config, EQueryEngine engine)
+{
+    switch (engine) {
+        case EQueryEngine::Mock:
+            return config->MockEngine;
+        case EQueryEngine::Ql:
+            return config->QLEngine;
+        case EQueryEngine::Yql:
+            return config->YqlEngine;
+        case EQueryEngine::Chyt:
+            return config->ChytEngine;
+        case EQueryEngine::Spyt:
+            return config->SpytEngine;
+        default:
+            YT_ABORT();
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

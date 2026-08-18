@@ -590,13 +590,12 @@ private:
             }
         }
 
-
         for (auto& request : Requests_) {
             // We always clean master request to avoid additional work in automaton thread.
             auto addedChunksEndIt = std::remove_if(
                 request->mutable_added_chunks()->begin(),
                 request->mutable_added_chunks()->end(),
-                [&](const TChunkAddInfo& chunkAddInfo) {
+                [&] (const TChunkAddInfo& chunkAddInfo) {
                     auto chunkIdWithIndex = DecodeChunkId(FromProto<TChunkId>(chunkAddInfo.chunk_id()));
                     return !ShouldProcessAddedReplicaOnMaster(chunkIdWithIndex);
                 });
@@ -607,7 +606,7 @@ private:
                 auto removedChunksEndIt = std::remove_if(
                     request->mutable_removed_chunks()->begin(),
                     request->mutable_removed_chunks()->end(),
-                    [&](const TChunkRemoveInfo& chunkRemoveInfo) {
+                    [&] (const TChunkRemoveInfo& chunkRemoveInfo) {
                         auto chunkIdWithIndex = DecodeChunkId(FromProto<TChunkId>(chunkRemoveInfo.chunk_id()));
 
                         auto chunkSequoiaConfig = GetChunkSequoiaConfig(chunkIdWithIndex.Id, Config_);

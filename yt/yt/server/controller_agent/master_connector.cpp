@@ -724,7 +724,7 @@ private:
         } catch (const std::exception& ex) {
             THROW_ERROR_EXCEPTION("Error updating operation %v node",
                 operationId)
-                << ex;
+                .With(ex);
         }
 
         YT_LOG_DEBUG("Finished updating operation node (OperationId: %v)",
@@ -835,7 +835,11 @@ private:
         auto controller = operation->GetController();
         bool shouldUpdateLightOperationAttributes = controller->ShouldUpdateLightOperationAttributes();
 
-        UpdateProgressAndLightAttributes(operationId, controller, controller->HasProgress(), shouldUpdateLightOperationAttributes);
+        UpdateProgressAndLightAttributes(
+            operationId,
+            controller,
+            controller->HasProgress(),
+            shouldUpdateLightOperationAttributes);
         if (shouldUpdateLightOperationAttributes) {
             controller->SetLightOperationAttributesUpdated();
         }
@@ -874,20 +878,28 @@ private:
             ValidateYson(progress, GetYsonNestingLevelLimit());
             ValidateYson(briefProgress, GetYsonNestingLevelLimit());
 
-            // NB: Brief progress is a small attribute, so we always report it to Cypress,
-            // and also to the archive if archivation is enabled.
-            hasSubrequests = true;
-
-            auto briefProgressReq = multisetReq->add_subrequests();
-            briefProgressReq->set_attribute("brief_progress");
-            briefProgressReq->set_value(ToProto(briefProgress));
-
             if (Config_->EnableOperationProgressArchivation && DoesOperationsArchiveExist()) {
+                // While the operation is running, we only attempt to write brief progress to the archive.
+                // Once the operation finishes, persist brief progress in Cypress to ensure it is always available.
+                if (controller->IsFinished()) {
+                    hasSubrequests = true;
+
+                    auto briefProgressReq = multisetReq->add_subrequests();
+                    briefProgressReq->set_attribute("brief_progress");
+                    briefProgressReq->set_value(ToProto(briefProgress));
+                }
+
                 TryUpdateOperationProgressInArchive(operationId, progress, briefProgress);
             } else {
+                hasSubrequests = true;
+
                 auto progressReq = multisetReq->add_subrequests();
                 progressReq->set_attribute("progress");
                 progressReq->set_value(ToProto(progress));
+
+                auto briefProgressReq = multisetReq->add_subrequests();
+                briefProgressReq->set_attribute("brief_progress");
+                briefProgressReq->set_value(ToProto(briefProgress));
             }
         }
 
@@ -1157,7 +1169,7 @@ private:
             }
 
             THROW_ERROR_EXCEPTION("Error getting snapshot version")
-                << rspOrError;
+                .With(rspOrError);
         }
 
         const auto& rsp = rspOrError.Value();
@@ -1181,7 +1193,7 @@ private:
                 operationId);
             snapshot.Blocks = downloader->Run();
         } catch (const std::exception& ex) {
-            THROW_ERROR_EXCEPTION("Error downloading snapshot") << ex;
+            THROW_ERROR_EXCEPTION("Error downloading snapshot").With(ex);
         }
         return snapshot;
     }
@@ -1200,7 +1212,7 @@ private:
         auto batchRspOrError = WaitFor(batchReq->Invoke());
         auto error = GetCumulativeError(batchRspOrError);
         if (!error.IsOK()) {
-            Bootstrap_->GetControllerAgent()->Disconnect(TError("Failed to remove snapshot") << error);
+            Bootstrap_->GetControllerAgent()->Disconnect(TError("Failed to remove snapshot").With(error));
         }
     }
 
@@ -1273,7 +1285,7 @@ private:
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
-        Bootstrap_->GetControllerAgent()->Disconnect(TError("Failed to update operation node") << error);
+        Bootstrap_->GetControllerAgent()->Disconnect(TError("Failed to update operation node").With(error));
     }
 
     void DoAddChunkTreesToUnstageList(std::vector<TChunkTreeId> chunkTreeIds, bool recursive)
@@ -1365,7 +1377,7 @@ private:
                 SetControllerAgentAlert(
                     EControllerAgentAlertType::UnrecognizedConfigOptions,
                     TError("Controller agent config contains unrecognized options")
-                        << TErrorAttribute("unrecognized", unrecognized));
+                        .With("unrecognized", unrecognized));
             }
         }
 
@@ -1407,7 +1419,7 @@ private:
                 newConfig = ConvertTo<TControllerAgentConfigPtr>(newConfigNode);
             } catch (const std::exception& ex) {
                 THROW_ERROR_EXCEPTION("Error loading controller agent configuration")
-                    << ex;
+                    .With(ex);
             }
 
             SetControllerAgentAlert(EControllerAgentAlertType::UpdateConfig, TError());

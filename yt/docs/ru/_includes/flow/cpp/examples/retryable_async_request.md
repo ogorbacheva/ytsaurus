@@ -53,14 +53,10 @@
 
 ### TRequestProcessor
 
-{% code '/yt/yt/flow/examples/cpp/retryable_async_request/main.cpp' lang='cpp' lines='[BEGIN request_processor]-[END request_processor]' keep-indents %}
+{% code '/yt/yt/flow/examples/cpp/retryable_async_request/lib/retryable_async_request_functions.cpp' lang='cpp' lines='[BEGIN request_processor]-[END request_processor]' keep-indents %}
 
 ### TStateKeeper
 
-{% code '/yt/yt/flow/examples/cpp/retryable_async_request/main.cpp' lang='cpp' lines='[BEGIN state_keeper]-[END state_keeper]' keep-indents %}
+{% code '/yt/yt/flow/examples/cpp/retryable_async_request/lib/retryable_async_request_functions.cpp' lang='cpp' lines='[BEGIN state_keeper]-[END state_keeper]' keep-indents %}
 
-## См. также
 
-- [Быстрый старт (C++)](../../../../flow/cpp/getting-started.md)
-- [Таймеры](../../../../flow/concepts/timers.md)
-- [Пример: асинхронные запросы (C++)](../../../../flow/cpp/examples/async_request.md)

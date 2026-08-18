@@ -12,6 +12,7 @@ SRCS(
     inflight_tracker_ut.cpp
     interval_ut.cpp
     job_directory_ut.cpp
+    joined_state_key_client_ut.cpp
     key_builder_ut.cpp
     key_ut.cpp
     message_batch_ut.cpp
@@ -36,6 +37,7 @@ SRCS(
 PEERDIR(
     yt/yt/flow/library/cpp/common
     yt/yt/flow/library/cpp/common/unittests/mock
+    yt/yt/library/profiling/solomon
     yt/yt/library/query/engine
 )
 

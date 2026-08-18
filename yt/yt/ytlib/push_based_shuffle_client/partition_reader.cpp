@@ -84,14 +84,12 @@ public:
         YT_VERIFY(CreateDistributedChunkSessionReader_);
         YT_VERIFY(!IdentityColumnIds_ || IdentityColumnIds_->AreValid());
 
-        YT_LOG_INFO(
-            "Push-based shuffle reader created (Codec: %v, MaxBytesPerRead: %v, "
-            "RowBufferStartChunkSize: %v, HasHeaderFilter: %v, HasIdentityColumns: %v)",
-            Config_->Codec,
-            Config_->MaxBytesPerRead,
-            Config_->RowBufferStartChunkSize,
-            static_cast<bool>(RecordHeaderFilter_),
-            static_cast<bool>(IdentityColumnIds_));
+        YT_TLOG_INFO("Push-based shuffle reader created")
+            .With("Codec", Config_->Codec)
+            .With("MaxBytesPerRead", Config_->MaxBytesPerRead)
+            .With("RowBufferStartChunkSize", Config_->RowBufferStartChunkSize)
+            .With("HasHeaderFilter", static_cast<bool>(RecordHeaderFilter_))
+            .With("HasIdentityColumns", static_cast<bool>(IdentityColumnIds_));
     }
 
     TFuture<TShuffleReadBatchPtr> Read() override
@@ -128,6 +126,13 @@ public:
     {
         SerializedInvoker_->Invoke(BIND_NO_PROPAGATE(
             &TPushBasedPartitionReader::DoSetNoMoreChunks,
+            MakeWeak(this)));
+    }
+
+    void FinishAtCurrentCommittedRecordCount() override
+    {
+        SerializedInvoker_->Invoke(BIND_NO_PROPAGATE(
+            &TPushBasedPartitionReader::DoFinishAtCurrentCommittedRecordCount,
             MakeWeak(this)));
     }
 
@@ -179,11 +184,10 @@ private:
 
         ChunkStates_[chunkId] = std::move(state);
 
-        YT_LOG_DEBUG(
-            "Chunk added (ChunkId: %v, StartRecordIndex: %v, RangeEndRecordIndex: %v)",
-            chunkId,
-            startRecordIndex,
-            rangeEndRecordIndex);
+        YT_TLOG_DEBUG("Chunk added")
+            .With("ChunkId", chunkId)
+            .With("StartRecordIndex", startRecordIndex)
+            .With("RangeEndRecordIndex", rangeEndRecordIndex);
     }
 
     void DoSetNoMoreChunks() noexcept
@@ -197,12 +201,25 @@ private:
             return;
         }
         NoMoreChunks_ = true;
+        MaybeResolveRead();
+
+        YT_TLOG_DEBUG("No more chunks will be added to shuffle reader");
+    }
+
+    void DoFinishAtCurrentCommittedRecordCount() noexcept
+    {
+        YT_ASSERT_INVOKER_AFFINITY(SerializedInvoker_);
+
+        if (!TerminalError_.IsOK()) {
+            return;
+        }
+        YT_VERIFY(NoMoreChunks_);
+
         for (auto& [_, state] : ChunkStates_) {
             state.ChunkSessionReader->SetAllWritersFinished();
         }
-        MaybeResolveRead();
 
-        YT_LOG_DEBUG("Shuffle reader sealed");
+        YT_TLOG_DEBUG("Finishing shuffle reader at current committed record count");
     }
 
     void DoRead(TPromise<TShuffleReadBatchPtr> promise) noexcept
@@ -217,7 +234,7 @@ private:
     {
         YT_ASSERT_INVOKER_AFFINITY(SerializedInvoker_);
 
-        FailReader(TError(NYT::EErrorCode::Canceled, "Partition reader canceled") << error);
+        FailReader(TError(NYT::EErrorCode::Canceled, "Partition reader canceled").With(error));
     }
 
     void StartChunkSessionRead(TChunkId chunkId, TChunkReadState* state) noexcept
@@ -238,7 +255,8 @@ private:
             if (!resultOrError.IsOK() &&
                 !resultOrError.FindMatching(NYT::EErrorCode::Canceled))
             {
-                YT_LOG_DEBUG(resultOrError, "Shuffle reader received subsequent failure");
+                YT_TLOG_DEBUG("Shuffle reader received subsequent failure")
+                    .With(resultOrError);
             }
             return;
         }
@@ -327,7 +345,7 @@ private:
                 drainedBytes += std::ssize(blob);
                 try {
                     auto header = ReadShuffleRecordHeader(blob);
-                    if (!SeenRecords_.emplace(header.MapperId, header.StartRow).second ||
+                    if (!SeenRecords_.emplace(header.WriterId, header.StartRow).second ||
                         (RecordHeaderFilter_ && !RecordHeaderFilter_(header)))
                     {
                         continue;
@@ -378,7 +396,8 @@ private:
 
         if (TerminalError_.IsOK()) {
             TerminalError_ = error;
-            YT_LOG_WARNING(TerminalError_, "Shuffle reader failed");
+            YT_TLOG_WARNING("Shuffle reader failed")
+                .With(TerminalError_);
 
             ReadyChunkIds_.clear();
             ReleaseRecordFilterState();
@@ -393,7 +412,8 @@ private:
             // First failure wins; later errors are observability noise — log them
             // at DEBUG so the diagnostic info isn't silently dropped, but don't
             // overwrite TerminalError_ (downstream code is keyed on the first).
-            YT_LOG_DEBUG(error, "Shuffle reader received subsequent failure");
+            YT_TLOG_DEBUG("Shuffle reader received subsequent failure")
+                .With(error);
         }
         if (PendingReadPromise_) {
             auto promise = std::move(PendingReadPromise_);
@@ -412,7 +432,7 @@ private:
         if (FinishedLogged_) {
             return;
         }
-        YT_LOG_INFO("Shuffle reader finished");
+        YT_TLOG_INFO("Shuffle reader finished");
         FinishedLogged_ = true;
     }
 };

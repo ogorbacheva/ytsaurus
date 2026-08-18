@@ -193,6 +193,43 @@ for line in sys.stdin:
 
         wait(lambda: cache_artifact_count() == 0)
 
+    @authors("dann239")
+    def test_disabled_location_alert(self):
+        node = ls("//sys/cluster_nodes")[0]
+        chunk_cache = self.Env.configs["node"][0]["data_node"]["cache_locations"][0]["path"]
+        assert not os.path.exists(f"{chunk_cache}/disabled")
+
+        # We set compression_codec here so that it trips the test_cache_location_disabling check.
+        create("file", "//tmp/file", attributes={"compression_codec": "lz4"})
+        write_file(
+            "//tmp/file",
+            b"x" * (1024 * 1024),
+            file_writer={"upload_replication_factor": 1},
+        )
+
+        update_nodes_dynamic_config({
+            "exec_node": {
+                "chunk_cache": {
+                    "test_cache_location_disabling": True,
+                },
+            },
+        })
+
+        op = run_test_vanilla(
+            command="true",
+            task_patch={"file_paths": ["//tmp/file"]},
+            track=False,
+        )
+
+        wait(lambda: os.path.exists(f"{chunk_cache}/disabled"))
+        op.abort()
+
+        def check_alerts():
+            alerts = get(f"//sys/cluster_nodes/{node}/@alerts")
+            return len(alerts) == 1 and "is disabled" in alerts[0]["message"]
+
+        wait(check_alerts)
+
 
 class TestPerLocationFullHeartbeats(YTEnvSetup):
     ENABLE_MULTIDAEMON = False
@@ -245,9 +282,6 @@ class TestPerLocationFullHeartbeats(YTEnvSetup):
 
     @authors("grphil")
     def test_empty_locations_are_reported(self):
-        # COMPAT(danilalexeev): YT-23781. Remove this once location fhb are enabled by default.
-        set("//sys/@config/chunk_manager/data_node_tracker/enable_validation_full_heartbeats", False)
-
         nodes = ls("//sys/cluster_nodes")
         assert len(nodes) == 1
         node = nodes[0]
@@ -273,9 +307,6 @@ class TestPerLocationFullHeartbeats(YTEnvSetup):
         wait(lambda: get(f"//sys/cluster_nodes/{node}/@state") == "being_disposed")
         set("//sys/@config/node_tracker/max_locations_being_disposed", 20)
 
-        set("//sys/@config/chunk_manager/data_node_tracker/enable_per_location_full_heartbeats", False)
-        wait(lambda: get(f"//sys/cluster_nodes/{node}/@state") == "online")
-
         update_nodes_dynamic_config({
             "data_node": {
                 "testing_options": {
@@ -284,7 +315,7 @@ class TestPerLocationFullHeartbeats(YTEnvSetup):
             }
         })
 
-        set("//sys/@config/chunk_manager/data_node_tracker/enable_per_location_full_heartbeats", True)
+        wait(lambda: get(f"//sys/cluster_nodes/{node}/@state") == "online")
 
         with Restarter(self.Env, NODES_SERVICE, sync=False):
             pass
@@ -293,9 +324,6 @@ class TestPerLocationFullHeartbeats(YTEnvSetup):
 
     @authors("danilalexeev")
     def test_interrupt_full_heartbeat_session(self):
-        # COMPAT(danilalexeev): YT-23781. Remove this once location fhb are enabled by default.
-        set("//sys/@config/chunk_manager/data_node_tracker/enable_validation_full_heartbeats", False)
-
         self.create_chunk_on_every_medium()
 
         nodes = ls("//sys/cluster_nodes")
@@ -317,11 +345,10 @@ class TestPerLocationFullHeartbeats(YTEnvSetup):
         # Full heartbeat is in session.
         wait(lambda: get(f"//sys/cluster_nodes/{node}/@state") == "registered")
 
-        set("//sys/@config/chunk_manager/data_node_tracker/enable_per_location_full_heartbeats", False)
+        with Restarter(self.Env, NODES_SERVICE, sync=False):
+            pass
 
         wait(lambda: get(f"//sys/cluster_nodes/{node}/@state") == "online")
-
-        set("//sys/@config/chunk_manager/data_node_tracker/enable_per_location_full_heartbeats", True)
 
     @authors("grphil")
     def test_location_indexes_in_heartbeats(self):

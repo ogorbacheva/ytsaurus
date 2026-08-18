@@ -22,11 +22,9 @@ struct TValidateVisitor
     bool operator()(const TKeyPairMetadataImpl<version>& meta) const
     {
         if (meta.IsDeprecated) {
-            YT_LOG_WARNING(
-                "Received deprecated key info (Id: %v, Version: %v.%v)",
-                meta.KeyId,
-                version.Major,
-                version.Minor);
+            YT_TLOG_WARNING("Received deprecated key info")
+                .With("Id", meta.KeyId)
+                .WithFormat("Version", "%v.%v", version.Major, version.Minor);
         }
 
         // TODO(pavook): separate timestamp provider into interface.
@@ -116,7 +114,7 @@ void Deserialize(TKeyPairMetadata& metadata, INodePtr node)
         metadata = TKeyPairMetadataImpl<TKeyPairVersion{0, 1}>();
     } else {
         THROW_ERROR_EXCEPTION("Unknown TKeyPair version")
-            << TErrorAttribute("version", version);
+            .With("version", version);
     }
 
     std::visit(TDeserializeVisitor{node->AsMap()}, metadata);
@@ -190,8 +188,8 @@ void Deserialize(TKeyInfo& keyInfo, INodePtr node)
     auto keyString = mapNode->GetChildValueOrThrow<std::string>("public_key");
     if (keyString.size() != PublicKeySize) {
         THROW_ERROR_EXCEPTION("Received incorrect public key size")
-            << TErrorAttribute("received", keyString.size())
-            << TErrorAttribute("expected", PublicKeySize);
+            .With("received", keyString.size())
+            .With("expected", PublicKeySize);
     }
     std::copy(keyString.begin(), keyString.end(), keyInfo.Key_.begin());
 }

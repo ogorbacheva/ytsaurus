@@ -1013,7 +1013,7 @@ private:
     void OnError(const TError& error) override
     {
         auto wrappedError = TError("Error computing recursive resource usage")
-            << error;
+            .With(error);
         Promise_.Set(wrappedError);
     }
 
@@ -2734,8 +2734,8 @@ public:
         }
 
         THROW_ERROR_EXCEPTION("Cross-cell links are not supported")
-            << TErrorAttribute("link_node_id", linkNode->GetId())
-            << TErrorAttribute("link_target_path", targetPath);
+            .With("link_node_id", linkNode->GetId())
+            .With("link_target_path", targetPath);
     }
 
     TYPath ComputeEffectiveLinkNodeTargetPathCompat(const TLinkNode* linkNode) const
@@ -3391,7 +3391,7 @@ private:
                 // See sequoia_actions_executor for more details.
                 if (node->IsSequoia() && node->MutableSequoiaProperties() && node->MutableSequoiaProperties()->BeingCreated) {
                     YT_LOG_ALERT_UNLESS(expectedRefCounter == actualRefCounter + 1,
-                "Node in BeingCreated state has unexpected ref counter "
+                        "Node in BeingCreated state has unexpected ref counter "
                         "(NodeId: %v, ExpectedRefCounter: %v, ActualRefCounter: %v)",
                         node->GetId(),
                         expectedRefCounter,
@@ -3432,7 +3432,7 @@ private:
 
         for (auto [nodeId, node] : NodeMap_) {
             if (!node->IsTrunk()) {
-               continue;
+                continue;
             }
 
             auto trunkRefCounter = 0;
@@ -3517,7 +3517,7 @@ private:
         }
 
         for (const auto* childrenMap : childrenMaps) {
-            for (auto& [child, _] : childrenMap->ChildToKey()) {
+            for (const auto& [child, _] : childrenMap->ChildToKey()) {
                 ++nodeToRefCounter[child.Get()];
             }
         }
@@ -3968,7 +3968,7 @@ private:
                         GetNodePath(trunkNode, transaction),
                         existingLock->Request().Mode,
                         existingTransaction->GetId())
-                        << TErrorAttribute("winner_transaction", existingTransaction->GetErrorDescription()));
+                        .With("winner_transaction", existingTransaction->GetErrorDescription()));
 
                 case ELockKeyKind::Child:
                     return TCheckLockErrorConflict(TError(
@@ -3977,7 +3977,7 @@ private:
                         request.Key.Name,
                         GetNodePath(trunkNode, transaction),
                         existingTransaction->GetId())
-                        << TErrorAttribute("winner_transaction", existingTransaction->GetErrorDescription()));
+                        .With("winner_transaction", existingTransaction->GetErrorDescription()));
 
                 case ELockKeyKind::Attribute:
                     return TCheckLockErrorConflict(TError(
@@ -3986,7 +3986,7 @@ private:
                         request.Key.Name,
                         GetNodePath(trunkNode, transaction),
                         existingTransaction->GetId())
-                        << TErrorAttribute("winner_transaction", existingTransaction->GetErrorDescription()));
+                        .With("winner_transaction", existingTransaction->GetErrorDescription()));
 
                 default:
                     YT_ABORT();

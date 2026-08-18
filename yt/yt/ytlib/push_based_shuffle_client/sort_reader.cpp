@@ -106,6 +106,11 @@ public:
         UnderlyingReader_->SetNoMoreChunks();
     }
 
+    void FinishAtCurrentCommittedRecordCount() override
+    {
+        UnderlyingReader_->FinishAtCurrentCommittedRecordCount();
+    }
+
 private:
     struct TBucket
     {
@@ -167,7 +172,7 @@ private:
             return;
         }
         if (!batchOrError.IsOK()) {
-            Fail(TError("Error reading shuffle partition") << batchOrError);
+            Fail(TError("Error reading shuffle partition").With(batchOrError));
             return;
         }
         const auto& batch = batchOrError.Value();
@@ -262,7 +267,7 @@ private:
         --PendingSortCount_;
         if (!error.IsOK()) {
             if (TerminalError_.IsOK()) {
-                Fail(TError("Error sorting shuffle rows") << error);
+                Fail(TError("Error sorting shuffle rows").With(error));
             } else {
                 MaybeReleaseFailedState();
             }
@@ -318,13 +323,12 @@ private:
         try {
             MakeHeap(MergeHeap_.begin(), MergeHeap_.end(), MakeMergeComparator());
         } catch (const std::exception& ex) {
-            Fail(TError("Error merging sorted shuffle rows") << TError(ex));
+            Fail(TError("Error merging sorted shuffle rows").With(TError(ex)));
             return;
         }
 
-        YT_LOG_DEBUG(
-            "Sort reader entered output phase (BucketCount: %v)",
-            std::ssize(SealedBuckets_));
+        YT_TLOG_DEBUG("Sort reader entered output phase")
+            .With("BucketCount", std::ssize(SealedBuckets_));
 
         PrepareNextBatch();
     }
@@ -349,7 +353,7 @@ private:
     {
         YT_ASSERT_INVOKER_AFFINITY(SerializedInvoker_);
 
-        Fail(TError(NYT::EErrorCode::Canceled, "Sort reader canceled") << error);
+        Fail(TError(NYT::EErrorCode::Canceled, "Sort reader canceled").With(error));
     }
 
     void ResolveRead(const TPromise<TSharedRange<TUnversionedRow>>& promise)
@@ -371,7 +375,7 @@ private:
             Fail(error);
             SetReadPromise(promise, error);
         } catch (const std::exception& ex) {
-            auto error = TError("Error merging sorted shuffle rows") << TError(ex);
+            auto error = TError("Error merging sorted shuffle rows").With(TError(ex));
             Fail(error);
             SetReadPromise(promise, error);
         }
@@ -405,7 +409,7 @@ private:
             Fail(ex.Error());
             return;
         } catch (const std::exception& ex) {
-            Fail(TError("Error merging sorted shuffle rows") << TError(ex));
+            Fail(TError("Error merging sorted shuffle rows").With(TError(ex)));
             return;
         }
 
@@ -466,7 +470,8 @@ private:
             return;
         }
         TerminalError_ = std::move(error);
-        YT_LOG_DEBUG(TerminalError_, "Sort reader failed");
+        YT_TLOG_DEBUG("Sort reader failed")
+            .With(TerminalError_);
         if (CurrentReadFuture_) {
             auto future = std::exchange(CurrentReadFuture_, {});
             future.Cancel(TerminalError_);
@@ -524,11 +529,11 @@ private:
     {
         YT_VERIFY(row.GetCount() >= IdentityColumnCount);
         auto identityIterator = row.End() - IdentityColumnCount;
-        const auto& mapperId = *identityIterator++;
+        const auto& writerId = *identityIterator++;
         const auto& rowId = *identityIterator;
-        YT_VERIFY(mapperId.Type == EValueType::Int64);
+        YT_VERIFY(writerId.Type == EValueType::Int64);
         YT_VERIFY(rowId.Type == EValueType::Int64);
-        return {mapperId.Data.Int64, rowId.Data.Int64};
+        return {writerId.Data.Int64, rowId.Data.Int64};
     }
 };
 
@@ -579,7 +584,7 @@ ISortReaderPtr CreateSortReaderForTesting(
 
     return Visit(
         mode,
-        [&] (const TValidMapperIds& /*validMapperIds*/) {
+        [&] (const TValidWriterIds& /*validWriterIds*/) {
             return createReader(TIdentityFreeModePolicy());
         },
         [&] (const TIdentityColumnIds& /*identityColumnIds*/) {
@@ -624,11 +629,11 @@ ISortReaderPtr CreateSortReader(
 
     return Visit(
         std::move(mode),
-        [&] (TValidMapperIds validMapperIds) {
+        [&] (TValidWriterIds validWriterIds) {
             auto recordHeaderFilter = [
-                validMapperIds = std::move(validMapperIds)] (const TRecordHeader& header)
+                validWriterIds = std::move(validWriterIds)] (const TRecordHeader& header)
             {
-                return validMapperIds.contains(header.MapperId);
+                return validWriterIds.contains(header.WriterId);
             };
             return createReader(
                 TIdentityFreeModePolicy(),

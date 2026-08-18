@@ -132,9 +132,9 @@ void ValidateChaosLeaseType(const TTransactionId& prerequisiteId, const std::str
     if (!IsChaosLeaseType(prerequisiteType)) {
         THROW_ERROR_EXCEPTION(
             "Transaction commit affects chaos tables, only chaos leases allowed as prerequisite ids")
-            << TErrorAttribute("prerequisite_id", prerequisiteId)
-            << TErrorAttribute("prerequisite_type", prerequisiteType)
-            << TErrorAttribute("table_path", path);
+            .With("prerequisite_id", prerequisiteId)
+            .With("prerequisite_type", prerequisiteType)
+            .With("table_path", path);
     }
 }
 
@@ -308,7 +308,7 @@ public:
             State_ = ETransactionState::Flushing;
         }
 
-        YT_LOG_DEBUG("Flushing transaction");
+        YT_TLOG_DEBUG("Flushing transaction");
 
         return BIND(&TTransaction::DoFlush, MakeStrong(this))
             .AsyncVia(SerializedInvoker_)
@@ -363,8 +363,8 @@ public:
             AlienTransactions_.push_back(transaction);
         }
 
-        YT_LOG_DEBUG("Alien transaction registered (AlienConnectionId: %v)",
-            transaction->GetConnection()->GetLoggingTags());
+        YT_TLOG_DEBUG("Alien transaction registered")
+            .With("AlienConnectionId", transaction->GetConnection()->GetLoggingTags());
     }
 
 
@@ -462,10 +462,10 @@ public:
     {
         ValidateTabletTransactionId(GetId());
 
-        YT_LOG_DEBUG("Buffering client row modifications (Count: %v, SequenceNumber: %v, SequenceNumberSourceId: %v)",
-            modifications.Size(),
-            options.SequenceNumber,
-            options.SequenceNumberSourceId);
+        YT_TLOG_DEBUG("Buffering client row modifications")
+            .With("Count", modifications.Size())
+            .With("SequenceNumber", options.SequenceNumber)
+            .With("SequenceNumberSourceId", options.SequenceNumberSourceId);
 
         auto guard = Guard(SpinLock_);
 
@@ -769,7 +769,7 @@ private:
             } catch (const std::exception& ex) {
                 THROW_ERROR_EXCEPTION("Error preparing rows for table %v",
                     TableSession_->GetInfo()->Path)
-                    << TError(ex);
+                    .With(TError(ex));
             }
         }
 
@@ -809,8 +809,8 @@ private:
                     replicaOptions.TopmostTransaction = false;
 
                     if (syncReplica.Transaction) {
-                        YT_LOG_DEBUG("Submitting remote sync replication modifications (Count: %v)",
-                            Modifications_.Size());
+                        YT_TLOG_DEBUG("Submitting remote sync replication modifications")
+                            .With("Count", Modifications_.Size());
                         syncReplica.Transaction->ModifyRows(
                             syncReplica.ReplicaInfo->ReplicaPath,
                             NameTable_,
@@ -823,8 +823,8 @@ private:
 
                         // For chaos replicated tables this branch is used to send data to itself.
 
-                        YT_LOG_DEBUG("Buffering local sync replication modifications (Count: %v)",
-                            Modifications_.Size());
+                        YT_TLOG_DEBUG("Buffering local sync replication modifications")
+                            .With("Count", Modifications_.Size());
                         transaction->EnqueueModificationRequest(std::make_unique<TModificationRequest>(
                             transaction.Get(),
                             Connection_,
@@ -957,6 +957,9 @@ private:
                     });
             }
 
+            RandomTabletInfo_ = tableInfo->GetRandomMountedTablet()
+                .ValueOrThrow();
+
             const auto& rowBuffer = transaction->RowBuffer_;
 
             ModificationsData_.resize(Modifications_.size());
@@ -1025,7 +1028,7 @@ private:
                 (const TTabletServiceProxy::TErrorOrRspWriteHunksPtr& rspOrError) mutable {
                     if (!rspOrError.IsOK()) {
                         THROW_ERROR_EXCEPTION("Failed to write hunks")
-                            << rspOrError;
+                            .With(rspOrError);
                     }
 
                     const auto& rsp = rspOrError.Value();
@@ -1052,7 +1055,7 @@ private:
             } catch (const std::exception& ex) {
                 THROW_ERROR_EXCEPTION("Error submitting rows for table %v",
                     TableSession_->GetInfo()->Path)
-                    << TError(ex);
+                    .With(TError(ex));
             }
         }
 
@@ -1087,9 +1090,6 @@ private:
                 ? Connection_->GetColumnEvaluatorCache()->Find(primarySchema)
                 : nullptr;
 
-            auto randomTabletInfo = tableInfo->GetRandomMountedTablet()
-                .ValueOrThrow();
-
             std::vector<int> columnIndexToLockIndex;
             GetLocksMapping(
                 *primarySchema,
@@ -1116,7 +1116,7 @@ private:
                     } else {
                         tabletInfo = GetOrderedTabletForRow(
                             tableInfo,
-                            randomTabletInfo,
+                            RandomTabletInfo_,
                             tabletIndexColumnId,
                             TUnversionedRow(GetTypeErasedRow(modification)),
                             true);
@@ -1230,7 +1230,7 @@ private:
                         row = capturedRow.ToTypeErasedRow();
                         tabletInfo = GetOrderedTabletForRow(
                             tableInfo,
-                            randomTabletInfo,
+                            RandomTabletInfo_,
                             tabletIndexColumnId,
                             TUnversionedRow(versionedWrite->Row),
                             true);
@@ -1254,6 +1254,8 @@ private:
 
         const NLogging::TLogger& Logger;
         const TTableCommitSessionPtr TableSession_;
+
+        TTabletInfoPtr RandomTabletInfo_;
 
         struct TModificationData
         {
@@ -1400,30 +1402,30 @@ private:
                             .IncludeHistory = true
                         }
                     }).Apply(BIND([=, this, this_ = MakeStrong(this)] (const TReplicationCardPtr& replicationCard) {
-                        YT_LOG_DEBUG("Got replication card from cache (Path: %v, ReplicationCardId: %v, CoordinatorCellIds: %v)",
-                            TableInfo_->Path,
-                            TableInfo_->ReplicationCardId,
-                            replicationCard->CoordinatorCellIds);
+                        YT_TLOG_DEBUG("Got replication card from cache")
+                            .With("Path", TableInfo_->Path)
+                            .With("ReplicationCardId", TableInfo_->ReplicationCardId)
+                            .With("CoordinatorCellIds", replicationCard->CoordinatorCellIds);
 
                         if (!TableInfo_->IsChaosReplicated()) {
                             auto replica = replicationCard->Replicas.FindPtr(TableInfo_->UpstreamReplicaId);
                             if (!replica) {
                                 THROW_ERROR_EXCEPTION("Table uses upstream_replica_id that is not present in replication card")
-                                    << TErrorAttribute("upstream_replica_id", TableInfo_->UpstreamReplicaId)
-                                    << TErrorAttribute("replication_card_id", TableInfo_->ReplicationCardId)
-                                    << TErrorAttribute("table_path", TableInfo_->Path);
+                                    .With("upstream_replica_id", TableInfo_->UpstreamReplicaId)
+                                    .With("replication_card_id", TableInfo_->ReplicationCardId)
+                                    .With("table_path", TableInfo_->Path);
                             }
 
                             const auto& clusterName = transaction->Client_->GetNativeConnection()->GetClusterName().value();
                             if (!NChaosClient::IsReplicaLocationValid(replica, TableInfo_->PhysicalPath, clusterName)) {
                                 THROW_ERROR_EXCEPTION("Table uses upstream_replica_id of other replica")
-                                    << TErrorAttribute("upstream_replica_id", TableInfo_->UpstreamReplicaId)
-                                    << TErrorAttribute("replication_card_id", TableInfo_->ReplicationCardId)
-                                    << TErrorAttribute("table_path", TableInfo_->Path)
-                                    << TErrorAttribute("table_physical_path", TableInfo_->PhysicalPath)
-                                    << TErrorAttribute("expected_path", replica->ReplicaPath)
-                                    << TErrorAttribute("table_cluster", clusterName)
-                                    << TErrorAttribute("expected_cluster", replica->ClusterName);
+                                    .With("upstream_replica_id", TableInfo_->UpstreamReplicaId)
+                                    .With("replication_card_id", TableInfo_->ReplicationCardId)
+                                    .With("table_path", TableInfo_->Path)
+                                    .With("table_physical_path", TableInfo_->PhysicalPath)
+                                    .With("expected_path", replica->ReplicaPath)
+                                    .With("table_cluster", clusterName)
+                                    .With("expected_cluster", replica->ClusterName);
                             }
                         }
 
@@ -1469,9 +1471,9 @@ private:
 
             HunkTableInfo_ = hunkTableInfo;
 
-            YT_LOG_DEBUG("Got hunk table info (Path: %v, HunkStorageId: %v)",
-                TableInfo_->Path,
-                TableInfo_->HunkStorageId);
+            YT_TLOG_DEBUG("Got hunk table info")
+                .With("Path", TableInfo_->Path)
+                .With("HunkStorageId", TableInfo_->HunkStorageId);
         }
 
         TFuture<void> OnGotTableInfo(const TTableMountInfoPtr& tableInfo)
@@ -1575,10 +1577,10 @@ private:
                     return;
                 }
 
-                YT_LOG_DEBUG("Sync table replica registered (ReplicaId: %v, ClusterName: %v, ReplicaPath: %v)",
-                    replicaInfo->ReplicaId,
-                    replicaInfo->ClusterName,
-                    replicaInfo->ReplicaPath);
+                YT_TLOG_DEBUG("Sync table replica registered")
+                    .With("ReplicaId", replicaInfo->ReplicaId)
+                    .With("ClusterName", replicaInfo->ClusterName)
+                    .With("ReplicaPath", replicaInfo->ReplicaPath);
 
                 futures->push_back(
                     transaction->GetSyncReplicaTransaction(replicaInfo)
@@ -1607,8 +1609,8 @@ private:
                             NTabletClient::EErrorCode::SyncReplicaNotInSync,
                             "Cannot write to sync replica %v since it is not in-sync yet",
                             replicaInfo->ReplicaId)
-                            << TErrorAttribute("replica_cluster", replicaInfo->ClusterName)
-                            << TErrorAttribute("replica_path", replicaInfo->ReplicaPath);
+                            .With("replica_cluster", replicaInfo->ClusterName)
+                            .With("replica_path", replicaInfo->ReplicaPath);
                         futures->push_back(MakeFuture(std::move(error)));
                         return;
                     }
@@ -1704,8 +1706,8 @@ private:
                     return OKFuture;
                 }
 
-                YT_LOG_DEBUG("Replica cluster is not known; waiting for cluster directory sync (ClusterName: %v)",
-                    replicaInfo->ClusterName);
+                YT_TLOG_DEBUG("Replica cluster is not known; waiting for cluster directory sync")
+                    .With("ClusterName", replicaInfo->ClusterName);
 
                 return Client_
                     ->GetNativeConnection()
@@ -1732,8 +1734,8 @@ private:
                 promise.Set(transaction);
 
                 if (transaction) {
-                    YT_LOG_DEBUG("Sync replica transaction started (ClusterName: %v)",
-                        replicaInfo->ClusterName);
+                    YT_TLOG_DEBUG("Sync replica transaction started")
+                        .With("ClusterName", replicaInfo->ClusterName);
                     DoRegisterSyncReplicaAlienTransaction(transaction);
                 }
 
@@ -1758,8 +1760,8 @@ private:
                 THROW_ERROR_EXCEPTION(
                     NRpc::EErrorCode::ProtocolError,
                     "Packet sequence number is negative")
-                    << TErrorAttribute("sequence_number", sequenceNumber->Value)
-                    << TErrorAttribute("sequence_number_source_id", sequenceNumber->SourceId);
+                    .With("sequence_number", sequenceNumber->Value)
+                    .With("sequence_number_source_id", sequenceNumber->SourceId);
             }
             // This may call DoEnqueueModificationRequest right away.
             OrderedRequestsSlidingWindow_.AddPacket(
@@ -2034,14 +2036,14 @@ private:
         auto validateResult = ValidatePushQueueProducerRows(
             nameTable, rows, lastProducerSequenceNumber, options.SequenceNumber);
 
-        YT_LOG_DEBUG("Rows were validated (SkipRowCount: %v, LastSequenceNumber: %v)",
-            validateResult.SkipRowCount,
-            validateResult.LastSequenceNumber);
+        YT_TLOG_DEBUG("Rows were validated")
+            .With("SkipRowCount", validateResult.SkipRowCount)
+            .With("LastSequenceNumber", validateResult.LastSequenceNumber);
 
         if (validateResult.SkipRowCount >= std::ssize(rows)) {
-            YT_LOG_DEBUG("After validation all rows should be skipped, do nothing (RowCount: %v, SkipRowCount: %v)",
-                std::ssize(rows),
-                validateResult.SkipRowCount);
+            YT_TLOG_DEBUG("After validation all rows should be skipped, do nothing")
+                .With("RowCount", std::ssize(rows))
+                .With("SkipRowCount", validateResult.SkipRowCount);
             return TPushQueueProducerResult{
                 .LastSequenceNumber = lastProducerSequenceNumber,
                 .SkippedRowCount = validateResult.SkipRowCount,
@@ -2299,27 +2301,26 @@ private:
             {
                 affectsChaosTables = true;
                 if (!requestedReplicationCardIds.insert(replicationCardId).second) {
-                    YT_LOG_DEBUG("Coordinator for replication card already selected, skipping "
-                        "(Path: %v, ReplicationCardId: %v, Era: %v)",
-                        path,
-                        replicationCardId,
-                        replicationCard->Era);
+                    YT_TLOG_DEBUG("Coordinator for replication card already selected, skipping")
+                        .With("Path", path)
+                        .With("ReplicationCardId", replicationCardId)
+                        .With("Era", replicationCard->Era);
 
                     continue;
                 }
 
                 const auto& coordinatorCellIds = replicationCard->CoordinatorCellIds;
 
-                YT_LOG_DEBUG("Considering replication card (Path: %v, ReplicationCardId: %v, Era: %v, CoordinatorCellIds: %v)",
-                    path,
-                    replicationCardId,
-                    replicationCard->Era,
-                    coordinatorCellIds);
+                YT_TLOG_DEBUG("Considering replication card")
+                    .With("Path", path)
+                    .With("ReplicationCardId", replicationCardId)
+                    .With("Era", replicationCard->Era)
+                    .With("CoordinatorCellIds", coordinatorCellIds);
 
                 if (coordinatorCellIds.empty()) {
                     THROW_ERROR_EXCEPTION(NTransactionClient::EErrorCode::ChaosCoordinatorsAreNotAvailable,
                         "Coordinators are not available")
-                        << TErrorAttribute("replication_card_id", replicationCardId);
+                        .With("replication_card_id", replicationCardId);
                 }
 
                 if (options.CoordinatorCommitMode == ETransactionCoordinatorCommitMode::Lazy) {
@@ -2361,14 +2362,15 @@ private:
                 CommitOptions_.Force2PC = true;
                 if (!CommitOptions_.CoordinatorCellId) {
                     CommitOptions_.CoordinatorCellId = coordinatorCellId;
-                    YT_LOG_DEBUG("2PC coordinator selected (CoordinatorCellId: %v)", coordinatorCellId);
+                    YT_TLOG_DEBUG("2PC coordinator selected")
+                        .With("CoordinatorCellId", coordinatorCellId);
                 }
 
-                YT_LOG_DEBUG("Coordinator selected (Path: %v, ReplicationCardId: %v, Era: %v, CoordinatorCellId: %v)",
-                    path,
-                    replicationCardId,
-                    replicationCard->Era,
-                    coordinatorCellId);
+                YT_TLOG_DEBUG("Coordinator selected")
+                    .With("Path", path)
+                    .With("ReplicationCardId", replicationCardId)
+                    .With("Era", replicationCard->Era)
+                    .With("CoordinatorCellId", coordinatorCellId);
             }
         }
 
@@ -2400,9 +2402,9 @@ private:
         auto session = GetOrCreateCellCommitSession(cellId);
         session->RegisterAction(data);
 
-        YT_LOG_DEBUG("Transaction action added (CellId: %v, ActionType: %v)",
-            cellId,
-            data.Type);
+        YT_TLOG_DEBUG("Transaction action added")
+            .With("CellId", cellId)
+            .With("ActionType", data.Type);
     }
 
     TFuture<TTransactionCommitResult> DoCommit(const TTransactionCommitOptions& options, bool needsFlush)
@@ -2484,9 +2486,9 @@ private:
                             YT_UNUSED_FUTURE(DoAbort(&guard));
 
                             auto error = TError("Error committing transaction %v", GetId())
-                                << MakeClusterIdErrorAttribute()
-                                << TErrorAttribute(ShouldBeStrippedErrorAttributeKey, true)
-                                << resultOrError;
+                                .With(MakeClusterIdErrorAttribute())
+                                .With(ShouldBeStrippedErrorAttributeKey, true)
+                                .With(resultOrError);
 
                             Client_->GetTableMountCache()->InvalidateOnError(error, /*forceRetry*/ true);
 
@@ -2516,12 +2518,13 @@ private:
                         if (error.IsOK() && State_ == ETransactionState::Flushing) {
                             State_ = ETransactionState::Flushed;
                         } else if (!error.IsOK()) {
-                            YT_LOG_DEBUG(error, "Error flushing transaction");
+                            YT_TLOG_DEBUG("Error flushing transaction")
+                                .With(error);
                             YT_UNUSED_FUTURE(DoAbort(&guard));
                             THROW_ERROR_EXCEPTION("Error flushing transaction %v",
                                 GetId())
-                                << MakeClusterIdErrorAttribute()
-                                << error;
+                                .With(MakeClusterIdErrorAttribute())
+                                .With(error);
                         }
                     }
 
@@ -2537,9 +2540,9 @@ private:
                             session->GetPrepareSignatureGenerator()->GetFinalSignature());
                     }
 
-                    YT_LOG_DEBUG("Transaction flushed (ParticipantCellIds: %v, ExpectedPrepareSignatures: %v)",
-                        result.ParticipantCellIds,
-                        result.ExpectedPrepareSignatures);
+                    YT_TLOG_DEBUG("Transaction flushed")
+                        .With("ParticipantCellIds", result.ParticipantCellIds)
+                        .With("ExpectedPrepareSignatures", result.ExpectedPrepareSignatures);
 
                     return result;
                 }).AsyncVia(SerializedInvoker_));

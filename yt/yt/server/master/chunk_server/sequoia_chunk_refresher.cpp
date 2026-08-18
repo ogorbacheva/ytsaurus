@@ -163,7 +163,7 @@ public:
 
         auto guard = Guard(Lock_);
 
-        const auto node = location->GetNode();
+        const auto* node = location->GetNode().Get();
         if (!IsObjectAlive(node)) {
             YT_LOG_ALERT(
                 "Location scheduled for Sequoia refresh belongs to non alive node (LocationId: %v, LocationIndex: %v)",
@@ -597,10 +597,6 @@ private:
                 this,
                 this_ = MakeStrong(this)]
             {
-                if (!Bootstrap_->GetHydraFacade()->GetHydraManager()->IsActive()) {
-                    THROW_ERROR_EXCEPTION("Hydra is not active");
-                }
-
                 {
                     auto guard = Guard(Lock_);
                     if (shouldAbortRefreshIteration(guard, epoch, shards)) {
@@ -641,7 +637,6 @@ private:
                     mutation->SetAllowLeaderForwarding(true);
                     WaitFor(mutation->CommitAndLog(Logger()))
                         .ThrowOnError();
-
                 }
             });
             WaitFor(refreshChunks
@@ -784,7 +779,7 @@ private:
                 if (!chunksOrError.IsOK()) {
                     // TODO(grphil): Maybe continue refresh for shards that are fetched.
                     THROW_ERROR_EXCEPTION("Error getting chunks for shard %v", shardIndex)
-                        << std::move(chunksOrError);
+                        .With(std::move(chunksOrError));
                 }
                 chunks[shardIndex] = std::move(chunksOrError).Value();
                 fetchedChunkCount[shardIndex] = chunks[shardIndex].size();

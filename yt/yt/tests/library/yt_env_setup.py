@@ -710,6 +710,7 @@ class YTEnvSetup(object):
                     "cypress_modification": 5000,
                     "cypress_transaction_mirroring": 5000,
                     "response_keeper": 5000,
+                    "ground_update_queue_flush": 5000,
                 },
                 # NB: default backoff is 3 seconds. It's too long. Typical
                 # Sequoia tx lives no longer than 300ms.
@@ -870,6 +871,12 @@ class YTEnvSetup(object):
             return "primary_ground"
         return "remote_{}_ground".format(cluster_index - cls.get_ground_index_offset() - 1)
 
+    @classmethod
+    def get_cluster_path(cls, cluster_index):
+        if cluster_index == 0:
+            return cls.primary_cluster_path
+        return os.path.join(cls.path_to_run, cls.get_cluster_name(cluster_index))
+
     # NB: Does not return ground clusters.
     @classmethod
     def get_cluster_names(cls):
@@ -1010,17 +1017,17 @@ class YTEnvSetup(object):
             for original_cluster_index in range(cls.NUM_REMOTE_CLUSTERS + 1):
                 if cls.get_param("USE_SEQUOIA", original_cluster_index):
                     cluster_index = original_cluster_index + cls.get_ground_index_offset()
-                    cluster_path = os.path.join(cls.path_to_run, cls.get_cluster_name(cluster_index))
+                    cluster_path = cls.get_cluster_path(cluster_index)
                     cls.ground_envs.append(cls.create_yt_cluster_instance(cluster_index, cluster_path))
                 else:
                     cls.ground_envs.append(None)
 
         # Primary cluster instantiation.
-        cls.Env = cls.create_yt_cluster_instance(0, cls.primary_cluster_path)
+        cls.Env = cls.create_yt_cluster_instance(0, cls.get_cluster_path(0))
 
         # Remote clusters instantiation.
         for cluster_index in range(1, cls.NUM_REMOTE_CLUSTERS + 1):
-            cluster_path = os.path.join(cls.path_to_run, cls.get_cluster_name(cluster_index))
+            cluster_path = cls.get_cluster_path(cluster_index)
             cls.remote_envs.append(cls.create_yt_cluster_instance(cluster_index, cluster_path))
 
         # All at once so one can copy alien entries between them

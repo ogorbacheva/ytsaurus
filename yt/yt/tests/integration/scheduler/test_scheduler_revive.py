@@ -505,7 +505,8 @@ class TestControllerAgentReconnection(YTEnvSetup):
         self._wait_for_state(op, "running")
 
         with Restarter(self.Env, CONTROLLER_AGENTS_SERVICE):
-            with raises_yt_error("Connection refused"):
+            # Agent dies before the connect -> ECONNREFUSED; mid-request on an open one -> ECONNRESET.
+            with raises_yt_error("Connection refused|Connection reset by peer"):
                 op.complete()
 
         self._wait_for_state(op, "running")
@@ -1740,7 +1741,7 @@ class TestDisabledJobRevival(TestJobRevivalBase):
 
         self._kill_and_start("controller_agents")
 
-        wait(lambda: op.get_state() == "failed", timeout=10)
+        wait(lambda: op.get_state() == "failed")
         with raises_yt_error("Reviving operation without job revival"):
             op.track()
 

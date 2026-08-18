@@ -524,7 +524,7 @@ private:
             std::string prefix = CurrentPathSegments_.empty() ? "" : "/";
             prefix += JoinToString(CurrentPathSegments_, TDefaultFormatter(), "/");
             THROW_ERROR_EXCEPTION("Duplicate key %Qv", key)
-                << TErrorAttribute("key_prefix", prefix);
+                .With("key_prefix", prefix);
         }
         LastKey_ = key;
     }
@@ -651,20 +651,6 @@ bool HasPrefixes(const std::vector<TAttributeValue>& attributeValues)
 }
 
 } // anonymous namespace
-
-////////////////////////////////////////////////////////////////////////////////
-
-bool IsOnePrefixOfAnother(NYPath::TYPathBuf lhs, NYPath::TYPathBuf rhs)
-{
-    auto [lit, rit] = std::ranges::mismatch(lhs, rhs);
-    if (lit == lhs.end() && (rit == rhs.end() || *rit == '/')) {
-        return true;
-    }
-    if (rit == rhs.end() && (*lit == '/')) {
-        return true;
-    }
-    return false;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 

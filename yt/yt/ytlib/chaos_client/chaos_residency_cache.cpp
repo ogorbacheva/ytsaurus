@@ -242,7 +242,7 @@ TFuture<TCellTag> TChaosResidencyCacheBase::DoGet(
         return MakeFuture<TCellTag>(
             TError("Unable to locate %Qlv: connection terminated",
                 TypeFromId(objectId))
-                << TErrorAttribute("object_id", objectId));
+                .With("object_id", objectId));
     }
 
     auto invoker = connection->GetInvoker();
@@ -431,9 +431,8 @@ private:
             futureCellTags.push_back(cellTag);
         }
 
-        YT_LOG_DEBUG("Looking for %v on chaos cells (ChaosCellTags: %v)",
-            Type_,
-            futureCellTags);
+        YT_TLOG_DEBUG("Looking for object on chaos cells")
+            .With("ChaosCellTags", futureCellTags);
 
         return AnyNSucceeded(foundFutures, 1).Apply(BIND(
             [
@@ -498,8 +497,8 @@ private:
                     const auto& sameResidencyValue = sameResidency.Value();
                     if (sameResidencyValue.IsNonExistent()) {
                         THROW_ERROR_EXCEPTION(NYTree::EErrorCode::ResolveError, "No such chaos object")
-                            << TErrorAttribute("chaos_object_id", ObjectId_)
-                            << TErrorAttribute("chaos_object_type", TypeFromId(ObjectId_));
+                            .With("chaos_object_id", ObjectId_)
+                            .With("chaos_object_type", TypeFromId(ObjectId_));
                     }
 
                     if (sameResidencyValue.IsPresent()) {
@@ -587,9 +586,8 @@ private:
             futureCellTags.push_back(cellTag);
         }
 
-        YT_LOG_DEBUG("Looking for %v on chaos cells (ChaosCellTags: %v)",
-            Type_,
-            futureCellTags);
+        YT_TLOG_DEBUG("Looking for object on chaos cells")
+            .With("ChaosCellTags", futureCellTags);
 
         if (foundFutures.empty()) {
             // All channels are unavailable.
@@ -614,8 +612,8 @@ private:
         const auto& locationResult = errorOrCellTag.Value();
         if (locationResult.IsNonExistent()) {
             return TError(NYTree::EErrorCode::ResolveError, "No such chaos object")
-                << TErrorAttribute("chaos_object_id", objectId)
-                << TErrorAttribute("chaos_object_type", TypeFromId(objectId));
+                .With("chaos_object_id", objectId)
+                .With("chaos_object_type", TypeFromId(objectId));
         }
 
         return locationResult.GetCellTag();
@@ -729,7 +727,7 @@ public:
             ObjectId_,
             req->Header().MutableExtension(NRpc::NProto::TBalancingExt::balancing_ext));
 
-        YT_LOG_DEBUG("Requesting master cache");
+        YT_TLOG_DEBUG("Requesting master cache");
         return req->Invoke().AsUnique().Apply(BIND(
             [
                 type = Type_,
@@ -743,7 +741,7 @@ public:
                     THROW_ERROR_EXCEPTION(NRpc::EErrorCode::Unavailable, "Unable to locate %Qlv %v",
                         type,
                         objectId)
-                        << std::move(resultOrError);
+                        .With(std::move(resultOrError));
                 }
 
                 return FromProto<TCellTag>(resultOrError.Value()->chaos_object_cell_tag());
@@ -820,9 +818,7 @@ IChaosResidencyCachePtr CreateChaosResidencyCache(
 
     if (chaosChannelConfigAddressesInvalid) {
         const auto& Logger = logger;
-        YT_LOG_WARNING(
-            "Chaos cache channel addresses are present but empty, "
-            "falling back to master cache variant of chaos residency cache");
+        YT_TLOG_WARNING("Chaos cache channel addresses are present but empty, falling back to master cache variant of chaos residency cache");
     }
 
     if (!isClientCache || !chaosCacheChannelConfig || chaosChannelConfigAddressesInvalid) {

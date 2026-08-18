@@ -38,9 +38,9 @@ Computation на стороне Worker-a собирает батч сообще�
 "CompanionManager" = {
     "resource_class_name" = "NYT::NFlow::NCompanion::TJavaCompanionManager";
     "parameters" = {
+        "main_class" = "tech.ytsaurus.flow.examples.wordcount.WordCountApplication";
         "timeout" = "10s";
         "jdk_bin_path" = "/app/ytflow/jdk/bin/java";
-        "main_class" = "tech.ytsaurus.flow.examples.wordcount.NodeCompanionMain";
         "classpath" = "/app/ytflow/lib/*";
     };
     "dependencies" = {};
@@ -108,6 +108,7 @@ int main(int argc, const char** argv)
 
 - не поддерживаются sync process function-ы (у протокола компаньона нет фазы Sync);
 - недоступны статические [ресурсы](../../../flow/concepts/glossary.md#resource), распределённые троттлеры и timestamp эпохи (`GetCurrentTimestamp`);
+- `GetStreamSpecs()->ComputeKey()` не вычисляет ключ, если в `group_by_schema` есть вычисляемые колонки: компаньон не вычисляет выражения. Ключ приходит вместе с сообщением — используйте `message->Key`;
 - внешние стейты поддерживаются только в виде `TSimpleExternalState`;
 - таймеры на выходе могут указывать только ключ одной из родительских сущностей батча;
 - компаньон работает одним многопоточным процессом (`companion_process_count` — 0 или 1).

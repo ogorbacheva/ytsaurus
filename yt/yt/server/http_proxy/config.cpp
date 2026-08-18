@@ -38,6 +38,8 @@ using namespace NAuth;
 void TProfilingEndpointProviderConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("component_type", &TThis::ComponentType);
+    registrar.Parameter("name", &TThis::Name)
+        .Default();
     registrar.Parameter("monitoring_port", &TThis::MonitoringPort);
     registrar.Parameter("shards", &TThis::Shards)
         .Default({"all"});
@@ -45,10 +47,25 @@ void TProfilingEndpointProviderConfig::Register(TRegistrar registrar)
         .Default(false);
 }
 
+std::string TProfilingEndpointProviderConfig::GetName() const
+{
+    return Name.value_or(FormatEnum(ComponentType));
+}
+
 void TSolomonProxyConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("endpoint_providers", &TThis::EndpointProviders)
         .Default();
+
+    registrar.Postprocessor([] (TThis* config) {
+        THashSet<std::string> names;
+        for (const auto& endpointProvider : config->EndpointProviders) {
+            auto name = endpointProvider->GetName();
+            if (!names.insert(name).second) {
+                THROW_ERROR_EXCEPTION("Duplicate endpoint provider name %Qv", name);
+            }
+        }
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -157,8 +174,8 @@ void TMemoryLimitRatiosConfig::Register(TRegistrar registrar)
         for (const auto& [name, value] : config->UserToMemoryLimitRatio) {
             if (value > 1 || value < 0) {
                 THROW_ERROR_EXCEPTION("User ratio must be in range [0, 1]")
-                    << TErrorAttribute("user_name", name)
-                    << TErrorAttribute("user_ratio", value);
+                    .With("user_name", name)
+                    .With("user_ratio", value);
             }
         }
     });
@@ -225,8 +242,8 @@ void TApiDynamicConfig::Register(TRegistrar registrar)
         for (const auto& [name, value] : config->UserToConcurrencyLimitRatio) {
             if (value > 1 || value < 0) {
                 THROW_ERROR_EXCEPTION("User ratio must be less than 1 and greater than 0")
-                    << TErrorAttribute("user_name", name)
-                    << TErrorAttribute("user_ratio", value);
+                    .With("user_name", name)
+                    .With("user_ratio", value);
             }
         }
     });
@@ -429,6 +446,9 @@ void TProxyDynamicConfig::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Parameter("memory_tracker", &TThis::MemoryTracker)
+        .DefaultNew();
+
+    registrar.Parameter("auth", &TThis::Auth)
         .DefaultNew();
 }
 

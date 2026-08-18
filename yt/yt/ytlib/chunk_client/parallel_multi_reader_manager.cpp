@@ -65,7 +65,7 @@ TParallelMultiReaderManager::TParallelMultiReaderManager(
         std::move(readerFactories),
         std::move(multiReaderMemoryManager))
 {
-    YT_LOG_DEBUG("Multi chunk reader is parallel");
+    YT_TLOG_DEBUG("Multi chunk reader is parallel");
     UncancelableCompletionError_.Subscribe(
         BIND(&TParallelMultiReaderManager::PropagateError, MakeWeak(this)));
 }
@@ -115,7 +115,7 @@ void TParallelMultiReaderManager::PropagateError(const TError& error)
     if (error.IsOK()) {
         EventQueue_.Enqueue(TReaderFinishedEvent{});
     } else {
-        EventQueue_.Enqueue(TSessionReadyEvent(TError("Multi reader failed") << error));
+        EventQueue_.Enqueue(TSessionReadyEvent(TError("Multi reader failed").With(error)));
     }
 }
 

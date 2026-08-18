@@ -73,10 +73,10 @@ constexpr int MaxStuckInRemovalOperationsToIncludeInAlert = 5;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "OperationsCleaner");
+static YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, Logger, "OperationsCleaner");
 
 // TODO(eshcherbin): It should be nested within SchedulerProfiler().
-static YT_DEFINE_GLOBAL(const TProfiler, Profiler, TProfiler("/operations_cleaner"));
+static YT_DEFINE_LEAKY_GLOBAL(const TProfiler, Profiler, TProfiler("/operations_cleaner"));
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -309,6 +309,21 @@ bool NeedProgressInRequest(const TYsonString& progress)
     }
     auto stateEnum = ParseEnum<NControllerAgent::EControllerState>(*stateString);
     return NControllerAgent::IsFinishedState(stateEnum);
+}
+
+bool HasOperationReachedRunningState(const TYsonString& events)
+{
+    if (!events) {
+        return false;
+    }
+
+    for (const auto& event : ConvertTo<std::vector<TOperationEvent>>(events)) {
+        if (event.State == EOperationState::Running) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 TUnversionedOwningRow BuildOrderedByIdTableRow(
@@ -1261,15 +1276,20 @@ private:
             return;
         }
 
-        // NB(bystrovserg): Try to fill missing progress/features from the archive for operations whose request lacks them.
+        // NB(bystrovserg): Try to fill missing progress from the archive for operations whose request lacks them.
         std::vector<TArchiveOperationRequest> missing;
         for (auto operationId : operationIds) {
             const auto& request = GetRequest(operationId);
-            if (!request.Progress || !request.ControllerFeatures) {
+
+            // NB(bystrovserg): Operations that fail during initialization do not have any progress anyway
+            // so we do not mark them as incomplete.
+            bool hasMissingProgress = !request.Progress || !request.BriefProgress;
+            if (hasMissingProgress && NDetail::HasOperationReachedRunningState(request.Events)) {
                 missing.push_back(request);
             }
         }
 
+        std::vector<TOperationId> incompleteIds;
         if (!missing.empty()) {
             FetchHeavyFieldsFromArchive(missing);
             // NB(bystrovserg): If fetching heavy fields fails, the corresponding fields remain empty,
@@ -1282,17 +1302,10 @@ private:
                 if (!request.BriefProgress) {
                     request.BriefProgress = missingRequest.BriefProgress;
                 }
-                if (!request.ControllerFeatures) {
-                    request.ControllerFeatures = missingRequest.ControllerFeatures;
-                }
-            }
-        }
 
-        std::vector<TOperationId> incompleteIds;
-        for (auto operationId : operationIds) {
-            const auto& request = GetRequest(operationId);
-            if (!request.Progress) {
-                incompleteIds.push_back(operationId);
+                if (!request.Progress || !request.BriefProgress) {
+                    incompleteIds.push_back(request.Id);
+                }
             }
         }
 
@@ -1375,7 +1388,7 @@ private:
                         orderedByIdRowsDataWeight += GetDataWeight(row);
                     } catch (const std::exception& ex) {
                         THROW_ERROR_EXCEPTION("Failed to build row for operation %v", operationId)
-                            << ex;
+                            .With(ex);
                     }
                 }
 
@@ -1406,7 +1419,7 @@ private:
                         orderedByStartTimeRowsDataWeight += GetDataWeight(row);
                     } catch (const std::exception& ex) {
                         THROW_ERROR_EXCEPTION("Failed to build row for operation %v", operationId)
-                            << ex;
+                            .With(ex);
                     }
                 }
 
@@ -1494,8 +1507,8 @@ private:
                     } catch (const std::exception& ex) {
                         int pendingCount = ArchivePending_.load();
                         error = TError("Failed to archive operations")
-                            << TErrorAttribute("pending_count", pendingCount)
-                            << ex;
+                            .With("pending_count", pendingCount)
+                            .With(ex);
                         YT_LOG_WARNING(error);
                         ArchiveErrorCounter_.Increment();
                     }
@@ -1504,7 +1517,7 @@ private:
                 int pendingCount = ArchivePending_.load();
                 if (pendingCount >= Config_->MinOperationCountEnqueuedForAlert) {
                     auto alertError = TError("Too many operations in archivation queue")
-                        << TErrorAttribute("pending_count", pendingCount);
+                        .With("pending_count", pendingCount);
                     if (!error.IsOK()) {
                         alertError.MutableInnerErrors()->push_back(error);
                     }
@@ -1598,8 +1611,8 @@ private:
         SetSchedulerAlert(
             ESchedulerAlertType::OperationStuckInRemoval,
             TError("Removing some operations from Cypress is stuck")
-            << TErrorAttribute("failed_operation_count", StuckInRemovalOperations_.size())
-            << TErrorAttribute("failed_operation_ids", failedOperationIdsToInclude));
+            .With("failed_operation_count", StuckInRemovalOperations_.size())
+            .With("failed_operation_ids", failedOperationIdsToInclude));
     }
 
     void DoRemoveOperations(std::vector<TRemoveOperationRequest> requests)
@@ -1890,7 +1903,7 @@ private:
         SetSchedulerAlert(
             ESchedulerAlertType::OperationsArchivation,
             TError("Max enqueued operations limit reached; archivation is temporarily disabled")
-            << TErrorAttribute("enable_time", enableTime));
+            .With("enable_time", enableTime));
 
         YT_LOG_INFO("Archivation is temporarily disabled (EnableTime: %v)", enableTime);
     }
@@ -1916,11 +1929,9 @@ private:
         auto filter = TColumnFilter{
             idMapping.Progress,
             idMapping.BriefProgress,
-            idMapping.ControllerFeatures,
         };
         auto progressIndex = filter.GetPosition(idMapping.Progress);
         auto briefProgressIndex = filter.GetPosition(idMapping.BriefProgress);
-        auto controllerFeaturesIndex = filter.GetPosition(idMapping.ControllerFeatures);
         auto timeout = Config_->FinishedOperationsArchiveLookupTimeout;
         auto rowsetOrError = LookupOperationsInArchive(Client_, ids, filter, timeout);
         if (!rowsetOrError.IsOK()) {
@@ -1940,7 +1951,6 @@ private:
         for (int i = 0; i < std::ssize(requests); ++i) {
             fetchField(requests[i].Progress, rows[i], progressIndex);
             fetchField(requests[i].BriefProgress, rows[i], briefProgressIndex);
-            fetchField(requests[i].ControllerFeatures, rows[i], controllerFeaturesIndex);
         }
     }
 
@@ -1979,7 +1989,7 @@ private:
         auto error = GetCumulativeError(rspOrError);
         if (!error.IsOK()) {
             THROW_ERROR_EXCEPTION("Error requesting operations attributes for archivation")
-                << error;
+                .With(error);
         } else {
             YT_LOG_INFO("Fetched operations attributes for cleaner (OperationCount: %v)", operationIds.size());
         }
@@ -2005,17 +2015,17 @@ private:
                         YT_VERIFY(operationId == operationDataToParse.OperationId);
                     } catch (const std::exception& ex) {
                         THROW_ERROR_EXCEPTION("Error parsing operation attributes")
-                            << TErrorAttribute("operation_id", operationDataToParse.OperationId)
-                            << ex;
+                            .With("operation_id", operationDataToParse.OperationId)
+                            .With(ex);
                     }
 
                     try {
                         result.push_back(InitializeRequestFromAttributes(*attributes));
                     } catch (const std::exception& ex) {
                         THROW_ERROR_EXCEPTION("Error initializing operation archivation request")
-                            << TErrorAttribute("operation_id", operationId)
-                            << TErrorAttribute("attributes", ConvertToYsonString(*attributes, EYsonFormat::Text))
-                            << ex;
+                            .With("operation_id", operationId)
+                            .With("attributes", ConvertToYsonString(*attributes, EYsonFormat::Text))
+                            .With(ex);
                     }
                 }
 
@@ -2069,7 +2079,7 @@ private:
         YT_LOG_INFO("Started fetching finished operations from Cypress (OperationCount: %v)", operationIds.size());
         auto operations = FetchOperationsFromCypressForCleaner(operationIds);
 
-        // Controller agent reports progress/brief_progress/controller_features only to
+        // Controller agent reports progress only to
         // the archive, so we fetch them here for operations recovered from Cypress.
         FetchHeavyFieldsFromArchive(operations);
 
@@ -2146,7 +2156,7 @@ private:
             ArchivedOperationAlertEventCounter_.Increment(eventsToSend.size());
         } catch (const std::exception& ex) {
             auto error = TError("Failed to write operation alert events to archive")
-                << ex;
+                .With(ex);
             YT_LOG_WARNING(error);
             if (TInstant::Now() - LastOperationAlertEventSendTime_ > Config_->OperationAlertSenderAlertThreshold) {
                 SetSchedulerAlert(ESchedulerAlertType::OperationAlertArchivation, error);

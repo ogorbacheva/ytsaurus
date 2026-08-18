@@ -250,25 +250,38 @@ def build_resource_usage(component: str, add_component_to_title: bool, backend: 
 
     bandwidth_description = (
         "Bytes the node's pod received and transmitted per second, "
-        "including the traffic of its sidecars"
+        "including the traffic of its sidecars. "
+        "The guarantee is a floor rather than a cap: traffic above it is served, "
+        "but is the first to be dropped when the host is congested"
     )
 
-    # An unlimited cgroup exports HierarchicalMemoryLimit as PAGE_COUNTER_MAX
-    # (~9.2e18); such points would flatten the RSS line, so drop everything
-    # above 1e18 (real limits are TBs at most).
-    memory_limit = MonitoringExpr(sensor("yt.memory.cgroup.memory_limit"))
+    # Anon memory is what the pod is killed on, so take usage and limit from
+    # porto at pod scope; the limit is equal on all hosts, hence one line.
+    # The cgroup fallback reads PAGE_COUNTER_MAX (~9.2e18) when unset.
+    pod_memory = None
     if backend == "monitoring":
-        memory_limit = memory_limit.query_transformation("drop_above({query}, 1e18)")
+        memory_limit = (MonitoringExpr(sensor("yt.porto.memory.anon_limit"))
+            .value("container_category", "pod")
+            .series_min()
+            .alias("Anon Memory Limit"))
+        pod_memory = (MonitoringExpr(sensor("yt.porto.memory.anon_usage"))
+            .value("container_category", "pod")
+            .alias("Anon Memory Usage - {{host}}"))
     else:
-        memory_limit = memory_limit.query_transformation("({query}) < 1e18")
-    memory_limit = memory_limit.alias("Limit")
+        memory_limit = (MonitoringExpr(sensor("yt.memory.cgroup.memory_limit"))
+            .query_transformation("({query}) < 1e18")
+            .alias("Limit"))
 
     # The vcpu limit is exported by the porto resource tracker, so it exists only
-    # in installations with porto, i.e. not on the grafana backend.
+    # in installations with porto, i.e. not on the grafana backend. All hosts
+    # report the same limit, so collapse them into one line; per-host limits are
+    # all equal and would bury the usage lines in the tooltip. Take the minimum
+    # to show the tightest one if the hosts ever disagree.
     vcpu_limit = None
     if backend == "monitoring":
         vcpu_limit = ((MonitoringExpr(sensor("yt.porto.vcpu.limit")) / 100)
             .value("container_category", "pod")
+            .series_min()
             .alias("Limit"))
 
     return (Rowset()
@@ -296,7 +309,8 @@ def build_resource_usage(component: str, add_component_to_title: bool, backend: 
                 "Memory" + title_suffix,
                 MultiSensor(
                     MonitoringExpr(sensor("yt.resource_tracker.memory_usage.rss"))
-                        .alias("RSS"),
+                        .alias("RSS - {{host}}"),
+                    pod_memory,
                     memory_limit)
                     .unit("UNIT_BYTES_SI"))
             # Network usage is exported by the porto resource tracker, so it exists
@@ -309,7 +323,11 @@ def build_resource_usage(component: str, add_component_to_title: bool, backend: 
                         .alias("Rx - {{host}}"),
                     MonitoringExpr(sensor("yt.porto.network.tx_bytes"))
                         .value("container_category", "pod")
-                        .alias("Tx - {{host}}"))
+                        .alias("Tx - {{host}}"),
+                    # The guarantee is equal on all hosts, hence one line.
+                    MonitoringExpr(sensor("yt.flow.node.network_bandwidth_guarantee"))
+                        .series_min()
+                        .alias("Guarantee"))
                     .unit("UNIT_BYTES_SI_PER_SECOND"),
                 description=bandwidth_description,
                 skip_cell=backend != "monitoring")

@@ -3,6 +3,7 @@ RECURSE(
     flamegraph
     job_investigation
     pipeline_chaos_monkey
+    python_companion_package
     reanimate_vanilla_operation
     reshard_flow_tables
     yt_sync_mini
@@ -11,6 +12,5 @@ RECURSE(
 IF (NOT OPENSOURCE)
     RECURSE(
         draw_pipeline_graph
-        generate_yson_struct_doc
     )
 ENDIF()

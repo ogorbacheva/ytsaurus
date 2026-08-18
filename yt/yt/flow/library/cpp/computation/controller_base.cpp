@@ -248,10 +248,10 @@ std::vector<TNodeTraverseDataPtr> ApplyIdlePartitionsRule(
     if (statistics.Detected > statistics.IgnoreLimit && statistics.Detected < statistics.TotalPartitions) {
         watermarkStallErrorState->SetError(TError(
             "Watermark cannot advance because too many source partitions are idle")
-            << TErrorAttribute("idle_partitions", statistics.Detected)
-            << TErrorAttribute("total_partitions", statistics.TotalPartitions)
-            << TErrorAttribute("watermark_gating_partitions", statistics.Detected - statistics.Ignored)
-            << TErrorAttribute("max_ratio", idleSpec->MaxRatio));
+                .With("idle_partitions", statistics.Detected)
+                .With("total_partitions", statistics.TotalPartitions)
+                .With("watermark_gating_partitions", statistics.Detected - statistics.Ignored)
+                .With("max_ratio", idleSpec->MaxRatio));
     } else {
         watermarkStallErrorState->ClearError();
     }
@@ -687,7 +687,7 @@ TProcessPartitionTraverseDataResultPtr TComputationControllerBase::ProcessPartit
     }
     auto result = New<TProcessPartitionTraverseDataResult>();
     result->StreamMetrics = ComputeStreamMetrics(preparedTraverseData, GetSpec());
-    result->MergedTraverseData = MergeNodeTraverseData(preparedTraverseData, GetSpec());
+    result->MergedTraverseData = MergeNodeTraverseData(preparedTraverseData);
 
     // Published only once every step above has succeeded. Suppression silences a group's errors, and a
     // traverse whose result is discarded hides no watermark, so publishing early would leave the pipeline

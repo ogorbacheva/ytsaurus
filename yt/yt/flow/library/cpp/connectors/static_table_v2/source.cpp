@@ -84,7 +84,7 @@ TRangeId ExtractRangeId(const TKey& key)
 {
     if (key.Underlying().GetCount() != 1) {
         THROW_ERROR_EXCEPTION("Static table partition key should have exactly one field, got: %v", key.Underlying().GetCount())
-            << TErrorAttribute("static_table_partition_key", key);
+            .With("static_table_partition_key", key);
     }
     return FromUnversionedValue<TRangeId>(key.Underlying()[0]);
 }
@@ -342,12 +342,12 @@ TError TSource::ClassifyPendingRead(
         // indefinitely pending one is only ever caught here.
         if (timeSinceReadProgress > readTimeout) {
             return NYT::TError(NYT::EErrorCode::Timeout, "Timeout of table reader; no rows read for too long")
-                << TErrorAttribute("read_timeout", readTimeout);
+                .With("read_timeout", readTimeout);
         }
         return {};
     }
     if (!pendingReadError->IsOK()) {
-        return NYT::TError("Table reader failed") << *pendingReadError;
+        return NYT::TError("Table reader failed").With(*pendingReadError);
     }
     return {};
 }
@@ -388,9 +388,9 @@ TFuture<std::vector<TSource::TRecord>> TSource::DoReadNextBatch(const TMessageBa
     // Clamping before the end check keeps a range trimmed to nothing from creating a reader over it.
     if (nextOffset < minOffsetInclusive) {
         CancelReader(TError(NYT::EErrorCode::Canceled, "Partition row range was trimmed under the table reader")
-            << TErrorAttribute("reader_offset", CurrentOffset_)
-            << TErrorAttribute("next_offset", nextOffset)
-            << TErrorAttribute("min_offset_inclusive", minOffsetInclusive));
+                .With("reader_offset", CurrentOffset_)
+                .With("next_offset", nextOffset)
+                .With("min_offset_inclusive", minOffsetInclusive));
         nextOffset = minOffsetInclusive;
     }
 
@@ -398,8 +398,8 @@ TFuture<std::vector<TSource::TRecord>> TSource::DoReadNextBatch(const TMessageBa
     // And may differ from CurrentOffset_.
     if (nextOffset == maxOffsetExclusive) {
         CancelReader(TError(NYT::EErrorCode::Canceled, "Partition row range is fully read")
-            << TErrorAttribute("reader_offset", CurrentOffset_)
-            << TErrorAttribute("max_offset_exclusive", maxOffsetExclusive));
+                .With("reader_offset", CurrentOffset_)
+                .With("max_offset_exclusive", maxOffsetExclusive));
         // Nothing is left to read, so a read error left by a previous poll is stale.
         ReadErrorState_->ClearError();
         return MakeFuture(std::vector<TSource::TRecord>{});
@@ -479,8 +479,8 @@ TFuture<std::vector<TSource::TRecord>> TSource::DoReadNextBatch(const TMessageBa
 
     if (!unversionedRowBatch) {
         DropReader(NYT::TError("Got null batch from table reader, but more rows are expected")
-            << TErrorAttribute("current_offset", CurrentOffset_)
-            << TErrorAttribute("max_offset_exclusive", maxOffsetExclusive));
+                .With("current_offset", CurrentOffset_)
+                .With("max_offset_exclusive", maxOffsetExclusive));
         return MakeFuture(std::vector<TSource::TRecord>{});
     }
 
@@ -930,7 +930,7 @@ TListedTables TSourceController::GetMultiClusterTables(
         }
     }
     THROW_ERROR_EXCEPTION_IF(unavailableClusters.size() == clusters.size(), "Failed to list tables from all clusters")
-        << TErrorAttribute("clusters", clusters);
+        .With("clusters", clusters);
 
     return TListedTables{
         .Tables = MergeByName(perClusterTables),
@@ -1050,7 +1050,7 @@ void TSourceController::ReconcileDistributingTable(TListedTables listed)
         serving->Path.GetCluster() == current->Path.GetCluster() &&
         serving->Path.GetPath() != current->Path.GetPath())
     {
-        YT_TLOG_EVENT_FLUENT(GetContext()->PublicLogger, ELogLevel::Warning, "Current table was recreated under a new object id; rereading from scratch")
+        YT_TLOG_EVENT(GetContext()->PublicLogger, ELogLevel::Warning, "Current table was recreated under a new object id; rereading from scratch")
             .With("Cluster", activeCluster)
             .With("EventTimestamp", current->EventTimestamp)
             .With("OldId", current->Path.GetPath())
@@ -1076,7 +1076,7 @@ void TSourceController::ReconcileDistributingTable(TListedTables listed)
     state->ClusterProgress->ByCluster[decision->StashedCluster] = NYTree::CloneYsonStruct(current);
     state->ClusterProgress->ByCluster.erase(toCluster);
 
-    YT_TLOG_EVENT_FLUENT(
+    YT_TLOG_EVENT(
         GetContext()->PublicLogger,
         ELogLevel::Info,
         "Failing over current table to another cluster")
@@ -1181,7 +1181,7 @@ std::optional<TFailoverDecision> TSourceController::DecideFailover(
     if (auto it = stash.find(*servingReplica->Path.GetCluster()); it != stash.end()) {
         resumeFrom = it->second;
         if (resumeFrom->Path.GetPath() != servingReplica->Path.GetPath()) {
-            YT_TLOG_EVENT_FLUENT(publicLogger, ELogLevel::Warning, "Stashed table was recreated on the target cluster; rereading from scratch")
+            YT_TLOG_EVENT(publicLogger, ELogLevel::Warning, "Stashed table was recreated on the target cluster; rereading from scratch")
                 .With("Cluster", *servingReplica->Path.GetCluster())
                 .With("EventTimestamp", current->EventTimestamp)
                 .With("StashedId", resumeFrom->Path.GetPath())
@@ -1287,7 +1287,7 @@ void TSourceController::UpdateControllerState(
         ++it;
     } else {
         if (state->DistributingTable->GetNotDistributedRows() != 0) {
-            YT_TLOG_EVENT_FLUENT(
+            YT_TLOG_EVENT(
                 publicLogger,
                 ELogLevel::Error,
                 "Data loss was detected, table was removed before it is fully read")
@@ -1317,7 +1317,7 @@ void TSourceController::UpdateControllerState(
     }
 
     if (needStartNewTable) {
-        YT_TLOG_EVENT_FLUENT(
+        YT_TLOG_EVENT(
             publicLogger,
             ELogLevel::Info,
             "Starting to read new table")
@@ -1338,7 +1338,7 @@ void TSourceController::ApplyRestartInstantLogic(
 {
     auto now = TInstant::Now();
     if (restartInstant > now) {
-        YT_TLOG_EVENT_FLUENT(
+        YT_TLOG_EVENT(
             publicLogger,
             ELogLevel::Warning,
             "Misconfiguration: restart instant in dynamic parameters is greater than now")
@@ -1349,7 +1349,7 @@ void TSourceController::ApplyRestartInstantLogic(
         state->DistributingTable->SkipRemainingRows();
 
         state->Era += 1;
-        YT_TLOG_EVENT_FLUENT(
+        YT_TLOG_EVENT(
             publicLogger,
             ELogLevel::Warning,
             "Starting new era")
@@ -1383,8 +1383,8 @@ bool TSourceController::CheckDistributingTable()
                 State_->Inited = true;
                 CheckDistributingTableErrorState_->ClearError();
             } catch (const std::exception& ex) {
-                auto error = TError("Failed to update distributing table") << ex;
-                YT_TLOG_EVENT_FLUENT(
+                auto error = TError("Failed to update distributing table").With(ex);
+                YT_TLOG_EVENT(
                     GetContext()->PublicLogger,
                     ELogLevel::Error,
                     "Failed to update distributing table")
@@ -1393,7 +1393,7 @@ bool TSourceController::CheckDistributingTable()
             }
         } else {
             auto error = TError("Failed to get tables") << TablesFuture_.GetOrCrash();
-            YT_TLOG_EVENT_FLUENT(
+            YT_TLOG_EVENT(
                 GetContext()->PublicLogger,
                 ELogLevel::Error,
                 "Failed to get tables")
@@ -1463,7 +1463,7 @@ void TSourceController::CheckDistributionFinished()
 
     state->DistributionFinished = true;
     state->ProcessedTables += 1;
-    YT_TLOG_EVENT_FLUENT(
+    YT_TLOG_EVENT(
         GetContext()->PublicLogger,
         ELogLevel::Info,
         "Table was processed")

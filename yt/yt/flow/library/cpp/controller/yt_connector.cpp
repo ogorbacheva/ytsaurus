@@ -260,8 +260,8 @@ private:
                 auto actualIncarnationId = ConvertTo<TIncarnationId>(parsedGetOrchidResult.Value);
                 if (actualIncarnationId != incarnationId) {
                     THROW_ERROR_EXCEPTION("Controller leader node incarnation ids mismatch")
-                        << TErrorAttribute("actual_incarnation_id", actualIncarnationId)
-                        << TErrorAttribute("expected_incarnation_id", incarnationId);
+                        .With("actual_incarnation_id", actualIncarnationId)
+                        .With("expected_incarnation_id", incarnationId);
                 }
             }));
     }
@@ -285,7 +285,7 @@ private:
             YT_TLOG_INFO("Published leader controller address")
                 .With("Address", NodeInfo_->RpcAddress);
         } catch (const std::exception& ex) {
-            YT_TLOG_EVENT_FLUENT(PublicControllerLogger, NLogging::ELogLevel::Error, "Failed to publish leader_controller_address")
+            YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Warning, "Failed to publish leader_controller_address")
                 .With(ex);
             return false;
         }
@@ -295,7 +295,7 @@ private:
             YT_TLOG_INFO("Confirmed published leader controller address")
                 .With("Address", NodeInfo_->RpcAddress);
         } catch (const std::exception& ex) {
-            YT_TLOG_EVENT_FLUENT(PublicControllerLogger, NLogging::ELogLevel::Error, "Failed to confirm leader_controller_address")
+            YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Warning, "Failed to confirm leader_controller_address")
                 .With(ex);
             return false;
         }
@@ -316,7 +316,7 @@ private:
             YT_TLOG_INFO("Published leader controller address to flow_control table")
                 .With("Address", NodeInfo_->RpcAddress);
         } catch (const std::exception& ex) {
-            YT_TLOG_EVENT_FLUENT(PublicControllerLogger, NLogging::ELogLevel::Error, "Failed to publish leader_controller to flow_control table")
+            YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Warning, "Failed to publish leader_controller to flow_control table")
                 .With(ex);
             return false;
         }
@@ -339,6 +339,8 @@ private:
             }
 
             if (TInstant::Now() - startTime > connector->Config_->PublishTimeout) {
+                YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Error, "Giving up leadership; failed to publish leader controller address")
+                    .With("PublishTimeout", connector->Config_->PublishTimeout);
                 WaitUntilSet(connector->ElectionManager_->StopLeading());
             }
 

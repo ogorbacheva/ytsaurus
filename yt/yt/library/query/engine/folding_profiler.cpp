@@ -1421,8 +1421,8 @@ size_t TExpressionProfiler::Profile(
 
         if (type->GetMetatype() != ELogicalMetatype::List) {
             THROW_ERROR_EXCEPTION("Unexpected type instead of list")
-                << TErrorAttribute("column_name", name)
-                << TErrorAttribute("actual_type", type->GetMetatype());
+                .With("column_name", name)
+                .With("actual_type", type->GetMetatype());
         }
 
         nestedColumns.emplace_back(name, type->GetElement());
@@ -2619,7 +2619,8 @@ void TQueryProfiler::Profile(
 
     auto joinGroups = GetJoinGroups(query->JoinClauses, schema);
     if (!joinGroups.empty()) {
-        YT_LOG_DEBUG("Join groups: [%v]", JoinToString(joinGroups));
+        YT_TLOG_DEBUG("Grouping joins")
+            .With("JoinGroups", JoinToString(joinGroups));
     }
 
     size_t joinIndex = 0;

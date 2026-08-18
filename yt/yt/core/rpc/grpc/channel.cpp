@@ -102,7 +102,7 @@ public:
         }
 
         return TError(StatusCodeToErrorCode(static_cast<grpc_status_code>(statusCode)), std::move(statusDetail), TError::DisableFormat)
-            << TErrorAttribute("status_code", statusCode);
+            .With("status_code", statusCode);
     }
 
     void RecordReceivedTrailingMetadata(
@@ -283,6 +283,8 @@ private:
 
         void Initialize()
         {
+            Request_->Header().set_start_time(ToProto(TInstant::Now()));
+
             YT_TLOG_DEBUG("Sending request")
                 .With("RequestId", Request_->GetRequestId())
                 .WithFormat("Method", "%v.%v", Request_->GetService(), Request_->GetMethod())
@@ -314,6 +316,7 @@ private:
                 NYT::Ref(Tracer_.Get());
             }
             InitialMetadataBuilder_.Add(RequestIdMetadataKey, ToString(Request_->GetRequestId()));
+            InitialMetadataBuilder_.Add(StartTimeMetadataKey, ToString(Request_->Header().start_time()));
             if (Request_->GetUser() != RootUserName) {
                 InitialMetadataBuilder_.Add(UserMetadataKey, Request_->GetUser());
             }
@@ -374,7 +377,7 @@ private:
                 auto responseHandler = TryAcquireResponseHandler();
                 YT_VERIFY(responseHandler);
                 responseHandler->HandleError(TError(NRpc::EErrorCode::TransportError, "Request serialization failed")
-                    << ex);
+                    .With(ex));
                 return;
             }
 
@@ -628,7 +631,7 @@ private:
                     error = DeserializeError(*serializedError);
                 } else {
                     error = TError(StatusCodeToErrorCode(ResponseStatusCode_), ResponseStatusDetails_.AsString(), TError::DisableFormat)
-                        << TErrorAttribute("status_code", ResponseStatusCode_);
+                        .With("status_code", ResponseStatusCode_);
                 }
                 NotifyError(TStringBuf("Request failed"), error);
                 return;
@@ -648,7 +651,7 @@ private:
                     messageBodySize = FromString<ui32>(*messageBodySizeString);
                 } catch (const std::exception& ex) {
                     auto error = TError(NRpc::EErrorCode::TransportError, "Failed to parse response message body size")
-                        << ex;
+                        .With(ex);
                     NotifyError(TStringBuf("Failed to parse response message body size"), error);
                     return;
                 }
@@ -669,7 +672,7 @@ private:
                     messageBodySize,
                     !responseHeader.has_codec());
             } catch (const std::exception& ex) {
-                auto error = TError(NRpc::EErrorCode::TransportError, "Failed to receive request body") << ex;
+                auto error = TError(NRpc::EErrorCode::TransportError, "Failed to receive request body").With(ex);
                 NotifyError(TStringBuf("Failed to receive request body"), error);
                 return;
             }
@@ -718,7 +721,7 @@ private:
                 << Owner_->GetEndpointAttributes();
             if (Options_.Timeout) {
                 detailedError = detailedError
-                    << TErrorAttribute("timeout", Options_.Timeout);
+                    .With("timeout", Options_.Timeout);
             }
 
             ProfileError(error);

@@ -8,7 +8,7 @@
 
 #include <library/cpp/yt/misc/enum.h>
 
-#include <library/cpp/yt/misc/global.h>
+#include <library/cpp/yt/misc/leaky_global.h>
 
 #include <util/system/types.h>
 
@@ -16,7 +16,7 @@ namespace NYT::NNbd::NJournal {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "Nbd");
+YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, Logger, "Nbd");
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -67,6 +67,9 @@ static_assert(ReservedBits + ChunkIndexBits + RecordIndexBits + BlockIndexBits =
 
 // Capacity limits implied by the id layout above.
 
+//! Exclusive upper bound on a device's block count.
+constexpr i64 MaxBlocksPerDevice = 1LL << 30;
+
 //! Total number of chunks a store may ever allocate; exceeding it is fatal.
 constexpr i64 MaxChunksPerDevice = 1LL << NStoredBlockIdLayout::ChunkIndexBits;
 
@@ -82,6 +85,7 @@ DEFINE_ENUM(EChunkSealState,
     (Waiting)  // abandoned; a maintenance tick starts the next seal attempt once the backoff elapses
     (Running)  // a seal attempt is in progress
     (Done)     // sealed
+    (Failed)   // abandoned: the chunk object is gone from the master, so no attempt can succeed
 );
 
 DECLARE_REFCOUNTED_STRUCT(IBlockStore)

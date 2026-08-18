@@ -157,7 +157,8 @@ protected:
     bool UpdateTraverse(
         TSystemTimestamp reportTime,
         TSystemTimestamp systemWatermark,
-        const THashMap<TStreamId, TInflightStreamTraverseDataPtr>& inflights);
+        const THashMap<TStreamId, TInflightStreamTraverseDataPtr>& inflights,
+        i64 iterationCycle);
 
     //! Returns the distributed throttler client for the given id.
     //! Throws if |throttlerId| is not in the dynamic pipeline spec's
@@ -460,7 +461,8 @@ protected:
     TSystemTimestamp GetWatermark(const TStreamId& streamId, ETimeType timeType) const;
     TSystemTimestamp GetEpochWatermark(const TStreamId& streamId, ETimeType timeType) const;
 
-    THashMap<TStreamId, TInflightStreamTraverseDataPtr> BuildInflights() const;
+    THashMap<TStreamId, TInflightStreamTraverseDataPtr> BuildInflights(
+        const IComputationRunContextPtr& context) const;
 
     void RegisterInputBeforeProcessing(
         const std::vector<TInputMessageConstPtr>& inputMessages,
@@ -530,6 +532,8 @@ protected:
 
     ITimeProvider::TGlobalUniqueSeqNo GenerateGlobalUniqueSeqNo();
 
+    std::optional<TUniqueSeqNo> GetEpochUniqueSeqNo() const;
+
     template <class... T>
     void ClearAsynchronously(T&&... args) const
     {
@@ -575,7 +579,7 @@ protected:
         const auto spec = GetContext()->StreamSpecStorage->GetSpec(message.StreamId);
         if (!spec->ClassName) {
             THROW_ERROR_EXCEPTION("Impossible to convert message to yson message due to undefined \"class_name\"")
-                << TErrorAttribute("stream_id", message.StreamId);
+                .With("stream_id", message.StreamId);
         }
         auto ysonMessage = TRegistry::Get()->CreateYsonMessage(*spec->ClassName);
         ::NYT::NFlow::ConvertToYsonMessage(message, ysonMessage);
@@ -595,7 +599,7 @@ protected:
         auto spec = GetContext()->StreamSpecStorage->GetSpec(streamId);
         if (!spec->ClassName) {
             THROW_ERROR_EXCEPTION("Impossible to convert yson message to message due to undefined \"class_name\"")
-                << TErrorAttribute("stream_id", streamId);
+                .With("stream_id", streamId);
         }
         TRegistry::Get()->ValidateYsonMessageType(*spec->ClassName, ysonMessage);
         auto message = ::NYT::NFlow::ConvertToMessage(ysonMessage, spec->Schema);
@@ -658,6 +662,8 @@ private:
 
     NProfiling::TEventTimer EpochTimer_;
     NProfiling::TCounter EpochCounter_;
+    //! Touched from the run fiber only; published by GenerateGlobalUniqueSeqNo.
+    std::optional<TUniqueSeqNo> EpochUniqueSeqNo_;
     THashMap<TStreamId, TStreamMessageCounters> StreamMessageCounters_;
 
     TStreamEventLagObserver InputEventLagObserver_;

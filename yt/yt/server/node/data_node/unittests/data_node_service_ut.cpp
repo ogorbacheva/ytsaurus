@@ -500,7 +500,7 @@ public:
         bool EnableSequentialIORequests = true;
         i64 CoalescedReadMaxGapSize = 10_MB;
         i64 BlockCacheCapacity = 0;
-        i64 PerMediumBlockCacheCapacity = 0;
+        i64 PerLocationBlockCacheCapacity = 0;
         bool RejectOversizedBlockCacheItems = false;
         int ClusterConnectionThreadPoolSize = 4;
         int ReadThreadCount = 1;
@@ -591,15 +591,16 @@ public:
         if (TestParams_.EnableMediumAwareBlockCache) {
             auto createMediumBlockCacheConfig = [&] {
                 auto config = New<TBlockCacheConfig>();
-                config->CompressedData = TSlruCacheConfig::CreateWithCapacity(
-                    TestParams_.PerMediumBlockCacheCapacity);
+                config->CompressedData->Capacity = TestParams_.PerLocationBlockCacheCapacity;
                 return config;
             };
 
             auto managerConfig = bootstrapConfig->DataNode->MediumAwareBlockCacheManager;
             managerConfig->Enable = true;
-            managerConfig->BlockCacheConfigPerMedium[DefaultStoreMediumName] = createMediumBlockCacheConfig();
-            managerConfig->BlockCacheConfigPerMedium[TestSsdMediumName] = createMediumBlockCacheConfig();
+            managerConfig->BlockCacheConfigPerMediumPerLocation[DefaultStoreMediumName] =
+                createMediumBlockCacheConfig();
+            managerConfig->BlockCacheConfigPerMediumPerLocation[TestSsdMediumName] =
+                createMediumBlockCacheConfig();
         }
 
         bootstrapConfig->DataNode->ChooseLocationBasedOnIOWeight = TestParams_.ChooseLocationBasedOnIOWeight;
@@ -1188,8 +1189,7 @@ public:
         : TDataNodeTest(
             TDataNodeTest::TDataNodeTestParams {
                 .EnableHugePageManager = GetParam().UseDirectIo,
-                // TODO(depression): Enable after Direct IO issues get fixed
-                .UseDirectIOForWrites = NIO::EDirectIOPolicy::Never,
+                .UseDirectIOForWrites = NIO::EDirectIOPolicy::OnDemand,
                 .ReadThreadCount = 4,
                 .WriteThreadCount = 4,
                 .UseProbePutBlocks = GetParam().UseProbePutBlocks,
@@ -1303,8 +1303,8 @@ public:
         auto rootSlotWindowSize = rootBucket->SlotWindowSize.load();
         if (rootRequestWindowSize <= 0 || rootSlotWindowSize <= 0) {
             return TError("Root windows are not filled yet")
-                << TErrorAttribute("request_window_size", rootRequestWindowSize)
-                << TErrorAttribute("slot_window_size", rootSlotWindowSize);
+                .With("request_window_size", rootRequestWindowSize)
+                .With("slot_window_size", rootSlotWindowSize);
         }
 
         constexpr double WeightTolerance = 0.05;
@@ -1879,19 +1879,20 @@ public:
     TMediumAwareBlockCacheTest()
         : TDataNodeTest(TDataNodeTestParams{
             .BlockCacheCapacity = NodeWideBlockCacheCapacity,
-            .PerMediumBlockCacheCapacity = PerMediumBlockCacheCapacity,
+            .PerLocationBlockCacheCapacity = PerLocationBlockCacheCapacity,
             .EnableMediumAwareBlockCache = true,
         })
     { }
 
 private:
-    static constexpr i64 PerMediumBlockCacheCapacity = 1_MB;
-    static constexpr i64 NodeWideBlockCacheCapacity = 2 * PerMediumBlockCacheCapacity;
+    static constexpr i64 PerLocationBlockCacheCapacity = 1_MB;
+    static constexpr i64 NodeWideBlockCacheCapacity = 2 * PerLocationBlockCacheCapacity;
 };
 
 TEST_F(TMediumAwareBlockCacheTest, ReadUsesNewMediumCacheAfterLocationMediumChanges)
 {
-    const auto& location = GetDataNodeBootstrap()->GetChunkStore()->Locations().front();
+    const auto& chunkStore = GetDataNodeBootstrap()->GetChunkStore();
+    const auto& location = chunkStore->Locations().front();
     UpdateLocationMedium(location, DefaultStoreMediumIndex);
 
     TSessionId sessionId(MakeRandomId(EObjectType::Chunk, TCellTag(0xf003)), DefaultStoreMediumIndex);

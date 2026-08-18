@@ -201,16 +201,41 @@ class TestSchedulerOperationsCleaner(YTEnvSetup):
              .get("brief_progress", {}).get("jobs", {}).get("running") == 1)
         wait(lambda: get_operation(op.id, attributes=["progress"], include_runtime=True)
              .get("progress", {}).get("jobs", {}).get("running") == 1)
-        # But progress is not written to Cypress: the archive exists, so there is no Cypress fallback.
+        # Running progress is not written to Cypress: the archive exists, so there is no Cypress fallback.
         assert not exists(get_operation_cypress_path(op.id) + "/@progress")
+        assert not exists(get_operation_cypress_path(op.id) + "/@brief_progress")
 
         release_breakpoint()
         op.track()
+
+        # Final brief progress remains available in Cypress after the controller is unregistered.
+        wait(lambda: get(get_operation_cypress_path(op.id) + "/@brief_progress/state") == "completed", ignore_exceptions=True)
 
         # controller_features are computed at commit and archived; they are retrievable via get_operation
         # (from the archive) but must not be written to Cypress either.
         wait(lambda: "controller_features" in get_operation(op.id, attributes=["controller_features"]))
         assert not exists(get_operation_cypress_path(op.id) + "/@controller_features")
+
+    @authors("bystrovserg")
+    def test_final_brief_progress_written_to_cypress_on_abort(self):
+        init_operations_archive.create_tables_latest_version(
+            self.Env.create_native_client(), override_tablet_cell_bundle="default"
+        )
+
+        update_scheduler_config("operations_cleaner/enable", False)
+        update_controller_agent_config("operations_update_period", 100)
+
+        op = run_test_vanilla(with_breakpoint("BREAKPOINT"), track=False)
+        wait_breakpoint()
+
+        wait(lambda: get_operation(op.id, attributes=["brief_progress"], include_runtime=True)
+             .get("brief_progress", {}).get("jobs", {}).get("running") == 1)
+
+        assert not exists(get_operation_cypress_path(op.id) + "/@brief_progress")
+
+        op.abort()
+        # TODO(bystrovserg): Re-enable this check after final brief progress is rebuilt and flushed to Cypress on operation abort.
+        # wait(lambda: get(get_operation_cypress_path(op.id) + "/@brief_progress/state") == "aborted", ignore_exceptions=True)
 
     @authors("bystrovserg")
     def test_incomplete_archivation_sensor(self):
@@ -227,6 +252,14 @@ class TestSchedulerOperationsCleaner(YTEnvSetup):
         op = run_test_vanilla("true", track=True)
         assert self._operation_exist(op.id)
 
+        failed_op = run_test_vanilla(
+            "true",
+            task_patch={"file_paths": ["//tmp/missing_file"]},
+        )
+        failed_op.track(raise_on_failed=False)
+        assert failed_op.get_state() == "failed"
+        assert all(event["state"] != "running" for event in get(failed_op.get_path() + "/@events"))
+
         with Restarter(self.Env, SCHEDULERS_SERVICE):
             pass
 
@@ -238,8 +271,8 @@ class TestSchedulerOperationsCleaner(YTEnvSetup):
         # Fetch operations from Cypress, progress is lost.
         update_scheduler_config("operations_cleaner/enable", True)
 
-        wait(lambda: not self._operation_exist(op.id))
-        wait(lambda: incomplete_info_counter.get_delta() > 0)
+        wait(lambda: not self._operation_exist(op.id) and not self._operation_exist(failed_op.id))
+        wait(lambda: incomplete_info_counter.get_delta() == 1)
 
     @authors("bystrovserg")
     def test_operations_archive_is_not_initialized(self):

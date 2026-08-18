@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include "private.h"
+
 #include <yt/yt/ytlib/journal_client/helpers.h>
 
 #include <yt/yt/client/api/config.h>
@@ -28,12 +30,12 @@ void TJournalBlockDeviceOptions::Register(TRegistrar registrar)
     registrar.Postprocessor([] (TThis* config) {
         if (!IsPowerOf2(config->BlockSize)) {
             THROW_ERROR_EXCEPTION("\"block_size\" must be a power of two")
-                << TErrorAttribute("block_size", config->BlockSize);
+                .With("block_size", config->BlockSize);
         }
         if (config->DeviceSize % config->BlockSize != 0) {
             THROW_ERROR_EXCEPTION("\"device_size\" must be a multiple of \"block_size\"")
-                << TErrorAttribute("device_size", config->DeviceSize)
-                << TErrorAttribute("block_size", config->BlockSize);
+                .With("device_size", config->DeviceSize)
+                .With("block_size", config->BlockSize);
         }
     });
 }
@@ -159,7 +161,7 @@ void TJournalBlockDeviceConfig::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("snapshot_blocks_per_batch", &TThis::SnapshotBlocksPerBatch)
         .Default(1'000'000)
-        .GreaterThan(0);
+        .InRange(1, MaxBlocksPerDevice);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

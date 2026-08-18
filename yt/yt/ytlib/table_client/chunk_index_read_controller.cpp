@@ -162,9 +162,9 @@ public:
             auto actualChecksum = GetChecksum(refWithoutChecksum);
             if (expectedChecksum != actualChecksum) {
                 THROW_ERROR_EXCEPTION("Chunk index sector checksum mismatch")
-                    << TErrorAttribute("expected_checksum", expectedChecksum)
-                    << TErrorAttribute("actual_checksum", actualChecksum)
-                    << TErrorAttribute("recalculated_checksum", GetChecksum(refWithoutChecksum));
+                    .With("expected_checksum", expectedChecksum)
+                    .With("actual_checksum", actualChecksum)
+                    .With("recalculated_checksum", GetChecksum(refWithoutChecksum));
             }
 
             PendingSectorAddressToData_[address] = sectorData;
@@ -590,7 +590,7 @@ private:
     {
         if (IsFinished()) {
             // Read session is finished now.
-            YT_LOG_DEBUG("Hash table chunk index read controller has no new requests");
+            YT_TLOG_DEBUG("Hash table chunk index read controller has no new requests");
             return;
         }
 
@@ -599,12 +599,11 @@ private:
             fragmentsSize += request.Length;
         }
 
-        YT_LOG_DEBUG("Hash table chunk index read controller generated new requests "
-            "(FragmentCount: %v, FragmentsSize: %v, SystemBlockCount: %v, RequestedHashIndexSectorCount: %v)",
-            ReadRequest_.FragmentSubrequests.size(),
-            fragmentsSize,
-            ReadRequest_.SystemBlockIndexes.size(),
-            PendingSectorDescriptors_.size());
+        YT_TLOG_DEBUG("Hash table chunk index read controller generated new requests")
+            .With("FragmentCount", ReadRequest_.FragmentSubrequests.size())
+            .With("FragmentsSize", fragmentsSize)
+            .With("SystemBlockCount", ReadRequest_.SystemBlockIndexes.size())
+            .With("RequestedHashIndexSectorCount", PendingSectorDescriptors_.size());
     }
 };
 

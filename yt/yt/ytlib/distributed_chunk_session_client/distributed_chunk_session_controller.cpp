@@ -18,7 +18,7 @@
 
 #include <yt/yt/core/yson/protobuf_helpers.h>
 
-#include <util/random/shuffle.h>
+#include <util/random/random.h>
 
 namespace NYT::NDistributedChunkSessionClient {
 
@@ -104,14 +104,14 @@ public:
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
         CloseSession();
-        return ClosedPromise_.ToFuture();
+        return ClosedPromise_.ToFuture().ToUncancelable();
     }
 
     TFuture<void> GetClosedFuture() final
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
-        return ClosedPromise_.ToFuture();
+        return ClosedPromise_.ToFuture().ToUncancelable();
     }
 
     TSessionId GetSessionId() const final
@@ -119,10 +119,10 @@ public:
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
         auto state = State_.load();
-        YT_LOG_FATAL_IF(
+        YT_TLOG_FATAL_IF(
             state != EControllerState::Running && state != EControllerState::Closed,
-            "Unexpected controller state (State: %v)",
-            state);
+            "Unexpected controller state")
+            .With("State", state);
 
         return SessionId_;
     }
@@ -184,7 +184,8 @@ private:
     TFuture<void> StartRemoteSession(TSessionId sessionId)
     {
         SessionId_ = sessionId;
-        YT_LOG_INFO("Chunk created (ChunkId: %v)", SessionId_);
+        YT_TLOG_INFO("Chunk created")
+            .With("ChunkId", SessionId_);
 
         // TODO(apollo1321): AllocateWriteTargets uses WaitFor internally, which contradicts
         // the no-WaitFor design of this file. Write targets allocation should also be batched
@@ -200,19 +201,16 @@ private:
             /*allocatedAddresses*/ {},
             Logger);
 
-        Shuffle(Targets_.begin(), Targets_.end());
-
         const auto& nodeDirectory = Client_->GetNativeConnection()->GetNodeDirectory();
         const auto& channelFactory = Client_->GetChannelFactory();
         const auto& networks = Client_->GetNativeConnection()->GetNetworks();
 
-        SequencerDescriptor_ = nodeDirectory->GetDescriptor(Targets_[0]);
+        SequencerDescriptor_ = nodeDirectory->GetDescriptor(Targets_[RandomNumber(Targets_.size())]);
         SequencerChannel_ = channelFactory->CreateChannel(
             SequencerDescriptor_.GetAddressOrThrow(networks));
 
-        YT_LOG_INFO(
-            "Selected sequencer node (Address: %v)",
-            SequencerDescriptor_.GetAddressOrThrow(networks));
+        YT_TLOG_INFO("Selected sequencer node")
+            .With("Address", SequencerDescriptor_.GetAddressOrThrow(networks));
 
         TDistributedChunkSessionServiceProxy proxy(SequencerChannel_);
         auto req = proxy.StartSession();
@@ -250,7 +248,8 @@ private:
     {
         if (!startedSessionOrError.IsOK()) {
             const auto& error = static_cast<const TError&>(startedSessionOrError);
-            YT_LOG_DEBUG(error, "Failed to start session");
+            YT_TLOG_DEBUG("Failed to start session")
+                .With(error);
             TransitionState(EControllerState::Starting, EControllerState::Closed);
             ClosedPromise_.Set(error);
         }
@@ -262,9 +261,8 @@ private:
     {
         YT_ASSERT_INVOKER_AFFINITY(Invoker_);
 
-        YT_LOG_DEBUG(
-            "Sending sequencer ping (Address: %v)",
-            SequencerDescriptor_.GetDefaultAddress());
+        YT_TLOG_DEBUG("Sending sequencer ping")
+            .With("Address", SequencerDescriptor_.GetDefaultAddress());
 
         TDistributedChunkSessionServiceProxy proxy(SequencerChannel_);
         auto req = proxy.PingSession();
@@ -282,41 +280,41 @@ private:
     void OnSequencerPingResponse(const TError& error)
     {
         if (error.IsOK()) {
-            YT_LOG_DEBUG("Successfully pinged session");
+            YT_TLOG_DEBUG("Successfully pinged session");
             ConsecutivePingFailures_ = 0;
             return;
         }
 
         if (error.GetCode() == NChunkClient::EErrorCode::NoSuchSession) {
-            YT_LOG_DEBUG(error, "Session has expired, finishing controller");
+            YT_TLOG_DEBUG("Session has been lost or expired, finishing controller")
+                .With(error);
 
-            auto expected = EControllerState::Running;
-            if (State_.compare_exchange_strong(expected, EControllerState::Closed)) {
-                ClosedPromise_.SetFrom(
-                    StopPingExecutor().Apply(BIND([error] {
-                        return MakeFuture(error);
-                    })));
-            }
+            CloseWithError(error);
             return;
         }
 
         ++ConsecutivePingFailures_;
-        YT_LOG_DEBUG(
-            error,
-            "Session ping failed (ConsecutivePingFailures: %v, MaxConsecutivePingFailures: %v)",
-            ConsecutivePingFailures_,
-            Config_->MaxConsecutivePingFailures);
+        YT_TLOG_DEBUG("Session ping failed")
+            .With("ConsecutivePingFailures", ConsecutivePingFailures_)
+            .With("MaxConsecutivePingFailures", Config_->MaxConsecutivePingFailures)
+            .With(error);
 
         if (ConsecutivePingFailures_ >= Config_->MaxConsecutivePingFailures) {
-            YT_LOG_DEBUG(error, "Too many consecutive ping failures, finishing controller");
+            YT_TLOG_DEBUG("Too many consecutive ping failures, finishing controller")
+                .With(error);
 
-            auto expected = EControllerState::Running;
-            if (State_.compare_exchange_strong(expected, EControllerState::Closed)) {
-                ClosedPromise_.SetFrom(
-                    StopPingExecutor().Apply(BIND([error] {
-                        return MakeFuture(error.Wrap("Too many consecutive ping failures"));
-                    })));
-            }
+            CloseWithError(error.Wrap("Too many consecutive ping failures"));
+        }
+    }
+
+    void CloseWithError(const TError& error)
+    {
+        auto expected = EControllerState::Running;
+        if (State_.compare_exchange_strong(expected, EControllerState::Closed)) {
+            ClosedPromise_.SetFrom(
+                StopPingExecutor().Apply(BIND([error] {
+                    return MakeFuture(error);
+                })));
         }
     }
 
@@ -326,16 +324,17 @@ private:
 
         auto expected = EControllerState::Running;
         if (!State_.compare_exchange_strong(expected, EControllerState::Closing)) {
-            YT_LOG_DEBUG("Session is not running (State: %v)", expected);
+            YT_TLOG_DEBUG("Session is not running")
+                .With("State", expected);
 
-            YT_LOG_FATAL_IF(
+            YT_TLOG_FATAL_IF(
                 expected != EControllerState::Closing && expected != EControllerState::Closed,
-                "Unexpected controller state (State: %v)",
-                expected);
+                "Unexpected controller state")
+                .With("State", expected);
             return;
         }
 
-        YT_LOG_DEBUG("Closing session");
+        YT_TLOG_DEBUG("Closing session");
 
         TDistributedChunkSessionServiceProxy proxy(SequencerChannel_);
         auto req = proxy.FinishSession();
@@ -358,9 +357,10 @@ private:
     TUniqueFuture<void> OnSessionFinished(TError&& error)
     {
         if (error.IsOK()) {
-            YT_LOG_DEBUG("Successfully closed session");
+            YT_TLOG_DEBUG("Successfully closed session");
         } else {
-            YT_LOG_DEBUG(error, "Error occurred while closing session");
+            YT_TLOG_DEBUG("Error occurred while closing session")
+                .With(error);
         }
 
         return StopPingExecutor().Apply(BIND([error] {
@@ -381,10 +381,8 @@ private:
     {
         return SessionPingExecutor_->Stop()
             .Apply(BIND([Logger = Logger] (const TError& error) {
-                YT_LOG_FATAL_IF(
-                    !error.IsOK(),
-                    error,
-                    "Unexpected failure during session ping executor stopping");
+                YT_TLOG_FATAL_IF(!error.IsOK(), "Unexpected failure during session ping executor stopping")
+                    .With(error);
             }))
             .AsUnique();
     }
@@ -392,12 +390,10 @@ private:
     void TransitionState(EControllerState from, EControllerState to)
     {
         auto actual = State_.exchange(to);
-        YT_LOG_FATAL_IF(
-            actual != from,
-            "Unexpected controller state (ExpectedState: %v, ActualState: %v, NewState: %v)",
-            from,
-            actual,
-            to);
+        YT_TLOG_FATAL_IF(actual != from, "Unexpected controller state")
+            .With("ExpectedState", from)
+            .With("ActualState", actual)
+            .With("NewState", to);
     }
 };
 

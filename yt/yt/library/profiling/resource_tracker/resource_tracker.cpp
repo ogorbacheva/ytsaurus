@@ -16,7 +16,7 @@
 
 #include <library/cpp/yt/threading/atomic_object.h>
 
-#include <library/cpp/yt/misc/global.h>
+#include <library/cpp/yt/misc/leaky_global.h>
 
 #include <library/cpp/yt/memory/leaky_ref_counted_singleton.h>
 
@@ -46,9 +46,9 @@ using namespace NCGroups;
 
 namespace {
 
-YT_DEFINE_GLOBAL(const NLogging::TLogger, Logger, "Profiling");
-YT_DEFINE_GLOBAL(const TProfiler, ResourceTrackerProfiler, "/resource_tracker");
-YT_DEFINE_GLOBAL(const TProfiler, MemoryProfiler, "/memory/cgroup");
+YT_DEFINE_LEAKY_GLOBAL(const NLogging::TLogger, Logger, "Profiling");
+YT_DEFINE_LEAKY_GLOBAL(const TProfiler, ResourceTrackerProfiler, "/resource_tracker");
+YT_DEFINE_LEAKY_GLOBAL(const TProfiler, MemoryProfiler, "/memory/cgroup");
 
 // Please, refer to /proc documentation to know more about available information.
 // http://www.kernel.org/doc/Documentation/filesystems/proc.txt
@@ -93,7 +93,8 @@ public:
                 (cpuStatistics.WaitTime - FirstCpuStatistics_->WaitTime).NanoSeconds() / 10'000'000);
         } catch (const std::exception& ex) {
             if (!CgroupErrorLogged_) {
-                YT_LOG_INFO(ex, "Failed to collect cgroup cpu statistics");
+                YT_TLOG_INFO("Failed to collect cgroup cpu statistics")
+                    .With(TError(ex));
                 CgroupErrorLogged_ = true;
             }
         }
@@ -139,7 +140,8 @@ public:
             }
         } catch (const std::exception& ex) {
             if (!CgroupErrorLogged_) {
-                YT_LOG_INFO(ex, "Failed to collect cgroup memory statistics");
+                YT_TLOG_INFO("Failed to collect cgroup memory statistics")
+                    .With(TError(ex));
                 CgroupErrorLogged_ = true;
             }
         }
@@ -430,13 +432,13 @@ private:
             return std::nullopt;
         }
 
-        YT_LOG_TRACE("Thread statistics (Tid: %v, ThreadName: %v, IsYtThread: %v, UserJiffies: %v, SystemJiffies: %v, CpuWaitNsec: %v)",
-            tid,
-            info.ThreadName,
-            info.IsYTThread,
-            info.Timings.UserJiffies,
-            info.Timings.SystemJiffies,
-            info.Timings.CpuWaitNsec);
+        YT_TLOG_TRACE("Thread statistics")
+            .With("Tid", tid)
+            .With("ThreadName", info.ThreadName)
+            .With("IsYtThread", info.IsYTThread)
+            .With("UserJiffies", info.Timings.UserJiffies)
+            .With("SystemJiffies", info.Timings.SystemJiffies)
+            .With("CpuWaitNsec", info.Timings.CpuWaitNsec);
 
         return info;
     }
@@ -463,7 +465,8 @@ private:
             if (info) {
                 tidToStats[tid] = *info;
             } else {
-                YT_LOG_TRACE("Failed to parse thread info (Tid: %v)", tid);
+                YT_TLOG_TRACE("Failed to parse thread info")
+                    .With("Tid", tid);
             }
         }
 
@@ -546,11 +549,11 @@ private:
 
             maxUtilization = std::max(maxUtilization, utilization);
 
-            YT_LOG_TRACE("Thread CPU timings in percent/sec (ProfilingKey: %v, UserCpu: %v, SystemCpu: %v, CpuWait: %v)",
-                profilingKey,
-                userCpuTime,
-                systemCpuTime,
-                waitTime);
+            YT_TLOG_TRACE("Thread CPU timings in percent/sec")
+                .With("ProfilingKey", profilingKey)
+                .With("UserCpu", userCpuTime)
+                .With("SystemCpu", systemCpuTime)
+                .With("CpuWait", waitTime);
         }
 
         LastUserCpu_.store(totalUserCpuTime);
@@ -558,14 +561,15 @@ private:
         LastCpuWait_.store(totalCpuWaitTime);
         MaxThreadPoolUtilization_.store(maxUtilization);
 
-        YT_LOG_DEBUG("Total CPU timings in percent/sec (UserCpu: %v, SystemCpu: %v, CpuWait: %v)",
-            totalUserCpuTime,
-            totalSystemCpuTime,
-            totalCpuWaitTime);
+        YT_TLOG_DEBUG("Total CPU timings in percent/sec")
+            .With("UserCpu", totalUserCpuTime)
+            .With("SystemCpu", totalSystemCpuTime)
+            .With("CpuWait", totalCpuWaitTime);
 
         int fileDescriptorCount = GetFileDescriptorCount();
         writer->AddGauge("/open_fds", fileDescriptorCount);
-        YT_LOG_DEBUG("Assessed open file descriptors (Count: %v)", fileDescriptorCount);
+        YT_TLOG_DEBUG("Assessed open file descriptors")
+            .With("Count", fileDescriptorCount);
     }
 };
 

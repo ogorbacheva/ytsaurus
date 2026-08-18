@@ -20,6 +20,12 @@ namespace NYT::NFlow {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! The scheduler cap. Its own default of ten is too few: a job's stderr is the only artifact that
+//! survives the operation, so it is worth retaining for every job.
+constexpr int DefaultMaxStderrCount = 150;
+
+////////////////////////////////////////////////////////////////////////////////
+
 DECLARE_REFCOUNTED_STRUCT(TVanillaTaskConfig)
 
 //! Per-task (controller or worker) sizing in a Flow vanilla launch.
@@ -31,9 +37,11 @@ struct TVanillaTaskConfig
     std::optional<NYTree::TSize> MemoryLimit;
     std::optional<int> CpuLimit;
 
-    //! When set, the task requests this many YT-allocated ports (exposed as YT_PORT_<i>),
+    //! When positive, the task requests this many YT-allocated ports (exposed as YT_PORT_<i>),
     //! overriding the fixed ports from the node config. Needed on a shared-network host
-    //! (e.g. local tests) where fixed ports of co-located jobs would collide.
+    //! (e.g. local tests) where fixed ports of co-located jobs would collide, so when the
+    //! launch has no network project it defaults to 2 (controller) / 3 (worker); an explicit
+    //! 0 keeps the fixed ports.
     std::optional<int> PortCount;
 
     //! Extra files delivered into the task sandbox: sandbox file name -> path.
@@ -47,6 +55,10 @@ struct TVanillaTaskConfig
 
     //! Per-task base OS layer; overrides the default system layer when set.
     std::optional<std::string> SystemLayerPath;
+
+    //! Root filesystem image for the task, on clusters whose job environment pulls images rather
+    //! than mounting porto layers. Mutually exclusive with `Layers`.
+    std::optional<std::string> DockerImage;
 
     REGISTER_YSON_STRUCT(TVanillaTaskConfig);
 
@@ -83,6 +95,7 @@ struct TVanillaConfig
     NYPath::TYPath CachePath;
 
     ui64 MaxFailedJobCount{};
+    int MaxStderrCount{};
     TDuration WaitTimeout;
     std::string SolomonResolverTag;
 
@@ -114,9 +127,11 @@ DEFINE_REFCOUNTED_TYPE(TVanillaConfig)
 
 //! Builds a TFlowNodeConfig with defaults appropriate for ephemeral
 //! vanilla jobs: stderr logging, OS-picked ports, lenient option parsing.
+//! |workerPortCount| is the worker task's `port_count`.
 TFlowNodeConfigPtr BuildDefaultVanillaNodeConfig(
     const NYPath::TRichYPath& pipelinePath,
-    std::optional<std::string> proxyRole);
+    std::optional<std::string> proxyRole,
+    std::optional<int> workerPortCount);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -148,6 +163,7 @@ struct TFlowVanillaTask
     THashMap<std::string, std::string> CypressFiles;
     std::vector<std::string> Layers;
     std::optional<std::string> SystemLayerPath;
+    std::optional<std::string> DockerImage;
 };
 
 //! Options for launching a Flow federation as a vanilla operation directly, without the pipeline
@@ -165,6 +181,8 @@ struct TFlowVanillaOptions
     std::optional<std::string> NetworkProject;
     std::string SolomonResolverTag;
     int MaxFailedJobCount = 10000;
+    //! Number of jobs whose stderr the scheduler retains after they finish.
+    int MaxStderrCount = DefaultMaxStderrCount;
     //! Optional operation `description` annotation.
     NYTree::IMapNodePtr Description;
     //! Cluster to run the operation on; defaults to the node config's cluster.

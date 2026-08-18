@@ -25,13 +25,14 @@ struct TMaterializedViewConfiguration
     NYPath::TYPath TargetPath;
     NObjectClient::TObjectId SourceObjectId;
     NObjectClient::TObjectId TargetObjectId;
-    i64 InitialSourceRowCount = 0;
 };
 
 TMaterializedViewConfiguration BuildMaterializedViewConfiguration(
     const DB::ContextPtr& context,
     const DB::StoragePtr& table,
     const DB::ASTPtr& query);
+
+void RegisterStorageYtMaterializedView(DB::StorageFactory& factory);
 
 ////////////////////////////////////////////////////////////////////////////////
 

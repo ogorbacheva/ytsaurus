@@ -774,7 +774,7 @@ TCumulativeStatisticsEntry GetCumulativeStatisticsEntry(TChunkTree* chunkTree)
             return IsHunkChunkFormat(chunk->GetChunkFormat())
                 // NB: In hunk tree unsealed chunks will also be included into cumulative statistics.
                 ? TCumulativeStatisticsEntry(/*rowCount*/ 0, /*chunkCount*/ 1, /*dataSize*/ 0)
-                : TCumulativeStatisticsEntry(chunk->GetStatistics());
+                : TCumulativeStatisticsEntry(chunk->GetStatistics(/*includeReferencedHunkData*/ false));
         }
 
         case EObjectType::ChunkView:
@@ -1315,9 +1315,9 @@ TLegacyOwningKey GetUpperBoundKeyOrThrow(const TChunkView* chunkView, std::optio
     } else {
         if (*keyColumnCount < upperLimitKey.GetCount()) {
             THROW_ERROR_EXCEPTION("Unexpected key shortening for chunk view")
-                << TErrorAttribute("chunk_view_id", chunkView->GetId())
-                << TErrorAttribute("key_column_count", *keyColumnCount)
-                << TErrorAttribute("key", ToString(upperLimitKey));
+                .With("chunk_view_id", chunkView->GetId())
+                .With("key_column_count", *keyColumnCount)
+                .With("key", ToString(upperLimitKey));
         }
         return std::min(chunkUpperBound, WidenKey(upperLimitKey, *keyColumnCount));
     }
@@ -1405,9 +1405,9 @@ TLegacyOwningKey GetMinKey(const TChunkView* chunkView, std::optional<int> keyCo
     } else {
         if (*keyColumnCount < lowerLimitKey.GetCount()) {
             THROW_ERROR_EXCEPTION("Unexpected key shortening for chunk view")
-                << TErrorAttribute("chunk_view_id", chunkView->GetId())
-                << TErrorAttribute("key_column_count", *keyColumnCount)
-                << TErrorAttribute("key", ToString(lowerLimitKey));
+                .With("chunk_view_id", chunkView->GetId())
+                .With("key_column_count", *keyColumnCount)
+                .With("key", ToString(lowerLimitKey));
         }
         return std::max(chunkMinKey, WidenKey(lowerLimitKey, *keyColumnCount));
     }
@@ -1572,9 +1572,9 @@ std::vector<TChunkViewMergeResult> MergeAdjacentChunkViewRanges(std::vector<TChu
             auto nextLowerLimit = lowerLimitOrEmptyKey(chunkView);
             if (nextLowerLimit < upperLimit) {
                 THROW_ERROR_EXCEPTION("Found intersecting chunk view ranges during merge")
-                    << TErrorAttribute("previous_upper_limit", upperLimit)
-                    << TErrorAttribute("lower_limit", lowerLimit)
-                    << TErrorAttribute("chunk_view_id", chunkView->GetId());
+                    .With("previous_upper_limit", upperLimit)
+                    .With("lower_limit", lowerLimit)
+                    .With("chunk_view_id", chunkView->GetId());
             } else if (nextLowerLimit == upperLimit) {
                 upperLimit = upperLimitOrMaxKey(chunkView);
             } else {
@@ -1778,14 +1778,14 @@ TSelectRowsQuery BuildSelectLocationSequoiaReplicasQuery(
     };
 }
 
-void ValidateChunkMetaOnConfirmation(const NChunkClient::NProto::TChunkMeta& chunkMeta)
+TError ValidateChunkMetaOnConfirmation(const NChunkClient::NProto::TChunkMeta& chunkMeta)
 {
     // YT-3251
     if (!HasProtoExtension<NChunkClient::NProto::TMiscExt>(chunkMeta.extensions())) {
-        THROW_ERROR_EXCEPTION("Missing TMiscExt in chunk meta");
+        return TError("Missing TMiscExt in chunk meta");
     }
 
-    ValidateFromProto(chunkMeta);
+    return ValidateFromProto(chunkMeta);
 }
 
 EChunkReplicaState GetAddedChunkReplicaState(
@@ -1828,7 +1828,7 @@ i64 ComputeDiskSpaceFromDataSize(i64 dataSize, NErasure::ECodec erasureCodec)
 void AccumulateNewlyReferencedHunkStatistics(TChunk* hunkChunk, i64 dataWeightDelta, i64 dataSizeDelta)
 {
     hunkChunk->AccumulateNewlyReferencedHunkStatistics(dataWeightDelta, dataSizeDelta);
-    VisitAllAncestorsInHunkTree(hunkChunk, [&] (TChunkList* chunkList, bool firstOccurrence) {
+    VisitHunkTreeAncestors(hunkChunk, [&] (TChunkList* chunkList, bool firstOccurrence) {
         if (firstOccurrence) {
             chunkList->AccumulateNewlyReferencedHunkDataSize(hunkChunk, dataSizeDelta);
         }
@@ -1851,6 +1851,18 @@ NLogging::ELogLevel GetChunkLogLevel(
     return chunkManager->IsVerboselyLogged(chunk)
         ? NLogging::ELogLevel::Debug
         : NLogging::ELogLevel::Trace;
+}
+
+int EncodeRepairQueueKey(int mediumIndex, int priority)
+{
+    return mediumIndex * RepairPriorityCount + priority;
+}
+
+std::pair<int, int> DecodeRepairQueueKey(int key)
+{
+    return std::make_pair(
+        key / RepairPriorityCount,      // mediumIndex
+        key % RepairPriorityCount);     // priority
 }
 
 ////////////////////////////////////////////////////////////////////////////////
