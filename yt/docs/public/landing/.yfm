@@ -4,7 +4,7 @@ varsPreset: public
 langs: [ru, en]
 
 docs-viewer:
-  project-name: ytsaurus
+  project-name: landing
   langs: [ru, en]
   themes: [light, dark]
   index-page:

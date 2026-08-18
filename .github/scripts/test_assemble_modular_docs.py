@@ -479,10 +479,16 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unsafe fragment", result.stderr)
 
-    def test_duplicate_base_storage_prefix_blocks_assembly(self) -> None:
+    def test_empty_storage_prefix_blocks_assembly(self) -> None:
         document = json.loads(self.registry.read_text(encoding="utf-8"))
-        document["modules"][0]["name"] = "landing"
         document["modules"][0]["storage_prefix"] = ""
+        self.registry.write_text(json.dumps(document), encoding="utf-8")
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid storage_prefix", result.stderr)
+
+    def test_duplicate_storage_prefix_blocks_assembly(self) -> None:
+        document = json.loads(self.registry.read_text(encoding="utf-8"))
         document["modules"].append(
             {
                 "name": "second",
@@ -490,7 +496,7 @@ class AssembleModularDocsTest(unittest.TestCase):
                 "viewer_url": "https://second-docs.viewer.ydocs.io",
                 "languages": ["ru"],
                 "common": False,
-                "storage_prefix": "",
+                "storage_prefix": document["modules"][0]["storage_prefix"],
             }
         )
         self.registry.write_text(json.dumps(document), encoding="utf-8")

@@ -3,11 +3,11 @@
   "modules": [
     {
       "name": "landing",
-      "project_name": "ytsaurus",
-      "viewer_url": "https://common-ytsaurus.viewer.ydocs.io",
+      "project_name": "landing",
+      "viewer_url": "https://common-ytsaurus---landing.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": false,
-      "storage_prefix": ""
+      "storage_prefix": "landing"
     },
     {
       "name": "core",

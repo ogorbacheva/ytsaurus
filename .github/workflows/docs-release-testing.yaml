@@ -167,7 +167,7 @@ jobs:
           set -euo pipefail
           matrix=$(jq -c '{include: [.modules[] | {
             module: .name,
-            "storage-suffix": (if .storage_prefix == "" then "" else "/" + .storage_prefix end),
+            "storage-suffix": ("/" + .storage_prefix),
             viewer_url: .viewer_url
           }]}' .github/docs-modules.json)
           printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"

@@ -161,18 +161,12 @@ def load_registry(path: Path) -> list[dict[str, Any]]:
             raise AssemblyError(f"Module {name} has invalid languages")
         if not isinstance(common, bool):
             raise AssemblyError(f"Module {name} must declare common as a boolean")
-        if not isinstance(storage_prefix, str) or (
-            storage_prefix and not MODULE_RE.fullmatch(storage_prefix)
+        if not isinstance(storage_prefix, str) or not MODULE_RE.fullmatch(
+            storage_prefix
         ):
             raise AssemblyError(f"Module {name} has invalid storage_prefix")
         if storage_prefix in prefixes:
             raise AssemblyError(f"Duplicate storage_prefix: {storage_prefix}")
-        if name == "landing" and storage_prefix:
-            raise AssemblyError("Module landing must use the base storage prefix")
-        if name != "landing" and not storage_prefix:
-            raise AssemblyError(
-                f"Only module landing may use the base storage prefix: {name}"
-            )
         names.add(name)
         project_names.add(project_name)
         viewer_urls.add(viewer_url)
