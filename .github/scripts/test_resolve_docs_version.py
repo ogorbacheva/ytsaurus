@@ -97,6 +97,8 @@ class ResolveDocsVersionTest(unittest.TestCase):
             components=self.load(),
         )
         self.assertEqual(plan["modules"], ["landing", "core", "spyt"])
+        self.assertEqual(plan["source_revision"], "abc123")
+        self.assertEqual(plan["docs_revision"], "abc123")
         self.assertEqual(
             plan["build_vars"],
             {
@@ -131,6 +133,9 @@ class ResolveDocsVersionTest(unittest.TestCase):
         )
         self.assertEqual(plan["artifact_version"], "25.4.0")
         self.assertEqual(plan["release_ref"], "core/25.4.0")
+        self.assertEqual(plan["source_revision"], "abc123")
+        self.assertRegex(plan["docs_revision"], r"^[0-9a-f]{40}$")
+        self.assertNotEqual(plan["docs_revision"], plan["source_revision"])
         self.assertEqual(plan["upload_matrix"]["include"][0]["version_label"], "25.4")
         self.assertEqual(
             plan["upload_matrix"]["include"][0]["update_only_version"], "false"
@@ -147,6 +152,27 @@ class ResolveDocsVersionTest(unittest.TestCase):
         )
         self.assertEqual(
             plan["upload_matrix"]["include"][0]["update_only_version"], "true"
+        )
+        default_plan = resolver.resolve_plan(
+            mode=resolver.MODE_VERSION,
+            component_name="spyt",
+            version_label="2.11",
+            revision="abc123",
+            modules=self.modules,
+            components=self.load(),
+        )
+        self.assertNotEqual(plan["docs_revision"], default_plan["docs_revision"])
+
+    def test_versioned_revision_is_deterministic_and_component_scoped(self) -> None:
+        first = resolver.versioned_docs_revision("abc123", "spyt", "2.11")
+        self.assertEqual(
+            first, resolver.versioned_docs_revision("abc123", "spyt", "2.11")
+        )
+        self.assertNotEqual(
+            first, resolver.versioned_docs_revision("abc123", "spyt", "2.10")
+        )
+        self.assertNotEqual(
+            first, resolver.versioned_docs_revision("abc123", "core", "2.11")
         )
 
     def test_version_preview_rejects_landing(self) -> None:
@@ -209,6 +235,7 @@ class ResolveDocsVersionTest(unittest.TestCase):
             )
         self.assertEqual(json.loads(values["modules"]), ["spyt"])
         self.assertEqual(json.loads(values["build_vars"])["spyt-version"], "2.11")
+        self.assertRegex(values["docs_revision"], r"^[0-9a-f]{40}$")
 
 
 if __name__ == "__main__":

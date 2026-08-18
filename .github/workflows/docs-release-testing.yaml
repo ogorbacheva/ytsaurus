@@ -47,6 +47,7 @@ jobs:
       version_label: ${{ steps.version-plan.outputs.version_label }}
       artifact_version: ${{ steps.version-plan.outputs.artifact_version }}
       release_ref: ${{ steps.version-plan.outputs.release_ref }}
+      docs_revision: ${{ steps.version-plan.outputs.docs_revision }}
     steps:
       - name: Checkout selected revision
         uses: actions/checkout@v4
@@ -281,6 +282,7 @@ jobs:
 
       - name: Save revision and version plan inputs
         env:
+          DOCS_REVISION: ${{ steps.version-plan.outputs.docs_revision }}
           PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
           SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
           VERSION_COMPONENT: ${{ steps.version-plan.outputs.component }}
@@ -291,9 +293,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p inputs
-          printf '%s\n' "${GITHUB_SHA}" > inputs/revision
+          printf '%s\n' "${DOCS_REVISION}" > inputs/revision
           jq -n \
             --arg mode "${PREVIEW_MODE}" \
+            --arg source_revision "${GITHUB_SHA}" \
+            --arg docs_revision "${DOCS_REVISION}" \
             --argjson modules "${SELECTED_MODULES}" \
             --arg component "${VERSION_COMPONENT}" \
             --arg version_label "${VERSION_LABEL}" \
@@ -302,6 +306,8 @@ jobs:
             --argjson build_vars "${BUILD_VARS}" \
             '{
               mode: $mode,
+              source_revision: $source_revision,
+              docs_revision: $docs_revision,
               modules: $modules,
               component: $component,
               version_label: $version_label,
@@ -395,7 +401,7 @@ jobs:
 
       - name: Verify revision is served by viewer
         env:
-          REVISION: ${{ github.sha }}
+          REVISION: ${{ needs.build.outputs.docs_revision }}
           VIEWER_URL: ${{ matrix.viewer_url }}
         run: |
           set -euo pipefail
@@ -431,7 +437,7 @@ jobs:
         if: ${{ needs.build.outputs.mode == 'version-preview' }}
         uses: diplodoc-platform/docs-release-action@v2
         with:
-          revision: ${{ github.sha }}
+          revision: ${{ needs.build.outputs.docs_revision }}
           version: ${{ matrix.version_label }}
           update-only-version: ${{ matrix.update_only_version }}
           storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}${{ matrix.storage-suffix }}"
@@ -515,7 +521,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PREVIEW_MODE: ${{ needs.build.outputs.mode }}
-      REVISION: ${{ github.sha }}
+      SOURCE_REVISION: ${{ github.sha }}
+      DOCS_REVISION: ${{ needs.build.outputs.docs_revision }}
       VERSION_LABEL: ${{ needs.build.outputs.version_label }}
       ARTIFACT_VERSION: ${{ needs.build.outputs.artifact_version }}
       RELEASE_REF: ${{ needs.build.outputs.release_ref }}
@@ -533,9 +540,10 @@ jobs:
               query="?version=${VERSION_LABEL}"
             else
               printf '## Modular documentation testing revision\n\n'
-              query="?revision=${REVISION}"
+              query="?revision=${DOCS_REVISION}"
             fi
-            printf 'Revision: `%s`\n\n' "${REVISION}"
+            printf 'Source revision: `%s`\n\n' "${SOURCE_REVISION}"
+            printf 'Documentation revision: `%s`\n\n' "${DOCS_REVISION}"
             printf '| Project | RU | EN |\n'
             printf '| --- | --- | --- |\n'
             while IFS=$'\t' read -r module viewer_url; do

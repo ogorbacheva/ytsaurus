@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -22,6 +23,14 @@ VARIABLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 class VersionPlanError(RuntimeError):
     pass
+
+
+def versioned_docs_revision(
+    source_revision: str, component_name: str, version_label: str
+) -> str:
+    """Return a stable commit-shaped namespace for one profiled documentation build."""
+    identity = f"version-preview\0{source_revision}\0{component_name}\0{version_label}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:40]
 
 
 def parse_args() -> argparse.Namespace:
@@ -226,8 +235,9 @@ def resolve_plan(
         }
 
     if mode == MODE_REVISION:
+        docs_revision = revision
         selected_names = list(module_map)
-        build_vars = {"docs-revision-query": f"?revision={revision}"}
+        build_vars = {"docs-revision-query": f"?revision={docs_revision}"}
         for component in components.values():
             label = component["default_version"]
             values = component_build_vars(
@@ -259,6 +269,9 @@ def resolve_plan(
                 f"Unknown {component_name} version {version_label!r}; choose: {available}"
             )
         selected_names = [component_name]
+        docs_revision = versioned_docs_revision(
+            revision, component_name, version_label
+        )
         artifact_version = version["artifact_version"]
         release_ref = version["release_ref"]
         build_vars = {"docs-revision-query": ""}
@@ -283,6 +296,8 @@ def resolve_plan(
     }
     return {
         "mode": mode,
+        "source_revision": revision,
+        "docs_revision": docs_revision,
         "modules": selected_names,
         "docs_revision_query": build_vars["docs-revision-query"],
         "build_vars": build_vars,
@@ -297,6 +312,8 @@ def resolve_plan(
 def write_github_output(path: Path, plan: dict[str, Any]) -> None:
     values = {
         "mode": plan["mode"],
+        "source_revision": plan["source_revision"],
+        "docs_revision": plan["docs_revision"],
         "modules": json.dumps(plan["modules"], separators=(",", ":")),
         "docs_revision_query": plan["docs_revision_query"],
         "build_vars": json.dumps(plan["build_vars"], separators=(",", ":")),

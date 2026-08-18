@@ -45,3 +45,9 @@ artifact version with the newest tag.
 Both workflow modes resolve their variables from this file. A
 `revision-preview` uses every component's `default_version`; a
 `version-preview` uses the explicitly selected component and label.
+
+Every `version-preview` gets a deterministic 40-character documentation
+revision derived from the source commit, component, and version label. This
+keeps differently profiled builds from the same Git commit in separate S3
+prefixes. Rebuilding the same component label from the same commit reuses the
+same revision; a different component or label cannot overwrite it.
