@@ -244,6 +244,7 @@ def resolve_plan(
         resolved_version = ""
         artifact_version = ""
         release_ref = ""
+        update_only_version = "true"
     else:
         component = components.get(component_name)
         if component is None:
@@ -264,6 +265,9 @@ def resolve_plan(
         build_vars.update(component_build_vars(component, version_label, version))
         resolved_component = component_name
         resolved_version = version_label
+        update_only_version = (
+            "false" if version_label == component["default_version"] else "true"
+        )
 
     upload_matrix = {
         "include": [
@@ -272,6 +276,7 @@ def resolve_plan(
                 "storage-suffix": f"/{module_map[name]['storage_prefix']}",
                 "viewer_url": module_map[name]["viewer_url"],
                 "version_label": resolved_version,
+                "update_only_version": update_only_version,
             }
             for name in selected_names
         ]

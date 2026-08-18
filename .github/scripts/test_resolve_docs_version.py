@@ -62,6 +62,11 @@ class ResolveDocsVersionTest(unittest.TestCase):
                     },
                     "versions": [
                         {
+                            "label": "2.10",
+                            "artifact_version": "2.10.0",
+                            "release_ref": "spyt/2.10.0",
+                        },
+                        {
                             "label": "2.11",
                             "artifact_version": "2.11.0",
                             "release_ref": "spyt/2.11.0",
@@ -127,6 +132,22 @@ class ResolveDocsVersionTest(unittest.TestCase):
         self.assertEqual(plan["artifact_version"], "25.4.0")
         self.assertEqual(plan["release_ref"], "core/25.4.0")
         self.assertEqual(plan["upload_matrix"]["include"][0]["version_label"], "25.4")
+        self.assertEqual(
+            plan["upload_matrix"]["include"][0]["update_only_version"], "false"
+        )
+
+    def test_non_default_version_does_not_move_head(self) -> None:
+        plan = resolver.resolve_plan(
+            mode=resolver.MODE_VERSION,
+            component_name="spyt",
+            version_label="2.10",
+            revision="abc123",
+            modules=self.modules,
+            components=self.load(),
+        )
+        self.assertEqual(
+            plan["upload_matrix"]["include"][0]["update_only_version"], "true"
+        )
 
     def test_version_preview_rejects_landing(self) -> None:
         with self.assertRaisesRegex(resolver.VersionPlanError, "Unknown or unversioned"):

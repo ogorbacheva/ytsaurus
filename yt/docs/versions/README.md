@@ -17,8 +17,11 @@ For example, CHYT documentation label `2.17` builds with
 `chyt-version=2.17` and `chyt-release-version=2.17.4`.
 
 `default_version` identifies the currently recommended documentation line. It
-is metadata for automation, not a special Diplodoc label named `latest`.
-Named labels are registered without moving the project's default/head.
+is metadata for automation, not a special Diplodoc label named `latest`. When
+that label is published by `version-preview`, the workflow updates both the
+named version and the project's default/head, so the documentation opens
+without a `?version=` query. Publishing any other registered label updates
+only that label and cannot move the default/head backwards.
 
 `docs_source: profiled-current-checkout` means that the product `release_ref`
 is audit metadata, not a Git ref used to check out documentation. The workflow

@@ -427,13 +427,13 @@ jobs:
           done
         shell: bash
 
-      - name: Register named version without changing default head
+      - name: Register named version and update head for the default version
         if: ${{ needs.build.outputs.mode == 'version-preview' }}
         uses: diplodoc-platform/docs-release-action@v2
         with:
           revision: ${{ github.sha }}
           version: ${{ matrix.version_label }}
-          update-only-version: "true"
+          update-only-version: ${{ matrix.update_only_version }}
           storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}${{ matrix.storage-suffix }}"
           storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
           storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
@@ -467,6 +467,40 @@ jobs:
               fi
               if [[ "${attempt}" == 12 ]]; then
                 printf 'Version check failed after %s attempts: %s returned HTTP %s\n' \
+                  "${attempt}" "${url}" "${status:-no response}" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+        shell: bash
+
+      - name: Verify default head is served without a version query
+        if: ${{ needs.build.outputs.mode == 'version-preview' && matrix.update_only_version == 'false' }}
+        env:
+          VIEWER_URL: ${{ matrix.viewer_url }}
+        run: |
+          set -euo pipefail
+          for language in ru en; do
+            url="${VIEWER_URL%/}/${language}/"
+            for attempt in $(seq 1 12); do
+              status=$(curl \
+                --silent \
+                --show-error \
+                --location \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                "${url}" || true)
+              if [[ "${status}" == 200 ]]; then
+                printf '%s is available as the default head\n' "${url}"
+                break
+              fi
+              if [[ "${attempt}" == 12 ]]; then
+                printf 'Default head check failed after %s attempts: %s returned HTTP %s\n' \
                   "${attempt}" "${url}" "${status:-no response}" >&2
                 exit 1
               fi
