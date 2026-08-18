@@ -162,7 +162,6 @@ navigation:
                     text: "История изменений CHYT"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/release-notes{{ docs-revision-query }}"
     rightItems:
-      - type: search
       - type: link
         text: "GitHub"
         url: "https://github.com/ytsaurus/ytsaurus"
