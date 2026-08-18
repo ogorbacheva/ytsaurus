@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 env:
-  DIPLODOC_CLI_VERSION: "5.50.6"
+  DIPLODOC_CLI_VERSION: "5.54.5"
   DOCS_SOURCE_ROOT: ./yt/docs
   DOCS_INPUT_ROOT: ./_docs-input
   BUILD_OUTPUT_HTML: ./build-output-html
@@ -87,6 +87,7 @@ jobs:
               '.modules[] | select(.name == $module) | .viewer_url' \
               .github/docs-modules.json
           }
+          landing_url=$(viewer_url landing)
           core_url=$(viewer_url core)
           spyt_url=$(viewer_url spyt)
           chyt_url=$(viewer_url chyt)
@@ -118,6 +119,10 @@ jobs:
           fi
 
           for language in ru en; do
+            spyt_toc="${BUILD_OUTPUT_MD}/spyt/${language}/toc.yaml"
+            expected_landing_url="${landing_url}/${language}/?revision=${GITHUB_SHA}"
+            grep -Fq "${expected_landing_url}" "${spyt_toc}"
+
             landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
             expected_url="${core_url}/${language}/user-guide/tutorials/quick-start?revision=${GITHUB_SHA}"
             grep -Fq "${expected_url}" "${landing_page}"
