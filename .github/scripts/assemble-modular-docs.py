@@ -98,12 +98,21 @@ def parse_args() -> argparse.Namespace:
             "Defaults to the value in public/presets.yaml."
         ),
     )
-    parser.add_argument(
+    preview_group = parser.add_mutually_exclusive_group()
+    preview_group.add_argument(
         "--public-revision-preview",
         action="store_true",
         help=(
             "Inject testing-only docs-viewer settings into generated .yfm files: "
             "unrestrict-revision-access=true and no-index=true."
+        ),
+    )
+    preview_group.add_argument(
+        "--public-version-preview",
+        action="store_true",
+        help=(
+            "Inject the same public testing settings and Viewer roots as a "
+            "revision preview, but require an empty docs-revision-query."
         ),
     )
     return parser.parse_args()
@@ -632,7 +641,7 @@ def assemble_module(
     shared_presets: Path,
     shared_variables: dict[str, str],
     docs_revision_query: str,
-    public_revision_preview: bool,
+    public_preview_mode: str | None,
     preview_roots: dict[str, str],
 ) -> dict[str, Any]:
     name = module["name"]
@@ -658,7 +667,7 @@ def assemble_module(
         raise AssemblyError(f"Output collision for module {name}: {destination}")
     shutil.copytree(public_source, destination, copy_function=shutil.copy2)
     shutil.copy2(shared_presets, destination / "presets.yaml")
-    if public_revision_preview:
+    if public_preview_mode:
         inject_public_revision_preview(destination / ".yfm")
         override_public_scalars(destination / "presets.yaml", preview_roots)
 
@@ -736,7 +745,8 @@ def assemble_module(
         "storage_prefix": module["storage_prefix"],
         "languages": module["languages"],
         "common": module["common"],
-        "public_revision_preview": public_revision_preview,
+        "public_revision_preview": public_preview_mode == "revision",
+        "public_version_preview": public_preview_mode == "version",
         "legacy_self_routes_rewritten": legacy_self_routes_rewritten,
         "hardcoded_self_routes_rewritten": hardcoded_self_routes_rewritten,
         "output": str(destination),
@@ -776,12 +786,22 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
         )
 
     modules = load_registry(args.registry.resolve())
-    preview_roots: dict[str, str] = {}
+    public_preview_mode: str | None = None
     if args.public_revision_preview:
+        public_preview_mode = "revision"
         if not docs_revision_query:
             raise AssemblyError(
                 "--public-revision-preview requires a non-empty --docs-revision-query"
             )
+    elif args.public_version_preview:
+        public_preview_mode = "version"
+        if docs_revision_query:
+            raise AssemblyError(
+                "--public-version-preview requires an empty --docs-revision-query"
+            )
+
+    preview_roots: dict[str, str] = {}
+    if public_preview_mode:
         preview_roots = preview_docs_roots(modules, shared_variables)
         shared_variables.update(preview_roots)
     validate_docs_roots(shared_variables)
@@ -821,7 +841,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
             shared_presets,
             shared_variables,
             docs_revision_query,
-            args.public_revision_preview,
+            public_preview_mode,
             preview_roots,
         )
         for module in modules

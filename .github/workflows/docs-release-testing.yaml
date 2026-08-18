@@ -2,6 +2,28 @@ name: Docs modular upload [testing only]
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Build all modules by revision or one named component version
+        required: true
+        default: revision-preview
+        type: choice
+        options:
+          - revision-preview
+          - version-preview
+      component:
+        description: Component for version-preview (ignored by revision-preview)
+        required: true
+        default: core
+        type: choice
+        options:
+          - core
+          - chyt
+          - spyt
+      version:
+        description: Version label from yt/docs/versions/component-versions.json
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -16,13 +38,36 @@ env:
 
 jobs:
   build:
-    name: Build all documentation modules
+    name: Build documentation modules (${{ inputs.mode }})
     runs-on: ubuntu-latest
     outputs:
-      upload-matrix: ${{ steps.upload-matrix.outputs.matrix }}
+      upload_matrix: ${{ steps.version-plan.outputs.upload_matrix }}
+      mode: ${{ steps.version-plan.outputs.mode }}
+      component: ${{ steps.version-plan.outputs.component }}
+      version_label: ${{ steps.version-plan.outputs.version_label }}
+      artifact_version: ${{ steps.version-plan.outputs.artifact_version }}
+      release_ref: ${{ steps.version-plan.outputs.release_ref }}
     steps:
       - name: Checkout selected revision
         uses: actions/checkout@v4
+
+      - name: Resolve documentation build plan
+        id: version-plan
+        env:
+          PREVIEW_MODE: ${{ inputs.mode }}
+          PREVIEW_COMPONENT: ${{ inputs.component }}
+          PREVIEW_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/resolve_docs_version.py \
+            --registry "${DOCS_SOURCE_ROOT}/versions/component-versions.json" \
+            --modules-registry .github/docs-modules.json \
+            --mode "${PREVIEW_MODE}" \
+            --component "${PREVIEW_COMPONENT}" \
+            --version "${PREVIEW_VERSION}" \
+            --revision "${GITHUB_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
+        shell: bash
 
       - name: Test documentation build tooling
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
@@ -48,25 +93,37 @@ jobs:
 
       - name: Assemble isolated YFM projects
         env:
-          DOCS_REVISION: ${{ github.sha }}
+          SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
+          DOCS_REVISION_QUERY: ${{ steps.version-plan.outputs.docs_revision_query }}
+          PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
         run: |
           set -euo pipefail
-          python3 .github/scripts/assemble-modular-docs.py \
+          args=(
+            python3 .github/scripts/assemble-modular-docs.py
             --source-root "${DOCS_SOURCE_ROOT}" \
             --registry .github/docs-modules.json \
             --output-root "${DOCS_INPUT_ROOT}" \
-            --docs-revision-query "?revision=${DOCS_REVISION}" \
-            --public-revision-preview \
+            --docs-revision-query "${DOCS_REVISION_QUERY}" \
             --clean
+          )
+          while IFS= read -r module; do
+            args+=(--module "${module}")
+          done < <(jq -r '.[]' <<<"${SELECTED_MODULES}")
+          if [[ "${PREVIEW_MODE}" == 'version-preview' ]]; then
+            args+=(--public-version-preview)
+          else
+            args+=(--public-revision-preview)
+          fi
+          "${args[@]}"
         shell: bash
 
       - name: Build strict HTML and md2md outputs
         env:
-          DOCS_REVISION: ${{ github.sha }}
+          SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
+          BUILD_VARS: ${{ steps.version-plan.outputs.build_vars }}
         run: |
           set -euo pipefail
           mkdir -p "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}" "${BUILD_LOGS}"
-          build_vars="{\"docs-revision-query\":\"?revision=${DOCS_REVISION}\"}"
 
           while IFS= read -r module; do
             log_file="${BUILD_LOGS}/${module}.log"
@@ -75,7 +132,7 @@ jobs:
               -i "${DOCS_INPUT_ROOT}/${module}" \
               -o "${BUILD_OUTPUT_HTML}/${module}" \
               --strict \
-              --vars "${build_vars}" \
+              --vars "${BUILD_VARS}" \
               2>&1 | tee -a "${log_file}"
 
             printf '\nBuilding %s as strict md2md\n' "${module}" | tee -a "${log_file}"
@@ -87,14 +144,25 @@ jobs:
               --allow-custom-resources \
               --no-search \
               --strict \
-              --vars "${build_vars}" \
+              --vars "${BUILD_VARS}" \
               2>&1 | tee -a "${log_file}"
-          done < <(jq -r '.modules[].name' .github/docs-modules.json)
+          done < <(jq -r '.[]' <<<"${SELECTED_MODULES}")
         shell: bash
 
       - name: Verify build contract
+        env:
+          SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
+          DOCS_REVISION_QUERY: ${{ steps.version-plan.outputs.docs_revision_query }}
+          PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
+          VERSION_COMPONENT: ${{ steps.version-plan.outputs.component }}
+          VERSION_LABEL: ${{ steps.version-plan.outputs.version_label }}
+          ARTIFACT_VERSION: ${{ steps.version-plan.outputs.artifact_version }}
         run: |
           set -euo pipefail
+          module_selected() {
+            jq -e --arg module "$1" 'index($module) != null' \
+              <<<"${SELECTED_MODULES}" >/dev/null
+          }
           viewer_url() {
             jq -er --arg module "$1" \
               '.modules[] | select(.name == $module) | .viewer_url' \
@@ -116,7 +184,9 @@ jobs:
               test -f "${BUILD_OUTPUT_MD}/${module}/${language}/llms.txt"
               test -f "${BUILD_OUTPUT_MD}/${module}/${language}/llms-full.txt"
             done
-          done < <(jq -r '.modules[] | [.name, .project_name] | @tsv' .github/docs-modules.json)
+          done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
+            '.modules[] | select(.name as $name | ($selected | index($name))) | [.name, .project_name] | @tsv' \
+            .github/docs-modules.json)
 
           unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|yql-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
           if grep -R -n -E --exclude-dir=_bundle "${unresolved_route_vars}" \
@@ -132,55 +202,75 @@ jobs:
           fi
 
           for language in ru en; do
-            spyt_toc="${BUILD_OUTPUT_MD}/spyt/${language}/toc.yaml"
-            expected_landing_url="${landing_url}/${language}/?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_landing_url}" "${spyt_toc}"
+            if module_selected landing; then
+              landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
+              expected_url="${core_url}/${language}/user-guide/tutorials/quick-start${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_url}" "${landing_page}"
+            fi
 
-            landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
-            expected_url="${core_url}/${language}/user-guide/tutorials/quick-start?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_url}" "${landing_page}"
+            if module_selected core; then
+              core_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/reference/releases.html"
+              expected_chyt_url="${chyt_url}/${language}/user-guide/reference/release-notes${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_chyt_url}" "${core_page}"
 
-            core_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/reference/releases.html"
-            expected_chyt_url="${chyt_url}/${language}/user-guide/reference/release-notes?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_chyt_url}" "${core_page}"
+              core_self_page="${BUILD_OUTPUT_HTML}/core/${language}/user-guide/reference/faq.html"
+              expected_core_self_url="${core_url}/${language}/user-guide/reference/data-processing/operations/merge${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_core_self_url}" "${core_self_page}"
 
-            core_self_page="${BUILD_OUTPUT_HTML}/core/${language}/user-guide/reference/faq.html"
-            expected_core_self_url="${core_url}/${language}/user-guide/reference/data-processing/operations/merge?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_core_self_url}" "${core_self_page}"
+              core_audience_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/how-to-guides/install-excel.html"
+              expected_core_audience_url="${core_url}/${language}/user-guide/explanation/excel${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_core_audience_url}" "${core_audience_page}"
+            fi
 
-            core_audience_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/how-to-guides/install-excel.html"
-            expected_core_audience_url="${core_url}/${language}/user-guide/explanation/excel?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_core_audience_url}" "${core_audience_page}"
+            if module_selected spyt; then
+              spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/reference/data-types.html"
+              expected_core_url="${core_url}/${language}/user-guide/reference/storage/data-types${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_core_url}" "${spyt_page}"
+              expected_spyt_self_url="${spyt_url}/${language}/reference/read-options${DOCS_REVISION_QUERY}#schema_hint"
+              grep -Fq "${expected_spyt_self_url}" "${spyt_page}"
+            fi
 
-            spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/reference/data-types.html"
-            expected_core_url="${core_url}/${language}/user-guide/reference/storage/data-types?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_core_url}" "${spyt_page}"
-            expected_spyt_self_url="${spyt_url}/${language}/reference/read-options?revision=${GITHUB_SHA}#schema_hint"
-            grep -Fq "${expected_spyt_self_url}" "${spyt_page}"
+            if module_selected chyt; then
+              chyt_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/yt-tables.html"
+              expected_core_url="${core_url}/${language}/user-guide/explanation/storage/static-tables${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_core_url}" "${chyt_page}"
 
-            chyt_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/yt-tables.html"
-            expected_core_url="${core_url}/${language}/user-guide/explanation/storage/static-tables?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_core_url}" "${chyt_page}"
-
-            chyt_self_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/faq.html"
-            expected_chyt_self_url="${chyt_url}/${language}/user-guide/explanation/general?revision=${GITHUB_SHA}"
-            grep -Fq "${expected_chyt_self_url}" "${chyt_self_page}"
+              chyt_self_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/faq.html"
+              expected_chyt_self_url="${chyt_url}/${language}/user-guide/explanation/general${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_chyt_self_url}" "${chyt_self_page}"
+            fi
           done
 
           yql_url='https://ytsaurus.tech/docs'
           while IFS=$'\t' read -r module language; do
             toc="${BUILD_OUTPUT_MD}/${module}/${language}/toc.yaml"
             grep -Fq 'navigation:' "${toc}"
-            grep -Fq "${landing_url}/${language}/?revision=${GITHUB_SHA}" "${toc}"
-            grep -Fq "${core_url}/${language}/user-guide/explanation/overview?revision=${GITHUB_SHA}" "${toc}"
-            grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs?revision=${GITHUB_SHA}" "${toc}"
-            grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt?revision=${GITHUB_SHA}" "${toc}"
+            grep -Fq "${landing_url}/${language}/${DOCS_REVISION_QUERY}" "${toc}"
+            grep -Fq "${core_url}/${language}/user-guide/explanation/overview${DOCS_REVISION_QUERY}" "${toc}"
+            grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs${DOCS_REVISION_QUERY}" "${toc}"
+            grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${yql_url}/${language}/yql/" "${toc}"
             if grep -E "${yql_url}/${language}/yql/[^\" ]*\?revision=" "${toc}"; then
               echo "YQL navigation link must not inherit the modular revision: ${toc}" >&2
               exit 1
             fi
-          done < <(jq -r '.modules[] | .name as $module | .languages[] | [$module, .] | @tsv' .github/docs-modules.json)
+          done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
+            '.modules[] | select(.name as $name | ($selected | index($name))) | .name as $module | .languages[] | [$module, .] | @tsv' \
+            .github/docs-modules.json)
+
+          if [[ "${PREVIEW_MODE}" == 'version-preview' ]]; then
+            test -n "${VERSION_COMPONENT}"
+            test -n "${VERSION_LABEL}"
+            test -n "${ARTIFACT_VERSION}"
+            grep -R -Fq "${ARTIFACT_VERSION}" \
+              "${BUILD_OUTPUT_HTML}/${VERSION_COMPONENT}"
+            if grep -R -n -F '?revision=' \
+              "${BUILD_OUTPUT_HTML}/${VERSION_COMPONENT}" \
+              "${BUILD_OUTPUT_MD}/${VERSION_COMPONENT}"; then
+              echo 'Version preview must not bake a revision query into component links.' >&2
+              exit 1
+            fi
+          fi
 
           if find "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}" \
             -type f -path '*/internal/*' -print -quit | grep -q .; then
@@ -189,23 +279,36 @@ jobs:
           fi
         shell: bash
 
-      - name: Generate upload matrix from module registry
-        id: upload-matrix
-        run: |
-          set -euo pipefail
-          matrix=$(jq -c '{include: [.modules[] | {
-            module: .name,
-            "storage-suffix": ("/" + .storage_prefix),
-            viewer_url: .viewer_url
-          }]}' .github/docs-modules.json)
-          printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
-        shell: bash
-
-      - name: Save revision input
+      - name: Save revision and version plan inputs
+        env:
+          PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
+          SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
+          VERSION_COMPONENT: ${{ steps.version-plan.outputs.component }}
+          VERSION_LABEL: ${{ steps.version-plan.outputs.version_label }}
+          ARTIFACT_VERSION: ${{ steps.version-plan.outputs.artifact_version }}
+          RELEASE_REF: ${{ steps.version-plan.outputs.release_ref }}
+          BUILD_VARS: ${{ steps.version-plan.outputs.build_vars }}
         run: |
           set -euo pipefail
           mkdir -p inputs
           printf '%s\n' "${GITHUB_SHA}" > inputs/revision
+          jq -n \
+            --arg mode "${PREVIEW_MODE}" \
+            --argjson modules "${SELECTED_MODULES}" \
+            --arg component "${VERSION_COMPONENT}" \
+            --arg version_label "${VERSION_LABEL}" \
+            --arg artifact_version "${ARTIFACT_VERSION}" \
+            --arg release_ref "${RELEASE_REF}" \
+            --argjson build_vars "${BUILD_VARS}" \
+            '{
+              mode: $mode,
+              modules: $modules,
+              component: $component,
+              version_label: $version_label,
+              artifact_version: $artifact_version,
+              release_ref: $release_ref,
+              build_vars: $build_vars
+            }' > inputs/version-plan.json
         shell: bash
 
       - name: Upload revision input
@@ -253,7 +356,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.build.outputs.upload-matrix) }}
+      matrix: ${{ fromJSON(needs.build.outputs.upload_matrix) }}
     steps:
       - name: Validate storage configuration
         env:
@@ -324,19 +427,80 @@ jobs:
           done
         shell: bash
 
+      - name: Register named version without changing default head
+        if: ${{ needs.build.outputs.mode == 'version-preview' }}
+        uses: diplodoc-platform/docs-release-action@v2
+        with:
+          revision: ${{ github.sha }}
+          version: ${{ matrix.version_label }}
+          update-only-version: "true"
+          storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}${{ matrix.storage-suffix }}"
+          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          server: https://viewer.ydocs.io
+          project-link: "${{ matrix.viewer_url }}/ru/?version=${{ matrix.version_label }}"
+
+      - name: Verify named version is served by viewer
+        if: ${{ needs.build.outputs.mode == 'version-preview' }}
+        env:
+          VERSION_LABEL: ${{ matrix.version_label }}
+          VIEWER_URL: ${{ matrix.viewer_url }}
+        run: |
+          set -euo pipefail
+          for language in ru en; do
+            url="${VIEWER_URL%/}/${language}/?version=${VERSION_LABEL}"
+            for attempt in $(seq 1 12); do
+              status=$(curl \
+                --silent \
+                --show-error \
+                --location \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                "${url}" || true)
+              if [[ "${status}" == 200 ]]; then
+                printf '%s is available\n' "${url}"
+                break
+              fi
+              if [[ "${attempt}" == 12 ]]; then
+                printf 'Version check failed after %s attempts: %s returned HTTP %s\n' \
+                  "${attempt}" "${url}" "${status:-no response}" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+        shell: bash
+
   summary:
     name: Testing documentation links
     needs: [build, upload]
     runs-on: ubuntu-latest
     env:
+      PREVIEW_MODE: ${{ needs.build.outputs.mode }}
       REVISION: ${{ github.sha }}
-      UPLOAD_MATRIX: ${{ needs.build.outputs.upload-matrix }}
+      VERSION_LABEL: ${{ needs.build.outputs.version_label }}
+      ARTIFACT_VERSION: ${{ needs.build.outputs.artifact_version }}
+      RELEASE_REF: ${{ needs.build.outputs.release_ref }}
+      UPLOAD_MATRIX: ${{ needs.build.outputs.upload_matrix }}
     steps:
       - name: Write links to job summary
         run: |
           set -euo pipefail
           {
-            printf '## Modular documentation testing revision\n\n'
+            if [[ "${PREVIEW_MODE}" == 'version-preview' ]]; then
+              printf '## Modular documentation version preview\n\n'
+              printf 'Version label: `%s`\n\n' "${VERSION_LABEL}"
+              printf 'Artifact version: `%s`\n\n' "${ARTIFACT_VERSION}"
+              printf 'Release ref: `%s`\n\n' "${RELEASE_REF}"
+              query="?version=${VERSION_LABEL}"
+            else
+              printf '## Modular documentation testing revision\n\n'
+              query="?revision=${REVISION}"
+            fi
             printf 'Revision: `%s`\n\n' "${REVISION}"
             printf '| Project | RU | EN |\n'
             printf '| --- | --- | --- |\n'
@@ -348,8 +512,8 @@ jobs:
                 chyt) title='CHYT' ;;
                 *) title="${module}" ;;
               esac
-              printf '| %s | [RU](%s/ru/?revision=%s) | [EN](%s/en/?revision=%s) |\n' \
-                "${title}" "${viewer_url%/}" "${REVISION}" "${viewer_url%/}" "${REVISION}"
+              printf '| %s | [RU](%s/ru/%s) | [EN](%s/en/%s) |\n' \
+                "${title}" "${viewer_url%/}" "${query}" "${viewer_url%/}" "${query}"
             done < <(jq -r '.include[] | [.module, .viewer_url] | @tsv' <<<"${UPLOAD_MATRIX}")
           } >> "${GITHUB_STEP_SUMMARY}"
         shell: bash

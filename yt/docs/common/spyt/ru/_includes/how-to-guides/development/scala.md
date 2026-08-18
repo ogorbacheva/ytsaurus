@@ -13,7 +13,7 @@ SPYT работает с Java 11 и Scala 2.12.
 ```scala
 
 val sparkVersion = "3.5.4"
-val spytVersion = "{{spyt-version}}"
+val spytVersion = "{{spyt-release-version}}"
 
 libraryDependencies ++= Seq(
     // зависимости от Spark
@@ -77,5 +77,4 @@ $ spark-submit \
   yt:///home/spark/examples/scala-examples-assembly-0.1.jar
 
 ```
-
 

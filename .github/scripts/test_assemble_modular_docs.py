@@ -345,6 +345,35 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("requires a non-empty", result.stderr)
 
+    def test_public_version_preview_is_generated_without_revision_query(self) -> None:
+        result = self.run_script("--public-version-preview")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        generated = (self.output / "demo" / ".yfm").read_text(encoding="utf-8")
+        self.assertIn("unrestrict-revision-access: true", generated)
+        self.assertIn("no-index: true", generated)
+        generated_presets = (self.output / "demo" / "presets.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'demo-docs-root: "https://demo-bucket---demo-docs.viewer.ydocs.io"',
+            generated_presets,
+        )
+        manifest = json.loads(
+            (self.output / "assembly-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(manifest["modules"][0]["public_revision_preview"])
+        self.assertTrue(manifest["modules"][0]["public_version_preview"])
+
+    def test_public_version_preview_rejects_revision_query(self) -> None:
+        result = self.run_script(
+            "--docs-revision-query",
+            "?revision=abc123",
+            "--public-version-preview",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires an empty", result.stderr)
+
     def test_committed_preview_setting_blocks_assembly(self) -> None:
         config = self.source / "public" / "demo" / ".yfm"
         config.write_text(

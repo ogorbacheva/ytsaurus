@@ -118,7 +118,7 @@ $ spark-submit --master ytsaurus://<cluster-name> --deploy-mode cluster --num-ex
     --worker-cores 16 \
     --worker-num 5 \
     --worker-memory 64G \
-    --spyt-version {{spyt-version}}
+    --spyt-version {{spyt-release-version}}
     ```
 
 - **spark-discovery-yt**

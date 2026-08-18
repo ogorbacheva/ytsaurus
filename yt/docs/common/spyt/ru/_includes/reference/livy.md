@@ -39,7 +39,7 @@ $ spark-launch-yt ... --enable-livy --livy-max-sessions 5 --livy-driver-cores 1 
 Для работы с {{product-name}} при инициализации Livy сессии в `spark_conf` необходимо указать два конфигурационных параметра — путь к Java (`spark.yt.jars`) и Python (`spark.yt.pyFiles`) библиотекам:
 
 ```python
-data = {'kind': 'spark', 'conf': {'spark.yt.version': '{{spyt-version}}', 'spark.yt.jars': 'yt:///home/spark/spyt/releases/{{spyt-version}}/spark-yt-data-source.jar', 'spark.yt.pyFiles': 'yt:///home/spark/spyt/releases/{{spyt-version}}/spyt.zip'}}
+data = {'kind': 'spark', 'conf': {'spark.yt.version': '{{spyt-release-version}}', 'spark.yt.jars': 'yt:///home/spark/spyt/releases/{{spyt-release-version}}/spark-yt-data-source.jar', 'spark.yt.pyFiles': 'yt:///home/spark/spyt/releases/{{spyt-release-version}}/spyt.zip'}}
 req = requests.post(host + '/sessions', data=json.dumps(data))
 resp = req.json()
 ```

@@ -12,7 +12,7 @@ spec:
   ytsaurus:
     name:
       minisaurus
-  image: ghcr.io/ytsaurus/spyt:{{spyt-version}}
+  image: ghcr.io/ytsaurus/spyt:{{spyt-release-version}}
   sparkVersions:
     - "3.5.7"
     - "3.2.2"

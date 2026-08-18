@@ -40,7 +40,7 @@ Livy server endpoints are described in the [official documentation](https://livy
 To use {{product-name}}, during the initialization of a Livy session, specify two configuration parameters — the paths to the Java (`spark.yt.jars`) and Python (`spark.yt.pyFiles`) libraries — in the `spark_conf` field:
 
 ```python
-data = {'kind': 'spark', 'conf': {'spark.yt.version': '{{spyt-version}}', 'spark.yt.jars': 'yt:///home/spark/spyt/releases/{{spyt-version}}/spark-yt-data-source.jar', 'spark.yt.pyFiles': 'yt:///home/spark/spyt/releases/{{spyt-version}}/spyt.zip'}}
+data = {'kind': 'spark', 'conf': {'spark.yt.version': '{{spyt-release-version}}', 'spark.yt.jars': 'yt:///home/spark/spyt/releases/{{spyt-release-version}}/spark-yt-data-source.jar', 'spark.yt.pyFiles': 'yt:///home/spark/spyt/releases/{{spyt-release-version}}/spyt.zip'}}
 req = requests.post(host + '/sessions', data=json.dumps(data))
 resp = req.json()
 ```
