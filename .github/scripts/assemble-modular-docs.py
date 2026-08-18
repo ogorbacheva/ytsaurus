@@ -22,11 +22,11 @@ REVISION_QUERY_RE = re.compile(r"^$|^\?revision=[A-Za-z0-9._-]+$")
 VIEWER_URL_RE = re.compile(
     r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.viewer\.ydocs\.io$"
 )
-ROUTE_ROOT_RE = re.compile(r"{{\s*(core|spyt|chyt)-docs-root\s*}}")
+ROUTE_ROOT_RE = re.compile(r"{{\s*(landing|core|spyt|chyt)-docs-root\s*}}")
 MODULAR_ROUTE_RE = re.compile(
-    r"{{\s*(?P<module>core|spyt|chyt)-docs-root\s*}}/"
+    r"{{\s*(?P<module>landing|core|spyt|chyt)-docs-root\s*}}/"
     r"{{\s*lang\s*}}/"
-    r"(?P<path>[A-Za-z0-9_./-]+)"
+    r"(?P<path>[A-Za-z0-9_./-]*)"
     r"{{\s*docs-revision-query\s*}}"
     r"(?:#[^\s)\]\[\"'<>]*)?"
 )
@@ -346,6 +346,7 @@ def validate_docs_roots(variables: dict[str, str]) -> None:
         "core-docs-root",
         "spyt-docs-root",
         "chyt-docs-root",
+        "yql-docs-root",
     ):
         value = variables.get(name)
         if not value:
@@ -413,17 +414,22 @@ def validate_route_path(target_module: str, target_path: str) -> None:
 def validate_route_target(
     source_root: Path, target_module: str, target_path: str, languages: list[str]
 ) -> None:
-    validate_route_path(target_module, target_path)
+    if target_path:
+        validate_route_path(target_module, target_path)
     if Path(target_path).suffix in {".md", ".yaml", ".yml"}:
         raise AssemblyError(
             f"Modular route must omit a source extension: {target_module}/{target_path}"
         )
     for language in languages:
         language_root = source_root / "public" / target_module / language
-        candidates = [
-            language_root / f"{target_path}{suffix}"
-            for suffix in (".md", ".yaml", ".yml")
-        ]
+        candidates = (
+            [language_root / name for name in INDEX_NAMES]
+            if not target_path
+            else [
+                language_root / f"{target_path}{suffix}"
+                for suffix in (".md", ".yaml", ".yml")
+            ]
+        )
         if not any(candidate.is_file() for candidate in candidates):
             raise AssemblyError(
                 f"Modular route target is missing: {target_module}/{language}/{target_path}"
@@ -587,7 +593,8 @@ def validate_modular_routes(source_root: Path, modules: list[dict[str, Any]]) ->
                 for route in routes:
                     target_module = route.group("module")
                     target_path = route.group("path")
-                    validate_route_path(target_module, target_path)
+                    if target_path:
+                        validate_route_path(target_module, target_path)
                     target = registry.get(target_module)
                     if target is None:
                         raise AssemblyError(

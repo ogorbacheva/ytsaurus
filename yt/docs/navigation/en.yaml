@@ -1,6 +1,3 @@
-title: YTsaurus documentation
-href: index.yaml
-# BEGIN GENERATED GLOBAL NAVIGATION
 navigation:
   logo:
     url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
@@ -168,4 +165,3 @@ navigation:
         icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
         target: "_blank"
       - type: controls
-# END GENERATED GLOBAL NAVIGATION

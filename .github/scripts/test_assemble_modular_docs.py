@@ -36,6 +36,7 @@ class AssembleModularDocsTest(unittest.TestCase):
             "  core-docs-root: https://example.test/docs/core\n"
             "  spyt-docs-root: https://example.test/docs/spyt\n"
             "  chyt-docs-root: https://example.test/docs/chyt\n"
+            "  yql-docs-root: https://example.test/docs\n"
             "  demo-docs-root: https://example.test/docs/demo\n"
             "  docs-revision-query: \"\"\n",
             encoding="utf-8",
@@ -296,6 +297,18 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("docs-revision-query must be empty", result.stderr)
 
+    def test_missing_yql_docs_root_blocks_assembly(self) -> None:
+        presets = self.source / "public" / "presets.yaml"
+        presets.write_text(
+            presets.read_text(encoding="utf-8").replace(
+                "  yql-docs-root: https://example.test/docs\n", ""
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing yql-docs-root", result.stderr)
+
     def test_public_revision_preview_is_generated_and_noindex(self) -> None:
         source_config = self.source / "public" / "demo" / ".yfm"
         result = self.run_script(
@@ -384,6 +397,17 @@ class AssembleModularDocsTest(unittest.TestCase):
             self.output / "core" / "ru" / "common" / "_includes" / "note.md"
         )
         self.assertTrue(generated_note.is_file())
+
+    def test_modular_root_route_resolves_language_index(self) -> None:
+        _, common_core = self.make_bilingual_core_fixture()
+        note = common_core / "ru" / "_includes" / "note.md"
+        note.write_text(
+            "[Core]({{ core-docs-root }}/{{ lang }}/"
+            "{{ docs-revision-query }})\n",
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_language_specific_modular_route_rejects_missing_matching_language(
         self,

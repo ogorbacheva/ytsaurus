@@ -24,6 +24,19 @@ jobs:
       - name: Checkout selected revision
         uses: actions/checkout@v4
 
+      - name: Test documentation build tooling
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+        shell: bash
+
+      - name: Verify generated global navigation
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/build_global_navigation.py \
+            --source-root "${DOCS_SOURCE_ROOT}" \
+            --registry .github/docs-modules.json \
+            --check
+        shell: bash
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -105,7 +118,7 @@ jobs:
             done
           done < <(jq -r '.modules[] | [.name, .project_name] | @tsv' .github/docs-modules.json)
 
-          unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
+          unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|yql-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
           if grep -R -n -E --exclude-dir=_bundle "${unresolved_route_vars}" \
             "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; then
             echo 'Unresolved modular routing variables found in build output.' >&2
@@ -153,6 +166,21 @@ jobs:
             expected_chyt_self_url="${chyt_url}/${language}/user-guide/explanation/general?revision=${GITHUB_SHA}"
             grep -Fq "${expected_chyt_self_url}" "${chyt_self_page}"
           done
+
+          yql_url='https://ytsaurus.tech/docs'
+          while IFS=$'\t' read -r module language; do
+            toc="${BUILD_OUTPUT_MD}/${module}/${language}/toc.yaml"
+            grep -Fq 'navigation:' "${toc}"
+            grep -Fq "${landing_url}/${language}/?revision=${GITHUB_SHA}" "${toc}"
+            grep -Fq "${core_url}/${language}/user-guide/explanation/overview?revision=${GITHUB_SHA}" "${toc}"
+            grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs?revision=${GITHUB_SHA}" "${toc}"
+            grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt?revision=${GITHUB_SHA}" "${toc}"
+            grep -Fq "${yql_url}/${language}/yql/" "${toc}"
+            if grep -E "${yql_url}/${language}/yql/[^\" ]*\?revision=" "${toc}"; then
+              echo "YQL navigation link must not inherit the modular revision: ${toc}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.modules[] | .name as $module | .languages[] | [$module, .] | @tsv' .github/docs-modules.json)
 
           if find "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}" \
             -type f -path '*/internal/*' -print -quit | grep -q .; then

@@ -29,4 +29,5 @@ public:
   core-docs-root: https://ytsaurus.tech/docs/core
   spyt-docs-root: https://ytsaurus.tech/docs/spyt
   chyt-docs-root: https://ytsaurus.tech/docs/chyt
+  yql-docs-root: https://ytsaurus.tech/docs
   docs-revision-query: ""
