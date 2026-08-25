@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).with_name("build_global_navigation.py")
-MODULES = ("landing", "core", "spyt", "chyt")
+MODULES = ("landing", "core", "spyt", "chyt", "yql")
 LANGUAGES = ("ru", "en")
 
 
@@ -34,6 +34,13 @@ class BuildGlobalNavigationTest(unittest.TestCase):
                 (language_root / "guide.md").write_text(
                     "# Guide\n", encoding="utf-8"
                 )
+                if module == "yql":
+                    for route in ("yql", "yql/syntax", "yql/builtins"):
+                        route_root = language_root / route
+                        route_root.mkdir(parents=True)
+                        (route_root / "index.md").write_text(
+                            f"# {route} {language}\n", encoding="utf-8"
+                        )
                 (language_root / "toc.yaml").write_text(
                     f"title: {module}\nhref: {index_name}\nitems:\n  - name: Guide\n"
                     "    href: guide.md\n",
@@ -57,7 +64,8 @@ class BuildGlobalNavigationTest(unittest.TestCase):
             '        url: "{{ chyt-docs-root }}/{{ lang }}/guide'
             '{{ docs-revision-query }}"\n'
             "      - type: link\n"
-            '        url: "{{ yql-docs-root }}/{{ lang }}/yql/"\n'
+            '        url: "{{ yql-docs-root }}/{{ lang }}/yql/'
+            '{{ docs-revision-query }}"\n'
         )
         for language in LANGUAGES:
             (self.source / "navigation" / f"{language}.yaml").write_text(
@@ -99,7 +107,7 @@ class BuildGlobalNavigationTest(unittest.TestCase):
     def test_build_updates_every_registered_module_and_language(self) -> None:
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count("public/"), 8)
+        self.assertEqual(result.stdout.count("public/"), 10)
         for module in MODULES:
             for language in LANGUAGES:
                 toc = self.source / "public" / module / language / "toc.yaml"
@@ -118,7 +126,7 @@ class BuildGlobalNavigationTest(unittest.TestCase):
         before = toc.read_text(encoding="utf-8")
         result = self.run_script("--check")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertEqual(result.stdout.count("Stale global navigation:"), 8)
+        self.assertEqual(result.stdout.count("Stale global navigation:"), 10)
         self.assertEqual(toc.read_text(encoding="utf-8"), before)
 
     def test_check_passes_after_build(self) -> None:
@@ -153,20 +161,20 @@ class BuildGlobalNavigationTest(unittest.TestCase):
         self.assertIn("missing local page", result.stderr)
         self.assertIn("public/core/ru/guide", result.stderr)
 
-    def test_unregistered_project_cannot_receive_revision_query(self) -> None:
+    def test_registered_project_must_receive_revision_query(self) -> None:
         template = self.source / "navigation" / "ru.yaml"
         template.write_text(
             template.read_text(encoding="utf-8").replace(
-                '{{ yql-docs-root }}/{{ lang }}/yql/"',
                 '{{ yql-docs-root }}/{{ lang }}/yql/'
                 '{{ docs-revision-query }}"',
+                '{{ yql-docs-root }}/{{ lang }}/yql/"',
             ),
             encoding="utf-8",
         )
         result = self.run_script()
         self.assertEqual(result.returncode, 2)
-        self.assertIn("unregistered project yql", result.stderr)
-        self.assertIn("must not receive docs-revision-query", result.stderr)
+        self.assertIn("malformed registered-project route", result.stderr)
+        self.assertIn("yql-docs-root", result.stderr)
 
     def test_registry_language_requires_a_template(self) -> None:
         document = json.loads(self.registry.read_text(encoding="utf-8"))

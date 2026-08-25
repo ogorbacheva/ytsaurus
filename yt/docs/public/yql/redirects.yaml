@@ -1,0 +1,4 @@
+common:
+  - from: /yql/syntax/select.md
+    to: /yql/syntax/select/index.md
+    type: redirect

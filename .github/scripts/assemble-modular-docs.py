@@ -22,9 +22,9 @@ REVISION_QUERY_RE = re.compile(r"^$|^\?revision=[A-Za-z0-9._-]+$")
 VIEWER_URL_RE = re.compile(
     r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.viewer\.ydocs\.io$"
 )
-ROUTE_ROOT_RE = re.compile(r"{{\s*(landing|core|spyt|chyt)-docs-root\s*}}")
+ROUTE_ROOT_RE = re.compile(r"{{\s*(landing|core|spyt|chyt|yql)-docs-root\s*}}")
 MODULAR_ROUTE_RE = re.compile(
-    r"{{\s*(?P<module>landing|core|spyt|chyt)-docs-root\s*}}/"
+    r"{{\s*(?P<module>landing|core|spyt|chyt|yql)-docs-root\s*}}/"
     r"{{\s*lang\s*}}/"
     r"(?P<path>[A-Za-z0-9_./-]*)"
     r"{{\s*docs-revision-query\s*}}"
@@ -46,7 +46,7 @@ OG_URL_PROPERTY_RE = re.compile(
     r"[ \t]*-[ \t]+property:[ \t]*['\"]og:url['\"][ \t]*"
 )
 HARDCODED_COMPONENT_RE = re.compile(
-    r"https://ytsaurus\.tech/docs/(?P<module>core|spyt|chyt)(?:/|\b)"
+    r"https://ytsaurus\.tech/docs/(?P<module>core|spyt|chyt|yql)(?:/|\b)"
 )
 INDEX_NAMES = ("index.md", "index.yaml", "index.yml")
 TEXT_SUFFIXES = {".md", ".yaml", ".yml"}
@@ -413,7 +413,8 @@ def inject_public_revision_preview(config: Path) -> None:
 
 
 def validate_route_path(target_module: str, target_path: str) -> None:
-    segments = target_path.split("/")
+    normalized_path = target_path[:-1] if target_path.endswith("/") else target_path
+    segments = normalized_path.split("/")
     if any(segment in {"", ".", ".."} for segment in segments):
         raise AssemblyError(
             f"Modular route contains an unsafe path: {target_module}/{target_path}"
@@ -423,9 +424,10 @@ def validate_route_path(target_module: str, target_path: str) -> None:
 def validate_route_target(
     source_root: Path, target_module: str, target_path: str, languages: list[str]
 ) -> None:
+    normalized_path = target_path[:-1] if target_path.endswith("/") else target_path
     if target_path:
         validate_route_path(target_module, target_path)
-    if Path(target_path).suffix in {".md", ".yaml", ".yml"}:
+    if Path(normalized_path).suffix in {".md", ".yaml", ".yml"}:
         raise AssemblyError(
             f"Modular route must omit a source extension: {target_module}/{target_path}"
         )
@@ -433,11 +435,12 @@ def validate_route_target(
         language_root = source_root / "public" / target_module / language
         candidates = (
             [language_root / name for name in INDEX_NAMES]
-            if not target_path
+            if not normalized_path
             else [
-                language_root / f"{target_path}{suffix}"
+                language_root / f"{normalized_path}{suffix}"
                 for suffix in (".md", ".yaml", ".yml")
             ]
+            + [language_root / normalized_path / name for name in INDEX_NAMES]
         )
         if not any(candidate.is_file() for candidate in candidates):
             raise AssemblyError(

@@ -32,6 +32,14 @@
       "languages": ["ru", "en"],
       "common": true,
       "storage_prefix": "chyt"
+    },
+    {
+      "name": "yql",
+      "project_name": "yql",
+      "viewer_url": "https://common-ytsaurus---yql.viewer.ydocs.io",
+      "languages": ["ru", "en"],
+      "common": false,
+      "storage_prefix": "yql"
     }
   ]
 }

@@ -33,16 +33,17 @@ and fails if a language has no navigation template.
 
 The templates reuse the modular routing variables from `public/presets.yaml`:
 
-- `landing-docs-root`, `core-docs-root`, `spyt-docs-root`, and
-  `chyt-docs-root` identify independently published projects;
+- `landing-docs-root`, `core-docs-root`, `spyt-docs-root`, `chyt-docs-root`,
+  and `yql-docs-root` identify independently published projects;
 - `lang` selects the matching language;
-- `docs-revision-query` keeps links between those four projects on the same
+- `docs-revision-query` keeps links between those five projects on the same
   testing revision.
 
-During a revision preview, the assembler replaces the four project roots with
+During a revision preview, the assembler replaces the five project roots with
 their Viewer URLs from `.github/docs-modules.json`. In production, the same
 variables resolve to `ytsaurus.tech` routes.
 
-YQL is not one of the independently published projects yet. Its links use the
-production-only `yql-docs-root` and intentionally omit `docs-revision-query`:
-the modular revision is not available in the legacy YQL project.
+YQL keeps its existing content path, `/<lang>/yql/...`, inside its independent
+project. It is part of `revision-preview`, but intentionally has no entry in
+the component version matrix until its release and source-repository policy is
+defined.

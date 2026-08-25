@@ -24,7 +24,7 @@ Currently supported execution engines include:
 
 + [YT QL]({{ docs_root }}/core/user-guide/reference/dynamic-tables/dyn-query-language)
   + A query language built in YT. Only supports dynamic tables.
-+ [YQL]({{ docs_root }}/yql/index)
++ [YQL]({{ yql-docs-root }}/{{ lang }}/yql/index{{ docs-revision-query }})
   + Executes the query on YQL agents, which break the query into individual YT operations (map, reduce, ...), start them, then retrieve and return the result.
 + [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }})
   + Executes the query on a clique.
@@ -50,7 +50,7 @@ Optional parameters:
 + `settings`: Additional query parameters in YSON format.
   + In [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}), you must set a clique alias using the `clique` parameter. Default value is the public clique.
   + In [SPYT]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}), you must set the housekeeping directory of an existing Spark cluster using the `discovery_path` parameter.
-  + In [YQL]({{ docs_root }}/yql/index), you can run queries in different modes using the `execution_mode` parameter. Acceptable values are `run`, `validate`, and `optimize`. The default value is `run`.
+  + In [YQL]({{ yql-docs-root }}/{{ lang }}/yql/index{{ docs-revision-query }}), you can run queries in different modes using the `execution_mode` parameter. Acceptable values are `run`, `validate`, and `optimize`. The default value is `run`.
 + `draft`: Used to mark draft queries. These queries are terminated automatically without execution.
 + `annotations`: Arbitrary annotations to the query. They can make it easier to search for queries. Specified in YSON format.
 + `access_control_objects`: List of objects at `//sys/access_control_object_namespaces/queries/` that controls access to the query for other users.

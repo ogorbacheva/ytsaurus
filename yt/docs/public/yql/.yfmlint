@@ -1,0 +1,4 @@
+log-levels:
+  YFM001: 'disabled'
+  YFM009: 'disabled'
+  YFM010: 'disabled'

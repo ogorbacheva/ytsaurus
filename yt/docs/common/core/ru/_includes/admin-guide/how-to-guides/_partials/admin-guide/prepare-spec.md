@@ -144,7 +144,7 @@ spec:
 
 Для хранения данных используются `dataNodes`, а для запуска джобов операций — `execNodes`.
 
-Если планируется задавать запросы к данным с помощью SQL-like [языка запросов]({{ docs_root }}/yql), необходимо добавить в спецификацию `queryTrackers` и `yqlAgents`.
+Если планируется задавать запросы к данным с помощью SQL-like [языка запросов]({{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}), необходимо добавить в спецификацию `queryTrackers` и `yqlAgents`.
 
 Для использования [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}) необходимо запустить специальный контроллер. Контроллер конфигурируется в поле `strawberry`.
 

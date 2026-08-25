@@ -36,7 +36,7 @@ navigation:
                 items:
                   - type: link
                     text: "Run your first YQL query"
-                    url: "{{ yql-docs-root }}/{{ lang }}/yql/"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
                   - type: link
                     text: "Run a Spark job"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/run-spark-jobs{{ docs-revision-query }}"
@@ -82,7 +82,7 @@ navigation:
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/queries/execute{{ docs-revision-query }}"
                   - type: link
                     text: "YQL"
-                    url: "{{ yql-docs-root }}/{{ lang }}/yql/"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
           - type: column
             items:
               - type: section
@@ -111,7 +111,7 @@ navigation:
             url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}"
           - type: link
             text: "YQL"
-            url: "{{ yql-docs-root }}/{{ lang }}/yql/"
+            url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
           - type: link
             text: "SPYT"
             url: "{{ spyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
@@ -148,10 +148,10 @@ navigation:
                 items:
                   - type: link
                     text: "YQL syntax"
-                    url: "{{ yql-docs-root }}/{{ lang }}/yql/syntax/"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/syntax/{{ docs-revision-query }}"
                   - type: link
                     text: "YQL built-in functions"
-                    url: "{{ yql-docs-root }}/{{ lang }}/yql/builtins/"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/builtins/{{ docs-revision-query }}"
                   - type: link
                     text: "SPYT reference"
                     url: "{{ spyt-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"

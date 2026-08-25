@@ -74,6 +74,10 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
         shell: bash
 
+      - name: Verify the recorded YQL as-is snapshot
+        run: python3 .github/scripts/check_yql_snapshot.py
+        shell: bash
+
       - name: Verify generated global navigation
         run: |
           set -euo pipefail
@@ -173,6 +177,7 @@ jobs:
           core_url=$(viewer_url core)
           spyt_url=$(viewer_url spyt)
           chyt_url=$(viewer_url chyt)
+          yql_url=$(viewer_url yql)
 
           while IFS=$'\t' read -r module project_name; do
             test -f "${BUILD_OUTPUT_MD}/${module}/.yfm"
@@ -196,7 +201,7 @@ jobs:
             exit 1
           fi
 
-          legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt)([^A-Za-z0-9_-]|$)'
+          legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt|yql)([^A-Za-z0-9_-]|$)'
           if grep -R -n -E "${legacy_self_routes}" "${DOCS_INPUT_ROOT}"; then
             echo 'Legacy same-module routes remain in assembled inputs.' >&2
             exit 1
@@ -240,9 +245,16 @@ jobs:
               expected_chyt_self_url="${chyt_url}/${language}/user-guide/explanation/general${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_chyt_self_url}" "${chyt_self_page}"
             fi
+
+            if module_selected yql; then
+              yql_page="${BUILD_OUTPUT_HTML}/yql/${language}/yql/index.html"
+              test -f "${yql_page}"
+              grep -Fq 'Hello, World!' "${yql_page}"
+              test -f "${BUILD_OUTPUT_MD}/yql/images/yql-how-to-try.png"
+              test -f "${DOCS_SOURCE_ROOT}/public/yql/${language}/yql/quickstart.md"
+            fi
           done
 
-          yql_url='https://ytsaurus.tech/docs'
           while IFS=$'\t' read -r module language; do
             toc="${BUILD_OUTPUT_MD}/${module}/${language}/toc.yaml"
             grep -Fq 'navigation:' "${toc}"
@@ -250,11 +262,7 @@ jobs:
             grep -Fq "${core_url}/${language}/user-guide/explanation/overview${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt${DOCS_REVISION_QUERY}" "${toc}"
-            grep -Fq "${yql_url}/${language}/yql/" "${toc}"
-            if grep -E "${yql_url}/${language}/yql/[^\" ]*\?revision=" "${toc}"; then
-              echo "YQL navigation link must not inherit the modular revision: ${toc}" >&2
-              exit 1
-            fi
+            grep -Fq "${yql_url}/${language}/yql/${DOCS_REVISION_QUERY}" "${toc}"
           done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
             '.modules[] | select(.name as $name | ($selected | index($name))) | .name as $module | .languages[] | [$module, .] | @tsv' \
             .github/docs-modules.json)

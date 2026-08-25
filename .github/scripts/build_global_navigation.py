@@ -134,27 +134,28 @@ def resolve_local_target(
     language: str,
     route_path: str,
 ) -> Path:
+    normalized_path = route_path[:-1] if route_path.endswith("/") else route_path
     if route_path:
-        segments = route_path.split("/")
+        segments = normalized_path.split("/")
         if any(segment in {"", ".", ".."} for segment in segments):
             raise NavigationError(
                 f"Navigation contains an unsafe route: {module}/{language}/{route_path}"
             )
-        if Path(route_path).suffix in {".md", ".yaml", ".yml"}:
+        if Path(normalized_path).suffix in {".md", ".yaml", ".yml"}:
             raise NavigationError(
                 f"Navigation route must omit its source extension: "
                 f"{module}/{language}/{route_path}"
             )
 
     content_root = source_root / "public" / module / language
-    if route_path:
+    if normalized_path:
         candidates = (
-            content_root / f"{route_path}.md",
-            content_root / f"{route_path}.yaml",
-            content_root / f"{route_path}.yml",
-            content_root / route_path / "index.md",
-            content_root / route_path / "index.yaml",
-            content_root / route_path / "index.yml",
+            content_root / f"{normalized_path}.md",
+            content_root / f"{normalized_path}.yaml",
+            content_root / f"{normalized_path}.yml",
+            content_root / normalized_path / "index.md",
+            content_root / normalized_path / "index.yaml",
+            content_root / normalized_path / "index.yml",
         )
     else:
         candidates = (

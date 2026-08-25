@@ -144,7 +144,7 @@ For a convenient UI you can use to work with a cluster, you need to configure it
 
 `dataNodes` are used to store data, while `execNodes` launch operation jobs.
 
-If you plan to query data using an SQL-like [query language]({{ docs_root }}/yql), add `queryTrackers` and `yqlAgents` to the specification.
+If you plan to query data using an SQL-like [query language]({{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}), add `queryTrackers` and `yqlAgents` to the specification.
 
 To use [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}), you need to run a special controller. It can be configured in the `strawberry` field.
 

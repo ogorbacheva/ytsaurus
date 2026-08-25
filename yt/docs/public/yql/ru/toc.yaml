@@ -1,0 +1,172 @@
+title: YQL
+href: index.md
+# BEGIN GENERATED GLOBAL NAVIGATION
+navigation:
+  logo:
+    url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+    urlTitle: "Перейти на главную документации"
+    dark:
+      icon: "https://ytsaurus.tech/assets/logo-dark.svg"
+    light:
+      icon: "https://ytsaurus.tech/assets/logo-light.svg"
+  header:
+    leftItems:
+      - type: dropdown
+        text: "Начало работы"
+        items:
+          - type: column
+            items:
+              - type: section
+                title: "YTsaurus Core"
+                items:
+                  - type: link
+                    text: "Обзор платформы"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}"
+                  - type: link
+                    text: "Быстрый старт"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}"
+                  - type: link
+                    text: "Архитектура и основные понятия"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/concepts/general{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Движки обработки"
+                items:
+                  - type: link
+                    text: "Выполнить первый YQL-запрос"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Запустить Spark-задачу"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/run-spark-jobs{{ docs-revision-query }}"
+                  - type: link
+                    text: "Выполнить первый запрос в CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/how-to-guides/try-chyt{{ docs-revision-query }}"
+      - type: dropdown
+        text: "Руководства"
+        items:
+          - type: column
+            items:
+              - type: section
+                title: "Разработка"
+                items:
+                  - type: link
+                    text: "Python API"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}"
+                  - type: link
+                    text: "Динамические таблицы"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}"
+                  - type: link
+                    text: "Разработка SPYT-приложений"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/development/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "CLI и Python API для CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/cli-and-api{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Обработка данных"
+                items:
+                  - type: link
+                    text: "MapReduce и распределённые вычисления"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/overview{{ docs-revision-query }}"
+                  - type: link
+                    text: "Практические руководства SPYT"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Structured Streaming"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/structured-streaming/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Запросы и данные в CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/queries/execute{{ docs-revision-query }}"
+                  - type: link
+                    text: "YQL"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Администрирование"
+                items:
+                  - type: link
+                    text: "Установка YTsaurus"
+                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-ytsaurus{{ docs-revision-query }}"
+                  - type: link
+                    text: "Эксплуатация кластера"
+                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/cluster-operations{{ docs-revision-query }}"
+                  - type: link
+                    text: "Развёртывание SPYT"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/deployment/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Установка CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-chyt{{ docs-revision-query }}"
+      - type: dropdown
+        text: "Компоненты"
+        items:
+          - type: link
+            text: "Все компоненты"
+            url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+          - type: link
+            text: "YTsaurus Core"
+            url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}"
+          - type: link
+            text: "YQL"
+            url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+          - type: link
+            text: "SPYT"
+            url: "{{ spyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+          - type: link
+            text: "CHYT"
+            url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}"
+      - type: dropdown
+        text: "Справочники"
+        items:
+          - type: column
+            items:
+              - type: section
+                title: "YTsaurus Core"
+                items:
+                  - type: link
+                    text: "Команды CLI"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/api/cli/commands{{ docs-revision-query }}"
+                  - type: link
+                    text: "Коды ошибок"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/api/error-codes{{ docs-revision-query }}"
+                  - type: link
+                    text: "Форматы данных"
+                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/formats{{ docs-revision-query }}"
+                  - type: link
+                    text: "История изменений"
+                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/reference/releases{{ docs-revision-query }}"
+                  - type: link
+                    text: "Совместимость версий"
+                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/reference/compatibility{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Движки обработки"
+                items:
+                  - type: link
+                    text: "Синтаксис YQL"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/syntax/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Встроенные функции YQL"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/builtins/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Справочник SPYT"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Конфигурация CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/cliques/configuration{{ docs-revision-query }}"
+                  - type: link
+                    text: "История изменений CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/release-notes{{ docs-revision-query }}"
+    rightItems:
+      - type: link
+        text: "GitHub"
+        url: "https://github.com/ytsaurus/ytsaurus"
+        icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
+        target: "_blank"
+      - type: controls
+# END GENERATED GLOBAL NAVIGATION
+items:
+  - include: { mode: link, path: yql/toc.yaml }

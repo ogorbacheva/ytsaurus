@@ -1,0 +1,19 @@
+default:
+  ipa: _wai-tee-saw-ruhs_
+
+public:
+  lang: en
+  source-root: https://github.com/ytsaurus/ytsaurus/tree/main
+  prestable-cluster: <cluster-name>
+  testing-cluster: <cluster-name>
+  testing-cluster-name: <cluster-name>
+  production-cluster: <cluster-name>
+  production-cluster-qt: https://<host-root>/<cluster-name>/queries
+  mr-clusters: <cluster-name>
+  package-name: ytsaurus-client
+  corporate-paste: <corporate-paste>
+  pool-tree: default
+  yt-docs-root: https://ytsaurus.tech/docs/en
+  cluster-ui: https://<host-root>/<cluster-name>
+  community-tg: https://t.me/ytsaurus
+  python-lib-qt: SystemPython3_8

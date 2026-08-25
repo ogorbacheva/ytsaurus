@@ -24,7 +24,7 @@ Query Tracker позволяет:
 
 + [YT QL]({{ docs_root }}/core/user-guide/reference/dynamic-tables/dyn-query-language)
   + Встроенный в YT язык запросов. Поддерживает только динамические таблицы.
-+ [YQL]({{ docs_root }}/yql/index)
++ [YQL]({{ yql-docs-root }}/{{ lang }}/yql/index{{ docs-revision-query }})
   + Запрос исполняется в YQL агентах. Они разбивают запрос в YT операции (map, reduce, ...), запускают их, собирают и возвращают результат.
 + [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }})
   + Запрос исполняется в клике.
@@ -50,7 +50,7 @@ Query Tracker позволяет:
 + `settings` — дополнительные параметры для запроса в формате YSON.
   + В [CHYT]({{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}) необходимо указывать параметр `clique` — алиас клики. По умолчанию используется публичная клика.
   + В [SPYT]({{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}) необходимо указывать параметр `discovery_path` — директория для служебных данных существующего кластера Spark.
-  + В [YQL]({{ docs_root }}/yql/index) можно запускать запрос в разных режимах с помощью параметра `execution_mode`. Допустимые значения — `run`, `validate`, `optimize`. Значение по умолчанию — `run`.
+  + В [YQL]({{ yql-docs-root }}/{{ lang }}/yql/index{{ docs-revision-query }}) можно запускать запрос в разных режимах с помощью параметра `execution_mode`. Допустимые значения — `run`, `validate`, `optimize`. Значение по умолчанию — `run`.
 + `draft` — является ли запрос черновиком. Такие запросы завершаются автоматически без исполнения.
 + `annotations` — произвольные аннотации к запросу. Позволяют осуществлять удобный поиск по запросам. В формате YSON.
 + `access_control_objects` — список объектов в `//sys/access_control_object_namespaces/queries/`, который определяет доступ к запросу для других пользователей.
