@@ -12,14 +12,20 @@ on:
           - revision-preview
           - version-preview
       component:
-        description: Component for version-preview (ignored by revision-preview)
+        description: Module to build; version-preview accepts only versioned components
         required: true
-        default: core
+        default: all
         type: choice
         options:
+          # BEGIN docs module choices: generated from .github/docs-modules.json
+          - all
+          - landing
           - core
-          - chyt
           - spyt
+          - chyt
+          - yql
+          - flow
+          # END docs module choices
       version:
         description: Version label from yt/docs/versions/component-versions.json
         required: false
@@ -71,7 +77,10 @@ jobs:
         shell: bash
 
       - name: Test documentation build tooling
-        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sync_docs_workflow_modules.py --check
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
         shell: bash
 
       - name: Verify the recorded YQL as-is snapshot

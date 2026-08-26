@@ -15,6 +15,7 @@ from typing import Any
 MODE_REVISION = "revision-preview"
 MODE_VERSION = "version-preview"
 MODES = (MODE_REVISION, MODE_VERSION)
+ALL_MODULES = "all"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 LABEL_RE = re.compile(r"^[0-9]+\.[0-9]+$")
 ARTIFACT_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -236,7 +237,15 @@ def resolve_plan(
 
     if mode == MODE_REVISION:
         docs_revision = revision
-        selected_names = list(module_map)
+        if component_name in ("", ALL_MODULES):
+            selected_names = list(module_map)
+        elif component_name in module_map:
+            selected_names = [component_name]
+        else:
+            available = ", ".join((ALL_MODULES, *module_map))
+            raise VersionPlanError(
+                f"Unknown module {component_name!r}; choose: {available}"
+            )
         build_vars = {"docs-revision-query": f"?revision={docs_revision}"}
         for component in components.values():
             label = component["default_version"]

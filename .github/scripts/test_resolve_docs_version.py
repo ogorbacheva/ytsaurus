@@ -90,7 +90,7 @@ class ResolveDocsVersionTest(unittest.TestCase):
     def test_revision_preview_builds_every_module_without_release_label(self) -> None:
         plan = resolver.resolve_plan(
             mode=resolver.MODE_REVISION,
-            component_name="core",
+            component_name="all",
             version_label="",
             revision="abc123",
             modules=self.modules,
@@ -111,6 +111,32 @@ class ResolveDocsVersionTest(unittest.TestCase):
             },
         )
         self.assertEqual(plan["version_label"], "")
+
+    def test_revision_preview_builds_one_unversioned_module(self) -> None:
+        plan = resolver.resolve_plan(
+            mode=resolver.MODE_REVISION,
+            component_name="landing",
+            version_label="",
+            revision="abc123",
+            modules=self.modules,
+            components=self.load(),
+        )
+        self.assertEqual(plan["modules"], ["landing"])
+        self.assertEqual(
+            plan["upload_matrix"]["include"][0]["module"], "landing"
+        )
+        self.assertEqual(plan["docs_revision_query"], "?revision=abc123")
+
+    def test_revision_preview_rejects_unknown_module(self) -> None:
+        with self.assertRaisesRegex(resolver.VersionPlanError, "Unknown module"):
+            resolver.resolve_plan(
+                mode=resolver.MODE_REVISION,
+                component_name="missing",
+                version_label="",
+                revision="abc123",
+                modules=self.modules,
+                components=self.load(),
+            )
 
     def test_version_preview_resolves_profile_and_artifact_variables(self) -> None:
         plan = resolver.resolve_plan(
