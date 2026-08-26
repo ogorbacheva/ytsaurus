@@ -167,6 +167,18 @@ class AssembleModularDocsTest(unittest.TestCase):
             ).read_text(encoding="utf-8"),
             "<svg id='github.svg'></svg>\n",
         )
+        self.assertIn(
+            "![](../_assets/navigation/github.svg)",
+            (
+                self.output / "demo" / "ru" / "_navigation-assets.md"
+            ).read_text(encoding="utf-8"),
+        )
+        generated_toc = (
+            self.output / "demo" / "ru" / "toc.yaml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("# GENERATED NAVIGATION ASSET PAGE", generated_toc)
+        self.assertIn("href: _navigation-assets.md", generated_toc)
+        self.assertIn("hidden: true", generated_toc)
         self.assertTrue(
             (self.output / "demo" / "ru" / "common" / "_includes" / "note.md").is_file()
         )

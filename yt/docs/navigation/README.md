@@ -31,9 +31,11 @@ validates project-local header icons, and fails if a language has no navigation
 template.
 
 Header SVG files live in `_assets/navigation/`. The modular assembler copies
-them into every project, and the GitHub workflow preserves them explicitly in
-the md2md artifact uploaded to Viewer. Do not replace these paths with external
-URLs: the Viewer may restrict third-party images.
+them into every project and adds a hidden `_navigation-assets.md` page for each
+language. Its image references make Diplodoc include the SVG files in
+`yfm-build-content.json`; the GitHub workflow verifies both the files and their
+manifest entries before uploading the md2md artifact to Viewer. Do not replace
+these paths with external URLs: the Viewer may restrict third-party images.
 
 ## Routing variables
 
