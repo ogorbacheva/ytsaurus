@@ -39,6 +39,9 @@ navigation:
                   - type: link
                     text: "Выполнить первый запрос в CHYT"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/how-to-guides/try-chyt{{ docs-revision-query }}"
+                  - type: link
+                    text: "Запустить первый Flow-пайплайн"
+                    url: "{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
       - type: dropdown
         text: "Руководства"
         items:
@@ -59,6 +62,9 @@ navigation:
                   - type: link
                     text: "CLI и Python API для CHYT"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/cli-and-api{{ docs-revision-query }}"
+                  - type: link
+                    text: "Разработка Flow-пайплайнов"
+                    url: "{{ flow-docs-root }}/{{ lang }}/concepts/language-choice{{ docs-revision-query }}"
           - type: column
             items:
               - type: section
@@ -79,6 +85,9 @@ navigation:
                   - type: link
                     text: "YQL"
                     url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Потоковая обработка во Flow"
+                    url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
           - type: column
             items:
               - type: section
@@ -96,6 +105,9 @@ navigation:
                   - type: link
                     text: "Установка CHYT"
                     url: "{{ chyt-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-chyt{{ docs-revision-query }}"
+                  - type: link
+                    text: "Развёртывание Flow"
+                    url: "{{ flow-docs-root }}/{{ lang }}/how-to-guides/deployment/launch-vanilla{{ docs-revision-query }}"
       - type: dropdown
         text: "Компоненты"
         items:
@@ -114,6 +126,9 @@ navigation:
           - type: link
             text: "CHYT"
             url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}"
+          - type: link
+            text: "Flow"
+            url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
       - type: dropdown
         text: "Справочники"
         items:
@@ -157,6 +172,9 @@ navigation:
                   - type: link
                     text: "История изменений CHYT"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/release-notes{{ docs-revision-query }}"
+                  - type: link
+                    text: "Справочник Flow"
+                    url: "{{ flow-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
     rightItems:
       - type: link
         text: "GitHub"

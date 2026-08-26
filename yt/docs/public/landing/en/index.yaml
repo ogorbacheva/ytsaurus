@@ -53,6 +53,10 @@ blocks:
         text: 'Process streams with Spark Structured Streaming.'
         url: '{{ spyt-docs-root }}/{{ lang }}/concepts/structured-streaming/index{{ docs-revision-query }}'
       - type: basic-card
+        title: 'Process events continuously'
+        text: 'Build stateful stream-processing pipelines with YTsaurus Flow.'
+        url: '{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
+      - type: basic-card
         title: 'Connect through APIs and tools'
         text: 'Get started with the Python API and client libraries.'
         url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}'
@@ -99,6 +103,18 @@ blocks:
           links:
             - text: 'Open documentation'
               url: '{{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}'
+              theme: normal
+              arrow: true
+        media:
+          image: '_assets/hub/pict4.svg'
+        border: true
+      - type: layout-item
+        content:
+          title: 'Flow'
+          text: 'Stream processing with pipelines, state, guarantees, connectors, and SDKs for several languages.'
+          links:
+            - text: 'Open documentation'
+              url: '{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}'
               theme: normal
               arrow: true
         media:

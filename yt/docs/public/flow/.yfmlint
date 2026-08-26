@@ -1,0 +1,7 @@
+log-levels:
+  YFM001: 'disabled'
+  # Composite Flow pages intentionally include two source fragments.  The
+  # linker treats the include files as standalone pages and reports them as
+  # unreachable even though their public wrapper is present in the TOC.
+  YFM003: 'disabled'
+  YFM010: 'disabled'

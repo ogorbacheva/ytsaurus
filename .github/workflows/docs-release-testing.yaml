@@ -78,11 +78,13 @@ jobs:
         run: python3 .github/scripts/check_yql_snapshot.py
         shell: bash
 
-      - name: Verify roleless Core structure and routes
+      - name: Verify roleless module structures and routes
         run: |
           set -euo pipefail
           python3 .github/scripts/check_core_structure.py
           python3 .github/scripts/rewrite_core_route_links.py
+          python3 .github/scripts/check_flow_structure.py
+          python3 .github/scripts/rewrite_flow_route_links.py
         shell: bash
 
       - name: Verify generated global navigation
@@ -186,6 +188,7 @@ jobs:
           spyt_url=$(viewer_url spyt)
           chyt_url=$(viewer_url chyt)
           yql_url=$(viewer_url yql)
+          flow_url=$(viewer_url flow)
 
           while IFS=$'\t' read -r module project_name; do
             test -f "${BUILD_OUTPUT_MD}/${module}/.yfm"
@@ -202,14 +205,14 @@ jobs:
             '.modules[] | select(.name as $name | ($selected | index($name))) | [.name, .project_name] | @tsv' \
             .github/docs-modules.json)
 
-          unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|yql-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
+          unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|yql-docs-root|flow-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
           if grep -R -n -E --exclude-dir=_bundle "${unresolved_route_vars}" \
             "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; then
             echo 'Unresolved modular routing variables found in build output.' >&2
             exit 1
           fi
 
-          legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt|yql)([^A-Za-z0-9_-]|$)'
+          legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt|yql|flow)([^A-Za-z0-9_-]|$)'
           if grep -R -n -E "${legacy_self_routes}" "${DOCS_INPUT_ROOT}"; then
             echo 'Legacy same-module routes remain in assembled inputs.' >&2
             exit 1
@@ -220,6 +223,8 @@ jobs:
               landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
               expected_url="${core_url}/${language}/tutorials/quick-start${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_url}" "${landing_page}"
+              expected_flow_url="${flow_url}/${language}/tutorials/quick-start${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_flow_url}" "${landing_page}"
             fi
 
             if module_selected core; then
@@ -261,6 +266,18 @@ jobs:
               test -f "${BUILD_OUTPUT_MD}/yql/images/yql-how-to-try.png"
               test -f "${DOCS_SOURCE_ROOT}/public/yql/${language}/yql/quickstart.md"
             fi
+
+            if module_selected flow; then
+              flow_page="${BUILD_OUTPUT_HTML}/flow/${language}/concepts/glossary.html"
+              expected_flow_self_url="${flow_url}/${language}/concepts/watermarks${DOCS_REVISION_QUERY}#eventtimestamp"
+              grep -Fq "${expected_flow_self_url}" "${flow_page}"
+
+              flow_quick_start="${BUILD_OUTPUT_HTML}/flow/${language}/tutorials/quick-start.html"
+              expected_core_url="${core_url}/${language}/concepts/storage/cypress${DOCS_REVISION_QUERY}"
+              grep -Fq "${expected_core_url}" "${flow_quick_start}"
+              grep -Fq '_images/flow_noop_pipeline.png' "${flow_quick_start}"
+              test -f "${BUILD_OUTPUT_MD}/flow/${language}/reference/configuration/all_yson_structs.md"
+            fi
           done
 
           while IFS=$'\t' read -r module language; do
@@ -271,6 +288,7 @@ jobs:
             grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${yql_url}/${language}/yql/${DOCS_REVISION_QUERY}" "${toc}"
+            grep -Fq "${flow_url}/${language}/tutorials/quick-start${DOCS_REVISION_QUERY}" "${toc}"
           done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
             '.modules[] | select(.name as $name | ($selected | index($name))) | .name as $module | .languages[] | [$module, .] | @tsv' \
             .github/docs-modules.json)
@@ -568,6 +586,7 @@ jobs:
                 core) title='Core' ;;
                 spyt) title='SPYT' ;;
                 chyt) title='CHYT' ;;
+                flow) title='Flow' ;;
                 *) title="${module}" ;;
               esac
               printf '| %s | [RU](%s/ru/%s) | [EN](%s/en/%s) |\n' \

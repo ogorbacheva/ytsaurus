@@ -1,0 +1,1 @@
+{% include [Pipeline object in {{product-name}}](../common/_includes/concepts/pipeline-object.md) %}

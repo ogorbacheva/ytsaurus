@@ -1,0 +1,1 @@
+{% include [Lineage in {{product-name}} Flow](../common/_includes/concepts/lineage.md) %}

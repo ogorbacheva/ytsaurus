@@ -1,0 +1,451 @@
+title: YTsaurus Flow
+href: index.md
+# BEGIN GENERATED GLOBAL NAVIGATION
+navigation:
+  logo:
+    url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+    urlTitle: "Перейти на главную документации"
+    dark:
+      icon: "https://ytsaurus.tech/assets/logo-dark.svg"
+    light:
+      icon: "https://ytsaurus.tech/assets/logo-light.svg"
+  header:
+    leftItems:
+      - type: dropdown
+        text: "Начало работы"
+        items:
+          - type: column
+            items:
+              - type: section
+                title: "YTsaurus Core"
+                items:
+                  - type: link
+                    text: "Обзор платформы"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+                  - type: link
+                    text: "Быстрый старт"
+                    url: "{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
+                  - type: link
+                    text: "Архитектура и основные понятия"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/basic-concepts{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Движки обработки"
+                items:
+                  - type: link
+                    text: "Выполнить первый YQL-запрос"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Запустить Spark-задачу"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/run-spark-jobs{{ docs-revision-query }}"
+                  - type: link
+                    text: "Выполнить первый запрос в CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/how-to-guides/try-chyt{{ docs-revision-query }}"
+                  - type: link
+                    text: "Запустить первый Flow-пайплайн"
+                    url: "{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
+      - type: dropdown
+        text: "Руководства"
+        items:
+          - type: column
+            items:
+              - type: section
+                title: "Разработка"
+                items:
+                  - type: link
+                    text: "Python API"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}"
+                  - type: link
+                    text: "Динамические таблицы"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}"
+                  - type: link
+                    text: "Разработка SPYT-приложений"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/development/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "CLI и Python API для CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/cli-and-api{{ docs-revision-query }}"
+                  - type: link
+                    text: "Разработка Flow-пайплайнов"
+                    url: "{{ flow-docs-root }}/{{ lang }}/concepts/language-choice{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Обработка данных"
+                items:
+                  - type: link
+                    text: "MapReduce и распределённые вычисления"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/data-processing/overview{{ docs-revision-query }}"
+                  - type: link
+                    text: "Практические руководства SPYT"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Structured Streaming"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/structured-streaming/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Запросы и данные в CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/queries/execute{{ docs-revision-query }}"
+                  - type: link
+                    text: "YQL"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Потоковая обработка во Flow"
+                    url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Администрирование"
+                items:
+                  - type: link
+                    text: "Установка YTsaurus"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/install-ytsaurus{{ docs-revision-query }}"
+                  - type: link
+                    text: "Эксплуатация кластера"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-operations{{ docs-revision-query }}"
+                  - type: link
+                    text: "Развёртывание SPYT"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/deployment/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Установка CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-chyt{{ docs-revision-query }}"
+                  - type: link
+                    text: "Развёртывание Flow"
+                    url: "{{ flow-docs-root }}/{{ lang }}/how-to-guides/deployment/launch-vanilla{{ docs-revision-query }}"
+      - type: dropdown
+        text: "Компоненты"
+        items:
+          - type: link
+            text: "Все компоненты"
+            url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+          - type: link
+            text: "YTsaurus Core"
+            url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+          - type: link
+            text: "YQL"
+            url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+          - type: link
+            text: "SPYT"
+            url: "{{ spyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+          - type: link
+            text: "CHYT"
+            url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}"
+          - type: link
+            text: "Flow"
+            url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+      - type: dropdown
+        text: "Справочники"
+        items:
+          - type: column
+            items:
+              - type: section
+                title: "YTsaurus Core"
+                items:
+                  - type: link
+                    text: "Команды CLI"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/api/cli/commands{{ docs-revision-query }}"
+                  - type: link
+                    text: "Коды ошибок"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/api/error-codes{{ docs-revision-query }}"
+                  - type: link
+                    text: "Форматы данных"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/storage/formats{{ docs-revision-query }}"
+                  - type: link
+                    text: "История изменений"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/releases{{ docs-revision-query }}"
+                  - type: link
+                    text: "Совместимость версий"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/compatibility{{ docs-revision-query }}"
+          - type: column
+            items:
+              - type: section
+                title: "Движки обработки"
+                items:
+                  - type: link
+                    text: "Синтаксис YQL"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/syntax/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Встроенные функции YQL"
+                    url: "{{ yql-docs-root }}/{{ lang }}/yql/builtins/{{ docs-revision-query }}"
+                  - type: link
+                    text: "Справочник SPYT"
+                    url: "{{ spyt-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
+                  - type: link
+                    text: "Конфигурация CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/cliques/configuration{{ docs-revision-query }}"
+                  - type: link
+                    text: "История изменений CHYT"
+                    url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/release-notes{{ docs-revision-query }}"
+                  - type: link
+                    text: "Справочник Flow"
+                    url: "{{ flow-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
+    rightItems:
+      - type: link
+        text: "GitHub"
+        url: "https://github.com/ytsaurus/ytsaurus"
+        icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
+        target: "_blank"
+      - type: controls
+# END GENERATED GLOBAL NAVIGATION
+items:
+  - name: Перейти на главную
+    href: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+
+  - name: НАЧАЛО РАБОТЫ
+    labeled: true
+    items:
+      - name: Обзор Flow
+        href: concepts/overview.md
+      - name: Попробовать Flow
+        href: tutorials/quick-start.md
+      - name: С чего начать
+        href: concepts/getting-started.md
+      - name: Выбрать язык
+        href: concepts/language-choice.md
+      - name: Обратиться в поддержку
+        href: "{{ community-tg }}"
+
+  - name: РУКОВОДСТВО ПОЛЬЗОВАТЕЛЯ
+    labeled: true
+    items:
+      - name: Основные понятия
+        href: concepts/index.md
+        items:
+          - name: Глоссарий
+            href: concepts/glossary.md
+          - name: Объект Pipeline
+            href: concepts/pipeline-object.md
+          - name: Computation
+            href: concepts/computation.md
+          - name: Spec, DynamicSpec и Config
+            href: concepts/spec.md
+          - name: Swift
+            href: concepts/swift.md
+          - name: Stateful processing
+            href: concepts/stateful.md
+          - name: Watermarks
+            href: concepts/watermarks.md
+          - name: Таймеры
+            href: concepts/timers.md
+          - name: Гарантии обработки
+            href: concepts/guarantees.md
+          - name: Порядок обработки сообщений
+            href: concepts/ordering.md
+          - name: Lineage
+            href: concepts/lineage.md
+          - name: Key Visitor Streams
+            href: concepts/key_visitor.md
+          - name: Distributed Throttler
+            href: concepts/distributed_throttler.md
+          - name: Worker Groups
+            href: concepts/worker_groups.md
+          - name: Companion
+            href: concepts/companion.md
+          - name: Ресурсы Companion
+            href: concepts/companion-resources.md
+          - name: Коннекторы
+            href: concepts/connectors/overview.md
+      - name: Учебные руководства
+        href: tutorials/index.md
+        items:
+          - name: Примеры задач
+            href: tutorials/task-examples.md
+          - name: C++
+            href: tutorials/cpp/quick-start.md
+            items:
+              - name: Async Request
+                href: tutorials/cpp/examples/async_request.md
+              - name: Log Parser
+                href: tutorials/cpp/examples/log_parser.md
+              - name: Multiplexer
+                href: tutorials/cpp/examples/multiplexer.md
+              - name: Proto Parser
+                href: tutorials/cpp/examples/proto_parser.md
+              - name: Retryable Async Request
+                href: tutorials/cpp/examples/retryable_async_request.md
+              - name: Shuffle
+                href: tutorials/cpp/examples/shuffle.md
+              - name: URL Downloader
+                href: tutorials/cpp/examples/url_downloader.md
+              - name: Wait Click Join
+                href: tutorials/cpp/examples/wait_click_join.md
+              - name: Word Count
+                href: tutorials/cpp/examples/word_count.md
+          - name: Java
+            href: tutorials/java/quick-start.md
+            items:
+              - name: Async Request
+                href: tutorials/java/examples/async_request.md
+              - name: Retryable Async Request
+                href: tutorials/java/examples/retryable_async_request.md
+              - name: Shuffle
+                href: tutorials/java/examples/shuffle.md
+              - name: URL Downloader
+                href: tutorials/java/examples/url_downloader.md
+              - name: Wait Click Join
+                href: tutorials/java/examples/wait_click_join.md
+              - name: Word Count
+                href: tutorials/java/examples/wordcount.md
+          - name: Python
+            href: tutorials/python/quick-start.md
+            items:
+              - name: Async Request
+                href: tutorials/python/examples/async_request.md
+              - name: Retryable Async Request
+                href: tutorials/python/examples/retryable_async_request.md
+              - name: Shuffle
+                href: tutorials/python/examples/shuffle.md
+              - name: URL Downloader
+                href: tutorials/python/examples/url_downloader.md
+              - name: Wait Click Join
+                href: tutorials/python/examples/wait_click_join.md
+              - name: Word Count
+                href: tutorials/python/examples/wordcount.md
+          - name: Go
+            href: tutorials/go/quick-start.md
+            items:
+              - name: Async Request
+                href: tutorials/go/examples/async_request.md
+              - name: External State Join
+                href: tutorials/go/examples/external_state_join.md
+              - name: Retryable Async Request
+                href: tutorials/go/examples/retryable_async_request.md
+              - name: Shuffle
+                href: tutorials/go/examples/shuffle.md
+              - name: Static Table Join
+                href: tutorials/go/examples/static_table_join.md
+              - name: URL Downloader
+                href: tutorials/go/examples/url_downloader.md
+              - name: Wait Click Join
+                href: tutorials/go/examples/wait_click_join.md
+              - name: Word Count
+                href: tutorials/go/examples/wordcount.md
+          - name: YQL
+            href: tutorials/yql/quick-start.md
+      - name: Практические руководства
+        href: how-to-guides/index.md
+        items:
+          - name: C++
+            items:
+              - name: Computation
+                href: how-to-guides/cpp/computation.md
+              - name: Process function
+                href: how-to-guides/cpp/process-functions.md
+              - name: Стейты
+                href: how-to-guides/cpp/state.md
+              - name: Ресурсы
+                href: how-to-guides/cpp/resources.md
+              - name: Тестирование
+                href: how-to-guides/cpp/testing.md
+          - name: Java
+            items:
+              - name: Computation
+                href: how-to-guides/java/computation.md
+              - name: Стейты
+                href: how-to-guides/java/state.md
+              - name: Internal State
+                href: how-to-guides/java/internal-state.md
+              - name: External State
+                href: how-to-guides/java/external-state.md
+              - name: StateAccessor
+                href: how-to-guides/java/state-accessor.md
+              - name: Флаг distribute
+                href: how-to-guides/java/distribute.md
+              - name: Typed Streams
+                href: how-to-guides/java/typed-streams.md
+              - name: Spring Boot
+                href: how-to-guides/java/spring.md
+              - name: Переменные окружения
+                href: how-to-guides/java/env-variables.md
+              - name: Профилирование
+                href: how-to-guides/java/profiling.md
+              - name: Тестирование
+                href: how-to-guides/java/testing.md
+          - name: Python
+            items:
+              - name: Computation
+                href: how-to-guides/python/computation.md
+              - name: Стейты
+                href: how-to-guides/python/state.md
+              - name: Internal State
+                href: how-to-guides/python/internal-state.md
+              - name: External State
+                href: how-to-guides/python/external-state.md
+              - name: StateAccessor
+                href: how-to-guides/python/state-accessor.md
+              - name: Флаг distribute
+                href: how-to-guides/python/distribute.md
+              - name: Тестирование
+                href: how-to-guides/python/testing.md
+          - name: Go
+            items:
+              - name: Computation
+                href: how-to-guides/go/computation.md
+              - name: Стейты
+                href: how-to-guides/go/state.md
+              - name: Internal State
+                href: how-to-guides/go/internal-state.md
+              - name: External State
+                href: how-to-guides/go/external-state.md
+              - name: StateAccessor
+                href: how-to-guides/go/state-accessor.md
+              - name: Флаг distribute
+                href: how-to-guides/go/distribute.md
+              - name: Тестирование
+                href: how-to-guides/go/testing.md
+      - name: Коннекторы
+        href: concepts/connectors/overview.md
+        items:
+          - name: Queue
+            href: reference/connectors/queue.md
+          - name: Static Table
+            href: reference/connectors/static-table.md
+          - name: Sorted Dynamic Table
+            href: reference/connectors/sorted-dynamic-table.md
+          - name: Сервис-лог
+            href: reference/connectors/servicelog.md
+
+  - name: РУКОВОДСТВО АДМИНИСТРАТОРА
+    labeled: true
+    items:
+      - name: Развёртывание
+        items:
+          - name: Запустить пайплайн в Vanilla
+            href: how-to-guides/deployment/launch-vanilla.md
+          - name: Настроить аутентификацию
+            href: how-to-guides/deployment/configure-authentication.md
+          - name: Настроить безопасность
+            href: how-to-guides/deployment/configure-security.md
+          - name: Обновить пайплайн
+            href: how-to-guides/deployment/update-pipeline.md
+          - name: Правила YtSync
+            href: how-to-guides/deployment/yt-sync-rules.md
+          - name: Целевая версия Flow Core
+            href: concepts/deployment/flow-core-target.md
+      - name: Эксплуатация
+        items:
+          - name: Управлять пайплайном
+            href: how-to-guides/operations/manage-pipeline.md
+          - name: Посмотреть логи
+            href: how-to-guides/operations/view-logs.md
+
+  - name: СПРАВОЧНИК
+    labeled: true
+    items:
+      - name: Обзор справочника
+        href: reference/index.md
+      - name: Flow CLI
+        href: reference/cli.md
+      - name: Конструкции YQL
+        href: reference/yql/features.md
+      - name: Параметры конфигурации
+        href: reference/configuration/all_yson_structs.md
+      - name: FAQ
+        href: reference/faq.md
+      - name: Для контрибьюторов
+        items:
+          - name: Style guide
+            href: how-to-guides/contributing/style-guide.md
+          - name: Фреймворк тестирования
+            href: how-to-guides/contributing/testing-framework.md
+          - name: Внутренняя аутентификация
+            href: how-to-guides/contributing/internal-authentication.md

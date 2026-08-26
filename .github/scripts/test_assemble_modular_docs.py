@@ -37,6 +37,7 @@ class AssembleModularDocsTest(unittest.TestCase):
             "  spyt-docs-root: https://example.test/docs/spyt\n"
             "  chyt-docs-root: https://example.test/docs/chyt\n"
             "  yql-docs-root: https://example.test/docs\n"
+            "  flow-docs-root: https://example.test/docs/flow\n"
             "  demo-docs-root: https://example.test/docs/demo\n"
             "  docs-revision-query: \"\"\n",
             encoding="utf-8",
@@ -202,6 +203,51 @@ class AssembleModularDocsTest(unittest.TestCase):
                 / "note.md"
             ).read_text(encoding="utf-8"),
         )
+
+    def test_materializes_arcadia_code_directive_from_repository_root(self) -> None:
+        example = self.root / "yt" / "yt" / "flow" / "examples" / "demo.py"
+        example.parent.mkdir(parents=True)
+        example.write_text(
+            "# BEGIN public-example\n"
+            "print('Flow')\n"
+            "# END public-example\n",
+            encoding="utf-8",
+        )
+        page = self.source / "public" / "demo" / "ru" / "guide.md"
+        page.write_text(
+            "# Guide\n\n"
+            "{% code '/yt/yt/flow/examples/demo.py' lang='python' "
+            "lines='[BEGIN public-example]-[END public-example]' %}\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        generated = (self.output / "demo" / "ru" / "guide.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("```python\nprint('Flow')\n```", generated)
+        self.assertNotIn("{% code", generated)
+        manifest = json.loads(
+            (self.output / "assembly-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["modules"][0]["code_directives_materialized"], 1)
+
+    def test_preserves_code_directive_when_source_is_not_public(self) -> None:
+        page = self.source / "public" / "demo" / "ru" / "guide.md"
+        directive = "{% code '/internal/flow/demo.py' lang='python' %}"
+        page.write_text(f"# Guide\n\n{directive}\n", encoding="utf-8")
+
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        generated = (self.output / "demo" / "ru" / "guide.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(directive, generated)
+        manifest = json.loads(
+            (self.output / "assembly-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["modules"][0]["code_directives_materialized"], 0)
 
     def test_canonical_metadata_url_is_not_rewritten(self) -> None:
         page = self.source / "public" / "demo" / "ru" / "guide.md"

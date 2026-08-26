@@ -33,6 +33,7 @@ public:
   spyt-docs-root: https://ytsaurus.tech/docs/spyt
   chyt-docs-root: https://ytsaurus.tech/docs/chyt
   yql-docs-root: https://ytsaurus.tech/docs
+  flow-docs-root: https://ytsaurus.tech/docs/flow
   docs-revision-query: ""
   yql:
     udf-cpp-dir: https://github.com/ytsaurus/ytsaurus/tree/main/yql/essentials/udfs

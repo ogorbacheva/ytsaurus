@@ -1,0 +1,1 @@
+{% include [Static tables in {{product-name}} Flow](../../common/_includes/reference/connectors/static-table.md) %}

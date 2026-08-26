@@ -53,6 +53,10 @@ blocks:
         text: 'Обрабатывать потоки через Spark Structured Streaming.'
         url: '{{ spyt-docs-root }}/{{ lang }}/concepts/structured-streaming/index{{ docs-revision-query }}'
       - type: basic-card
+        title: 'Обрабатывать события непрерывно'
+        text: 'Строить stateful-пайплайны потоковой обработки в YTsaurus Flow.'
+        url: '{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
+      - type: basic-card
         title: 'Подключиться через API и инструменты'
         text: 'Начать работу с Python API и клиентскими библиотеками.'
         url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}'
@@ -99,6 +103,18 @@ blocks:
           links:
             - text: 'Открыть документацию'
               url: '{{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}'
+              theme: normal
+              arrow: true
+        media:
+          image: '_assets/hub/pict4.svg'
+        border: true
+      - type: layout-item
+        content:
+          title: 'Flow'
+          text: 'Потоковая обработка данных: пайплайны, состояния, гарантии, коннекторы и SDK для нескольких языков.'
+          links:
+            - text: 'Открыть документацию'
+              url: '{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}'
               theme: normal
               arrow: true
         media:

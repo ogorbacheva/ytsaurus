@@ -1,0 +1,15 @@
+default:
+
+public:
+  lang: ru
+  source-root: https://github.com/ytsaurus/ytsaurus/tree/main
+  production-cluster: <cluster-name>
+  flow-example-cluster: <cluster-name>
+  flow-data-cluster: <cluster-name>
+  flow-runtime-cluster: <cluster-name>
+  flow-consumer-cluster: <cluster-name>
+  yt-cli: yt
+  yt-docs-root: https://ytsaurus.tech/docs/ru
+  cluster-ui: https://<host-root>/<cluster-name>
+  community-tg: https://t.me/ytsaurus_ru
+  yt-sync-docs: https://ytsaurus.tech/docs

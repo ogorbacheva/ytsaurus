@@ -1,0 +1,1 @@
+{% include [Glossary of {{product-name}} Flow](../common/_includes/concepts/glossary.md) %}

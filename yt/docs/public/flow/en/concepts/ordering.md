@@ -1,0 +1,1 @@
+{% include [Message ordering in {{product-name}} Flow](../common/_includes/concepts/ordering.md) %}

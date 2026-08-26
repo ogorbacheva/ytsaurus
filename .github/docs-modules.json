@@ -40,6 +40,14 @@
       "languages": ["ru", "en"],
       "common": false,
       "storage_prefix": "yql"
+    },
+    {
+      "name": "flow",
+      "project_name": "flow",
+      "viewer_url": "https://common-ytsaurus---flow.viewer.ydocs.io",
+      "languages": ["ru", "en"],
+      "common": true,
+      "storage_prefix": "flow"
     }
   ]
 }

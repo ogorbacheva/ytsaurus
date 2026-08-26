@@ -1,0 +1,1 @@
+{% include [Spec, DynamicSpec and Config in {{product-name}} Flow](../common/_includes/concepts/spec.md) %}

@@ -1,0 +1,1 @@
+{% include [Stateful processing in {{product-name}} Flow](../common/_includes/concepts/stateful.md) %}

@@ -1,0 +1,1782 @@
+common: []
+ru:
+  - from: /about
+    to: /concepts/overview
+    type: redirect
+  - from: /connectors/about
+    to: /concepts/connectors/overview
+    type: redirect
+  - from: /connectors/queue
+    to: /reference/connectors/queue
+    type: redirect
+  - from: /connectors/servicelog
+    to: /reference/connectors/servicelog
+    type: redirect
+  - from: /connectors/sorted-dynamic-table
+    to: /reference/connectors/sorted-dynamic-table
+    type: redirect
+  - from: /connectors/static-table
+    to: /reference/connectors/static-table
+    type: redirect
+  - from: /contributor/internal-authentication
+    to: /how-to-guides/contributing/internal-authentication
+    type: redirect
+  - from: /contributor/style-guide
+    to: /how-to-guides/contributing/style-guide
+    type: redirect
+  - from: /contributor/testing-framework
+    to: /how-to-guides/contributing/testing-framework
+    type: redirect
+  - from: /cpp/computation
+    to: /how-to-guides/cpp/computation
+    type: redirect
+  - from: /cpp/examples/async_request
+    to: /tutorials/cpp/examples/async_request
+    type: redirect
+  - from: /cpp/examples/log_parser
+    to: /tutorials/cpp/examples/log_parser
+    type: redirect
+  - from: /cpp/examples/multiplexer
+    to: /tutorials/cpp/examples/multiplexer
+    type: redirect
+  - from: /cpp/examples/proto_parser
+    to: /tutorials/cpp/examples/proto_parser
+    type: redirect
+  - from: /cpp/examples/retryable_async_request
+    to: /tutorials/cpp/examples/retryable_async_request
+    type: redirect
+  - from: /cpp/examples/shuffle
+    to: /tutorials/cpp/examples/shuffle
+    type: redirect
+  - from: /cpp/examples/url_downloader
+    to: /tutorials/cpp/examples/url_downloader
+    type: redirect
+  - from: /cpp/examples/wait_click_join
+    to: /tutorials/cpp/examples/wait_click_join
+    type: redirect
+  - from: /cpp/examples/word_count
+    to: /tutorials/cpp/examples/word_count
+    type: redirect
+  - from: /cpp/getting-started
+    to: /tutorials/cpp/quick-start
+    type: redirect
+  - from: /cpp/process-functions
+    to: /how-to-guides/cpp/process-functions
+    type: redirect
+  - from: /cpp/resources
+    to: /how-to-guides/cpp/resources
+    type: redirect
+  - from: /cpp/state
+    to: /how-to-guides/cpp/state
+    type: redirect
+  - from: /cpp/testing
+    to: /how-to-guides/cpp/testing
+    type: redirect
+  - from: /devops/vanilla/diagnostics/logs
+    to: /how-to-guides/operations/view-logs
+    type: redirect
+  - from: /devops/vanilla/initial-deploy
+    to: /how-to-guides/deployment/launch-vanilla
+    type: redirect
+  - from: /devops/vanilla/pipeline-operations
+    to: /how-to-guides/operations/manage-pipeline
+    type: redirect
+  - from: /devops/vanilla/releases
+    to: /how-to-guides/deployment/update-pipeline
+    type: redirect
+  - from: /devops/vanilla/security
+    to: /how-to-guides/deployment/configure-security
+    type: redirect
+  - from: /faq
+    to: /reference/faq
+    type: redirect
+  - from: /generated_docs/NYT_NApi_EConnectionType
+    to: /reference/configuration/NYT_NApi_EConnectionType
+    type: redirect
+  - from: /generated_docs/NYT_NApi_NRpcProxy_EAddressType
+    to: /reference/configuration/NYT_NApi_NRpcProxy_EAddressType
+    type: redirect
+  - from: /generated_docs/NYT_NApi_NRpcProxy_TConnectionConfig
+    to: /reference/configuration/NYT_NApi_NRpcProxy_TConnectionConfig
+    type: redirect
+  - from: /generated_docs/NYT_NApi_TTableMountCacheConfig
+    to: /reference/configuration/NYT_NApi_TTableMountCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NAuth_TTvmServiceConfig
+    to: /reference/configuration/NYT_NAuth_TTvmServiceConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_EEncryptionMode
+    to: /reference/configuration/NYT_NBus_EEncryptionMode
+    type: redirect
+  - from: /generated_docs/NYT_NBus_EVerificationMode
+    to: /reference/configuration/NYT_NBus_EVerificationMode
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TBusConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TBusConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TBusServerConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TBusServerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TDispatcherConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TDispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TDispatcherDynamicConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TDispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TMultiplexingBandConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TMultiplexingBandConfig
+    type: redirect
+  - from: /generated_docs/NYT_NChaosClient_TReplicationCardCacheConfig
+    to: /reference/configuration/NYT_NChaosClient_TReplicationCardCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NClient_NCache_TClientsCacheConfig
+    to: /reference/configuration/NYT_NClient_NCache_TClientsCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCodegen_EOptimizationLevel
+    to: /reference/configuration/NYT_NCodegen_EOptimizationLevel
+    type: redirect
+  - from: /generated_docs/NYT_NCompression_ECodec
+    to: /reference/configuration/NYT_NCompression_ECodec
+    type: redirect
+  - from: /generated_docs/NYT_NConcurrency_EExecutionStackKind
+    to: /reference/configuration/NYT_NConcurrency_EExecutionStackKind
+    type: redirect
+  - from: /generated_docs/NYT_NConcurrency_TFiberManagerConfig
+    to: /reference/configuration/NYT_NConcurrency_TFiberManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NConcurrency_TFiberManagerDynamicConfig
+    to: /reference/configuration/NYT_NConcurrency_TFiberManagerDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCoreDump_TCoreDumperConfig
+    to: /reference/configuration/NYT_NCoreDump_TCoreDumperConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCrypto_TPemBlobConfig
+    to: /reference/configuration/NYT_NCrypto_TPemBlobConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCrypto_TSslContextCommand
+    to: /reference/configuration/NYT_NCrypto_TSslContextCommand
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EBacktraceEnricherLevel
+    to: /reference/configuration/NYT_NFlow_EBacktraceEnricherLevel
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EDistributionOrdering
+    to: /reference/configuration/NYT_NFlow_EDistributionOrdering
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EFetchType
+    to: /reference/configuration/NYT_NFlow_EFetchType
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EFlowStateTarget
+    to: /reference/configuration/NYT_NFlow_EFlowStateTarget
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EJobBalancerType
+    to: /reference/configuration/NYT_NFlow_EJobBalancerType
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EPipelineState
+    to: /reference/configuration/NYT_NFlow_EPipelineState
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EProcessingMode
+    to: /reference/configuration/NYT_NFlow_EProcessingMode
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EQueueTabletIndexRoutingHashPolicy
+    to: /reference/configuration/NYT_NFlow_EQueueTabletIndexRoutingHashPolicy
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_ETimeType
+    to: /reference/configuration/NYT_NFlow_ETimeType
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_ETimestampFormat
+    to: /reference/configuration/NYT_NFlow_ETimestampFormat
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EUnavailableSourcePolicy
+    to: /reference/configuration/NYT_NFlow_EUnavailableSourcePolicy
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NCompanion_TCompanionConfig
+    to: /reference/configuration/NYT_NFlow_NCompanion_TCompanionConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TControllerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TControllerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TControllerServiceConfig
+    to: /reference/configuration/NYT_NFlow_NController_TControllerServiceConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TElectionManagerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TElectionManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TLeaseManagerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TLeaseManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TPersistedStateManagerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TPersistedStateManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NDeltaCodecs_ECodec
+    to: /reference/configuration/NYT_NFlow_NDeltaCodecs_ECodec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NFileStorage_TFileStorageConfig
+    to: /reference/configuration/NYT_NFlow_NFileStorage_TFileStorageConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NStaticTableConnector_TTableTimestampLocatorSpec
+    to: /reference/configuration/NYT_NFlow_NStaticTableConnector_TTableTimestampLocatorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NWorker_TWorkerConfig
+    to: /reference/configuration/NYT_NFlow_NWorker_TWorkerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TAtMostOnceStrategyDynamicParameters
+    to: /reference/configuration/NYT_NFlow_TAtMostOnceStrategyDynamicParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TAtMostOnceStrategyParameters
+    to: /reference/configuration/NYT_NFlow_TAtMostOnceStrategyParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TAuthenticatorConfig
+    to: /reference/configuration/NYT_NFlow_TAuthenticatorConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TBacktraceEnricherDynamicSpec
+    to: /reference/configuration/NYT_NFlow_TBacktraceEnricherDynamicSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TBacktraceEnricherSpec
+    to: /reference/configuration/NYT_NFlow_TBacktraceEnricherSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TComputationSpec
+    to: /reference/configuration/NYT_NFlow_TComputationSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDeleteStatesArg
+    to: /reference/configuration/NYT_NFlow_TDeleteStatesArg
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDeleteStatesResponse
+    to: /reference/configuration/NYT_NFlow_TDeleteStatesResponse
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicBufferStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicBufferStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicBufferStateManagerSpec_TOneSideBufferSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicBufferStateManagerSpec_TOneSideBufferSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicComputationSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicComputationSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicControllerConnectorSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicControllerConnectorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicExpiringJobNamedStateCacheSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicExpiringJobNamedStateCacheSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicInputStoreSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicInputStoreSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicJobManagerGroupSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicJobManagerGroupSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicJobManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicJobManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicJobTrackerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicJobTrackerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicKeyVisitorStreamSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicKeyVisitorStreamSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicMessageDistributorSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicMessageDistributorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicOutputStoreSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicOutputStoreSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicPartitionTracerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicPartitionTracerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicPipelineSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicPipelineSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicResourceSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicResourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicRetryableRequestSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicRetryableRequestSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSimpleExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSimpleExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSimpleExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSimpleExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSinkSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSinkSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSourceSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateCacheSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateCacheSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateFormatSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateFormatSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStaticTableKeyVisitorJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStaticTableKeyVisitorJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicTableRequestSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicTableRequestSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicThrottlerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicThrottlerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicTimerStoreSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicTimerStoreSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TQueueSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TQueueSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TRandomSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TRandomSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TServiceLogSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TServiceLogSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TEventTimestampAssignerSpec
+    to: /reference/configuration/NYT_NFlow_TEventTimestampAssignerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFetcherInJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TFetcherInJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFileResourceDynamicParameters
+    to: /reference/configuration/NYT_NFlow_TFileResourceDynamicParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFileResourceParameters
+    to: /reference/configuration/NYT_NFlow_TFileResourceParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFileSourceSpec
+    to: /reference/configuration/NYT_NFlow_TFileSourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFlowNodeConfig
+    to: /reference/configuration/NYT_NFlow_TFlowNodeConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_THeavyHittersSpec
+    to: /reference/configuration/NYT_NFlow_THeavyHittersSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TIdlePartitionsSpec
+    to: /reference/configuration/NYT_NFlow_TIdlePartitionsSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TInputOrderingSpec
+    to: /reference/configuration/NYT_NFlow_TInputOrderingSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TKeyStateRow
+    to: /reference/configuration/NYT_NFlow_TKeyStateRow
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TKeyVisitorStreamSpec
+    to: /reference/configuration/NYT_NFlow_TKeyVisitorStreamSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TLateDataPartitionsSpec
+    to: /reference/configuration/NYT_NFlow_TLateDataPartitionsSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TLoadThroughputThrottlerSpec
+    to: /reference/configuration/NYT_NFlow_TLoadThroughputThrottlerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TMatchedStates
+    to: /reference/configuration/NYT_NFlow_TMatchedStates
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TMatchedStatesBucket
+    to: /reference/configuration/NYT_NFlow_TMatchedStatesBucket
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TMessageSerializer
+    to: /reference/configuration/NYT_NFlow_TMessageSerializer
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TPartitionStateRow
+    to: /reference/configuration/NYT_NFlow_TPartitionStateRow
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TPipelineSpec
+    to: /reference/configuration/NYT_NFlow_TPipelineSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TPivotFinderSpec
+    to: /reference/configuration/NYT_NFlow_TPivotFinderSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TReadStatesArg
+    to: /reference/configuration/NYT_NFlow_TReadStatesArg
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TReadStatesResponse
+    to: /reference/configuration/NYT_NFlow_TReadStatesResponse
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TResourceDescription
+    to: /reference/configuration/NYT_NFlow_TResourceDescription
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TResourceSpec
+    to: /reference/configuration/NYT_NFlow_TResourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSimpleExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TSimpleExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSimpleExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TSimpleExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSimpleRunnerConfig
+    to: /reference/configuration/NYT_NFlow_TSimpleRunnerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSinkSpec
+    to: /reference/configuration/NYT_NFlow_TSinkSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSourceSpec
+    to: /reference/configuration/NYT_NFlow_TSourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStateJoinSpec
+    to: /reference/configuration/NYT_NFlow_TStateJoinSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStaticTableKeyVisitorJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TStaticTableKeyVisitorJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStreamSpec
+    to: /reference/configuration/NYT_NFlow_TStreamSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTableFetcherSpec
+    to: /reference/configuration/NYT_NFlow_TTableFetcherSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTableJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TTableJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTimerSerializer
+    to: /reference/configuration/NYT_NFlow_TTimerSerializer
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTimerSpec
+    to: /reference/configuration/NYT_NFlow_TTimerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnavailablePartitionGroupsSpec
+    to: /reference/configuration/NYT_NFlow_TUnavailablePartitionGroupsSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TQueueSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TQueueSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TRandomSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TRandomSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TServiceLogSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TServiceLogSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TVanillaConfig
+    to: /reference/configuration/NYT_NFlow_TVanillaConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TVanillaTaskConfig
+    to: /reference/configuration/NYT_NFlow_TVanillaTaskConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkAlignmentSpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkAlignmentSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkGeneratorSpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkGeneratorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkPercentileSpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkPercentileSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkStrategySpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkStrategySpec
+    type: redirect
+  - from: /generated_docs/NYT_NHttp_TClientConfig
+    to: /reference/configuration/NYT_NHttp_TClientConfig
+    type: redirect
+  - from: /generated_docs/NYT_NHttps_TClientConfig
+    to: /reference/configuration/NYT_NHttps_TClientConfig
+    type: redirect
+  - from: /generated_docs/NYT_NHttps_TClientCredentialsConfig
+    to: /reference/configuration/NYT_NHttps_TClientCredentialsConfig
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_ELogFamily
+    to: /reference/configuration/NYT_NLogging_ELogFamily
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_ELogLevel
+    to: /reference/configuration/NYT_NLogging_ELogLevel
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_TLogManagerConfig
+    to: /reference/configuration/NYT_NLogging_TLogManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_TLogManagerDynamicConfig
+    to: /reference/configuration/NYT_NLogging_TLogManagerDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_TRuleConfig
+    to: /reference/configuration/NYT_NLogging_TRuleConfig
+    type: redirect
+  - from: /generated_docs/NYT_NNet_TAddressResolverConfig
+    to: /reference/configuration/NYT_NNet_TAddressResolverConfig
+    type: redirect
+  - from: /generated_docs/NYT_NNet_TDialerConfig
+    to: /reference/configuration/NYT_NNet_TDialerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NPipeIO_TPipeIODispatcherConfig
+    to: /reference/configuration/NYT_NPipeIO_TPipeIODispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NPipeIO_TPipeIODispatcherDynamicConfig
+    to: /reference/configuration/NYT_NPipeIO_TPipeIODispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_ELabelSanitizationPolicy
+    to: /reference/configuration/NYT_NProfiling_ELabelSanitizationPolicy
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TResourceTrackerConfig
+    to: /reference/configuration/NYT_NProfiling_TResourceTrackerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TShardConfig
+    to: /reference/configuration/NYT_NProfiling_TShardConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonExporterConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonExporterConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonProxyConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonProxyConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonRegistryConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonRegistryConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonRegistryDynamicConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonRegistryDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_EStatisticsAggregation
+    to: /reference/configuration/NYT_NQueryClient_EStatisticsAggregation
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TCodegenCacheConfig
+    to: /reference/configuration/NYT_NQueryClient_TCodegenCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TCodegenCacheDynamicConfig
+    to: /reference/configuration/NYT_NQueryClient_TCodegenCacheDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TQueryEngineConfig
+    to: /reference/configuration/NYT_NQueryClient_TQueryEngineConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TQueryEngineDynamicConfig
+    to: /reference/configuration/NYT_NQueryClient_TQueryEngineDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_EPeerPriorityStrategy
+    to: /reference/configuration/NYT_NRpc_EPeerPriorityStrategy
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_ERequestTracingMode
+    to: /reference/configuration/NYT_NRpc_ERequestTracingMode
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TChannelConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TChannelConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TChannelCredentialsConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TChannelCredentialsConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TDispatcherConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TDispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TDispatcherDynamicConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TDispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TSslPemKeyCertPairConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TSslPemKeyCertPairConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TDispatcherConfig
+    to: /reference/configuration/NYT_NRpc_TDispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TDispatcherDynamicConfig
+    to: /reference/configuration/NYT_NRpc_TDispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TDynamicChannelPoolConfig
+    to: /reference/configuration/NYT_NRpc_TDynamicChannelPoolConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_THistogramExponentialBounds
+    to: /reference/configuration/NYT_NRpc_THistogramExponentialBounds
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TRetryingChannelConfig
+    to: /reference/configuration/NYT_NRpc_TRetryingChannelConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TServerConfig
+    to: /reference/configuration/NYT_NRpc_TServerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TServiceDiscoveryEndpointsConfig
+    to: /reference/configuration/NYT_NRpc_TServiceDiscoveryEndpointsConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TTimeHistogramConfig
+    to: /reference/configuration/NYT_NRpc_TTimeHistogramConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_TDynamicHeapSizeLimitConfig
+    to: /reference/configuration/NYT_NTCMalloc_TDynamicHeapSizeLimitConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_TDynamicTCMallocConfig
+    to: /reference/configuration/NYT_NTCMalloc_TDynamicTCMallocConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_THeapSizeLimitConfig
+    to: /reference/configuration/NYT_NTCMalloc_THeapSizeLimitConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_TTCMallocConfig
+    to: /reference/configuration/NYT_NTCMalloc_TTCMallocConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTracing_TJaegerTracerConfig
+    to: /reference/configuration/NYT_NTracing_TJaegerTracerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTracing_TJaegerTracerDynamicConfig
+    to: /reference/configuration/NYT_NTracing_TJaegerTracerDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NYTree_TSize
+    to: /reference/configuration/NYT_NYTree_TSize
+    type: redirect
+  - from: /generated_docs/NYT_NYson_EEnumYsonStorageType
+    to: /reference/configuration/NYT_NYson_EEnumYsonStorageType
+    type: redirect
+  - from: /generated_docs/NYT_NYson_EUtf8Check
+    to: /reference/configuration/NYT_NYson_EUtf8Check
+    type: redirect
+  - from: /generated_docs/NYT_NYson_TProtobufInteropConfig
+    to: /reference/configuration/NYT_NYson_TProtobufInteropConfig
+    type: redirect
+  - from: /generated_docs/NYT_NYson_TProtobufInteropDynamicConfig
+    to: /reference/configuration/NYT_NYson_TProtobufInteropDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_TSingletonsDynamicConfig
+    to: /reference/configuration/NYT_TSingletonsDynamicConfig
+    type: redirect
+  - from: /generated_docs/TDuration
+    to: /reference/configuration/TDuration
+    type: redirect
+  - from: /generated_docs/all_yson_structs
+    to: /reference/configuration/all_yson_structs
+    type: redirect
+  - from: /go/computation
+    to: /how-to-guides/go/computation
+    type: redirect
+  - from: /go/distribute
+    to: /how-to-guides/go/distribute
+    type: redirect
+  - from: /go/examples/async_request
+    to: /tutorials/go/examples/async_request
+    type: redirect
+  - from: /go/examples/external_state_join
+    to: /tutorials/go/examples/external_state_join
+    type: redirect
+  - from: /go/examples/retryable_async_request
+    to: /tutorials/go/examples/retryable_async_request
+    type: redirect
+  - from: /go/examples/shuffle
+    to: /tutorials/go/examples/shuffle
+    type: redirect
+  - from: /go/examples/static_table_join
+    to: /tutorials/go/examples/static_table_join
+    type: redirect
+  - from: /go/examples/url_downloader
+    to: /tutorials/go/examples/url_downloader
+    type: redirect
+  - from: /go/examples/wait_click_join
+    to: /tutorials/go/examples/wait_click_join
+    type: redirect
+  - from: /go/examples/wordcount
+    to: /tutorials/go/examples/wordcount
+    type: redirect
+  - from: /go/external-state
+    to: /how-to-guides/go/external-state
+    type: redirect
+  - from: /go/getting-started
+    to: /tutorials/go/quick-start
+    type: redirect
+  - from: /go/internal-state
+    to: /how-to-guides/go/internal-state
+    type: redirect
+  - from: /go/state
+    to: /how-to-guides/go/state
+    type: redirect
+  - from: /go/state-accessor
+    to: /how-to-guides/go/state-accessor
+    type: redirect
+  - from: /go/testing
+    to: /how-to-guides/go/testing
+    type: redirect
+  - from: /java/computation
+    to: /how-to-guides/java/computation
+    type: redirect
+  - from: /java/distribute
+    to: /how-to-guides/java/distribute
+    type: redirect
+  - from: /java/env-variables
+    to: /how-to-guides/java/env-variables
+    type: redirect
+  - from: /java/examples/async_request
+    to: /tutorials/java/examples/async_request
+    type: redirect
+  - from: /java/examples/retryable_async_request
+    to: /tutorials/java/examples/retryable_async_request
+    type: redirect
+  - from: /java/examples/shuffle
+    to: /tutorials/java/examples/shuffle
+    type: redirect
+  - from: /java/examples/url_downloader
+    to: /tutorials/java/examples/url_downloader
+    type: redirect
+  - from: /java/examples/wait_click_join
+    to: /tutorials/java/examples/wait_click_join
+    type: redirect
+  - from: /java/examples/wordcount
+    to: /tutorials/java/examples/wordcount
+    type: redirect
+  - from: /java/external-state
+    to: /how-to-guides/java/external-state
+    type: redirect
+  - from: /java/getting-started
+    to: /tutorials/java/quick-start
+    type: redirect
+  - from: /java/internal-state
+    to: /how-to-guides/java/internal-state
+    type: redirect
+  - from: /java/profiling
+    to: /how-to-guides/java/profiling
+    type: redirect
+  - from: /java/spring
+    to: /how-to-guides/java/spring
+    type: redirect
+  - from: /java/state
+    to: /how-to-guides/java/state
+    type: redirect
+  - from: /java/state-accessor
+    to: /how-to-guides/java/state-accessor
+    type: redirect
+  - from: /java/testing
+    to: /how-to-guides/java/testing
+    type: redirect
+  - from: /java/typed-streams
+    to: /how-to-guides/java/typed-streams
+    type: redirect
+  - from: /python/computation
+    to: /how-to-guides/python/computation
+    type: redirect
+  - from: /python/distribute
+    to: /how-to-guides/python/distribute
+    type: redirect
+  - from: /python/examples/async_request
+    to: /tutorials/python/examples/async_request
+    type: redirect
+  - from: /python/examples/retryable_async_request
+    to: /tutorials/python/examples/retryable_async_request
+    type: redirect
+  - from: /python/examples/shuffle
+    to: /tutorials/python/examples/shuffle
+    type: redirect
+  - from: /python/examples/url_downloader
+    to: /tutorials/python/examples/url_downloader
+    type: redirect
+  - from: /python/examples/wait_click_join
+    to: /tutorials/python/examples/wait_click_join
+    type: redirect
+  - from: /python/examples/wordcount
+    to: /tutorials/python/examples/wordcount
+    type: redirect
+  - from: /python/external-state
+    to: /how-to-guides/python/external-state
+    type: redirect
+  - from: /python/getting-started
+    to: /tutorials/python/quick-start
+    type: redirect
+  - from: /python/internal-state
+    to: /how-to-guides/python/internal-state
+    type: redirect
+  - from: /python/state
+    to: /how-to-guides/python/state
+    type: redirect
+  - from: /python/state-accessor
+    to: /how-to-guides/python/state-accessor
+    type: redirect
+  - from: /python/testing
+    to: /how-to-guides/python/testing
+    type: redirect
+  - from: /quickstart
+    to: /tutorials/quick-start
+    type: redirect
+  - from: /start
+    to: /concepts/getting-started
+    type: redirect
+  - from: /tasks
+    to: /tutorials/task-examples
+    type: redirect
+  - from: /tools/cli
+    to: /reference/cli
+    type: redirect
+  - from: /yql/features
+    to: /reference/yql/features
+    type: redirect
+  - from: /yql/getting-started
+    to: /tutorials/yql/quick-start
+    type: redirect
+en:
+  - from: /about
+    to: /concepts/overview
+    type: redirect
+  - from: /connectors/about
+    to: /concepts/connectors/overview
+    type: redirect
+  - from: /connectors/queue
+    to: /reference/connectors/queue
+    type: redirect
+  - from: /connectors/servicelog
+    to: /reference/connectors/servicelog
+    type: redirect
+  - from: /connectors/sorted-dynamic-table
+    to: /reference/connectors/sorted-dynamic-table
+    type: redirect
+  - from: /connectors/static-table
+    to: /reference/connectors/static-table
+    type: redirect
+  - from: /contributor/internal-authentication
+    to: /how-to-guides/contributing/internal-authentication
+    type: redirect
+  - from: /contributor/style-guide
+    to: /how-to-guides/contributing/style-guide
+    type: redirect
+  - from: /contributor/testing-framework
+    to: /how-to-guides/contributing/testing-framework
+    type: redirect
+  - from: /cpp/computation
+    to: /how-to-guides/cpp/computation
+    type: redirect
+  - from: /cpp/examples/async_request
+    to: /tutorials/cpp/examples/async_request
+    type: redirect
+  - from: /cpp/examples/log_parser
+    to: /tutorials/cpp/examples/log_parser
+    type: redirect
+  - from: /cpp/examples/multiplexer
+    to: /tutorials/cpp/examples/multiplexer
+    type: redirect
+  - from: /cpp/examples/proto_parser
+    to: /tutorials/cpp/examples/proto_parser
+    type: redirect
+  - from: /cpp/examples/retryable_async_request
+    to: /tutorials/cpp/examples/retryable_async_request
+    type: redirect
+  - from: /cpp/examples/shuffle
+    to: /tutorials/cpp/examples/shuffle
+    type: redirect
+  - from: /cpp/examples/url_downloader
+    to: /tutorials/cpp/examples/url_downloader
+    type: redirect
+  - from: /cpp/examples/wait_click_join
+    to: /tutorials/cpp/examples/wait_click_join
+    type: redirect
+  - from: /cpp/examples/word_count
+    to: /tutorials/cpp/examples/word_count
+    type: redirect
+  - from: /cpp/getting-started
+    to: /tutorials/cpp/quick-start
+    type: redirect
+  - from: /cpp/process-functions
+    to: /how-to-guides/cpp/process-functions
+    type: redirect
+  - from: /cpp/state
+    to: /how-to-guides/cpp/state
+    type: redirect
+  - from: /cpp/testing
+    to: /how-to-guides/cpp/testing
+    type: redirect
+  - from: /faq
+    to: /reference/faq
+    type: redirect
+  - from: /generated_docs/NYT_NApi_EConnectionType
+    to: /reference/configuration/NYT_NApi_EConnectionType
+    type: redirect
+  - from: /generated_docs/NYT_NApi_NRpcProxy_EAddressType
+    to: /reference/configuration/NYT_NApi_NRpcProxy_EAddressType
+    type: redirect
+  - from: /generated_docs/NYT_NApi_NRpcProxy_TConnectionConfig
+    to: /reference/configuration/NYT_NApi_NRpcProxy_TConnectionConfig
+    type: redirect
+  - from: /generated_docs/NYT_NApi_TTableMountCacheConfig
+    to: /reference/configuration/NYT_NApi_TTableMountCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NAuth_TTvmServiceConfig
+    to: /reference/configuration/NYT_NAuth_TTvmServiceConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_EEncryptionMode
+    to: /reference/configuration/NYT_NBus_EEncryptionMode
+    type: redirect
+  - from: /generated_docs/NYT_NBus_EVerificationMode
+    to: /reference/configuration/NYT_NBus_EVerificationMode
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TBusConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TBusConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TBusServerConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TBusServerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TDispatcherConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TDispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TDispatcherDynamicConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TDispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NBus_NTcp_TMultiplexingBandConfig
+    to: /reference/configuration/NYT_NBus_NTcp_TMultiplexingBandConfig
+    type: redirect
+  - from: /generated_docs/NYT_NChaosClient_TReplicationCardCacheConfig
+    to: /reference/configuration/NYT_NChaosClient_TReplicationCardCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NClient_NCache_TClientsCacheConfig
+    to: /reference/configuration/NYT_NClient_NCache_TClientsCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCodegen_EOptimizationLevel
+    to: /reference/configuration/NYT_NCodegen_EOptimizationLevel
+    type: redirect
+  - from: /generated_docs/NYT_NCompression_ECodec
+    to: /reference/configuration/NYT_NCompression_ECodec
+    type: redirect
+  - from: /generated_docs/NYT_NConcurrency_EExecutionStackKind
+    to: /reference/configuration/NYT_NConcurrency_EExecutionStackKind
+    type: redirect
+  - from: /generated_docs/NYT_NConcurrency_TFiberManagerConfig
+    to: /reference/configuration/NYT_NConcurrency_TFiberManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NConcurrency_TFiberManagerDynamicConfig
+    to: /reference/configuration/NYT_NConcurrency_TFiberManagerDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCoreDump_TCoreDumperConfig
+    to: /reference/configuration/NYT_NCoreDump_TCoreDumperConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCrypto_TPemBlobConfig
+    to: /reference/configuration/NYT_NCrypto_TPemBlobConfig
+    type: redirect
+  - from: /generated_docs/NYT_NCrypto_TSslContextCommand
+    to: /reference/configuration/NYT_NCrypto_TSslContextCommand
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EBacktraceEnricherLevel
+    to: /reference/configuration/NYT_NFlow_EBacktraceEnricherLevel
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EDistributionOrdering
+    to: /reference/configuration/NYT_NFlow_EDistributionOrdering
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EFetchType
+    to: /reference/configuration/NYT_NFlow_EFetchType
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EFlowStateTarget
+    to: /reference/configuration/NYT_NFlow_EFlowStateTarget
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EJobBalancerType
+    to: /reference/configuration/NYT_NFlow_EJobBalancerType
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EPipelineState
+    to: /reference/configuration/NYT_NFlow_EPipelineState
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EProcessingMode
+    to: /reference/configuration/NYT_NFlow_EProcessingMode
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EQueueTabletIndexRoutingHashPolicy
+    to: /reference/configuration/NYT_NFlow_EQueueTabletIndexRoutingHashPolicy
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_ETimeType
+    to: /reference/configuration/NYT_NFlow_ETimeType
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_ETimestampFormat
+    to: /reference/configuration/NYT_NFlow_ETimestampFormat
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_EUnavailableSourcePolicy
+    to: /reference/configuration/NYT_NFlow_EUnavailableSourcePolicy
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NCompanion_TCompanionConfig
+    to: /reference/configuration/NYT_NFlow_NCompanion_TCompanionConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TControllerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TControllerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TControllerServiceConfig
+    to: /reference/configuration/NYT_NFlow_NController_TControllerServiceConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TElectionManagerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TElectionManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TLeaseManagerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TLeaseManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NController_TPersistedStateManagerConfig
+    to: /reference/configuration/NYT_NFlow_NController_TPersistedStateManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NDeltaCodecs_ECodec
+    to: /reference/configuration/NYT_NFlow_NDeltaCodecs_ECodec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NFileStorage_TFileStorageConfig
+    to: /reference/configuration/NYT_NFlow_NFileStorage_TFileStorageConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NStaticTableConnector_TTableTimestampLocatorSpec
+    to: /reference/configuration/NYT_NFlow_NStaticTableConnector_TTableTimestampLocatorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_NWorker_TWorkerConfig
+    to: /reference/configuration/NYT_NFlow_NWorker_TWorkerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TAtMostOnceStrategyDynamicParameters
+    to: /reference/configuration/NYT_NFlow_TAtMostOnceStrategyDynamicParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TAtMostOnceStrategyParameters
+    to: /reference/configuration/NYT_NFlow_TAtMostOnceStrategyParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TAuthenticatorConfig
+    to: /reference/configuration/NYT_NFlow_TAuthenticatorConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TBacktraceEnricherDynamicSpec
+    to: /reference/configuration/NYT_NFlow_TBacktraceEnricherDynamicSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TBacktraceEnricherSpec
+    to: /reference/configuration/NYT_NFlow_TBacktraceEnricherSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TComputationSpec
+    to: /reference/configuration/NYT_NFlow_TComputationSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDeleteStatesArg
+    to: /reference/configuration/NYT_NFlow_TDeleteStatesArg
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDeleteStatesResponse
+    to: /reference/configuration/NYT_NFlow_TDeleteStatesResponse
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicBufferStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicBufferStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicBufferStateManagerSpec_TOneSideBufferSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicBufferStateManagerSpec_TOneSideBufferSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicComputationSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicComputationSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicControllerConnectorSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicControllerConnectorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicExpiringJobNamedStateCacheSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicExpiringJobNamedStateCacheSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicInputStoreSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicInputStoreSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicJobManagerGroupSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicJobManagerGroupSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicJobManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicJobManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicJobTrackerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicJobTrackerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicKeyVisitorStreamSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicKeyVisitorStreamSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicMessageDistributorSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicMessageDistributorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicOutputStoreSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicOutputStoreSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicPartitionTracerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicPartitionTracerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicPipelineSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicPipelineSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicResourceSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicResourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicRetryableRequestSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicRetryableRequestSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSimpleExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSimpleExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSimpleExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSimpleExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSinkSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSinkSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicSourceSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicSourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateCacheSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateCacheSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateFormatSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateFormatSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicStaticTableKeyVisitorJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicStaticTableKeyVisitorJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicTableRequestSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicTableRequestSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicThrottlerSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicThrottlerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicTimerStoreSpec
+    to: /reference/configuration/NYT_NFlow_TDynamicTimerStoreSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TQueueSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TQueueSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TRandomSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TRandomSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TServiceLogSource
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TServiceLogSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TEventTimestampAssignerSpec
+    to: /reference/configuration/NYT_NFlow_TEventTimestampAssignerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFetcherInJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TFetcherInJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFileResourceDynamicParameters
+    to: /reference/configuration/NYT_NFlow_TFileResourceDynamicParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFileResourceParameters
+    to: /reference/configuration/NYT_NFlow_TFileResourceParameters
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFileSourceSpec
+    to: /reference/configuration/NYT_NFlow_TFileSourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TFlowNodeConfig
+    to: /reference/configuration/NYT_NFlow_TFlowNodeConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_THeavyHittersSpec
+    to: /reference/configuration/NYT_NFlow_THeavyHittersSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TIdlePartitionsSpec
+    to: /reference/configuration/NYT_NFlow_TIdlePartitionsSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TInputOrderingSpec
+    to: /reference/configuration/NYT_NFlow_TInputOrderingSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TKeyStateRow
+    to: /reference/configuration/NYT_NFlow_TKeyStateRow
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TKeyVisitorStreamSpec
+    to: /reference/configuration/NYT_NFlow_TKeyVisitorStreamSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TLateDataPartitionsSpec
+    to: /reference/configuration/NYT_NFlow_TLateDataPartitionsSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TLoadThroughputThrottlerSpec
+    to: /reference/configuration/NYT_NFlow_TLoadThroughputThrottlerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TMatchedStates
+    to: /reference/configuration/NYT_NFlow_TMatchedStates
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TMatchedStatesBucket
+    to: /reference/configuration/NYT_NFlow_TMatchedStatesBucket
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TMessageSerializer
+    to: /reference/configuration/NYT_NFlow_TMessageSerializer
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TPartitionStateRow
+    to: /reference/configuration/NYT_NFlow_TPartitionStateRow
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TPipelineSpec
+    to: /reference/configuration/NYT_NFlow_TPipelineSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TPivotFinderSpec
+    to: /reference/configuration/NYT_NFlow_TPivotFinderSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TReadStatesArg
+    to: /reference/configuration/NYT_NFlow_TReadStatesArg
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TReadStatesResponse
+    to: /reference/configuration/NYT_NFlow_TReadStatesResponse
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TResourceDescription
+    to: /reference/configuration/NYT_NFlow_TResourceDescription
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TResourceSpec
+    to: /reference/configuration/NYT_NFlow_TResourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSimpleExternalStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TSimpleExternalStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSimpleExternalStateManagerSpec
+    to: /reference/configuration/NYT_NFlow_TSimpleExternalStateManagerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSimpleRunnerConfig
+    to: /reference/configuration/NYT_NFlow_TSimpleRunnerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSinkSpec
+    to: /reference/configuration/NYT_NFlow_TSinkSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TSourceSpec
+    to: /reference/configuration/NYT_NFlow_TSourceSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStateJoinSpec
+    to: /reference/configuration/NYT_NFlow_TStateJoinSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStateJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TStateJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStaticTableKeyVisitorJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TStaticTableKeyVisitorJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TStreamSpec
+    to: /reference/configuration/NYT_NFlow_TStreamSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTableFetcherSpec
+    to: /reference/configuration/NYT_NFlow_TTableFetcherSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTableJoinerSpec
+    to: /reference/configuration/NYT_NFlow_TTableJoinerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTimerSerializer
+    to: /reference/configuration/NYT_NFlow_TTimerSerializer
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TTimerSpec
+    to: /reference/configuration/NYT_NFlow_TTimerSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnavailablePartitionGroupsSpec
+    to: /reference/configuration/NYT_NFlow_TUnavailablePartitionGroupsSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftMapCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TSwiftOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TQueueSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TQueueSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TRandomSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TRandomSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TServiceLogSource
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TServiceLogSource
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSyncQueueSink
+    to: /reference/configuration/NYT_NFlow_TUnitedParameters_NYT_NFlow_TSyncQueueSink
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TVanillaConfig
+    to: /reference/configuration/NYT_NFlow_TVanillaConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TVanillaTaskConfig
+    to: /reference/configuration/NYT_NFlow_TVanillaTaskConfig
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkAlignmentSpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkAlignmentSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkGeneratorSpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkGeneratorSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkPercentileSpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkPercentileSpec
+    type: redirect
+  - from: /generated_docs/NYT_NFlow_TWatermarkStrategySpec
+    to: /reference/configuration/NYT_NFlow_TWatermarkStrategySpec
+    type: redirect
+  - from: /generated_docs/NYT_NHttp_TClientConfig
+    to: /reference/configuration/NYT_NHttp_TClientConfig
+    type: redirect
+  - from: /generated_docs/NYT_NHttps_TClientConfig
+    to: /reference/configuration/NYT_NHttps_TClientConfig
+    type: redirect
+  - from: /generated_docs/NYT_NHttps_TClientCredentialsConfig
+    to: /reference/configuration/NYT_NHttps_TClientCredentialsConfig
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_ELogFamily
+    to: /reference/configuration/NYT_NLogging_ELogFamily
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_ELogLevel
+    to: /reference/configuration/NYT_NLogging_ELogLevel
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_TLogManagerConfig
+    to: /reference/configuration/NYT_NLogging_TLogManagerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_TLogManagerDynamicConfig
+    to: /reference/configuration/NYT_NLogging_TLogManagerDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NLogging_TRuleConfig
+    to: /reference/configuration/NYT_NLogging_TRuleConfig
+    type: redirect
+  - from: /generated_docs/NYT_NNet_TAddressResolverConfig
+    to: /reference/configuration/NYT_NNet_TAddressResolverConfig
+    type: redirect
+  - from: /generated_docs/NYT_NNet_TDialerConfig
+    to: /reference/configuration/NYT_NNet_TDialerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NPipeIO_TPipeIODispatcherConfig
+    to: /reference/configuration/NYT_NPipeIO_TPipeIODispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NPipeIO_TPipeIODispatcherDynamicConfig
+    to: /reference/configuration/NYT_NPipeIO_TPipeIODispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_ELabelSanitizationPolicy
+    to: /reference/configuration/NYT_NProfiling_ELabelSanitizationPolicy
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TResourceTrackerConfig
+    to: /reference/configuration/NYT_NProfiling_TResourceTrackerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TShardConfig
+    to: /reference/configuration/NYT_NProfiling_TShardConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonExporterConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonExporterConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonProxyConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonProxyConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonRegistryConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonRegistryConfig
+    type: redirect
+  - from: /generated_docs/NYT_NProfiling_TSolomonRegistryDynamicConfig
+    to: /reference/configuration/NYT_NProfiling_TSolomonRegistryDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_EStatisticsAggregation
+    to: /reference/configuration/NYT_NQueryClient_EStatisticsAggregation
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TCodegenCacheConfig
+    to: /reference/configuration/NYT_NQueryClient_TCodegenCacheConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TCodegenCacheDynamicConfig
+    to: /reference/configuration/NYT_NQueryClient_TCodegenCacheDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TQueryEngineConfig
+    to: /reference/configuration/NYT_NQueryClient_TQueryEngineConfig
+    type: redirect
+  - from: /generated_docs/NYT_NQueryClient_TQueryEngineDynamicConfig
+    to: /reference/configuration/NYT_NQueryClient_TQueryEngineDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_EPeerPriorityStrategy
+    to: /reference/configuration/NYT_NRpc_EPeerPriorityStrategy
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_ERequestTracingMode
+    to: /reference/configuration/NYT_NRpc_ERequestTracingMode
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TChannelConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TChannelConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TChannelCredentialsConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TChannelCredentialsConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TDispatcherConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TDispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TDispatcherDynamicConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TDispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_NGrpc_TSslPemKeyCertPairConfig
+    to: /reference/configuration/NYT_NRpc_NGrpc_TSslPemKeyCertPairConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TDispatcherConfig
+    to: /reference/configuration/NYT_NRpc_TDispatcherConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TDispatcherDynamicConfig
+    to: /reference/configuration/NYT_NRpc_TDispatcherDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TDynamicChannelPoolConfig
+    to: /reference/configuration/NYT_NRpc_TDynamicChannelPoolConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_THistogramExponentialBounds
+    to: /reference/configuration/NYT_NRpc_THistogramExponentialBounds
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TRetryingChannelConfig
+    to: /reference/configuration/NYT_NRpc_TRetryingChannelConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TServerConfig
+    to: /reference/configuration/NYT_NRpc_TServerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TServiceDiscoveryEndpointsConfig
+    to: /reference/configuration/NYT_NRpc_TServiceDiscoveryEndpointsConfig
+    type: redirect
+  - from: /generated_docs/NYT_NRpc_TTimeHistogramConfig
+    to: /reference/configuration/NYT_NRpc_TTimeHistogramConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_TDynamicHeapSizeLimitConfig
+    to: /reference/configuration/NYT_NTCMalloc_TDynamicHeapSizeLimitConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_TDynamicTCMallocConfig
+    to: /reference/configuration/NYT_NTCMalloc_TDynamicTCMallocConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_THeapSizeLimitConfig
+    to: /reference/configuration/NYT_NTCMalloc_THeapSizeLimitConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTCMalloc_TTCMallocConfig
+    to: /reference/configuration/NYT_NTCMalloc_TTCMallocConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTracing_TJaegerTracerConfig
+    to: /reference/configuration/NYT_NTracing_TJaegerTracerConfig
+    type: redirect
+  - from: /generated_docs/NYT_NTracing_TJaegerTracerDynamicConfig
+    to: /reference/configuration/NYT_NTracing_TJaegerTracerDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_NYTree_TSize
+    to: /reference/configuration/NYT_NYTree_TSize
+    type: redirect
+  - from: /generated_docs/NYT_NYson_EEnumYsonStorageType
+    to: /reference/configuration/NYT_NYson_EEnumYsonStorageType
+    type: redirect
+  - from: /generated_docs/NYT_NYson_EUtf8Check
+    to: /reference/configuration/NYT_NYson_EUtf8Check
+    type: redirect
+  - from: /generated_docs/NYT_NYson_TProtobufInteropConfig
+    to: /reference/configuration/NYT_NYson_TProtobufInteropConfig
+    type: redirect
+  - from: /generated_docs/NYT_NYson_TProtobufInteropDynamicConfig
+    to: /reference/configuration/NYT_NYson_TProtobufInteropDynamicConfig
+    type: redirect
+  - from: /generated_docs/NYT_TSingletonsDynamicConfig
+    to: /reference/configuration/NYT_TSingletonsDynamicConfig
+    type: redirect
+  - from: /generated_docs/TDuration
+    to: /reference/configuration/TDuration
+    type: redirect
+  - from: /generated_docs/all_yson_structs
+    to: /reference/configuration/all_yson_structs
+    type: redirect
+  - from: /go/computation
+    to: /how-to-guides/go/computation
+    type: redirect
+  - from: /go/distribute
+    to: /how-to-guides/go/distribute
+    type: redirect
+  - from: /go/examples/async_request
+    to: /tutorials/go/examples/async_request
+    type: redirect
+  - from: /go/examples/external_state_join
+    to: /tutorials/go/examples/external_state_join
+    type: redirect
+  - from: /go/examples/retryable_async_request
+    to: /tutorials/go/examples/retryable_async_request
+    type: redirect
+  - from: /go/examples/shuffle
+    to: /tutorials/go/examples/shuffle
+    type: redirect
+  - from: /go/examples/static_table_join
+    to: /tutorials/go/examples/static_table_join
+    type: redirect
+  - from: /go/examples/url_downloader
+    to: /tutorials/go/examples/url_downloader
+    type: redirect
+  - from: /go/examples/wait_click_join
+    to: /tutorials/go/examples/wait_click_join
+    type: redirect
+  - from: /go/examples/wordcount
+    to: /tutorials/go/examples/wordcount
+    type: redirect
+  - from: /go/external-state
+    to: /how-to-guides/go/external-state
+    type: redirect
+  - from: /go/getting-started
+    to: /tutorials/go/quick-start
+    type: redirect
+  - from: /go/internal-state
+    to: /how-to-guides/go/internal-state
+    type: redirect
+  - from: /go/state
+    to: /how-to-guides/go/state
+    type: redirect
+  - from: /go/state-accessor
+    to: /how-to-guides/go/state-accessor
+    type: redirect
+  - from: /go/testing
+    to: /how-to-guides/go/testing
+    type: redirect
+  - from: /java/computation
+    to: /how-to-guides/java/computation
+    type: redirect
+  - from: /java/distribute
+    to: /how-to-guides/java/distribute
+    type: redirect
+  - from: /java/env-variables
+    to: /how-to-guides/java/env-variables
+    type: redirect
+  - from: /java/examples/async_request
+    to: /tutorials/java/examples/async_request
+    type: redirect
+  - from: /java/examples/retryable_async_request
+    to: /tutorials/java/examples/retryable_async_request
+    type: redirect
+  - from: /java/examples/shuffle
+    to: /tutorials/java/examples/shuffle
+    type: redirect
+  - from: /java/examples/url_downloader
+    to: /tutorials/java/examples/url_downloader
+    type: redirect
+  - from: /java/examples/wait_click_join
+    to: /tutorials/java/examples/wait_click_join
+    type: redirect
+  - from: /java/examples/wordcount
+    to: /tutorials/java/examples/wordcount
+    type: redirect
+  - from: /java/external-state
+    to: /how-to-guides/java/external-state
+    type: redirect
+  - from: /java/getting-started
+    to: /tutorials/java/quick-start
+    type: redirect
+  - from: /java/internal-state
+    to: /how-to-guides/java/internal-state
+    type: redirect
+  - from: /java/profiling
+    to: /how-to-guides/java/profiling
+    type: redirect
+  - from: /java/spring
+    to: /how-to-guides/java/spring
+    type: redirect
+  - from: /java/state
+    to: /how-to-guides/java/state
+    type: redirect
+  - from: /java/state-accessor
+    to: /how-to-guides/java/state-accessor
+    type: redirect
+  - from: /java/testing
+    to: /how-to-guides/java/testing
+    type: redirect
+  - from: /java/typed-streams
+    to: /how-to-guides/java/typed-streams
+    type: redirect
+  - from: /python/computation
+    to: /how-to-guides/python/computation
+    type: redirect
+  - from: /python/distribute
+    to: /how-to-guides/python/distribute
+    type: redirect
+  - from: /python/examples/async_request
+    to: /tutorials/python/examples/async_request
+    type: redirect
+  - from: /python/examples/retryable_async_request
+    to: /tutorials/python/examples/retryable_async_request
+    type: redirect
+  - from: /python/examples/shuffle
+    to: /tutorials/python/examples/shuffle
+    type: redirect
+  - from: /python/examples/url_downloader
+    to: /tutorials/python/examples/url_downloader
+    type: redirect
+  - from: /python/examples/wait_click_join
+    to: /tutorials/python/examples/wait_click_join
+    type: redirect
+  - from: /python/examples/wordcount
+    to: /tutorials/python/examples/wordcount
+    type: redirect
+  - from: /python/external-state
+    to: /how-to-guides/python/external-state
+    type: redirect
+  - from: /python/getting-started
+    to: /tutorials/python/quick-start
+    type: redirect
+  - from: /python/internal-state
+    to: /how-to-guides/python/internal-state
+    type: redirect
+  - from: /python/state
+    to: /how-to-guides/python/state
+    type: redirect
+  - from: /python/state-accessor
+    to: /how-to-guides/python/state-accessor
+    type: redirect
+  - from: /python/testing
+    to: /how-to-guides/python/testing
+    type: redirect
+  - from: /quickstart
+    to: /tutorials/quick-start
+    type: redirect
+  - from: /release/auth
+    to: /how-to-guides/deployment/configure-authentication
+    type: redirect
+  - from: /release/basic-rules
+    to: /how-to-guides/deployment/basic-rules
+    type: redirect
+  - from: /release/cli
+    to: /reference/cli
+    type: redirect
+  - from: /release/flow-core-target
+    to: /concepts/deployment/flow-core-target
+    type: redirect
+  - from: /release/launch-vanilla
+    to: /how-to-guides/deployment/launch-vanilla
+    type: redirect
+  - from: /release/logs
+    to: /how-to-guides/operations/view-logs
+    type: redirect
+  - from: /release/pipeline-operations
+    to: /how-to-guides/operations/manage-pipeline
+    type: redirect
+  - from: /release/releases
+    to: /how-to-guides/deployment/update-pipeline
+    type: redirect
+  - from: /release/security
+    to: /how-to-guides/deployment/configure-security
+    type: redirect
+  - from: /release/yt-sync-rules
+    to: /how-to-guides/deployment/yt-sync-rules
+    type: redirect
+  - from: /start
+    to: /concepts/getting-started
+    type: redirect
+  - from: /tasks
+    to: /tutorials/task-examples
+    type: redirect
+  - from: /yql/features
+    to: /reference/yql/features
+    type: redirect
+  - from: /yql/getting-started
+    to: /tutorials/yql/quick-start
+    type: redirect
