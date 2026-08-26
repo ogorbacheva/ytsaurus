@@ -340,6 +340,38 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertNotIn("unrestrict-revision-access", source)
         self.assertNotIn("no-index", source)
 
+    def test_public_preview_overrides_language_specific_docs_root(self) -> None:
+        language_presets = (
+            self.source / "public" / "demo" / "ru" / "presets.yaml"
+        )
+        language_presets.write_text(
+            language_presets.read_text(encoding="utf-8").replace(
+                "  lang: ru\n",
+                "  lang: ru\n"
+                "  demo-docs-root: https://language.example.test/docs/demo\n"
+                "  preview-link: '{{ demo-docs-root }}/{{ lang }}/preview"
+                "{{ docs-revision-query }}'\n",
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_script(
+            "--docs-revision-query",
+            "?revision=abc123",
+            "--public-revision-preview",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        generated = (self.output / "demo" / "ru" / "presets.yaml").read_text(
+            encoding="utf-8"
+        )
+        viewer_root = "https://demo-bucket---demo-docs.viewer.ydocs.io"
+        self.assertIn(f'demo-docs-root: "{viewer_root}"', generated)
+        self.assertIn(
+            f"preview-link: '{viewer_root}/ru/preview?revision=abc123'",
+            generated,
+        )
+
     def test_public_revision_preview_requires_revision(self) -> None:
         result = self.run_script("--public-revision-preview")
         self.assertNotEqual(result.returncode, 0)

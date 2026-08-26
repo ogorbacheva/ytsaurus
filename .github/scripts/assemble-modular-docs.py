@@ -722,8 +722,25 @@ def assemble_module(
     for language in module["languages"]:
         language_root = destination / language
         language_presets = language_root / "presets.yaml"
+        language_variables = load_public_scalars(language_presets)
+        if public_preview_mode:
+            # A language preset may define its own component root so that the
+            # source module can also be built directly.  During a public
+            # preview that value must not shadow the Viewer root injected into
+            # the shared preset, otherwise self-links leave the preview and
+            # point at production.
+            language_preview_roots = {
+                name: value
+                for name, value in preview_roots.items()
+                if name in language_variables
+            }
+            if language_preview_roots:
+                override_public_scalars(
+                    language_presets, language_preview_roots
+                )
+                language_variables = load_public_scalars(language_presets)
         variables = dict(shared_variables)
-        variables.update(load_public_scalars(language_presets))
+        variables.update(language_variables)
         variables["docs-revision-query"] = docs_revision_query
         if variables.get("lang") != language:
             raise AssemblyError(

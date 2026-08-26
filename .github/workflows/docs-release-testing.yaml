@@ -170,7 +170,8 @@ jobs:
           VERSION_LABEL: ${{ steps.version-plan.outputs.version_label }}
           ARTIFACT_VERSION: ${{ steps.version-plan.outputs.artifact_version }}
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          trap 'printf "Build contract failed at line %s: %s\n" "${LINENO}" "${BASH_COMMAND}" >&2' ERR
           module_selected() {
             jq -e --arg module "$1" 'index($module) != null' \
               <<<"${SELECTED_MODULES}" >/dev/null
