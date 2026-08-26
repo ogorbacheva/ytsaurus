@@ -20,6 +20,7 @@ CONFIG_LANGS_RE = re.compile(r"^[ \t]*langs:[ \t]*\[([^]]+)]", re.MULTILINE)
 PRESET_SCALAR_RE = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):(?:\s+(.*?))?\s*$")
 PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*}}")
 REVISION_QUERY_RE = re.compile(r"^$|^\?revision=[A-Za-z0-9._-]+$")
+DOCS_REVISION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 VIEWER_URL_RE = re.compile(
     r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.viewer\.ydocs\.io$"
 )
@@ -123,6 +124,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Override docs-revision-query while rendering Page Constructor YAML. "
             "Defaults to the value in public/presets.yaml."
+        ),
+    )
+    parser.add_argument(
+        "--docs-revision",
+        help=(
+            "Revision used for Viewer asset URLs. Required for a public "
+            "version preview; inferred from docs-revision-query for a "
+            "revision preview."
         ),
     )
     preview_group = parser.add_mutually_exclusive_group()
@@ -263,6 +272,30 @@ def materialize_navigation_asset_pages(
             content = content.rstrip() + "\n" + item
         else:
             content = content.rstrip() + "\nitems:\n" + item
+        toc.write_text(content, encoding="utf-8")
+
+
+def rewrite_navigation_asset_urls(
+    destination: Path,
+    module: dict[str, Any],
+    docs_revision: str,
+) -> None:
+    """Point Page Constructor header icons at Viewer-served build assets."""
+    asset_root = (
+        f"{module['viewer_url']}/docs-assets/{module['project_name']}"
+        f"/rev/{docs_revision}/_assets/navigation"
+    )
+    for language in module["languages"]:
+        toc = destination / language / "toc.yaml"
+        content = toc.read_text(encoding="utf-8")
+        for asset in ("logo-dark.svg", "logo-light.svg", "github.svg"):
+            relative = f"_assets/navigation/{asset}"
+            occurrences = content.count(relative)
+            if occurrences != 1:
+                raise AssemblyError(
+                    f"Expected one {relative} reference in {toc}, found {occurrences}"
+                )
+            content = content.replace(relative, f"{asset_root}/{asset}")
         toc.write_text(content, encoding="utf-8")
 
 
@@ -775,6 +808,7 @@ def assemble_module(
     shared_presets: Path,
     shared_variables: dict[str, str],
     docs_revision_query: str,
+    docs_revision: str | None,
     public_preview_mode: str | None,
     preview_roots: dict[str, str],
     navigation_assets: Path,
@@ -814,6 +848,9 @@ def assemble_module(
     if public_preview_mode:
         inject_public_revision_preview(destination / ".yfm")
         override_public_scalars(destination / "presets.yaml", preview_roots)
+        if docs_revision is None:
+            raise AssemblyError("Public preview requires docs_revision")
+        rewrite_navigation_asset_urls(destination, module, docs_revision)
 
     common_module = source_root / "common" / name
     if module["common"]:
@@ -962,6 +999,9 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
         raise AssemblyError(
             "docs-revision-query must be empty or match ?revision=<safe-revision>"
         )
+    docs_revision = args.docs_revision
+    if docs_revision is not None and not DOCS_REVISION_RE.fullmatch(docs_revision):
+        raise AssemblyError("docs-revision must contain only safe revision characters")
 
     modules = load_registry(args.registry.resolve())
     public_preview_mode: str | None = None
@@ -971,12 +1011,21 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
             raise AssemblyError(
                 "--public-revision-preview requires a non-empty --docs-revision-query"
             )
+        query_revision = docs_revision_query.removeprefix("?revision=")
+        if docs_revision is None:
+            docs_revision = query_revision
+        elif docs_revision != query_revision:
+            raise AssemblyError(
+                "docs-revision must match the revision in docs-revision-query"
+            )
     elif args.public_version_preview:
         public_preview_mode = "version"
         if docs_revision_query:
             raise AssemblyError(
                 "--public-version-preview requires an empty --docs-revision-query"
             )
+        if docs_revision is None:
+            raise AssemblyError("--public-version-preview requires --docs-revision")
 
     preview_roots: dict[str, str] = {}
     if public_preview_mode:
@@ -1019,6 +1068,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
             shared_presets,
             shared_variables,
             docs_revision_query,
+            docs_revision,
             public_preview_mode,
             preview_roots,
             navigation_assets,

@@ -117,6 +117,7 @@ jobs:
       - name: Assemble isolated YFM projects
         env:
           SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
+          DOCS_REVISION: ${{ steps.version-plan.outputs.docs_revision }}
           DOCS_REVISION_QUERY: ${{ steps.version-plan.outputs.docs_revision_query }}
           PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
         run: |
@@ -126,6 +127,7 @@ jobs:
             --source-root "${DOCS_SOURCE_ROOT}" \
             --registry .github/docs-modules.json \
             --output-root "${DOCS_INPUT_ROOT}" \
+            --docs-revision "${DOCS_REVISION}" \
             --docs-revision-query "${DOCS_REVISION_QUERY}" \
             --clean
           )
@@ -176,6 +178,7 @@ jobs:
       - name: Verify build contract
         env:
           SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
+          DOCS_REVISION: ${{ steps.version-plan.outputs.docs_revision }}
           DOCS_REVISION_QUERY: ${{ steps.version-plan.outputs.docs_revision_query }}
           PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
           VERSION_COMPONENT: ${{ steps.version-plan.outputs.component }}
@@ -201,6 +204,8 @@ jobs:
           flow_url=$(viewer_url flow)
 
           while IFS=$'\t' read -r module project_name; do
+            module_url=$(viewer_url "${module}")
+            navigation_asset_root="${module_url}/docs-assets/${project_name}/rev/${DOCS_REVISION}/_assets/navigation"
             test -f "${BUILD_OUTPUT_MD}/${module}/.yfm"
             test -f "${BUILD_OUTPUT_HTML}/${module}/index.html"
             test -s "${BUILD_LOGS}/${module}.log"
@@ -217,6 +222,11 @@ jobs:
               grep -Fq \
                 "\"_assets/navigation/${asset}\"" \
                 "${BUILD_OUTPUT_MD}/${module}/yfm-build-content.json"
+              for language in ru en; do
+                grep -Fq \
+                  "${navigation_asset_root}/${asset}" \
+                  "${BUILD_OUTPUT_MD}/${module}/${language}/toc.yaml"
+              done
             done
           done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
             '.modules[] | select(.name as $name | ($selected | index($name))) | [.name, .project_name] | @tsv' \

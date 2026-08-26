@@ -56,7 +56,19 @@ class AssembleModularDocsTest(unittest.TestCase):
             encoding="utf-8",
         )
         (self.source / "public" / "demo" / "ru" / "toc.yaml").write_text(
-            "title: Demo\nhref: index.yaml\n", encoding="utf-8"
+            "title: Demo\n"
+            "href: index.yaml\n"
+            "navigation:\n"
+            "  logo:\n"
+            "    dark:\n"
+            "      icon: \"_assets/navigation/logo-dark.svg\"\n"
+            "    light:\n"
+            "      icon: \"_assets/navigation/logo-light.svg\"\n"
+            "  header:\n"
+            "    rightItems:\n"
+            "      - type: link\n"
+            "        icon: \"_assets/navigation/github.svg\"\n",
+            encoding="utf-8",
         )
         (self.source / "public" / "demo" / "ru" / "presets.yaml").write_text(
             "public:\n"
@@ -421,6 +433,15 @@ class AssembleModularDocsTest(unittest.TestCase):
             manifest["modules"][0]["viewer_url"],
             "https://demo-bucket---demo-docs.viewer.ydocs.io",
         )
+        generated_toc = (self.output / "demo" / "ru" / "toc.yaml").read_text(
+            encoding="utf-8"
+        )
+        asset_root = (
+            "https://demo-bucket---demo-docs.viewer.ydocs.io/"
+            "docs-assets/demo-docs/rev/abc123/_assets/navigation"
+        )
+        self.assertIn(f'icon: "{asset_root}/logo-light.svg"', generated_toc)
+        self.assertIn(f'icon: "{asset_root}/github.svg"', generated_toc)
 
         source = source_config.read_text(encoding="utf-8")
         self.assertNotIn("unrestrict-revision-access", source)
@@ -464,7 +485,9 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertIn("requires a non-empty", result.stderr)
 
     def test_public_version_preview_is_generated_without_revision_query(self) -> None:
-        result = self.run_script("--public-version-preview")
+        result = self.run_script(
+            "--docs-revision", "version-preview-revision", "--public-version-preview"
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
         generated = (self.output / "demo" / ".yfm").read_text(encoding="utf-8")
@@ -482,6 +505,19 @@ class AssembleModularDocsTest(unittest.TestCase):
         )
         self.assertFalse(manifest["modules"][0]["public_revision_preview"])
         self.assertTrue(manifest["modules"][0]["public_version_preview"])
+        generated_toc = (self.output / "demo" / "ru" / "toc.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "docs-assets/demo-docs/rev/version-preview-revision/"
+            "_assets/navigation/github.svg",
+            generated_toc,
+        )
+
+    def test_public_version_preview_requires_docs_revision(self) -> None:
+        result = self.run_script("--public-version-preview")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires --docs-revision", result.stderr)
 
     def test_public_version_preview_rejects_revision_query(self) -> None:
         result = self.run_script(
