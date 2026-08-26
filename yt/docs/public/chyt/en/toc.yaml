@@ -6,9 +6,9 @@ navigation:
     url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
     urlTitle: "Go to the documentation home page"
     dark:
-      icon: "https://ytsaurus.tech/assets/logo-dark.svg"
+      icon: "_assets/navigation/logo-dark.svg"
     light:
-      icon: "https://ytsaurus.tech/assets/logo-light.svg"
+      icon: "_assets/navigation/logo-light.svg"
   header:
     leftItems:
       - type: dropdown
@@ -182,7 +182,7 @@ navigation:
       - type: link
         text: "GitHub"
         url: "https://github.com/ytsaurus/ytsaurus"
-        icon: "https://storage.yandexcloud.net/ytsaurus-www/assets/favicon-github.svg"
+        icon: "_assets/navigation/github.svg"
         target: "_blank"
       - type: controls
 # END GENERATED GLOBAL NAVIGATION

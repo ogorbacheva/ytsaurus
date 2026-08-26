@@ -22,6 +22,10 @@ class BuildGlobalNavigationTest(unittest.TestCase):
         self.source = self.root / "yt" / "docs"
         self.registry = self.root / "docs-modules.json"
         (self.source / "navigation").mkdir(parents=True)
+        navigation_assets = self.source / "navigation" / "_assets" / "navigation"
+        navigation_assets.mkdir(parents=True)
+        for asset in ("logo-dark.svg", "logo-light.svg", "github.svg"):
+            (navigation_assets / asset).write_text("<svg/>\n", encoding="utf-8")
 
         for module in MODULES:
             for language in LANGUAGES:
@@ -52,6 +56,10 @@ class BuildGlobalNavigationTest(unittest.TestCase):
             "  logo:\n"
             '    url: "{{ landing-docs-root }}/{{ lang }}/'
             '{{ docs-revision-query }}"\n'
+            "    dark:\n"
+            '      icon: "_assets/navigation/logo-dark.svg"\n'
+            "    light:\n"
+            '      icon: "_assets/navigation/logo-light.svg"\n'
             "  header:\n"
             "    leftItems:\n"
             "      - type: link\n"
@@ -66,6 +74,9 @@ class BuildGlobalNavigationTest(unittest.TestCase):
             "      - type: link\n"
             '        url: "{{ yql-docs-root }}/{{ lang }}/yql/'
             '{{ docs-revision-query }}"\n'
+            "    rightItems:\n"
+            "      - type: link\n"
+            '        icon: "_assets/navigation/github.svg"\n'
         )
         for language in LANGUAGES:
             (self.source / "navigation" / f"{language}.yaml").write_text(
@@ -160,6 +171,31 @@ class BuildGlobalNavigationTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("missing local page", result.stderr)
         self.assertIn("public/core/ru/guide", result.stderr)
+
+    def test_external_navigation_icon_fails(self) -> None:
+        template = self.source / "navigation" / "ru.yaml"
+        template.write_text(
+            template.read_text(encoding="utf-8").replace(
+                "_assets/navigation/github.svg",
+                "https://example.test/github.svg",
+            ),
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("navigation icon must be a safe project-local path", result.stderr)
+
+    def test_missing_navigation_icon_fails(self) -> None:
+        (
+            self.source
+            / "navigation"
+            / "_assets"
+            / "navigation"
+            / "github.svg"
+        ).unlink()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("navigation icon is missing", result.stderr)
 
     def test_registered_project_must_receive_revision_query(self) -> None:
         template = self.source / "navigation" / "ru.yaml"

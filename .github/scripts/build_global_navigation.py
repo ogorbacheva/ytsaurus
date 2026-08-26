@@ -22,6 +22,10 @@ URL_RE = re.compile(
     r"^[ \t]*url:[ \t]*(?P<quote>['\"])(?P<url>.*)(?P=quote)[ \t]*$",
     re.MULTILINE,
 )
+ICON_RE = re.compile(
+    r"^[ \t]*icon:[ \t]*(?P<quote>['\"])(?P<icon>.*)(?P=quote)[ \t]*$",
+    re.MULTILINE,
+)
 DOCS_ROOT_RE = re.compile(
     r"\{\{\s*(?P<module>[a-z0-9][a-z0-9-]*)-docs-root\s*\}\}"
 )
@@ -185,6 +189,23 @@ def validate_template_routes(
     module_names: set[str],
 ) -> None:
     template = template_path.read_text(encoding="utf-8")
+    for icon_match in ICON_RE.finditer(template):
+        icon = icon_match.group("icon")
+        icon_path = Path(icon)
+        if (
+            "://" in icon
+            or icon_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in icon_path.parts)
+        ):
+            raise NavigationError(
+                f"{template_path}: navigation icon must be a safe project-local path: "
+                f"{icon}"
+            )
+        source = source_root / "navigation" / icon_path
+        if not source.is_file():
+            raise NavigationError(
+                f"{template_path}: navigation icon is missing: {source}"
+            )
     for url_match in URL_RE.finditer(template):
         url = url_match.group("url")
         roots = list(DOCS_ROOT_RE.finditer(url))

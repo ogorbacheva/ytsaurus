@@ -169,6 +169,13 @@ jobs:
               --strict \
               --vars "${BUILD_VARS}" \
               2>&1 | tee -a "${log_file}"
+
+            mkdir -p "${BUILD_OUTPUT_MD}/${module}/_assets/navigation"
+            for asset in logo-dark.svg logo-light.svg github.svg; do
+              cp \
+                "${DOCS_INPUT_ROOT}/${module}/_assets/navigation/${asset}" \
+                "${BUILD_OUTPUT_MD}/${module}/_assets/navigation/${asset}"
+            done
           done < <(jq -r '.[]' <<<"${SELECTED_MODULES}")
         shell: bash
 
@@ -209,6 +216,10 @@ jobs:
             for language in ru en; do
               test -f "${BUILD_OUTPUT_MD}/${module}/${language}/llms.txt"
               test -f "${BUILD_OUTPUT_MD}/${module}/${language}/llms-full.txt"
+            done
+            for asset in logo-dark.svg logo-light.svg github.svg; do
+              test -f "${BUILD_OUTPUT_HTML}/${module}/_assets/navigation/${asset}"
+              test -f "${BUILD_OUTPUT_MD}/${module}/_assets/navigation/${asset}"
             done
           done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
             '.modules[] | select(.name as $name | ($selected | index($name))) | [.name, .project_name] | @tsv' \

@@ -19,6 +19,12 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.source = self.root / "yt" / "docs"
         self.registry = self.root / "modules.json"
         self.output = self.root / "output"
+        navigation_assets = self.source / "navigation" / "_assets" / "navigation"
+        navigation_assets.mkdir(parents=True)
+        for asset in ("logo-dark.svg", "logo-light.svg", "github.svg"):
+            (navigation_assets / asset).write_text(
+                f"<svg id='{asset}'></svg>\n", encoding="utf-8"
+            )
         (self.source / "public" / "demo" / "ru").mkdir(parents=True)
         (self.source / "common" / "demo" / "ru" / "_includes").mkdir(
             parents=True
@@ -151,6 +157,16 @@ class AssembleModularDocsTest(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.output / "demo" / "presets.yaml").is_file())
+        self.assertEqual(
+            (
+                self.output
+                / "demo"
+                / "_assets"
+                / "navigation"
+                / "github.svg"
+            ).read_text(encoding="utf-8"),
+            "<svg id='github.svg'></svg>\n",
+        )
         self.assertTrue(
             (self.output / "demo" / "ru" / "common" / "_includes" / "note.md").is_file()
         )
@@ -305,6 +321,18 @@ class AssembleModularDocsTest(unittest.TestCase):
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing common/demo/ru", result.stderr)
+
+    def test_missing_navigation_asset_blocks_assembly(self) -> None:
+        (
+            self.source
+            / "navigation"
+            / "_assets"
+            / "navigation"
+            / "github.svg"
+        ).unlink()
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("shared navigation asset navigation/github.svg", result.stderr)
 
     def test_missing_language_preset_blocks_assembly(self) -> None:
         (self.source / "public" / "demo" / "ru" / "presets.yaml").unlink()
