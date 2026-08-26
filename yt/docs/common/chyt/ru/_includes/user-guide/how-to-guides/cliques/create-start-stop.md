@@ -20,7 +20,7 @@
       - _Alias name_ — название клики;
       - _Instance count_ — количество инстансов клики (от 1 до 100);
       - _Pool tree_ — дерево пулов, выберите значение из списка или оставьте значение по умолчанию;
-      - _Pool_ — название вычислительного [пула]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler), в котором необходимо запускать операцию клики.
+      - _Pool_ — название вычислительного [пула]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler), в котором необходимо запускать операцию клики.
 
         {% note info %}
 

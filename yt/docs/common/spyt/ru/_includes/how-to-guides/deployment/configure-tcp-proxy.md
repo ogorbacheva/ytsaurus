@@ -1,6 +1,6 @@
 # Как настроить доступ к SPYT {#spyt-access}
 
-Для работы SPYT в режиме [Standalone]({{ spyt-docs-root }}/{{ lang }}/concepts/cluster-architecture{{ docs-revision-query }}#spark-standalone) внешний драйвер Spark должен соединяться напрямую со Spark-воркерами. Эти воркеры запускаются не как отдельные поды Kubernetes, а как процессы внутри [Vanilla-джобов]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}) {{product-name}}. Стандартные сетевые абстракции Kubernetes (Services) не умеют адресовать трафик внутрь таких процессов.
+Для работы SPYT в режиме [Standalone]({{ spyt-docs-root }}/{{ lang }}/concepts/cluster-architecture{{ docs-revision-query }}#spark-standalone) внешний драйвер Spark должен соединяться напрямую со Spark-воркерами. Эти воркеры запускаются не как отдельные поды Kubernetes, а как процессы внутри [Vanilla-джобов]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}) {{product-name}}. Стандартные сетевые абстракции Kubernetes (Services) не умеют адресовать трафик внутрь таких процессов.
 
 Для проксирования таких соединений используется `tcp_proxy`. Это компонент {{product-name}}, который знает, на какой ноде и на каком порту запустился конкретный процесс воркера, и умеет пробросить туда трафик снаружи &mdash; на основе таблиц в Кипарисе `//sys/tcp_proxies/routes`.
 

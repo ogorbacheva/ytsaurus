@@ -17,7 +17,7 @@ Below are the query execution stages that can be a bottleneck.
 2. Reading data from the disk.
 3. Transmitting data over the network.
 4. Data uncompressing and decoding.
-5. Version merging (for [dynamic]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}) tables only).
+5. Version merging (for [dynamic]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}) tables only).
 6. Converting data from {{product-name}} format into CH format.
 7. Data processing by the ClickHouse engine.
 8. Converting data from CH format into {{product-name}} format (for write operations only).
@@ -31,7 +31,7 @@ Below are the factors that affect the read query speed.
 
 ### Processed data size { #data_weight }
 
-CHYT is primarily designed for fast (a few seconds) processing of small (about 1 GB) and medium (about tens of GB) data. You cannot use CHYT effectively to process TB of data. You can reduce the amount of processed data with a right data storage [schema]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/static-schema{{ docs-revision-query }}) (using column orientation and sorting).
+CHYT is primarily designed for fast (a few seconds) processing of small (about 1 GB) and medium (about tens of GB) data. You cannot use CHYT effectively to process TB of data. You can reduce the amount of processed data with a right data storage [schema]({{ core-docs-root }}/{{ lang }}/reference/storage/static-schema{{ docs-revision-query }}) (using column orientation and sorting).
 
 To build dashboards on top of a large amount of data, we recommend making separate tables with the necessary data and pre-aggregated values. For example, if the data is specified in milliseconds and you need to build analytics by days, you need to pre-aggregate the data to a day.
 

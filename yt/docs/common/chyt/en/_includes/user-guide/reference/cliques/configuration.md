@@ -1,6 +1,6 @@
 # Clique configuration
 
-The entire clique configuration is described by a single [YSON document]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/yson-docs{{ docs-revision-query }}) called a *speclet*.
+The entire clique configuration is described by a single [YSON document]({{ core-docs-root }}/{{ lang }}/concepts/storage/yson-docs{{ docs-revision-query }}) called a *speclet*.
 
 The clique speclet is stored in Cypress at `//sys/strawberry/chyt/<alias>/speclet`. You can also view its contents in the [web interface]({{ docs_root }}/chyt/user-guide/reference/cliques/ui.md) on the **Speclet** tab or retrieve it by running the CLI command `yt clickhouse ctl get-speclet`.
 
@@ -35,7 +35,7 @@ The {{product-name}} part of the instance configuration resides in the `yt_confi
 
 
 - `settings`: CHYT‑specific default query [settings]({{ docs_root }}/chyt/user-guide/reference/queries/settings.md). Changing the setting in this section changes the default value for this setting for all queries in the clique.
-- `table_writer`: [Table Writer configuration]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/io-configuration{{ docs-revision-query }}#table_writer).
+- `table_writer`: [Table Writer configuration]({{ core-docs-root }}/{{ lang }}/reference/storage/io-configuration{{ docs-revision-query }}#table_writer).
 - `table_attribute_cache`: Table attribute cache configuration. This cache significantly improves the responsiveness of CHYT, though at the moment it may lead to non‑consistent reads (when data has already appeared in the table, but CHYT does not see it yet). To disable this cache, use the following configuration:
   ```
   {read_from=follower;expire_after_successful_update_time=0;expire_after_failed_update_time=0;refresh_time=0;expire_after_access_time=0}

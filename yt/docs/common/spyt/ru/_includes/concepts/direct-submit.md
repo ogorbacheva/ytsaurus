@@ -34,7 +34,7 @@
                                                  "medium_name"="ssd_slots_physical";};
                                                 }'
 ```
-Полный список параметров можно посмотреть в разделе [опции операции]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/operations-options{{ docs-revision-query }}).
+Полный список параметров можно посмотреть в разделе [опции операции]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/operations-options{{ docs-revision-query }}).
 
 ### Использование Docker-образов и Porto-слоёв { #images }
 
@@ -56,7 +56,7 @@ spark-submit --master "ytsaurus://<cluster-host>:<port>" \
              ./spark-job.py
 ```
 
-Подробнее можно прочитать в разделе [образы корневой файловой системы]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/layers/layer-paths{{ docs-revision-query }}).
+Подробнее можно прочитать в разделе [образы корневой файловой системы]({{ core-docs-root }}/{{ lang }}/reference/data-processing/layers/layer-paths{{ docs-revision-query }}).
 
 ## Преимущества подхода { #advantages }
 

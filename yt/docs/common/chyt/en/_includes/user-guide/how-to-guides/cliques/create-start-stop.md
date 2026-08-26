@@ -20,7 +20,7 @@ You can create a new clique in two ways:
      - _Alias name_ — the clique name;
      - _Instance count_ — the number of clique instances (from 1 to 100);
      - _Pool tree_ — pool tree, select a value from the list or keep the default value;
-     - _Pool_ — the name of the compute [pool]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler) where you want to run the clique operation.
+     - _Pool_ — the name of the compute [pool]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler) where you want to run the clique operation.
 
         {% note info %}
 

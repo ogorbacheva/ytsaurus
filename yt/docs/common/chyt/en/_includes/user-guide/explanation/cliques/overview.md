@@ -18,7 +18,7 @@ The diagram below shows the stages of the clique lifecycle and transitions betwe
 
 1. You configure the clique: you assign a compute pool, the number of instances and resources to it. The _pool_ is a required parameter — the controller won’t start the clique without it. You can leave the other options at their default values. For more details, see: [clique settings]({{ docs_root }}/chyt/user-guide/reference/cliques/configs.md) and [Adding compute resources]({{ docs_root }}/chyt/user-guide/how-to-guides/cliques/manage-resources.md).
 
-1. You start the clique — the [Strawberry Controller]({{ docs_root }}/chyt/user-guide/explanation/controller.md) reads the configuration and starts a [Vanilla operation]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}). The clique enters the active state and, after some time, is ready to accept queries. For more details, see the [Creating, starting, and stopping a clique]({{ docs_root }}/chyt/user-guide/how-to-guides/cliques/create-start-stop.md) section.
+1. You start the clique — the [Strawberry Controller]({{ docs_root }}/chyt/user-guide/explanation/controller.md) reads the configuration and starts a [Vanilla operation]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}). The clique enters the active state and, after some time, is ready to accept queries. For more details, see the [Creating, starting, and stopping a clique]({{ docs_root }}/chyt/user-guide/how-to-guides/cliques/create-start-stop.md) section.
 
 **Usage and maintenance**
 

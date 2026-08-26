@@ -1,6 +1,6 @@
 # GPU usage
 
-In task execution, some computations can be performed on GPU devices. You can read about GPU resource scheduling in {{product-name}} [here]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/overview{{ docs-revision-query }}#podderzhka-gpu).
+In task execution, some computations can be performed on GPU devices. You can read about GPU resource scheduling in {{product-name}} [here]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/overview{{ docs-revision-query }}#podderzhka-gpu).
 
 GPU-based task execution relies on the [RAPIDS Accelerator](https://docs.nvidia.com/spark-rapids/user-guide/23.08/getting-started/on-premise.html) plugin. It takes some of the operations for which conversions are described and transfers them to the GPU. The main parameters are described in the plugin documentation.
 

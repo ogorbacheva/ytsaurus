@@ -56,7 +56,7 @@ query.awaitTermination()
 
 ## Streaming queues in {{product-name}} { #queues }
 
-{{product-name}} provides its own implementation of [queues]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}) based on ordered dynamic tables.
+{{product-name}} provides its own implementation of [queues]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}) based on ordered dynamic tables.
 
 
 {% note info %}
@@ -65,7 +65,7 @@ Currently, Spark Streaming running on a {{product-name}} cluster can only oper
 
 {% endnote %}
 
-Before starting a streaming task, create and configure queues according to the [documentation]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}#api). For reading, create queue and consumer tables and register them. Streaming results are written to a pre‑created and mounted ordered dynamic table.
+Before starting a streaming task, create and configure queues according to the [documentation]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}#api). For reading, create queue and consumer tables and register them. Streaming results are written to a pre‑created and mounted ordered dynamic table.
 
 After processing the latest data batch, a new offset is committed, notifying the input table that it can delete obsolete rows.
 
@@ -132,14 +132,14 @@ with spark_session() as spark:
 
    For each partition:
    * If lowerIndex < upperIndex:
-     * Calls the [advanceConsumer]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}#rabota-s-konsyumerom) method to commit offsets for batch `#N‑1` in the consumer.
+     * Calls the [advanceConsumer]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}#rabota-s-konsyumerom) method to commit offsets for batch `#N‑1` in the consumer.
      * Generates tasks for executors.
    * Otherwise: skips processing (empty batch).
 
 3. **Execution on executors**
 
    Each executor for its partition:
-   * Reads data using the [pullConsumer]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}#chtenie-dannyh) method.
+   * Reads data using the [pullConsumer]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}#chtenie-dannyh) method.
    * Applies transformations (if any).
    * Writes data to the output table.
 
@@ -235,7 +235,7 @@ query = df\
 
 ## Composite types { #type-v3 }
 
-To process [composite data types]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) with streaming, you must enable the `parsing_type_v3` and `write_type_v3` options, just as for batch jobs.
+To process [composite data types]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) with streaming, you must enable the `parsing_type_v3` and `write_type_v3` options, just as for batch jobs.
 
 
 <small>Listing 6 — Processing composite types in Structured Streaming</small>

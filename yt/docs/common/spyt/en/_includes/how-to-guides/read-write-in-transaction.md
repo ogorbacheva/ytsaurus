@@ -2,7 +2,7 @@
 
 {% if audience == "public" %}
 
-For more information on transactions, please see the [Transactions]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/transactions{{ docs-revision-query }}) section.
+For more information on transactions, please see the [Transactions]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/transactions{{ docs-revision-query }}) section.
 
 {% endif %}
 

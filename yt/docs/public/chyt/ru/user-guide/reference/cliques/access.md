@@ -1,10 +1,10 @@
 # Права доступа
 
-Права доступа к клике хранятся в специальном системном узле — **Access Control Object** (ACO). Подробнее  об этом объекте читайте в [разделе]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}#access-control).
+Права доступа к клике хранятся в специальном системном узле — **Access Control Object** (ACO). Подробнее  об этом объекте читайте в [разделе]({{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}#access-control).
 
 ## Аутентификация { #authentication }
 
-Пользователи аутентифицируются в CHYT так же, как и в {{product-name}} — с использованием токена от {{product-name}} (подробнее см. [Аутентификация]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/auth{{ docs-revision-query }})).
+Пользователи аутентифицируются в CHYT так же, как и в {{product-name}} — с использованием токена от {{product-name}} (подробнее см. [Аутентификация]({{ core-docs-root }}/{{ lang }}/reference/storage/auth{{ docs-revision-query }})).
 
 ## Какие бывают права { #types }
 

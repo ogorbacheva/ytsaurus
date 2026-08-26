@@ -1,2 +1,0 @@
-- `enable_aggressive_starvation` (false): Enables [aggressive preemption]({{ docs_root }}/core/user-guide/explanation/data-processing/scheduler/preemption#aggressive-preemption) for operations within a specific pool and its descendants.
-- `allow_aggressive_preemption` (true): Allows [aggressive preemption]({{ docs_root }}/core/user-guide/explanation/data-processing/scheduler/preemption#aggressive-preemption) of allocations for all operations within a specific pool and its descendants.

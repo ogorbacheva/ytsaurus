@@ -19,4 +19,4 @@ export YT_PROXY=<cluster_name> CHYT_ALIAS=ch_public
 
 ## {{package-name}} { #{{package-name}} }
 
-Основной способ начать работать с {{product-name}} — установить пакет `{{package-name}}`. Подробнее об этом можно прочитать в статье [Python Wrapper]({{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}).
+Основной способ начать работать с {{product-name}} — установить пакет `{{package-name}}`. Подробнее об этом можно прочитать в статье [Python Wrapper]({{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}).

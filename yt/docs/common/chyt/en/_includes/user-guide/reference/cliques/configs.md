@@ -4,7 +4,7 @@ This article describes clique [options](#options) and how to manage them: how to
 
 ## Speclet { #speclet }
 
-A clique’s configuration is described by a single [YSON document]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/yson-docs{{ docs-revision-query }}), called a *speclet*.
+A clique’s configuration is described by a single [YSON document]({{ core-docs-root }}/{{ lang }}/concepts/storage/yson-docs{{ docs-revision-query }}), called a *speclet*.
 
 The speclet is stored in Cypress at the path `//sys/strawberry/chyt/<alias>/speclet`. It is a set of [options](#options) that are interpreted by the [controller]({{ docs_root }}/chyt/user-guide/explanation/controller.md) when the clique starts. Based on these options, the controller generates the final configuration for CHYT instances.
 

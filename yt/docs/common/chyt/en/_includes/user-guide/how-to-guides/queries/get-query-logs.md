@@ -8,7 +8,7 @@ Query Logs functionality is available in CHYT starting from version `2.16`.
 
 {% endnote %}
 
-Logs of all queries are stored in tables. They are located in [Cypress]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}#cypress)  at the following path: `//sys/strawberry/chyt/<alias>/artifacts/system_log_tables/query_log`.
+Logs of all queries are stored in tables. They are located in [Cypress]({{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}#cypress)  at the following path: `//sys/strawberry/chyt/<alias>/artifacts/system_log_tables/query_log`.
 
 The `query_log` folder contains:
 

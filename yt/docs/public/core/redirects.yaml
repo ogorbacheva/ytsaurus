@@ -1,0 +1,669 @@
+common:
+  - from: /admin-guide/how-to-guides/bundle-controller
+    to: /how-to-guides/bundle-controller
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/cell-addition
+    to: /how-to-guides/cell-addition
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/cluster-access-proxy/faq
+    to: /how-to-guides/cluster-access-proxy/faq
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/cluster-access-proxy/manage-traffic
+    to: /how-to-guides/cluster-access-proxy/manage-traffic
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/cluster-access-proxy/network-isolation
+    to: /how-to-guides/cluster-access-proxy/network-isolation
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/cluster-access-proxy/overview
+    to: /how-to-guides/cluster-access-proxy/overview
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/cluster-operations
+    to: /how-to-guides/cluster-operations
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/cluster-throttlers
+    to: /how-to-guides/cluster-throttlers
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/gpu
+    to: /how-to-guides/gpu
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/identity-sync
+    to: /how-to-guides/identity-sync
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-cron
+    to: /how-to-guides/install-cron
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-excel
+    to: /how-to-guides/install-excel
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-monitoring
+    to: /how-to-guides/install-monitoring
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-odin
+    to: /how-to-guides/install-odin
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-task-proxy
+    to: /how-to-guides/install-task-proxy
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-tutorial
+    to: /how-to-guides/install-tutorial
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-ytmsvc
+    to: /how-to-guides/install-ytmsvc
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/install-ytsaurus
+    to: /how-to-guides/install-ytsaurus
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/locations
+    to: /how-to-guides/locations
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/logging
+    to: /how-to-guides/logging
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/monitoring
+    to: /how-to-guides/monitoring
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/multiproxy
+    to: /how-to-guides/multiproxy
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/native-encryption
+    to: /how-to-guides/native-encryption
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/node-cri
+    to: /how-to-guides/node-cri
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/node-maintenance
+    to: /how-to-guides/node-maintenance
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/node-tags
+    to: /how-to-guides/node-tags
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/oauth
+    to: /how-to-guides/oauth
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/persistence-uploader
+    to: /how-to-guides/persistence-uploader
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/prepare-spec
+    to: /how-to-guides/prepare-spec
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/problems
+    to: /how-to-guides/problems
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/update/update-volumes
+    to: /how-to-guides/update/update-volumes
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/update/update-ytsaurus
+    to: /how-to-guides/update/update-ytsaurus
+    type: redirect
+
+  - from: /admin-guide/reference/cli-admin
+    to: /reference/cli-admin
+    type: redirect
+
+  - from: /admin-guide/reference/compatibility
+    to: /reference/compatibility
+    type: redirect
+
+  - from: /admin-guide/reference/components
+    to: /reference/components
+    type: redirect
+
+  - from: /admin-guide/reference/config-overrides
+    to: /reference/config-overrides
+    type: redirect
+
+  - from: /admin-guide/reference/releases
+    to: /reference/releases
+    type: redirect
+
+  - from: /user-guide/explanation/api/cpp/description
+    to: /concepts/api/cpp/description
+    type: redirect
+
+  - from: /user-guide/explanation/concepts/architecture
+    to: /concepts/architecture
+    type: redirect
+
+  - from: /user-guide/explanation/concepts/general
+    to: /concepts/basic-concepts
+    type: redirect
+
+  - from: /user-guide/explanation/data-processing/overview
+    to: /concepts/data-processing/overview
+    type: redirect
+
+  - from: /user-guide/explanation/data-processing/reliability
+    to: /concepts/data-processing/reliability
+    type: redirect
+
+  - from: /user-guide/explanation/data-processing/scheduler/fair-share
+    to: /concepts/data-processing/scheduler/fair-share
+    type: redirect
+
+  - from: /user-guide/explanation/data-processing/scheduler/integral-guarantees
+    to: /concepts/data-processing/scheduler/integral-guarantees
+    type: redirect
+
+  - from: /user-guide/explanation/data-processing/scheduler/operations-limits
+    to: /concepts/data-processing/scheduler/operations-limits
+    type: redirect
+
+  - from: /user-guide/explanation/data-processing/scheduler/preemption
+    to: /concepts/data-processing/scheduler/preemption
+    type: redirect
+
+  - from: /user-guide/explanation/data-processing/scheduler/scheduler-and-pools
+    to: /concepts/data-processing/scheduler/scheduler-and-pools
+    type: redirect
+
+  - from: /user-guide/explanation/dynamic-tables/chaos-dynamic-tables
+    to: /concepts/dynamic-tables/chaos-dynamic-tables
+    type: redirect
+
+  - from: /user-guide/explanation/dynamic-tables/concepts
+    to: /concepts/dynamic-tables/concepts
+    type: redirect
+
+  - from: /user-guide/explanation/dynamic-tables/ordered-dynamic-tables
+    to: /concepts/dynamic-tables/ordered-dynamic-tables
+    type: redirect
+
+  - from: /user-guide/explanation/dynamic-tables/overview
+    to: /concepts/dynamic-tables/overview
+    type: redirect
+
+  - from: /user-guide/explanation/dynamic-tables/replicated-dynamic-tables
+    to: /concepts/dynamic-tables/replicated-dynamic-tables
+    type: redirect
+
+  - from: /user-guide/explanation/dynamic-tables/sorted-dynamic-tables
+    to: /concepts/dynamic-tables/sorted-dynamic-tables
+    type: redirect
+
+  - from: /user-guide/explanation/dynamic-tables/transactions
+    to: /concepts/dynamic-tables/transactions
+    type: redirect
+
+  - from: /user-guide/explanation/excel
+    to: /concepts/excel
+    type: redirect
+
+  - from: /user-guide/explanation/import
+    to: /concepts/import
+    type: redirect
+
+  - from: /user-guide/explanation/jupyt
+    to: /concepts/jupyt
+    type: redirect
+
+  - from: /user-guide/explanation/locking/cypress-as-locking-service
+    to: /concepts/locking/cypress-as-locking-service
+    type: redirect
+
+  - from: /user-guide/explanation/overview
+    to: /concepts/overview
+    type: redirect
+
+  - from: /user-guide/explanation/proxy/about
+    to: /concepts/proxy/about
+    type: redirect
+
+  - from: /user-guide/explanation/query-tracker/about
+    to: /concepts/query-tracker/about
+    type: redirect
+
+  - from: /user-guide/explanation/storage/access-control
+    to: /concepts/storage/access-control
+    type: redirect
+
+  - from: /user-guide/explanation/storage/blobtables
+    to: /concepts/storage/blobtables
+    type: redirect
+
+  - from: /user-guide/explanation/storage/chunks
+    to: /concepts/storage/chunks
+    type: redirect
+
+  - from: /user-guide/explanation/storage/cypress
+    to: /concepts/storage/cypress
+    type: redirect
+
+  - from: /user-guide/explanation/storage/files
+    to: /concepts/storage/files
+    type: redirect
+
+  - from: /user-guide/explanation/storage/links
+    to: /concepts/storage/links
+    type: redirect
+
+  - from: /user-guide/explanation/storage/objects
+    to: /concepts/storage/objects
+    type: redirect
+
+  - from: /user-guide/explanation/storage/static-tables
+    to: /concepts/storage/static-tables
+    type: redirect
+
+  - from: /user-guide/explanation/storage/transactions
+    to: /concepts/storage/transactions
+    type: redirect
+
+  - from: /user-guide/explanation/storage/yson-docs
+    to: /concepts/storage/yson-docs
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/airflow/userdoc
+    to: /how-to-guides/api/airflow/userdoc
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/cli/examples
+    to: /how-to-guides/api/cli/examples
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/cli/install
+    to: /how-to-guides/api/cli/install
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/cpp/examples
+    to: /how-to-guides/api/cpp/examples
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/java/examples
+    to: /how-to-guides/api/java/examples
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/python/examples
+    to: /how-to-guides/api/python/examples
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/python/start
+    to: /how-to-guides/api/python/start
+    type: redirect
+
+  - from: /user-guide/how-to-guides/api/python/userdoc
+    to: /how-to-guides/api/python/userdoc
+    type: redirect
+
+  - from: /user-guide/how-to-guides/data-processing/operations/recommendations
+    to: /how-to-guides/data-processing/operations/recommendations
+    type: redirect
+
+  - from: /user-guide/how-to-guides/data-processing/operations/table-switch
+    to: /how-to-guides/data-processing/operations/table-switch
+    type: redirect
+
+  - from: /user-guide/how-to-guides/data-processing/scheduler/job-cpu-monitor
+    to: /how-to-guides/data-processing/scheduler/job-cpu-monitor
+    type: redirect
+
+  - from: /user-guide/how-to-guides/data-processing/scheduler/manage-pools
+    to: /how-to-guides/data-processing/scheduler/manage-pools
+    type: redirect
+
+  - from: /user-guide/how-to-guides/data-processing/scheduler/memory-digest
+    to: /how-to-guides/data-processing/scheduler/memory-digest
+    type: redirect
+
+  - from: /user-guide/how-to-guides/data-processing/scheduler/pool-settings
+    to: /how-to-guides/data-processing/scheduler/pool-settings
+    type: redirect
+
+  - from: /user-guide/how-to-guides/dynamic-tables/bulk-insert
+    to: /how-to-guides/dynamic-tables/bulk-insert
+    type: redirect
+
+  - from: /user-guide/how-to-guides/dynamic-tables/compaction
+    to: /how-to-guides/dynamic-tables/compaction
+    type: redirect
+
+  - from: /user-guide/how-to-guides/dynamic-tables/mapreduce
+    to: /how-to-guides/dynamic-tables/mapreduce
+    type: redirect
+
+  - from: /user-guide/how-to-guides/dynamic-tables/resharding
+    to: /how-to-guides/dynamic-tables/resharding
+    type: redirect
+
+  - from: /user-guide/how-to-guides/dynamic-tables/tablet-balancing
+    to: /how-to-guides/dynamic-tables/tablet-balancing
+    type: redirect
+
+  - from: /user-guide/how-to-guides/problems/jobshell-and-slowjobs
+    to: /how-to-guides/problems/jobshell-and-slowjobs
+    type: redirect
+
+  - from: /user-guide/how-to-guides/problems/jobstatistics
+    to: /how-to-guides/problems/jobstatistics
+    type: redirect
+
+  - from: /user-guide/how-to-guides/problems/jobtool
+    to: /how-to-guides/problems/jobtool
+    type: redirect
+
+  - from: /user-guide/how-to-guides/problems/mapreduce-debug
+    to: /how-to-guides/problems/mapreduce-debug
+    type: redirect
+
+  - from: /user-guide/how-to-guides/problems/slow-read
+    to: /how-to-guides/problems/slow-read
+    type: redirect
+
+  - from: /user-guide/how-to-guides/storage/batch-requests
+    to: /how-to-guides/storage/batch-requests
+    type: redirect
+
+  - from: /user-guide/how-to-guides/storage/cypress-example
+    to: /how-to-guides/storage/cypress-example
+    type: redirect
+
+  - from: /user-guide/how-to-guides/storage/examples
+    to: /how-to-guides/storage/examples
+    type: redirect
+
+  - from: /user-guide/reference/api/cli/cli
+    to: /reference/api/cli/cli
+    type: redirect
+
+  - from: /user-guide/reference/api/cli/commands
+    to: /reference/api/cli/commands
+    type: redirect
+
+  - from: /user-guide/reference/api/commands
+    to: /reference/api/commands
+    type: redirect
+
+  - from: /user-guide/reference/api/cpp/lambda
+    to: /reference/api/cpp/lambda
+    type: redirect
+
+  - from: /user-guide/reference/api/cpp/protobuf
+    to: /reference/api/cpp/protobuf
+    type: redirect
+
+  - from: /user-guide/reference/api/error-codes
+    to: /reference/api/error-codes
+    type: redirect
+
+  - from: /user-guide/reference/api/go/reference
+    to: /reference/api/go/reference
+    type: redirect
+
+  - from: /user-guide/reference/api/js-wrapper
+    to: /reference/api/js-wrapper
+    type: redirect
+
+  - from: /user-guide/reference/api/python/dataclass
+    to: /reference/api/python/dataclass
+    type: redirect
+
+  - from: /user-guide/reference/api/query-parameters
+    to: /reference/api/query-parameters
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/layers/layer-paths
+    to: /reference/data-processing/layers/layer-paths
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/automerge
+    to: /reference/data-processing/operations/automerge
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/chunk-merger
+    to: /reference/data-processing/operations/chunk-merger
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/cluster-throttlers
+    to: /reference/data-processing/operations/cluster-throttlers
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/erase
+    to: /reference/data-processing/operations/erase
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/job-collectives
+    to: /reference/data-processing/operations/job-collectives
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/map
+    to: /reference/data-processing/operations/map
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/mapreduce
+    to: /reference/data-processing/operations/mapreduce
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/merge
+    to: /reference/data-processing/operations/merge
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/operations-options
+    to: /reference/data-processing/operations/operations-options
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/overview
+    to: /reference/data-processing/operations/overview
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/reduce
+    to: /reference/data-processing/operations/reduce
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/remote-copy
+    to: /reference/data-processing/operations/remote-copy
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/sort
+    to: /reference/data-processing/operations/sort
+    type: redirect
+
+  - from: /user-guide/reference/data-processing/operations/vanilla
+    to: /reference/data-processing/operations/vanilla
+    type: redirect
+
+  - from: /user-guide/reference/dynamic-tables/dyn-query-language
+    to: /reference/dynamic-tables/dyn-query-language
+    type: redirect
+
+  - from: /user-guide/reference/dynamic-tables/faq
+    to: /reference/dynamic-tables/faq
+    type: redirect
+
+  - from: /user-guide/reference/dynamic-tables/hunks-guide
+    to: /reference/dynamic-tables/hunks-guide
+    type: redirect
+
+  - from: /user-guide/reference/dynamic-tables/operations
+    to: /reference/dynamic-tables/operations
+    type: redirect
+
+  - from: /user-guide/reference/dynamic-tables/queues
+    to: /reference/dynamic-tables/queues
+    type: redirect
+
+  - from: /user-guide/reference/dynamic-tables/secondary-indices
+    to: /reference/dynamic-tables/secondary-indices
+    type: redirect
+
+  - from: /user-guide/reference/dynamic-tables/versioned-format
+    to: /reference/dynamic-tables/versioned-format
+    type: redirect
+
+  - from: /user-guide/reference/faq
+    to: /reference/faq
+    type: redirect
+
+  - from: /user-guide/reference/proxy/grpc
+    to: /reference/proxy/grpc
+    type: redirect
+
+  - from: /user-guide/reference/proxy/http
+    to: /reference/proxy/http
+    type: redirect
+
+  - from: /user-guide/reference/proxy/http-reference
+    to: /reference/proxy/http-reference
+    type: redirect
+
+  - from: /user-guide/reference/proxy/rpc
+    to: /reference/proxy/rpc
+    type: redirect
+
+  - from: /user-guide/reference/proxy/task
+    to: /reference/proxy/task
+    type: redirect
+
+  - from: /user-guide/reference/storage/accounts
+    to: /reference/storage/accounts
+    type: redirect
+
+  - from: /user-guide/reference/storage/annotations
+    to: /reference/storage/annotations
+    type: redirect
+
+  - from: /user-guide/reference/storage/attributes
+    to: /reference/storage/attributes
+    type: redirect
+
+  - from: /user-guide/reference/storage/auth
+    to: /reference/storage/auth
+    type: redirect
+
+  - from: /user-guide/reference/storage/columnar-acl
+    to: /reference/storage/columnar-acl
+    type: redirect
+
+  - from: /user-guide/reference/storage/compression
+    to: /reference/storage/compression
+    type: redirect
+
+  - from: /user-guide/reference/storage/data-types
+    to: /reference/storage/data-types
+    type: redirect
+
+  - from: /user-guide/reference/storage/faq
+    to: /reference/storage/faq
+    type: redirect
+
+  - from: /user-guide/reference/storage/file-cache
+    to: /reference/storage/file-cache
+    type: redirect
+
+  - from: /user-guide/reference/storage/formats
+    to: /reference/storage/formats
+    type: redirect
+
+  - from: /user-guide/reference/storage/io-configuration
+    to: /reference/storage/io-configuration
+    type: redirect
+
+  - from: /user-guide/reference/storage/media
+    to: /reference/storage/media
+    type: redirect
+
+  - from: /user-guide/reference/storage/quotas
+    to: /reference/storage/quotas
+    type: redirect
+
+  - from: /user-guide/reference/storage/replication
+    to: /reference/storage/replication
+    type: redirect
+
+  - from: /user-guide/reference/storage/row-level-security
+    to: /reference/storage/row-level-security
+    type: redirect
+
+  - from: /user-guide/reference/storage/skiff
+    to: /reference/storage/skiff
+    type: redirect
+
+  - from: /user-guide/reference/storage/static-schema
+    to: /reference/storage/static-schema
+    type: redirect
+
+  - from: /user-guide/reference/storage/ypath
+    to: /reference/storage/ypath
+    type: redirect
+
+  - from: /user-guide/reference/storage/yson
+    to: /reference/storage/yson
+    type: redirect
+
+  - from: /user-guide/tutorials/dynamic-tables/add-remove-line
+    to: /tutorials/dynamic-tables/add-remove-line
+    type: redirect
+
+  - from: /user-guide/tutorials/dynamic-tables/backup-table
+    to: /tutorials/dynamic-tables/backup-table
+    type: redirect
+
+  - from: /user-guide/tutorials/dynamic-tables/dyn-tables-tutorial
+    to: /tutorials/dynamic-tables/dyn-tables-tutorial
+    type: redirect
+
+  - from: /user-guide/tutorials/dynamic-tables/dynamic-table-queue
+    to: /tutorials/dynamic-tables/dynamic-table-queue
+    type: redirect
+
+  - from: /user-guide/tutorials/dynamic-tables/dynamic-to-static
+    to: /tutorials/dynamic-tables/dynamic-to-static
+    type: redirect
+
+  - from: /user-guide/tutorials/quick-start
+    to: /tutorials/quick-start
+    type: redirect
+
+ru:
+  - from: /admin-guide/how-to-guides/update/update-cron
+    to: /how-to-guides/update/update-cron
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/update/update-odin
+    to: /how-to-guides/update/update-odin
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/update/update-task-proxy
+    to: /how-to-guides/update/update-task-proxy
+    type: redirect
+
+  - from: /admin-guide/how-to-guides/update/update_strategy
+    to: /how-to-guides/update/update_strategy
+    type: redirect
+
+  - from: /user-guide/explanation/storage/orchid
+    to: /concepts/storage/orchid
+    type: redirect
+
+  - from: /user-guide/reference/api/cpp/roren
+    to: /reference/api/cpp/roren
+    type: redirect

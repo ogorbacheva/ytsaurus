@@ -43,4 +43,4 @@ myspyt   Finished
 
 Once all jobs are successfully completed (when `RELEASESTATUS` changes to `Finished`), you can run `SPYT`. For more information, see [this section]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/run-spark-jobs{{ docs-revision-query }}).
 
-Consider installing [Task proxy]({{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-task-proxy{{ docs-revision-query }}) if you want to open Spark UI from browser.
+Consider installing [Task proxy]({{ core-docs-root }}/{{ lang }}/how-to-guides/install-task-proxy{{ docs-revision-query }}) if you want to open Spark UI from browser.

@@ -18,7 +18,7 @@
 
 2. Вы настраиваете клику: назначаете ей вычислительный пул, количество инстансов и ресурсов. Пул (*pool*) — обязательный параметр, без него контроллер не запустит клику. Остальные опции можно оставить по умолчанию. Подробнее в разделах: [Настройки клики]({{ docs_root }}/chyt/user-guide/reference/cliques/configs.md) и [Добавление вычислительных ресурсов]({{ docs_root }}/chyt/user-guide/how-to-guides/cliques/manage-resources.md).
 
-3. Вы запускаете клику — [Strawberry Controller]({{ docs_root }}/chyt/user-guide/explanation/controller.md) читает конфигурацию и поднимает [Vanilla-операцию]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}). Клика переходит в активное состояние и, через некоторое время, готова принимать запросы. Подробнее в разделе [Создание, запуск и остановка клики]({{ docs_root }}/chyt/user-guide/how-to-guides/cliques/create-start-stop.md).
+3. Вы запускаете клику — [Strawberry Controller]({{ docs_root }}/chyt/user-guide/explanation/controller.md) читает конфигурацию и поднимает [Vanilla-операцию]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}). Клика переходит в активное состояние и, через некоторое время, готова принимать запросы. Подробнее в разделе [Создание, запуск и остановка клики]({{ docs_root }}/chyt/user-guide/how-to-guides/cliques/create-start-stop.md).
 
 **Эксплуатация и обслуживание**
 

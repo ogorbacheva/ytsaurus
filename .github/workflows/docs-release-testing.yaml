@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 env:
-  DIPLODOC_CLI_VERSION: "5.54.5"
+  DIPLODOC_CLI_VERSION: "5.56.0"
   DOCS_SOURCE_ROOT: ./yt/docs
   DOCS_INPUT_ROOT: ./_docs-input
   BUILD_OUTPUT_HTML: ./build-output-html
@@ -76,6 +76,13 @@ jobs:
 
       - name: Verify the recorded YQL as-is snapshot
         run: python3 .github/scripts/check_yql_snapshot.py
+        shell: bash
+
+      - name: Verify roleless Core structure and routes
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check_core_structure.py
+          python3 .github/scripts/rewrite_core_route_links.py
         shell: bash
 
       - name: Verify generated global navigation
@@ -210,27 +217,27 @@ jobs:
           for language in ru en; do
             if module_selected landing; then
               landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
-              expected_url="${core_url}/${language}/user-guide/tutorials/quick-start${DOCS_REVISION_QUERY}"
+              expected_url="${core_url}/${language}/tutorials/quick-start${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_url}" "${landing_page}"
             fi
 
             if module_selected core; then
-              core_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/reference/releases.html"
+              core_page="${BUILD_OUTPUT_HTML}/core/${language}/reference/releases.html"
               expected_chyt_url="${chyt_url}/${language}/user-guide/reference/release-notes${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_chyt_url}" "${core_page}"
 
-              core_self_page="${BUILD_OUTPUT_HTML}/core/${language}/user-guide/reference/faq.html"
-              expected_core_self_url="${core_url}/${language}/user-guide/reference/data-processing/operations/merge${DOCS_REVISION_QUERY}"
+              core_self_page="${BUILD_OUTPUT_HTML}/core/${language}/reference/faq.html"
+              expected_core_self_url="${core_url}/${language}/reference/data-processing/operations/merge${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_core_self_url}" "${core_self_page}"
 
-              core_audience_page="${BUILD_OUTPUT_HTML}/core/${language}/admin-guide/how-to-guides/install-excel.html"
-              expected_core_audience_url="${core_url}/${language}/user-guide/explanation/excel${DOCS_REVISION_QUERY}"
+              core_audience_page="${BUILD_OUTPUT_HTML}/core/${language}/how-to-guides/install-excel.html"
+              expected_core_audience_url="${core_url}/${language}/concepts/excel${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_core_audience_url}" "${core_audience_page}"
             fi
 
             if module_selected spyt; then
               spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/reference/data-types.html"
-              expected_core_url="${core_url}/${language}/user-guide/reference/storage/data-types${DOCS_REVISION_QUERY}"
+              expected_core_url="${core_url}/${language}/reference/storage/data-types${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_core_url}" "${spyt_page}"
               expected_spyt_self_url="${spyt_url}/${language}/reference/read-options${DOCS_REVISION_QUERY}#schema_hint"
               grep -Fq "${expected_spyt_self_url}" "${spyt_page}"
@@ -238,7 +245,7 @@ jobs:
 
             if module_selected chyt; then
               chyt_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/yt-tables.html"
-              expected_core_url="${core_url}/${language}/user-guide/explanation/storage/static-tables${DOCS_REVISION_QUERY}"
+              expected_core_url="${core_url}/${language}/concepts/storage/static-tables${DOCS_REVISION_QUERY}"
               grep -Fq "${expected_core_url}" "${chyt_page}"
 
               chyt_self_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/faq.html"
@@ -259,7 +266,7 @@ jobs:
             toc="${BUILD_OUTPUT_MD}/${module}/${language}/toc.yaml"
             grep -Fq 'navigation:' "${toc}"
             grep -Fq "${landing_url}/${language}/${DOCS_REVISION_QUERY}" "${toc}"
-            grep -Fq "${core_url}/${language}/user-guide/explanation/overview${DOCS_REVISION_QUERY}" "${toc}"
+            grep -Fq "${core_url}/${language}/concepts/overview${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt${DOCS_REVISION_QUERY}" "${toc}"
             grep -Fq "${yql_url}/${language}/yql/${DOCS_REVISION_QUERY}" "${toc}"

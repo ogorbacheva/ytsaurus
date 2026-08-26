@@ -21,7 +21,7 @@ spark.read.yt('//home/table').show() # Таблица на домашнем кл
 
 ## schema_hint { #schema_hint }
 
-Жесткое указание [типа колонки]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}). Полезно в случае, когда колонка имеет тип `any` (сериализованный в `yson` сложный тип).
+Жесткое указание [типа колонки]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}). Полезно в случае, когда колонка имеет тип `any` (сериализованный в `yson` сложный тип).
 Значение будет десериализовано в указанный тип.
 
 Пример на Python:
@@ -40,7 +40,7 @@ df.write
 
 ## transaction { #transaction }
 
-Чтение под [транзакцией]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/transactions{{ docs-revision-query }}). Подробнее можно узнать в разделе [Чтение и запись под транзакцией]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/read-write-in-transaction{{ docs-revision-query }}).
+Чтение под [транзакцией]({{ core-docs-root }}/{{ lang }}/concepts/storage/transactions{{ docs-revision-query }}). Подробнее можно узнать в разделе [Чтение и запись под транзакцией]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/read-write-in-transaction{{ docs-revision-query }}).
 
 Пример на Scala:
 
@@ -52,7 +52,7 @@ transaction.commit().get(10, TimeUnit.SECONDS)
 
 ## Schema v3 { #type_v3 }
 
-Чтение таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1`. Настраивается в [Spark конфигурации]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/configure{{ docs-revision-query }}) или опции записи.
+Чтение таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1`. Настраивается в [Spark конфигурации]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/configure{{ docs-revision-query }}) или опции записи.
 
 Python example:
 ```python

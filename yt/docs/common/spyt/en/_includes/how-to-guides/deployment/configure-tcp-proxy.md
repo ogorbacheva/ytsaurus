@@ -1,6 +1,6 @@
 # Configure access to SPYT
 
-For SPYT to work in [Standalone]({{ spyt-docs-root }}/{{ lang }}/concepts/cluster-architecture{{ docs-revision-query }}#spark-standalone) mode, the external Spark driver must connect directly to the Spark workers. These workers run not as separate Kubernetes pods, but as processes inside [Vanilla jobs]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}) in {{product-name}}. Standard Kubernetes network abstractions (Services) can't route traffic to such processes.
+For SPYT to work in [Standalone]({{ spyt-docs-root }}/{{ lang }}/concepts/cluster-architecture{{ docs-revision-query }}#spark-standalone) mode, the external Spark driver must connect directly to the Spark workers. These workers run not as separate Kubernetes pods, but as processes inside [Vanilla jobs]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}) in {{product-name}}. Standard Kubernetes network abstractions (Services) can't route traffic to such processes.
 
 To proxy these connections, `tcp_proxy` is used. This is a {{product-name}} component that knows which node and port a specific worker process runs on, and forwards external traffic to it using routing tables stored in Cypress at `//sys/tcp_proxies/routes`.
 

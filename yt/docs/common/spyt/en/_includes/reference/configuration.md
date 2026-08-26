@@ -13,11 +13,11 @@ Most of the options are available starting with version 1.23.0, unless otherwis
 | `spark.yt.write.miniBatchSize` | `1000` | Size of a data block sent in `WriteTable`. | - |
 | `spark.yt.write.timeout` | `120 seconds` | Write timeout limit for a single data block. | - |
 | `spark.yt.write.dynBatchSize` | `50000` | Maximum number of rows in a single write operation to a dynamic table. Used in [Structured Streaming]({{ spyt-docs-root }}/{{ lang }}/concepts/structured-streaming/index{{ docs-revision-query }}) | 2.6.5 |
-| `spark.yt.write.typeV3.enabled` (`spark.yt.write.writingTypeV3.enabled` before 1.75.2) | `true` | Writing of tables with a schema in [type_v3]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) format instead of `type_v1`. | 1.75.3 |
+| `spark.yt.write.typeV3.enabled` (`spark.yt.write.writingTypeV3.enabled` before 1.75.2) | `true` | Writing of tables with a schema in [type_v3]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) format instead of `type_v1`. | 1.75.3 |
 | `spark.yt.read.vectorized.capacity` | `1000` | Maximum number of rows in a batch for reading via the `wire` protocol. | - |
 | `spark.yt.read.arrow.enabled` | `true` | Use the `arrow` format to read data (if possible). | - |
 | `spark.hadoop.yt.timeout` | `30 seconds` | Timeout on reads from {{product-name}}. | - |
-| `spark.yt.read.typeV3.enabled` (`spark.yt.read.parsingTypeV3.enabled` before 1.75.2) | `true` | Reading of tables with a schema in [type_v3]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) format instead of `type_v1`. | 1.75.3 |
+| `spark.yt.read.typeV3.enabled` (`spark.yt.read.parsingTypeV3.enabled` before 1.75.2) | `true` | Reading of tables with a schema in [type_v3]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) format instead of `type_v1`. | 1.75.3 |
 | `spark.yt.read.keyColumnsFilterPushdown.enabled` | `true` | Use Spark query filters to selectively read from {{product-name}}. | - |
 | `spark.yt.read.keyColumnsFilterPushdown.union.enabled` | `false` | Combine all filters into a continuous range for selective reading. | - |
 | `spark.yt.read.keyColumnsFilterPushdown.ytPathCount.limit` | `100` | Maximum number of table ranges for selective reading. | - |
@@ -94,14 +94,14 @@ Most of the options are available starting with version 1.23.0, unless otherwis
 | **Parameter** | **Default value** | **Description** | **Starting with version** |
 | ------------ | ------------------------- | ------------ | ------------------ |
 | `spark.ytsaurus.shuffle.transaction.timeout` | 5m | Timeout for the transaction processing shuffle chunk writes. In regular operation mode, the transaction is periodically pinged by the driver, and the timeout sets the time between the last ping and transaction rollback with chunk deletion. | 2.7.0 |
-| `spark.ytsaurus.shuffle.account` | intermediate | [Account]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/accounts{{ docs-revision-query }}) used for writing shuffle chunks. | 2.7.0 |
-| `spark.ytsaurus.shuffle.medium` | - | [Medium]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/media{{ docs-revision-query }}) used for writing shuffle chunks. Defaults to the system‑wide setting. | 2.7.0 |
+| `spark.ytsaurus.shuffle.account` | intermediate | [Account]({{ core-docs-root }}/{{ lang }}/reference/storage/accounts{{ docs-revision-query }}) used for writing shuffle chunks. | 2.7.0 |
+| `spark.ytsaurus.shuffle.medium` | - | [Medium]({{ core-docs-root }}/{{ lang }}/reference/storage/media{{ docs-revision-query }}) used for writing shuffle chunks. Defaults to the system‑wide setting. | 2.7.0 |
 | `spark.ytsaurus.shuffle.replication.factor` | - | Shuffle chunk replication factor. Defaults to the system‑wide setting. | 2.7.0 |
 | `spark.ytsaurus.shuffle.partition.column` | partition | The name of the chunk column used to store the target partition index. | 2.7.0 |
 | `spark.ytsaurus.shuffle.write.row.size` | 8m | The maximum size of a single row in a chunk containing shuffle data. This value is not directly related to the size of shuffle data rows but serves to partition serialized shuffle data into chunk rows. Reducing this value increases the number of rows in the chunk, while raising the value may result in exceeding the maximum allowed chunk row size. | 2.7.0 |
 | `spark.ytsaurus.shuffle.write.buffer.size` | 10 | Shuffle data write buffer size (in rows) in {{product-name}}. Set this parameter together with `spark.ytsaurus.shuffle.write.row.size` to avoid RAM overflow. | 2.7.0 |
-| `spark.ytsaurus.shuffle.write.config` | - | Additional parameters for writing shuffle data in {{product-name}} in [YSON]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/yson{{ docs-revision-query }}) format. Matches the [TableWriter]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/io-configuration{{ docs-revision-query }}#table_writer) configuration. | 2.7.0 |
-| `spark.ytsaurus.shuffle.read.config` | - | Additional parameters for reading shuffle data in {{product-name}} in [YSON]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/yson{{ docs-revision-query }}) format. Matches the [TableReader]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/io-configuration{{ docs-revision-query }}#table_reader) configuration. | 2.7.0 |
+| `spark.ytsaurus.shuffle.write.config` | - | Additional parameters for writing shuffle data in {{product-name}} in [YSON]({{ core-docs-root }}/{{ lang }}/reference/storage/yson{{ docs-revision-query }}) format. Matches the [TableWriter]({{ core-docs-root }}/{{ lang }}/reference/storage/io-configuration{{ docs-revision-query }}#table_writer) configuration. | 2.7.0 |
+| `spark.ytsaurus.shuffle.read.config` | - | Additional parameters for reading shuffle data in {{product-name}} in [YSON]({{ core-docs-root }}/{{ lang }}/reference/storage/yson{{ docs-revision-query }}) format. Matches the [TableReader]({{ core-docs-root }}/{{ lang }}/reference/storage/io-configuration{{ docs-revision-query }}#table_reader) configuration. | 2.7.0 |
 
 {wide-content title="Configuration options for the {{product-name}} Shuffle service"}
 

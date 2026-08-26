@@ -1,6 +1,6 @@
 # Clique as a YT operation
 
-In the {{product-name}} system, a CHYT clique is not a separate entity but a standard distributed [Vanilla operation]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}) that consists of a set of tasks — jobs.
+In the {{product-name}} system, a CHYT clique is not a separate entity but a standard distributed [Vanilla operation]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}) that consists of a set of tasks — jobs.
 
 The YT operation interface helps you track the click’s status, analyze jobs, and troubleshoot issues if something goes wrong.
 

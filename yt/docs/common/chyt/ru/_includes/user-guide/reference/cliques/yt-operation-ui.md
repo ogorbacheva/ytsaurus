@@ -1,6 +1,6 @@
 # Клика как YT‑операция
 
-В системе {{product-name}} клика CHYT — не отдельная сущность, а стандартная распределённая [Vanilla‑операция]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}), которая состоит из набора задач — джобов (jobs).
+В системе {{product-name}} клика CHYT — не отдельная сущность, а стандартная распределённая [Vanilla‑операция]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}), которая состоит из набора задач — джобов (jobs).
 
 Интерфейс YT-операции помогает отслеживать состояние клики, анализировать джобы и разбираться в проблемах, если что-то пошло не так.
 

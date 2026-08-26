@@ -31,7 +31,7 @@ Note that even though the {{product-name}} cluster network rarely becomes a bott
 
 ### Compression
 
-In {{product-name}}, data is typically stored in **compressed** form. Compression is handled by the `/@compression_codec` table attribute, which is also found in the table view web interface. This is further described in a dedicated documentation [article]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/compression{{ docs-revision-query }}).
+In {{product-name}}, data is typically stored in **compressed** form. Compression is handled by the `/@compression_codec` table attribute, which is also found in the table view web interface. This is further described in a dedicated documentation [article]({{ core-docs-root }}/{{ lang }}/reference/storage/compression{{ docs-revision-query }}).
 
 Instances read data from compressed tables in compressed form. This data is then decompressed just before being processed by the ClickHouse engine.{{ chyt-user-guide-explanation-queries-anatomy-md-audience-1 }} When choosing a compression codec for your data, take into account that the stronger the codec, the more costly it will be to decompress the data.
 
@@ -53,7 +53,7 @@ If you believe that migrating your data to an SSD will speed up query execution{
 
 ### About columnar storage
 
-In most cases when working with ClickHouse, you want to use the columnar [format]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/chunks{{ docs-revision-query }}#optimize_for) for table storage, which you can implement by setting the `/@optimize_for` attribute to `scan`.
+In most cases when working with ClickHouse, you want to use the columnar [format]({{ core-docs-root }}/{{ lang }}/concepts/storage/chunks{{ docs-revision-query }}#optimize_for) for table storage, which you can implement by setting the `/@optimize_for` attribute to `scan`.
 
 Columnar storage lets you efficiently read individual table columns without having to load the entire table into memory and helps conserve disk space, as {{product-name}} will apply different codecs for columnar storage, which will optimize column representation.
 

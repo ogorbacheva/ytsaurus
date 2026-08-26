@@ -2,7 +2,7 @@
 
 A CHYT clique is a Vanilla {{product-name}} operation and instances are run in the jobs of this operation and consume resources.
 
-Before continuing with this article, consider reading about the [Scheduler and pools]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}) first.
+Before continuing with this article, consider reading about the [Scheduler and pools]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}) first.
 
 ## Preemption { #preemption }
 

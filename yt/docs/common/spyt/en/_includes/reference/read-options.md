@@ -21,7 +21,7 @@ Data is read from other {{product-name}} clusters through shared proxies, which 
 
 ## schema_hint { #schema_hint }
 
-Hard-coded [column type]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}). Useful when a column is of type `any` (a composite data type serialized as `yson`).
+Hard-coded [column type]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}). Useful when a column is of type `any` (a composite data type serialized as `yson`).
 The value will be deserialized as the specified type.
 
 Python example:
@@ -40,7 +40,7 @@ df.write
 
 ## transaction { #transaction }
 
-Reading from a [transaction]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/transactions{{ docs-revision-query }}). For more details, see [Reading and writing within a transaction]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/read-write-in-transaction{{ docs-revision-query }}).
+Reading from a [transaction]({{ core-docs-root }}/{{ lang }}/concepts/storage/transactions{{ docs-revision-query }}). For more details, see [Reading and writing within a transaction]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/read-write-in-transaction{{ docs-revision-query }}).
 
 Scala example:
 
@@ -52,7 +52,7 @@ transaction.commit().get(10, TimeUnit.SECONDS)
 
 ## Schema v3 { #type_v3 }
 
-Read tables with schema in [type_v3]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) instead of type_v1. It can be enabled in [Spark configuration]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/configure{{ docs-revision-query }}) or write option.
+Read tables with schema in [type_v3]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) instead of type_v1. It can be enabled in [Spark configuration]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/configure{{ docs-revision-query }}) or write option.
 
 Python example:
 ```python

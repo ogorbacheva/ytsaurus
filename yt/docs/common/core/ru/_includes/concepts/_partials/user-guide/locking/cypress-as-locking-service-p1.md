@@ -1,0 +1,1 @@
+В данном разделе содержится информация об использовании [Кипариса]({{ docs_root }}/core/concepts/storage/cypress) в качестве сервиса распределённых блокировок, аналога [ZooKeeper](https://zookeeper.apache.org).

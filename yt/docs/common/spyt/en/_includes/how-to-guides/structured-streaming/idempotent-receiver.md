@@ -70,8 +70,8 @@ With operations that produce multiple output rows (e.g., `explode` or `join` in 
 
 
 1. When reading the queue, set the [include_service_columns]({{ spyt-docs-root }}/{{ lang }}/reference/streaming-options{{ docs-revision-query }}#service-columns) option to `true`. Then the streaming dataframe will contain the columns `__spyt_streaming_src_tablet_index` and `__spyt_streaming_src_row_index`, which correspond to `$tablet_index` and `$row_index` of the row in the queue being read.
-2. Create an output [sorted dynamic table]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/sorted-dynamic-tables{{ docs-revision-query }}) and mount it before starting streaming.
-   - If reading from a single queue, use `__spyt_streaming_src_tablet_index` and `__spyt_streaming_src_row_index` as key columns. Key columns must be specified in the schema and form its prefix; see the [table schema]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/static-schema{{ docs-revision-query }}). You can rename these columns — then rename them in the dataframe too, as shown in the listing below.
+2. Create an output [sorted dynamic table]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/sorted-dynamic-tables{{ docs-revision-query }}) and mount it before starting streaming.
+   - If reading from a single queue, use `__spyt_streaming_src_tablet_index` and `__spyt_streaming_src_row_index` as key columns. Key columns must be specified in the schema and form its prefix; see the [table schema]({{ core-docs-root }}/{{ lang }}/reference/storage/static-schema{{ docs-revision-query }}). You can rename these columns — then rename them in the dataframe too, as shown in the listing below.
    - If reading from more than one queue, add another column with a unique identifier of the source queue (e.g., its path) to the output table’s key and to the dataframe. See the [example](#multi-queues) for how to do this.
 
 After this setup, the output table’s key is uniquely determined by the original queue row, so re‑writing the same row does not create a duplicate.

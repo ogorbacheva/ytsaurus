@@ -43,7 +43,7 @@ _4. [Панель вкладок](#tabs) — ссылки на вкладки н
 
 Справа расположен блок с кнопками действий (2):
 
-- ![sql](../../../../_images/user-guide/reference/cliques/sql-btn.png){width=24 height=24} _SQL_ — переход в веб-интерфейс для выполнения запросов [Query Tracker]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }});
+- ![sql](../../../../_images/user-guide/reference/cliques/sql-btn.png){width=24 height=24} _SQL_ — переход в веб-интерфейс для выполнения запросов [Query Tracker]({{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }});
 - ![start](../../../../_images/user-guide/reference/cliques/start-btn.png){width=24 height=24} _Start_ — запуск клики;
 - ![stop](../../../../_images/user-guide/reference/cliques/stop-btn.png){width=24 height=24} _Stop_ — остановка клики;
 - ![remove](../../../../_images/user-guide/reference/cliques/remove-btn.png){width=24 height=24} _Remove_ — удаление клики;
@@ -67,7 +67,7 @@ _4. [Панель вкладок](#tabs) — ссылки на вкладки н
   {% endnote %}
   
 - `State` — состояние клики: `Active` / `Inactive`. Показывает, запущена клика или остановлена;
-- `Pool` — название вычислительного [пула]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler), которое является ссылкой на его веб-интерфейс;
+- `Pool` — название вычислительного [пула]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler), которое является ссылкой на его веб-интерфейс;
 - `Instances`, `Cores`, `Memory` — количество экземпляров и вычислительных ресурсов (процессоров CPU и оперативной памяти RAM), выделенных под клику;
 - `YT operation Id` — ссылка на интерфейс [YT-операции]({{ docs_root }}/chyt/user-guide/reference/cliques/yt-operation-ui.md), которая соответствует клике.
 

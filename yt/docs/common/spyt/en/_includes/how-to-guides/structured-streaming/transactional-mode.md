@@ -116,14 +116,14 @@ If either parameter is missing or has a different value, the transactional mode 
 
 ## Output table sharding { #sharding }
 
-YTsaurus has an internal [limitation]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/transactions{{ docs-revision-query }}#restrictions): within a single transaction, you cannot write more than a certain number of rows to one tablet (100 000 by default). Since the transactional mode writes the entire micro‑batch atomically in one transaction, all its rows are distributed across the output table’s tablets. If there are too few tablets and the micro‑batch is large, each tablet will receive too much data — the limit will be exceeded, and the transaction will fail with the `Transaction affects too many rows in tablet` error.
+YTsaurus has an internal [limitation]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/transactions{{ docs-revision-query }}#restrictions): within a single transaction, you cannot write more than a certain number of rows to one tablet (100 000 by default). Since the transactional mode writes the entire micro‑batch atomically in one transaction, all its rows are distributed across the output table’s tablets. If there are too few tablets and the micro‑batch is large, each tablet will receive too much data — the limit will be exceeded, and the transaction will fail with the `Transaction affects too many rows in tablet` error.
 
 To ensure transactions stay within limits, shard the output table — split it into more tablets before starting the stream. There is no exact formula for calculating the required number of tablets — determine it empirically based on the load pattern:
 
 - For non‑shuffle loads, when data is written unchanged or with simple transformations (`filter`, `select`), follow the number of tablets in the source queue.
 - For shuffle operations (`join`, `groupBy`, aggregations), there is no universal rule — estimate the expected micro‑batch result size and adjust as needed.
 
-For instructions on setting the number of tablets when creating a table or changing it later, see the [Sharding]({{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/dynamic-tables/resharding{{ docs-revision-query }}) section.
+For instructions on setting the number of tablets when creating a table or changing it later, see the [Sharding]({{ core-docs-root }}/{{ lang }}/how-to-guides/dynamic-tables/resharding{{ docs-revision-query }}) section.
 
 
 ## Failure behavior { #failures }

@@ -1,12 +1,12 @@
 # Сопоставление типов данных: SPYT, Spark и {{product-name}}
 
-В этой статье описано сопоставление [типов данных в {{product-name}}]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) и [типов данных в Spark](https://spark.apache.org/docs/latest/sql-ref-datatypes.html) при чтении и записи.
+В этой статье описано сопоставление [типов данных в {{product-name}}]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) и [типов данных в Spark](https://spark.apache.org/docs/latest/sql-ref-datatypes.html) при чтении и записи.
 
 ## Особенности { #features }
 
 1. **Указания типов**: некоторые сопоставления могут быть изменены [указаниями типов]({{ spyt-docs-root }}/{{ lang }}/reference/read-options{{ docs-revision-query }}#schema_hint) в метаданных полей, позволяя более точный контроль над преобразованием типов.
 
-2. **Точность Decimal**: {{product-name}} ограничивает `precision` типа `decimal` значением 35 (не `scale`). [Подробнее про Decimal]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}#schema_decimal)
+2. **Точность Decimal**: {{product-name}} ограничивает `precision` типа `decimal` значением 35 (не `scale`). [Подробнее про Decimal]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}#schema_decimal)
 
 3. **Строковые типы**: опция конфигурации `stringToUtf8` контролирует, сопоставляются ли строки с типами `string` или `utf8` в {{product-name}}. Пример:
    ```python
@@ -152,7 +152,7 @@
 
 Широкие типы появились позже стандартных и являются предпочтительными для данных, выходящих за пределы 1970–2105. В Spark им соответствуют кастомные типы SPYT: `Date32Type`, `Datetime64Type`, `Timestamp64Type`, `Interval64Type`.
 
-Подробнее про устройство временны́х типов в {{product-name}} см. в разделе [Временны́е типы]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}#temporal_types).
+Подробнее про устройство временны́х типов в {{product-name}} см. в разделе [Временны́е типы]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}#temporal_types).
 
 ### YsonType { #yson-type }
 

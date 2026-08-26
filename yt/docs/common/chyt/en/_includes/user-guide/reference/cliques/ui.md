@@ -43,7 +43,7 @@ The header (1) displays basic information:
 
 On the right, there is an action buttons block (2):
 
-- ![sql](../../../../_images/user-guide/reference/cliques/sql-btn.png){width=24 height=24} _SQL_ — go to the web interface for running queries — [Query Tracker]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}).
+- ![sql](../../../../_images/user-guide/reference/cliques/sql-btn.png){width=24 height=24} _SQL_ — go to the web interface for running queries — [Query Tracker]({{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}).
 - ![start](../../../../_images/user-guide/reference/cliques/start-btn.png){width=24 height=24} _Start_ — start the clique.
 - ![stop](../../../../_images/user-guide/reference/cliques/stop-btn.png){width=24 height=24} _Stop_ — stop the clique.
 - ![remove](../../../../_images/user-guide/reference/cliques/remove-btn.png){width=24 height=24} _Remove_ — delete the clique.
@@ -66,7 +66,7 @@ Below the header is the clique characteristics block (3). Key parameters:
   {% endnote %}
   
 - `State` — the clique state: `Active` / `Inactive`. Shows whether the clique is running or stopped.
-- `Pool` — the name of the compute [pool]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler), which is a link to pool's web interface.
+- `Pool` — the name of the compute [pool]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}#scheduler), which is a link to pool's web interface.
 - `Instances`, `Cores`, `Memory` — the number of instances and computing resources (CPU cores and RAM) allocated to the clique.
 - `YT operation Id` — a link to the [YT operation]({{ docs_root }}/chyt/user-guide/reference/cliques/yt-operation-ui.md) interface that corresponds to the clique.
 

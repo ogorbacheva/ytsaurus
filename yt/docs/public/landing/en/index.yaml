@@ -11,7 +11,7 @@ blocks:
         primary: true
         theme: action
         size: xl
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
       - text: 'GitHub'
         theme: outlined
         size: xl
@@ -27,23 +27,23 @@ blocks:
       - type: basic-card
         title: 'Get started with YTsaurus'
         text: 'Run a local cluster and execute your first commands.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
       - type: basic-card
         title: 'Store and organize data'
         text: 'Cypress, static tables, schemas, transactions, and files.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/cypress{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/storage/cypress{{ docs-revision-query }}'
       - type: basic-card
         title: 'Build a low-latency service or queue'
         text: 'Dynamic tables, transactions, replication, and queues.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}'
       - type: basic-card
         title: 'Run batch computations'
         text: 'Map, Reduce, MapReduce, Sort, Merge, and Vanilla.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/overview{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/overview{{ docs-revision-query }}'
       - type: basic-card
         title: 'Run an SQL query'
         text: 'Run queries and inspect their history with Query Tracker.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}'
       - type: basic-card
         title: 'Work with Spark'
         text: 'Run Spark workloads over data stored in YTsaurus.'
@@ -55,11 +55,11 @@ blocks:
       - type: basic-card
         title: 'Connect through APIs and tools'
         text: 'Get started with the Python API and client libraries.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}'
       - type: basic-card
         title: 'Install and operate the platform'
         text: 'Deploy a cluster, configure components, and run it in production.'
-        url: '{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/cluster-operations{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-operations{{ docs-revision-query }}'
 
   - type: card-layout-block
     title: 'Choose a component'
@@ -74,7 +74,7 @@ blocks:
           text: 'Cypress, storage, dynamic tables, MapReduce, APIs, and operation of the core cluster.'
           links:
             - text: 'Open documentation'
-              url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}'
+              url: '{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}'
               theme: normal
               arrow: true
         media:

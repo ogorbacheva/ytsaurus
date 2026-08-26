@@ -14,7 +14,7 @@ As usual, many of the settings include certain optimizations that are enabled by
 
 - `enable_computed_column_deduction` [`%true`]: Enables the output of values for the computed key columns using the predicate in WHERE. For example, if the `key_hash` key column is specified in the schema as a result of the `farm_hash(key)` expression, then if the query condition contains the `key = 'xyz'` expression, the `key_hash = 16518849956333482075` consequence will be automatically added to the predicate. Only conditions of the `column = constant expression`, `column tuple = tuple of constant expressions`, `column IN tuple of constant expressions`, and `column tuple IN tuple of constant expression tuples` type are supported.
 
-- `infer_dynamic_table_ranges_from_pivot_keys` [`%true`]: Enables the additional step of range output when querying via a dynamic table using [tablet pivot keys]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}).
+- `infer_dynamic_table_ranges_from_pivot_keys` [`%true`]: Enables the additional step of range output when querying via a dynamic table using [tablet pivot keys]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}).
 
 - `composite`: A section with settings related to composite `type_v3` and `YSON any/composite` types:
 
@@ -86,4 +86,4 @@ As usual, many of the settings include certain optimizations that are enabled by
 
    - `max_tables` [250]: The maximum number of tables that can be combined for reading. If this limit is exceeded, the query will end with an error.
 
-- `omit_inaccessible_rows` [`%false`] — Allows to read tables with [row-level ACLs]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/row-level-security{{ docs-revision-query }}).
+- `omit_inaccessible_rows` [`%false`] — Allows to read tables with [row-level ACLs]({{ core-docs-root }}/{{ lang }}/reference/storage/row-level-security{{ docs-revision-query }}).

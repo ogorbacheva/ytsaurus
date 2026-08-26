@@ -1,12 +1,12 @@
 # Data type mapping: SPYT, Spark, and {{product-name}}
 
-This article describes the mapping between [{{product-name}} data types]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) and [Apache Spark data types](https://spark.apache.org/docs/latest/sql-ref-datatypes.html) for read and write.
+This article describes the mapping between [{{product-name}} data types]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) and [Apache Spark data types](https://spark.apache.org/docs/latest/sql-ref-datatypes.html) for read and write.
 
 ## Features { #features }
 
 1. **Type hints**: Some mappings can be overridden by [type hints]({{ spyt-docs-root }}/{{ lang }}/reference/read-options{{ docs-revision-query }}#schema_hint) in field metadata. This enables precise control of type conversion.
 
-2. **Decimal precision**: {{product-name}} limits the `precision` of the `decimal` type to 35 (not `scale`). [Learn more about Decimal]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}#schema_decimal)
+2. **Decimal precision**: {{product-name}} limits the `precision` of the `decimal` type to 35 (not `scale`). [Learn more about Decimal]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}#schema_decimal)
 
 3. **String types**: The configuration option `stringToUtf8` controls whether strings map to `string` or `utf8` in {{product-name}}. Example:
    ```python
@@ -153,7 +153,7 @@ The types listed below are not part of standard Apache Spark — they are provid
 Wide types were introduced after standard ones and are preferred for data outside the 1970–2105 range. In Spark, they correspond to custom SPYT types: `Date32Type`, `Datetime64Type`, `Timestamp64Type`, `Interval64Type`.
 
 
-Learn more about temporal types in {{product-name}} in the [Temporal types]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}#temporal_types) section.
+Learn more about temporal types in {{product-name}} in the [Temporal types]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}#temporal_types) section.
 
 
 ### YsonType { #yson-type }

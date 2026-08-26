@@ -43,6 +43,6 @@ myspyt   Finished
 
 После успешного выполнения всех джобов (когда `RELEASESTATUS` перешел в `Finished`), можно запускать `SPYT`. Подробнее можно почитать [в отдельном разделе]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/run-spark-jobs{{ docs-revision-query }}).
 
-Для открытия Spark UI в браузере можно установить [Task proxy]({{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-task-proxy{{ docs-revision-query }}).
+Для открытия Spark UI в браузере можно установить [Task proxy]({{ core-docs-root }}/{{ lang }}/how-to-guides/install-task-proxy{{ docs-revision-query }}).
 
 Инструкция по обновлению SPYT подробно описана в статье [Обновление SPYT]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/deployment/update-spyt{{ docs-revision-query }}).

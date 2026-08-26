@@ -2,7 +2,7 @@
 
 {% if audience == "public" %}
 
-Подробнее о транзакциях можно узнать в разделе [Транзакции]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/transactions{{ docs-revision-query }}).
+Подробнее о транзакциях можно узнать в разделе [Транзакции]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/transactions{{ docs-revision-query }}).
 
 {% endif %}
 

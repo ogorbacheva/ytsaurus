@@ -2,11 +2,11 @@
 
 SPYT operations launch the Spark UI web interface. Usually, it cannot be opened directly: for example, if cluster nodes are in a closed internal network (as in Kubernetes) or job addresses change when moving to other machines.
 
-To access the interface, [Task proxy]({{ core-docs-root }}/{{ lang }}/user-guide/reference/proxy/task{{ docs-revision-query }}) is used. It creates a stable link that works even when jobs move between nodes, and verifies access rights upon entry.
+To access the interface, [Task proxy]({{ core-docs-root }}/{{ lang }}/reference/proxy/task{{ docs-revision-query }}) is used. It creates a stable link that works even when jobs move between nodes, and verifies access rights upon entry.
 
 {% note info %}
 
-To work with Task proxy, the cluster administrator must first [deploy]({{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-task-proxy{{ docs-revision-query }}) this component.
+To work with Task proxy, the cluster administrator must first [deploy]({{ core-docs-root }}/{{ lang }}/how-to-guides/install-task-proxy{{ docs-revision-query }}) this component.
 
 {% endnote %}
 

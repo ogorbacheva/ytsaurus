@@ -2,11 +2,11 @@
 
 Основная задача, которую решает CHYT — возможность обработки таблиц, уже находящихся в {{product-name}}, без необходимости их копирования в какие-либо сторонние хранилища.
 
-Таким образом, основное отличие CHYT от ClickHouse — отсутствие многообразия движков из обычного ClickHouse. Таблицы хранятся в соответствии с логикой [хранения таблиц в {{product-name}}]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/static-tables{{ docs-revision-query }}). Создание таблиц с использованием стандартных движков ClickHouse запрещено, вместо этого можно читать любую из имеющихся в соответствующем кластере {{product-name}} таблиц. Также можно сохранять результаты в виде таблиц {{product-name}}.
+Таким образом, основное отличие CHYT от ClickHouse — отсутствие многообразия движков из обычного ClickHouse. Таблицы хранятся в соответствии с логикой [хранения таблиц в {{product-name}}]({{ core-docs-root }}/{{ lang }}/concepts/storage/static-tables{{ docs-revision-query }}). Создание таблиц с использованием стандартных движков ClickHouse запрещено, вместо этого можно читать любую из имеющихся в соответствующем кластере {{product-name}} таблиц. Также можно сохранять результаты в виде таблиц {{product-name}}.
 
 "Под капотом" работа с таблицами {{product-name}} устроена похоже на движок [Distributed](https://clickhouse.com/docs/ru/engines/table-engines/special/distributed) из ClickHouse. Исключение: не приходится думать о ручном или автоматическом распределении данных по шардам — {{product-name}} как сторадж решает эту задачу прозрачным, незаметным и надежным образом, раскладывая данные по нодам.
 
-CHYT работает только со [схематизированными таблицами]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/static-schema{{ docs-revision-query }}). У таблицы должен быть заполнен атрибут `/@schema`, или, что то же самое, в веб-интерфейсе {{product-name}} на вкладке **Schema** должна присутствовать схема (т.е. упомянута хотя бы одна колонка).
+CHYT работает только со [схематизированными таблицами]({{ core-docs-root }}/{{ lang }}/reference/storage/static-schema{{ docs-revision-query }}). У таблицы должен быть заполнен атрибут `/@schema`, или, что то же самое, в веб-интерфейсе {{product-name}} на вкладке **Schema** должна присутствовать схема (т.е. упомянута хотя бы одна колонка).
 
 Таблицы {{product-name}} обозначаются своими полными путями в Кипарисе, обернутыми в backticks или в двойные кавычки: `` `//path/to/table` `` либо `"//path/to/table"`:
 
@@ -14,7 +14,7 @@ CHYT работает только со [схематизированными т
 SELECT * FROM `//tmp/sample_table`
 ```
 
-CHYT умеет читать и писать статические и сортированные динамически таблицы, но стоит учитывать, что из-за особенностей хранения данных чтение из [динамических таблиц]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}) может занимать в несколько раз больше времени по сравнению со статическими.
+CHYT умеет читать и писать статические и сортированные динамически таблицы, но стоит учитывать, что из-за особенностей хранения данных чтение из [динамических таблиц]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}) может занимать в несколько раз больше времени по сравнению со статическими.
 
 ## Чтение нескольких таблиц { #many }
 
@@ -97,7 +97,7 @@ INSERT INTO `<append=%false>//tmp/sample_table`
 SELECT a+100 FROM `//tmp/sample_table` ORDER BY a;
 ```
 
-При создании таблицы можно указывать дополнительные атрибуты, для этого их достаточно передать в Engine в виде [YSON]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}#yson).
+При создании таблицы можно указывать дополнительные атрибуты, для этого их достаточно передать в Engine в виде [YSON]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}#yson).
 
 Пример:
 
@@ -179,7 +179,7 @@ FROM concatYtTables("//home/dev/username/t0", "//home/dev/username/t1");
 
 ## Работа с динамическими таблицами { #dynamic }
 
-Из CHYT можно читать [динамические]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}) таблицы, включая dynamic stores (свежие данные в памяти).
+Из CHYT можно читать [динамические]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}) таблицы, включая dynamic stores (свежие данные в памяти).
 
 {% note warning "Внимание" %}
 

@@ -6,7 +6,7 @@ This article provides a rationale for the selected ClickHouse model within the {
 
 A *clique* is a full-fledged ClickHouse cluster that can read data from tables located in {{product-name}} via the built-in {{product-name}} internal protocol.
 
-From the point of view of the [{{product-name}} scheduler]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}), a clique is a Vanilla operation containing in a typical case up to dozens of jobs, each of which consumes up to 16 CPU cores by default. The name *clique* was chosen as a play on words in consonance with the name ClickHouse, but the correct spelling in English is *Clique*.
+From the point of view of the [{{product-name}} scheduler]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}), a clique is a Vanilla operation containing in a typical case up to dozens of jobs, each of which consumes up to 16 CPU cores by default. The name *clique* was chosen as a play on words in consonance with the name ClickHouse, but the correct spelling in English is *Clique*.
 
 ## Administering a clique { #administration }
 
@@ -22,7 +22,7 @@ If the database faces many "heavy" queries made at the same time, this can overl
 - Compute nodes can bump into the network bandwidth and become [IO-bound](https://en.wikipedia.org/wiki/I/O_bound).
 - Finally, processing substantial amounts of data can consume a lot of RAM, both directly for computations that require maintaining large intermediate states (such as heavy `GROUP BY`, sorting, or `COUNT DISTINCT`) and elementarily for reading data for buffers over the network.
 
-Despite the fact that ClickHouse has built-in individual protection mechanisms to solve the problems described above, they do not always help in the realities of {{product-name}}. A key property of {{product-name}} as a data source for ClickHouse is that any even somewhat large table is "very heavily distributed". Roughly speaking, you can assume that every next GB of data in the table will live on a new host. In addition, [static {{product-name}} tables]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/static-tables{{ docs-revision-query }}), and especially those storing analytical data, can often be compressed with a heavy compression codec (see [Compression]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/compression{{ docs-revision-query }})).
+Despite the fact that ClickHouse has built-in individual protection mechanisms to solve the problems described above, they do not always help in the realities of {{product-name}}. A key property of {{product-name}} as a data source for ClickHouse is that any even somewhat large table is "very heavily distributed". Roughly speaking, you can assume that every next GB of data in the table will live on a new host. In addition, [static {{product-name}} tables]({{ core-docs-root }}/{{ lang }}/concepts/storage/static-tables{{ docs-revision-query }}), and especially those storing analytical data, can often be compressed with a heavy compression codec (see [Compression]({{ core-docs-root }}/{{ lang }}/reference/storage/compression{{ docs-revision-query }})).
 
 This leads to the fact that processing even a "relatively light" table of a dozen GB with only a few narrow columns with a total weight of hundreds of MB is heavily dependent on the network stack and the data decompression subsystem and is quite demanding on RAM for buffers to read from each machine over the network.
 

@@ -69,8 +69,8 @@ sequenceDiagram
 ## Как включить { #steps }
 
 1. При чтении очереди установите опцию [include_service_columns]({{ spyt-docs-root }}/{{ lang }}/reference/streaming-options{{ docs-revision-query }}#service-columns) в `true`. Тогда стриминговый датафрейм будет содержать столбцы `__spyt_streaming_src_tablet_index` и `__spyt_streaming_src_row_index`, соответствующие `$tablet_index` и `$row_index` строки в читаемой очереди.
-2. Создайте выходную [сортированную динамическую таблицу]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/sorted-dynamic-tables{{ docs-revision-query }}) и примонтируйте её до запуска стриминга.
-   - Если чтение идёт из одной очереди, используйте в качестве ключевых колонок `__spyt_streaming_src_tablet_index` и `__spyt_streaming_src_row_index`. Ключевые колонки должны быть указаны в схеме и образовывать её префикс, см. [схему таблицы]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/static-schema{{ docs-revision-query }}). Можно переименовать эти колонки — тогда переименуйте их и в датафрейме, как в листинге ниже.
+2. Создайте выходную [сортированную динамическую таблицу]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/sorted-dynamic-tables{{ docs-revision-query }}) и примонтируйте её до запуска стриминга.
+   - Если чтение идёт из одной очереди, используйте в качестве ключевых колонок `__spyt_streaming_src_tablet_index` и `__spyt_streaming_src_row_index`. Ключевые колонки должны быть указаны в схеме и образовывать её префикс, см. [схему таблицы]({{ core-docs-root }}/{{ lang }}/reference/storage/static-schema{{ docs-revision-query }}). Можно переименовать эти колонки — тогда переименуйте их и в датафрейме, как в листинге ниже.
    - Если чтение происходит из более чем одной очереди, добавьте в ключ выходной таблицы и в датафрейм ещё одну колонку с уникальным идентификатором исходной очереди — например, её путь. Как это сделать, показано в [примере](#multi-queues).
 
 После такой настройки ключ выходной таблицы однозначно определяется исходной строкой очереди, поэтому повторная запись той же строки не создаёт дубликат.

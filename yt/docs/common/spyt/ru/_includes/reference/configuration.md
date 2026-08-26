@@ -12,11 +12,11 @@
 | `spark.yt.write.miniBatchSize` | `1000` | Размер блока данных, отправляемого в `WriteTable` | - |
 | `spark.yt.write.timeout` | `120 seconds` | Ограничение на ожидание записи одного блока данных | - |
 | `spark.yt.write.dynBatchSize` | `50000` | Максимальное количество строк в одной операции записи в динамическую таблицу. Используется в [Structured Streaming]({{ spyt-docs-root }}/{{ lang }}/concepts/structured-streaming/index{{ docs-revision-query }}) | 2.6.5 |
-| `spark.yt.write.typeV3.enabled` (`spark.yt.write.writingTypeV3.enabled` до 1.75.2) | `true` | Запись таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1` | 1.75.3 |
+| `spark.yt.write.typeV3.enabled` (`spark.yt.write.writingTypeV3.enabled` до 1.75.2) | `true` | Запись таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1` | 1.75.3 |
 | `spark.yt.read.vectorized.capacity` | `1000` | Максимальное количество строк в батче при чтении через `wire` протокол | - |
 | `spark.yt.read.arrow.enabled` | `true` | Использовать `arrow` формат для чтения данных (если это возможно) | - |
 | `spark.hadoop.yt.timeout` | `300 seconds` | Таймаут на чтение из {{product-name}} | - |
-| `spark.yt.read.typeV3.enabled` (`spark.yt.read.parsingTypeV3.enabled` до 1.75.2) | `true` | Чтение таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1` | 1.75.3 |
+| `spark.yt.read.typeV3.enabled` (`spark.yt.read.parsingTypeV3.enabled` до 1.75.2) | `true` | Чтение таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1` | 1.75.3 |
 | `spark.yt.read.keyColumnsFilterPushdown.enabled` | `true` | Использовать фильтры Spark-запроса для выборочного чтения из {{product-name}} | - |
 | `spark.yt.read.keyColumnsFilterPushdown.union.enabled` | `false` | Объединять все фильтры в непрерывный диапазон при выборочном чтении | - |
 | `spark.yt.read.keyColumnsFilterPushdown.ytPathCount.limit` | `100` | Максимальное количество диапазонов таблицы при выборочном чтении | - |
@@ -94,14 +94,14 @@
 | **Параметр** | **Значение по умолчанию** | **Описание** | **С какой версии** |
 | ------------ | ------------------------- | ------------ | ------------------ |
 | `spark.ytsaurus.shuffle.transaction.timeout` | 5m | Таймаут транзакции, под которой записываются shuffle чанки. При штатной работе транзакция периодически пингуется драйвером, таймаут задаёт время между последним пингом и откатом транзакции с удалением чанков | 2.7.0 |
-| `spark.ytsaurus.shuffle.account` | intermediate | [Аккаунт]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/accounts{{ docs-revision-query }}), используемый для записи shuffle чанков | 2.7.0 |
-| `spark.ytsaurus.shuffle.medium` | - | [Медиум]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/media{{ docs-revision-query }}), используемый для записи shuffle чанков. По умолчанию равен установленному в системе | 2.7.0 |
+| `spark.ytsaurus.shuffle.account` | intermediate | [Аккаунт]({{ core-docs-root }}/{{ lang }}/reference/storage/accounts{{ docs-revision-query }}), используемый для записи shuffle чанков | 2.7.0 |
+| `spark.ytsaurus.shuffle.medium` | - | [Медиум]({{ core-docs-root }}/{{ lang }}/reference/storage/media{{ docs-revision-query }}), используемый для записи shuffle чанков. По умолчанию равен установленному в системе | 2.7.0 |
 | `spark.ytsaurus.shuffle.replication.factor` | - | Коэффициент репликации shuffle чанков. По умолчанию равен установленному в системе | 2.7.0 |
 | `spark.ytsaurus.shuffle.partition.column` | partition | Название колонки в чанке, используемой для хранения номера целевой партиции | 2.7.0 |
 | `spark.ytsaurus.shuffle.write.row.size` | 8m | Максимальный размер одной строки в чанке c shuffle данными. Данное значение не связано с размером непосредственно строк shuffle данных, это значение служит для разделения сериализованных shuffle данных по строкам чанка. Уменьшение этого значения приводит к большему количеству строк в чанке, при увеличении можно превысить максимально допустимый размер строки чанка | 2.7.0 |
 | `spark.ytsaurus.shuffle.write.buffer.size` | 10 | Размер буфера записи (в количестве строк) shuffle данных в  {{product-name}}. Этот параметр необходимо выставлять вместе с `spark.ytsaurus.shuffle.write.row.size` для избежания переполнения оперативной памяти | 2.7.0 |
-| `spark.ytsaurus.shuffle.write.config` | - | Дополнительные параметры записи shuffle данных в {{product-name}} в [YSON]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/yson{{ docs-revision-query }}) формате. Соответствует конфигурации [TableWriter]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/io-configuration{{ docs-revision-query }}#table_writer) | 2.7.0 |
-| `spark.ytsaurus.shuffle.read.config` | - | Дополнительные параметры чтения shuffle данных в {{product-name}} в [YSON]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/yson{{ docs-revision-query }}) формате. Соответствует конфигурации [TableReader]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/io-configuration{{ docs-revision-query }}#table_reader) | 2.7.0 |
+| `spark.ytsaurus.shuffle.write.config` | - | Дополнительные параметры записи shuffle данных в {{product-name}} в [YSON]({{ core-docs-root }}/{{ lang }}/reference/storage/yson{{ docs-revision-query }}) формате. Соответствует конфигурации [TableWriter]({{ core-docs-root }}/{{ lang }}/reference/storage/io-configuration{{ docs-revision-query }}#table_writer) | 2.7.0 |
+| `spark.ytsaurus.shuffle.read.config` | - | Дополнительные параметры чтения shuffle данных в {{product-name}} в [YSON]({{ core-docs-root }}/{{ lang }}/reference/storage/yson{{ docs-revision-query }}) формате. Соответствует конфигурации [TableReader]({{ core-docs-root }}/{{ lang }}/reference/storage/io-configuration{{ docs-revision-query }}#table_reader) | 2.7.0 |
 
 {wide-content title="Опции для конфигурации {{product-name}} Shuffle сервиса"}
 

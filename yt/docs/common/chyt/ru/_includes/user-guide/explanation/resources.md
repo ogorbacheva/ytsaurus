@@ -2,7 +2,7 @@
 
 Клика CHYT является Vanilla-операцией {{product-name}}, а инстансы запускаются в джобах этой операции и потребляют ресурсы.
 
-Перед чтением этой статьи рекомендуется ознакомиться со статьей [Планировщик и пулы]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}).
+Перед чтением этой статьи рекомендуется ознакомиться со статьей [Планировщик и пулы]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}).
 
 ## Вытеснение { #preemption }
 

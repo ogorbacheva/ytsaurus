@@ -1,6 +1,6 @@
 # Типы данных
 
-В ClickHouse доступно большое количество разнообразных [типов данных](https://clickhouse.com/docs/ru/sql-reference/data-types). В {{product-name}} используется своя система типов данных, сильно пересекающаяся с системой типов ClickHouse, но отдельные типы данных {{product-name}} могут отсутствовать в CH и наоборот. Полный список поддерживаемых в системе {{product-name}} типов доступен в разделе [типы данных {{product-name}}]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}).
+В ClickHouse доступно большое количество разнообразных [типов данных](https://clickhouse.com/docs/ru/sql-reference/data-types). В {{product-name}} используется своя система типов данных, сильно пересекающаяся с системой типов ClickHouse, но отдельные типы данных {{product-name}} могут отсутствовать в CH и наоборот. Полный список поддерживаемых в системе {{product-name}} типов доступен в разделе [типы данных {{product-name}}]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}).
 
  ## Примитивные типы данных
 
@@ -20,7 +20,7 @@
 ## Составные типы данных
 
 Полезные ссылки:
-- [Система типов {{product-name}}]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/objects{{ docs-revision-query }}).
+- [Система типов {{product-name}}]({{ core-docs-root }}/{{ lang }}/concepts/storage/objects{{ docs-revision-query }}).
 
 В {{product-name}} доступны составные типы данных: списки, словари, опциональные типы, структуры, кортежи. По умолчанию составные значения видны движком CH так же, как и тип `Any`, т.е. в виде YSON-строки.
 
@@ -132,7 +132,7 @@ tupleElement(struct, 2):
 
 Для работы с композитными данными (массивами, словарями, структурами) в {{product-name}} исторически использовался тип данных `Any`. Несмотря на появление поддержки составных типов в системе типов {{product-name}}, многие старые данные по-прежнему остаются представленными в `Any`: движку ClickHouse они будут доступны в виде бинарного YSON.
 
-В свою очередь, для движка ClickHouse представление `Any` в виде бинарного YSON почти ни о чём не говорит, так как поддержка YSON не встроена в ClickHouse. ClickHouse интерпретирует подобные данные просто в виде бинарной строки с каким-то пользовательским форматом. Поэтому слой совместимости ClickHouse и {{product-name}} предоставляет ряд вспомогательных функций, позволяющих адресоваться по YSON-структуре с помощью [языка YPath]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/yson-docs{{ docs-revision-query }}). А также интерпретировать её узлы как примитивные типы {{product-name}} (`Int64`, `UInt64`, `Double`, `Boolean`), как строки (`String`), либо как списки примитивных типов {{product-name}} (`Array(Int64)`, `Array(UInt64)`, `Array(Double)`, `Array(Boolean)`) с приведением к соответствующему встроенному типу ClickHouse. Подробнее о данных функциях можно прочесть в разделе [Функции для работы с YSON]({{ docs_root }}/chyt/user-guide/reference/functions.md#yson_functions).
+В свою очередь, для движка ClickHouse представление `Any` в виде бинарного YSON почти ни о чём не говорит, так как поддержка YSON не встроена в ClickHouse. ClickHouse интерпретирует подобные данные просто в виде бинарной строки с каким-то пользовательским форматом. Поэтому слой совместимости ClickHouse и {{product-name}} предоставляет ряд вспомогательных функций, позволяющих адресоваться по YSON-структуре с помощью [языка YPath]({{ core-docs-root }}/{{ lang }}/concepts/storage/yson-docs{{ docs-revision-query }}). А также интерпретировать её узлы как примитивные типы {{product-name}} (`Int64`, `UInt64`, `Double`, `Boolean`), как строки (`String`), либо как списки примитивных типов {{product-name}} (`Array(Int64)`, `Array(UInt64)`, `Array(Double)`, `Array(Boolean)`) с приведением к соответствующему встроенному типу ClickHouse. Подробнее о данных функциях можно прочесть в разделе [Функции для работы с YSON]({{ docs_root }}/chyt/user-guide/reference/functions.md#yson_functions).
 
 {% note warning "Внимание" %}
 

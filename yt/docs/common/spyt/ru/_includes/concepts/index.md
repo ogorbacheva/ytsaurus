@@ -25,7 +25,7 @@ Spark обрабатывает данные в оперативной памят
 
 ## Что такое SPYT? { #what-is-spyt }
 
-SPYT powered by Apache Spark позволяет запускать Spark-кластер на вычислительных мощностях {{product-name}}. Кластер запускается в [Vanilla-операции {{product-name}}]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}), затем забирает некоторое количество ресурсов из квоты и занимает их постоянно. Spark может читать как [статические]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/static-tables{{ docs-revision-query }}), так и [динамические таблицы {{product-name}}]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}), делать на них расчеты и писать результат в статическую таблицу.
+SPYT powered by Apache Spark позволяет запускать Spark-кластер на вычислительных мощностях {{product-name}}. Кластер запускается в [Vanilla-операции {{product-name}}]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}), затем забирает некоторое количество ресурсов из квоты и занимает их постоянно. Spark может читать как [статические]({{ core-docs-root }}/{{ lang }}/concepts/storage/static-tables{{ docs-revision-query }}), так и [динамические таблицы {{product-name}}]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}), делать на них расчеты и писать результат в статическую таблицу.
 
 
 ## Совместимость версий SPYT с версиями Apache Spark{ #spyt-compatibility }, Java, Scala, Python
@@ -55,7 +55,7 @@ SPYT оптимален в следующих случаев:
 - разработка на Java с использованием MapReduce в {{product-name}};
 - оптимизация производительности пайплайна на {{product-name}} с двумя и более джойнами или группировками;
 - написание интеграционных ETL пайплайнов из других систем хранения;
-- ad-hoc аналитика в интерактивном режиме с использованием `Jupyter`, `pyspark`, `spark-shell` или встроенного в UI компонента [Query Tracker]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}).
+- ad-hoc аналитика в интерактивном режиме с использованием `Jupyter`, `pyspark`, `spark-shell` или встроенного в UI компонента [Query Tracker]({{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}).
 
 SPYT не стоит выбирать, если:
 - существует необходимость в обработке более 10 ТБ данных в одной транзакции;

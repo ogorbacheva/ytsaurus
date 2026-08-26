@@ -28,7 +28,7 @@ spark.write.optimize_for("lookup").yt("//sys/spark/examples/test_data")
 
 ## Schema v3
 
-Запись таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1`. Настраивается в [Spark конфигурации]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/configure{{ docs-revision-query }}) или опции записи.
+Запись таблиц со схемой в формате [type_v3]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}) вместо `type_v1`. Настраивается в [Spark конфигурации]({{ spyt-docs-root }}/{{ lang }}/how-to-guides/cluster/configure{{ docs-revision-query }}) или опции записи.
 
 Python example:
 ```python

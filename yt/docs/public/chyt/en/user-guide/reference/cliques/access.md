@@ -1,10 +1,10 @@
 # Access permissions
 
-Access permissions for a clique are stored in a dedicated system node — **Access Control Object** (ACO). For more information about this object, see the [section]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}#access-control).
+Access permissions for a clique are stored in a dedicated system node — **Access Control Object** (ACO). For more information about this object, see the [section]({{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}#access-control).
 
 ## Authentication { #authentication }
 
-Users are authenticated in CHYT in the same way as in {{product-name}} — using a token from {{product-name}} (for more information, see [Authentication]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/auth{{ docs-revision-query }})).
+Users are authenticated in CHYT in the same way as in {{product-name}} — using a token from {{product-name}} (for more information, see [Authentication]({{ core-docs-root }}/{{ lang }}/reference/storage/auth{{ docs-revision-query }})).
 
 ## Types of permissions { #types }
 

@@ -42,7 +42,7 @@ class MySparkApplication {
 
 3. `spark.read().format("yt").load("/sys/spark/examples/test_data")`: Read data in `yt` format from `//sys/spark/examples/test_data`.
 
-The read operation returns a `Dataset` object aliased as `DataFrame` in Scala. DataFrames are Spark's internal representations of schematized tables. You can filter and join these, as well as add new columns. By applying operations like these to a DataFrame, you create a new DataFrame for subsequent use. A DataFrame includes several partitions that you can process individually. A DataFrame read from {{product-name}} has as many partitions as the {{product-name}} table had [chunks]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/chunks{{ docs-revision-query }}) .
+The read operation returns a `Dataset` object aliased as `DataFrame` in Scala. DataFrames are Spark's internal representations of schematized tables. You can filter and join these, as well as add new columns. By applying operations like these to a DataFrame, you create a new DataFrame for subsequent use. A DataFrame includes several partitions that you can process individually. A DataFrame read from {{product-name}} has as many partitions as the {{product-name}} table had [chunks]({{ core-docs-root }}/{{ lang }}/concepts/storage/chunks{{ docs-revision-query }}) .
 
 The example here calls the DataFrame's `show()` method. The output is the first few rows of the DataFrame (20 by default) displayed to `stdout`. In the logs, the output will look like this:
 

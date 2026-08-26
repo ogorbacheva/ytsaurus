@@ -35,7 +35,7 @@ In addition to the standard Spark parameters for the driver and executors, you c
                                                  "medium_name"="ssd_slots_physical";};
                                                 }'
 ```
-The full list of parameters can be found in the section [operation options]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/operations-options{{ docs-revision-query }}).
+The full list of parameters can be found in the section [operation options]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/operations-options{{ docs-revision-query }}).
 
 ### Using Docker Images and Porto Layers {#images}
 
@@ -57,7 +57,7 @@ spark-submit --master "ytsaurus://<cluster-host>:<port>" \
              ./spark-job.py
 ```
 
-For more details, see the [root filesystem images section]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/layers/layer-paths{{ docs-revision-query }}).
+For more details, see the [root filesystem images section]({{ core-docs-root }}/{{ lang }}/reference/data-processing/layers/layer-paths{{ docs-revision-query }}).
 
 ## Advantages of the Approach {#advantages}
 

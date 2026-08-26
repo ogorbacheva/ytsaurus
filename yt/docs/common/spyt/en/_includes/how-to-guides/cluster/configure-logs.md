@@ -4,7 +4,7 @@
 *Event log* is a special log format in Spark. Logs are written by a [driver]({{ spyt-docs-root }}/{{ lang }}/concepts/cluster-architecture{{ docs-revision-query }}#spark-app) and read by a special service called *Spark History Server (SHS)*. SHS launches alongside the master and the workers when a SPYT cluster is started. SHS uses the log to draw a UI similar to Spark UI.
 
 The difference between them is that Spark UI is available on the driver only while a job is running, whereas SHS is always up and can read the logs of completed jobs.
-Logs are written to a [dynamic table]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}) in `discovery-path`. SHS can delete them [automatically](#log-settings).
+Logs are written to a [dynamic table]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}) in `discovery-path`. SHS can delete them [automatically](#log-settings).
 
 ## Enabling { #log-on }
 

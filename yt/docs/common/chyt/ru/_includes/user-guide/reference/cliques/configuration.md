@@ -1,6 +1,6 @@
 # Конфигурация клики
 
-Вся конфигурация клики описывается одним [YSON-документом]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/yson-docs{{ docs-revision-query }}), называемым *спеклет* (speclet).
+Вся конфигурация клики описывается одним [YSON-документом]({{ core-docs-root }}/{{ lang }}/concepts/storage/yson-docs{{ docs-revision-query }}), называемым *спеклет* (speclet).
 
 Спеклет клики хранится в Кипарисе по пути `//sys/strawberry/chyt/<alias>/speclet`. Также его содержимое можно посмотреть в [веб-интерфейсе]({{ docs_root }}/chyt/user-guide/reference/cliques/ui.md) на вкладке **Speclet** или получить с помощью команды CLI `yt clickhouse ctl get-speclet`.  
 
@@ -28,7 +28,7 @@
 
 - `settings` — CHYT-специфичные [настройки]({{ docs_root }}/chyt/user-guide/reference/queries/settings.md) запросов по умолчанию. Изменение настройки в данном разделе приводит к изменению значения по умолчанию для этой настройки для всех запросов в клике.
 
-- `table_writer` — [конфигурация Table Writer]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/io-configuration{{ docs-revision-query }}#table_writer).
+- `table_writer` — [конфигурация Table Writer]({{ core-docs-root }}/{{ lang }}/reference/storage/io-configuration{{ docs-revision-query }}#table_writer).
 
 - `table_attribute_cache` — конфигурация кеша атрибутов таблиц. Данный кеш существенно повышает отзывчивость CHYT, но на текущий момент потенциально может приводить к неконсистентным чтениям (в таблице данные уже появились, а CHYT их еще не видит). Чтобы отключить данный кеш, можно воспользоваться конфигурацией:
   ```

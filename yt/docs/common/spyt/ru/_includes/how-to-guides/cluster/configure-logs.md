@@ -4,7 +4,7 @@
 *Event log* – это специальный формат лога в Spark. Лог пишет [драйвер]({{ spyt-docs-root }}/{{ lang }}/concepts/cluster-architecture{{ docs-revision-query }}#spark-app), а читает специальный сервис *Spark History Server (SHS)*. SHS запускается вместе с мастером и воркерами при старте кластера SPYT. SHS по логу рисует UI, аналогичный Spark UI.
 
 Отличие между ними в том, что Spark UI доступен на драйвере в момент выполнения джобы, а SHS поднят всегда и может прочитать логи джобов, которые уже завершились.
-Логи записываются в [динамическую таблицу]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}) внутри `discovery-path`. SHS умеет удалять их [автоматически](#log-settings).
+Логи записываются в [динамическую таблицу]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}) внутри `discovery-path`. SHS умеет удалять их [автоматически](#log-settings).
 
 ## Включение { #log-on }
 

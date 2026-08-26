@@ -19,4 +19,4 @@ The process that launches the clique can sometimes be informally called a *launc
 
 ## {{package-name}} { #{{package-name}} }
 
-The main way to get started with {{product-name}} is to install the `{{package-name}}` package. For more information, see [Python Wrapper]({{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}).
+The main way to get started with {{product-name}} is to install the `{{package-name}}` package. For more information, see [Python Wrapper]({{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}).

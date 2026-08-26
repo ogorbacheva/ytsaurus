@@ -4,7 +4,7 @@
 
 ## Спеклет { #speclet }
 
-Конфигурация клики описывается одним [YSON-документом]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/yson-docs{{ docs-revision-query }}), который называется *спеклет* (*Speclet*).
+Конфигурация клики описывается одним [YSON-документом]({{ core-docs-root }}/{{ lang }}/concepts/storage/yson-docs{{ docs-revision-query }}), который называется *спеклет* (*Speclet*).
 
 Спеклет хранится в Кипарисе по пути `//sys/strawberry/chyt/<alias>/speclet`. Он представляет собой набор [опций](#options), которые интерпретируются [контроллером]({{ docs_root }}/chyt/user-guide/explanation/controller.md) во время запуска клики. На основе этих опций контроллер генерирует конечную конфигурацию CHYT-инстансов.
 

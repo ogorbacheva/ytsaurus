@@ -26,7 +26,7 @@
 
 #### **Q: How do I load geo-dicts in my own clique?** {#load-geodictionaries-chyt}
 
-**A:** When starting any clique, you can specify the `--cypress-geodata-path` option that enables you to specify the path to geo-dicts in [Cypress]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/cypress{{ docs-revision-query }}).
+**A:** When starting any clique, you can specify the `--cypress-geodata-path` option that enables you to specify the path to geo-dicts in [Cypress]({{ core-docs-root }}/{{ lang }}/concepts/storage/cypress{{ docs-revision-query }}).
 
 <!-- For more information, see [Getting started.](../../user-guide/data-processing/chyt/reference/start-clique.md) -->
 
@@ -46,9 +46,9 @@ toDate(reinterpretAsInt64(reverse(unhex(substring(hex(payment_dt), 1, 8)))))
 
 **A:** First, make sure that your {{product-name}} account has a quota for the **ssd_blobs** medium. To do this, go to the account page, switch your medium type to **ssd_blobs**, and enter your account name. If you have no quota for the **ssd_blobs** medium, you can request it via a special form.
 
-After obtaining the quota for the **ssd_blobs** medium, you will need to change the value of the `primary_medium` attribute, and the data will be moved to the corresponding medium in the background. Learn more in the section on [storage]({{ core-docs-root }}/{{ lang }}/user-guide/reference/faq{{ docs-revision-query }}).
+After obtaining the quota for the **ssd_blobs** medium, you will need to change the value of the `primary_medium` attribute, and the data will be moved to the corresponding medium in the background. Learn more in the section on [storage]({{ core-docs-root }}/{{ lang }}/reference/faq{{ docs-revision-query }}).
 
-For static tables, you can force a move using the [Merge]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/merge{{ docs-revision-query }}) operation:
+For static tables, you can force a move using the [Merge]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/merge{{ docs-revision-query }}) operation:
 
 ```bash
 yt set //home/dev/test_table/@primary_medium ssd_blobs
@@ -64,7 +64,7 @@ yt set //home/dev/test_table/@primary_medium ssd_blobs
 yt mount-table //home/dev/test_table --sync
 ```
 
-You can speed up the move further with [forced_compaction]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}#attributes) but using this method creates a heavy load in the cluster and is strongly discouraged.
+You can speed up the move further with [forced_compaction]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}#attributes) but using this method creates a heavy load in the cluster and is strongly discouraged.
 
 To verify that the table has in fact changed its medium, use the command below:
 

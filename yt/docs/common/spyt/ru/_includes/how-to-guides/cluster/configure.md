@@ -77,7 +77,7 @@ protected void doRun(String[] args, SparkSession spark, CompoundClient yt) {
 
 ### Настройки операций
 
-При использовании `spark-launch-yt` для настройки кластера доступна опция `--params '{"operation_spec"={...};}`. [Список всех поддерживаемых опций]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/operations-options{{ docs-revision-query }}).
+При использовании `spark-launch-yt` для настройки кластера доступна опция `--params '{"operation_spec"={...};}`. [Список всех поддерживаемых опций]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/operations-options{{ docs-revision-query }}).
 Это будет полезно, если необходимо изменить стандартные настройки операции например для увеличения количество failed джобов, после которого операция считается failed.
 
 ```bash

@@ -54,7 +54,7 @@ query.awaitTermination()
 
 ## Стриминг очередей {{product-name}} { #queues }
 
-{{product-name}} имеет собственную реализацию [очередей]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}), основанных на упорядоченных динамических таблицах.
+{{product-name}} имеет собственную реализацию [очередей]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}), основанных на упорядоченных динамических таблицах.
 
 {% note info %}
 
@@ -62,7 +62,7 @@ query.awaitTermination()
 
 {% endnote %}
 
-Перед запуском стриминговой задачи необходимо создать и настроить очереди в соответствии с [документацией]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}#api). В случае чтения — создать таблицы очередей и консьюмеров, произвести регистрацию. Запись результатов стриминга производится в упорядоченную динамическую таблицу, созданную и примонтированную заранее.
+Перед запуском стриминговой задачи необходимо создать и настроить очереди в соответствии с [документацией]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}#api). В случае чтения — создать таблицы очередей и консьюмеров, произвести регистрацию. Запись результатов стриминга производится в упорядоченную динамическую таблицу, созданную и примонтированную заранее.
 
 После обработки очередной порции данных совершается коммит нового смещения, что позволяет уведомлять входную таблицу о возможности удалить неактуальные строки.
 
@@ -128,14 +128,14 @@ with spark_session() as spark:
 
    Для каждой партиции:
    - Если lowerIndex < upperIndex:
-     - Выполняется метод [advanceConsumer]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}#rabota-s-konsyumerom) для фиксации оффсетов батча `#N-1` в консьюмере.
+     - Выполняется метод [advanceConsumer]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}#rabota-s-konsyumerom) для фиксации оффсетов батча `#N-1` в консьюмере.
      - Формирует таски для экзекьюторов.
    - Иначе: пропускает обработку (пустой батч).
 
 3. **Исполнение на экзекьюторах**
 
    Каждый экзекьютор для своей партиции:
-   - Читает данные, используя метод [pullConsumer]({{ core-docs-root }}/{{ lang }}/user-guide/reference/dynamic-tables/queues{{ docs-revision-query }}#chtenie-dannyh).
+   - Читает данные, используя метод [pullConsumer]({{ core-docs-root }}/{{ lang }}/reference/dynamic-tables/queues{{ docs-revision-query }}#chtenie-dannyh).
    - Применяет трансформации (если есть).
    - Пишет данные в выходную таблицу.
 
@@ -226,7 +226,7 @@ query = df\
 ```
 
 ## Композитные типы { #type-v3 }
-Для того чтобы обрабатывать стримингом [композитные типы данных]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}), необходимо, как и для батчовых джоб, включать опции `parsing_type_v3` и `write_type_v3`.
+Для того чтобы обрабатывать стримингом [композитные типы данных]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}), необходимо, как и для батчовых джоб, включать опции `parsing_type_v3` и `write_type_v3`.
 
 <small>Листинг 6 — Обработка композитных типов в Structured Streaming</small>
 

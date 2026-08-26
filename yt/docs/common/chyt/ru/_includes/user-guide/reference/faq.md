@@ -44,9 +44,9 @@ toDate(reinterpretAsInt64(reverse(unhex(substring(hex(payment_dt), 1, 8)))))
 
 **A:** Для начала необходимо убедиться, что в вашем аккаунте в {{product-name}} квота в медиуме **ssd_blobs**. Для этого можно на {{ chyt-user-guide-reference-faq-md-audience-2 }} переключить тип медиума на **ssd_blobs** и ввести название своего аккаунта. Если квоты в медиуме **ssd_blobs** нет, то ее можно запросить через специальную форму.
 
-После получения квоты на медиуме **ssd_blobs** необходимо изменить значение атрибута `primary_medium`, данные будут в фоне переложены на соответствующий медиум. Подробнее можно прочитать в разделе про [хранение]({{ core-docs-root }}/{{ lang }}/user-guide/reference/faq{{ docs-revision-query }}#storage).
+После получения квоты на медиуме **ssd_blobs** необходимо изменить значение атрибута `primary_medium`, данные будут в фоне переложены на соответствующий медиум. Подробнее можно прочитать в разделе про [хранение]({{ core-docs-root }}/{{ lang }}/reference/faq{{ docs-revision-query }}#storage).
 
-Для статических таблиц можно форсировать перекладывание с помощью операции [Merge]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/merge{{ docs-revision-query }}):
+Для статических таблиц можно форсировать перекладывание с помощью операции [Merge]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/merge{{ docs-revision-query }}):
 
 ```bash
 yt set //home/dev/test_table/@primary_medium ssd_blobs
@@ -62,7 +62,7 @@ yt set //home/dev/test_table/@primary_medium ssd_blobs
 yt mount-table //home/dev/test_table --sync
 ```
 
-Дополнительно ускорить перекладывание можно с помощью [forced_compaction]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}#attributes), однако использование этого метода создаёт большую нагрузку на кластер и крайне не рекомендуется.
+Дополнительно ускорить перекладывание можно с помощью [forced_compaction]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}#attributes), однако использование этого метода создаёт большую нагрузку на кластер и крайне не рекомендуется.
 
 Для проверки того, что таблица действительно изменила медиум можно воспользоваться командой:
 

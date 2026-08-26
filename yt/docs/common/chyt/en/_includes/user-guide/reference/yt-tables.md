@@ -2,11 +2,11 @@
 
 The main task solved by CHYT is processing tables that are already in {{product-name}} without having to copy them to any third-party storages.
 
-Thus, the main difference of CHYT from ClickHouse is that it does not have the variety of engines from regular ClickHouse. Tables are stored according to the logic of [table storage in {{product-name}}]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/static-tables{{ docs-revision-query }}). Creating tables using standard ClickHouse engines is prohibited. Instead, you can read any of the existing tables in the corresponding {{product-name}} cluster. You can also save results as {{product-name}} tables.
+Thus, the main difference of CHYT from ClickHouse is that it does not have the variety of engines from regular ClickHouse. Tables are stored according to the logic of [table storage in {{product-name}}]({{ core-docs-root }}/{{ lang }}/concepts/storage/static-tables{{ docs-revision-query }}). Creating tables using standard ClickHouse engines is prohibited. Instead, you can read any of the existing tables in the corresponding {{product-name}} cluster. You can also save results as {{product-name}} tables.
 
 "Under the hood", working with {{product-name}} tables is arranged similarly to the [Distributed](https://clickhouse.com/docs/{{lang}}/engines/table-engines/special/distributed) engine from ClickHouse. Exception: you do not have to think about manual or automatic distribution of data into shards, because as a storage {{product-name}} solves this task in a transparent, seamless, and reliable way, distributing data to nodes.
 
-CHYT works only with [schematized tables]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/static-schema{{ docs-revision-query }}). The table must have the filled in `/@schema` attribute, or the **Schema** tab in the {{product-name}} web interface must have a schema (i.e. at least one column is mentioned), which is the same thing.
+CHYT works only with [schematized tables]({{ core-docs-root }}/{{ lang }}/reference/storage/static-schema{{ docs-revision-query }}). The table must have the filled in `/@schema` attribute, or the **Schema** tab in the {{product-name}} web interface must have a schema (i.e. at least one column is mentioned), which is the same thing.
 
 {{product-name}} tables are denoted by their full paths in Cypress wrapped in backticks or in double quotes: `` `//path/to/table` `` or `"//path/to/table"`:
 
@@ -14,7 +14,7 @@ CHYT works only with [schematized tables]({{ core-docs-root }}/{{ lang }}/user-g
 SELECT * FROM `//tmp/sample_table`
 ```
 
-CHYT can read and write static and sorted dynamic tables, but note that due to the data storage peculiarities, reading from [dynamic tables]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}) may take by several times more time than reading from static tables.
+CHYT can read and write static and sorted dynamic tables, but note that due to the data storage peculiarities, reading from [dynamic tables]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}) may take by several times more time than reading from static tables.
 
 ## Reading multiple tables { #many }
 
@@ -97,7 +97,7 @@ INSERT INTO `<append=%false>//tmp/sample_table`
 SELECT a+100 FROM `//tmp/sample_table` ORDER BY a.
 ```
 
-When creating a table, you can specify additional attributes. To do this, just pass them to Engine in the form of [YSON]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/data-types{{ docs-revision-query }}#yson).
+When creating a table, you can specify additional attributes. To do this, just pass them to Engine in the form of [YSON]({{ core-docs-root }}/{{ lang }}/reference/storage/data-types{{ docs-revision-query }}#yson).
 
 Example:
 
@@ -179,7 +179,7 @@ FROM concatYtTables("//home/dev/username/t0", "//home/dev/username/t1");
 
 ## Working with dynamic tables { #dynamic }
 
-You can read [dynamic]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}) tables, including dynamic stores (fresh data in memory), from CHYT.
+You can read [dynamic]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}) tables, including dynamic stores (fresh data in memory), from CHYT.
 
 {% note warning "Attention" %}
 

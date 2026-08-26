@@ -14,11 +14,11 @@
 - Не нужно копировать данные из {{product-name}} в ClickHouse.
 - Можно использовать вычислительную квоту в {{product-name}} для быстрых вычислений.
 - Можно быстро проводить вычисления над данными в {{product-name}} небольшого и среднего объемов (до 1 ТБ), до 100 раз быстрее чем запуск MapReduce операции.
-- Поддерживается работа со [статическими таблицами]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/static-tables{{ docs-revision-query }}) и [динамическими таблицами]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}).
+- Поддерживается работа со [статическими таблицами]({{ core-docs-root }}/{{ lang }}/concepts/storage/static-tables{{ docs-revision-query }}) и [динамическими таблицами]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}).
 
 ## Ограничения { #disadvantages }
 
-Обрабатываемые таблицы должны быть [схематизированы]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/static-schema{{ docs-revision-query }}).
+Обрабатываемые таблицы должны быть [схематизированы]({{ core-docs-root }}/{{ lang }}/reference/storage/static-schema{{ docs-revision-query }}).
 
 
 

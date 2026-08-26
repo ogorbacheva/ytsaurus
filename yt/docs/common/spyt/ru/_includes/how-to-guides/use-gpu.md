@@ -1,6 +1,6 @@
 # Использование GPU
 
-При исполнении задач некоторые вычисления могут быть произведены на GPU устройствах. Про планирование GPU ресурсов в {{product-name}} можно прочесть в соответствующей [статье]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/overview{{ docs-revision-query }}#podderzhka-gpu).
+При исполнении задач некоторые вычисления могут быть произведены на GPU устройствах. Про планирование GPU ресурсов в {{product-name}} можно прочесть в соответствующей [статье]({{ core-docs-root }}/{{ lang }}/concepts/data-processing/overview{{ docs-revision-query }}#podderzhka-gpu).
 
 Исполнение задач с использованием GPU опирается на плагин [RAPIDS Accelerator](https://docs.nvidia.com/spark-rapids/user-guide/23.08/getting-started/on-premise.html). Он переносит часть операций, для которых описаны преобразования, на GPU. Основные параметры описаны в документации плагина.
 

@@ -14,7 +14,7 @@
 
 - `enable_computed_column_deduction` [`%true`] — включает выведение значений для вычислимых ключевых колонок с использованием предиката в WHERE. Например, если ключевая колонка `key_hash` задана в схеме как результат выражения `farm_hash(key)`, то при наличии в условии запроса выражения `key = 'xyz'` в предикат автоматически будет добавлено следствие `key_hash = 16518849956333482075`. Поддерживаются только условий типа `колонка = константное выражение`, `кортеж колонок = кортеж константных выражений`, `колонка IN кортеж константных выражений` и `кортеж колонок IN кортеж кортежей константных выражений`.
 
-- `infer_dynamic_table_ranges_from_pivot_keys` [`%true`] — включает дополнительный шаг выведение диапазонов при запросе по динамической таблице с использованием [tablet pivot keys]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}).
+- `infer_dynamic_table_ranges_from_pivot_keys` [`%true`] — включает дополнительный шаг выведение диапазонов при запросе по динамической таблице с использованием [tablet pivot keys]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}).
 
 - `composite` — секция с настройками, относящимися к сложным типам `type_v3` и `YSON any/composite`:
 
@@ -86,4 +86,4 @@
 
   - `max_tables` [250] — максимальное количество таблиц, которые могут быть объединены для чтения. При превышении данного ограничения запрос завершится ошибкой.
 
-- `omit_inaccessible_rows` [`%false`] — позволяет читать таблицы, на которые действует [построчный ACL]({{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/row-level-security{{ docs-revision-query }})
+- `omit_inaccessible_rows` [`%false`] — позволяет читать таблицы, на которые действует [построчный ACL]({{ core-docs-root }}/{{ lang }}/reference/storage/row-level-security{{ docs-revision-query }})

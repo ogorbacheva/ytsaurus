@@ -9,7 +9,7 @@ applies_to:
 
 # SPYT Connect
 
-SPYT Connect is a remote connection mechanism for a Spark driver, built on the [Spark Connect](https://spark.apache.org/docs/latest/spark-connect-overview.html) protocol. It lets you run Spark SQL queries via [Query Tracker]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}) in {{product-name}}. You can also work with data directly from Python code via the Spark Connect API, without installing a JVM on the client side.
+SPYT Connect is a remote connection mechanism for a Spark driver, built on the [Spark Connect](https://spark.apache.org/docs/latest/spark-connect-overview.html) protocol. It lets you run Spark SQL queries via [Query Tracker]({{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}) in {{product-name}}. You can also work with data directly from Python code via the Spark Connect API, without installing a JVM on the client side.
 
 {% note info %}
 

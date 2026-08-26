@@ -21,7 +21,7 @@ Spark is also equipped by a full-scale [Catalyst](https://github.com/tupol/spark
 
 ## What is SPYT? { #what-is-spyt }
 
-SPYT powered by Apache Spark enables a Spark cluster to be started with {{product-name}} computational capacity.  The cluster is started in a [{{product-name}} Vanilla operation]({{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/vanilla{{ docs-revision-query }}), then takes a certain amount of resources from the quota and occupies them constantly.  Spark can read [static]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/static-tables{{ docs-revision-query }}), as well as [dynamic {{product-name}} tables]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}), perform computations on them, and record the result in the static table.
+SPYT powered by Apache Spark enables a Spark cluster to be started with {{product-name}} computational capacity.  The cluster is started in a [{{product-name}} Vanilla operation]({{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/vanilla{{ docs-revision-query }}), then takes a certain amount of resources from the quota and occupies them constantly.  Spark can read [static]({{ core-docs-root }}/{{ lang }}/concepts/storage/static-tables{{ docs-revision-query }}), as well as [dynamic {{product-name}} tables]({{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}), perform computations on them, and record the result in the static table.
 
 
 ## Compatibility of SPYT versions with Apache Spark{ #spyt-compatibility }, Java, Scala, and Python
@@ -51,7 +51,7 @@ SPYT is optimal in the following cases:
 - Developing in Java and using MapReduce in {{product-name}}.
 - Optimizing pipeline performance on {{product-name}} with two or more joins or groupings.
 - Writing integrational ETL pipelines from other storage systems.
-- Ad-hoc analytics in interactive mode using `Jupyter`, `pyspark`, `spark-shell`, or the [Query Tracker]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}) component built into the UI.
+- Ad-hoc analytics in interactive mode using `Jupyter`, `pyspark`, `spark-shell`, or the [Query Tracker]({{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}) component built into the UI.
 
 Do not use SPYT if:
 - You need to process over 10 TB of data in a single transaction.

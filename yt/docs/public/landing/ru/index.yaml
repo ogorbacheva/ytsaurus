@@ -11,7 +11,7 @@ blocks:
         primary: true
         theme: action
         size: xl
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
       - text: 'GitHub'
         theme: outlined
         size: xl
@@ -27,23 +27,23 @@ blocks:
       - type: basic-card
         title: 'Начать работу с YTsaurus'
         text: 'Запустить локальный кластер и выполнить первые команды.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
       - type: basic-card
         title: 'Хранить и организовывать данные'
         text: 'Кипарис, статические таблицы, схемы, транзакции и файлы.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/storage/cypress{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/storage/cypress{{ docs-revision-query }}'
       - type: basic-card
         title: 'Построить low-latency сервис или очередь'
         text: 'Динамические таблицы, транзакции, репликация и очереди.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}'
       - type: basic-card
         title: 'Запустить пакетные вычисления'
         text: 'Map, Reduce, MapReduce, Sort, Merge и Vanilla.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/reference/data-processing/operations/overview{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/overview{{ docs-revision-query }}'
       - type: basic-card
         title: 'Выполнить SQL-запрос'
         text: 'Запускать запросы и смотреть историю через Query Tracker.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/query-tracker/about{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}'
       - type: basic-card
         title: 'Работать со Spark'
         text: 'Запускать Spark-задачи поверх данных YTsaurus.'
@@ -55,11 +55,11 @@ blocks:
       - type: basic-card
         title: 'Подключиться через API и инструменты'
         text: 'Начать работу с Python API и клиентскими библиотеками.'
-        url: '{{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}'
       - type: basic-card
         title: 'Установить и администрировать платформу'
         text: 'Развернуть кластер, настроить компоненты и эксплуатацию.'
-        url: '{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/cluster-operations{{ docs-revision-query }}'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-operations{{ docs-revision-query }}'
 
   - type: card-layout-block
     title: 'Выбрать компонент'
@@ -74,7 +74,7 @@ blocks:
           text: 'Кипарис, хранение, динамические таблицы, MapReduce, API и эксплуатация базового кластера.'
           links:
             - text: 'Открыть документацию'
-              url: '{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}'
+              url: '{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}'
               theme: normal
               arrow: true
         media:

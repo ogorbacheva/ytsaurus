@@ -23,7 +23,7 @@ where:
 
 ## Where to find available CHYT versions { #versions }
 
-All available CHYT versions are stored in binary files in [Cypress]({{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}#cypress) at the path `//sys/bin/ytserver-clickhouse`.
+All available CHYT versions are stored in binary files in [Cypress]({{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}#cypress) at the path `//sys/bin/ytserver-clickhouse`.
 
 In addition to binary files with CHYT builds, the directory contains symlinks (files that store references to binary files) for the *latest stable* and *latest base* versions.
 

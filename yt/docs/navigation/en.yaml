@@ -18,13 +18,13 @@ navigation:
                 items:
                   - type: link
                     text: "Platform overview"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
                   - type: link
                     text: "Quick start"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
                   - type: link
                     text: "Architecture and core concepts"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/concepts/general{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/basic-concepts{{ docs-revision-query }}"
           - type: column
             items:
               - type: section
@@ -49,10 +49,10 @@ navigation:
                 items:
                   - type: link
                     text: "Python API"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}"
                   - type: link
                     text: "Dynamic tables"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}"
                   - type: link
                     text: "Develop SPYT applications"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/development/index{{ docs-revision-query }}"
@@ -66,7 +66,7 @@ navigation:
                 items:
                   - type: link
                     text: "MapReduce and distributed compute"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/overview{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/data-processing/overview{{ docs-revision-query }}"
                   - type: link
                     text: "SPYT how-to guides"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/index{{ docs-revision-query }}"
@@ -86,10 +86,10 @@ navigation:
                 items:
                   - type: link
                     text: "Install YTsaurus"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-ytsaurus{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/install-ytsaurus{{ docs-revision-query }}"
                   - type: link
                     text: "Operate a cluster"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/cluster-operations{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-operations{{ docs-revision-query }}"
                   - type: link
                     text: "Deploy SPYT"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/deployment/index{{ docs-revision-query }}"
@@ -104,7 +104,7 @@ navigation:
             url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
           - type: link
             text: "YTsaurus Core"
-            url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}"
+            url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
           - type: link
             text: "YQL"
             url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
@@ -124,19 +124,19 @@ navigation:
                 items:
                   - type: link
                     text: "CLI commands"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/api/cli/commands{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/api/cli/commands{{ docs-revision-query }}"
                   - type: link
                     text: "Error codes"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/api/error-codes{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/api/error-codes{{ docs-revision-query }}"
                   - type: link
                     text: "Data formats"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/formats{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/storage/formats{{ docs-revision-query }}"
                   - type: link
                     text: "Release notes"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/reference/releases{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/releases{{ docs-revision-query }}"
                   - type: link
                     text: "Version compatibility"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/reference/compatibility{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/compatibility{{ docs-revision-query }}"
           - type: column
             items:
               - type: section

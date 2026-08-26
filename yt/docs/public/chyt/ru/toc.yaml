@@ -21,13 +21,13 @@ navigation:
                 items:
                   - type: link
                     text: "Обзор платформы"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
                   - type: link
                     text: "Быстрый старт"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/tutorials/quick-start{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
                   - type: link
                     text: "Архитектура и основные понятия"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/concepts/general{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/basic-concepts{{ docs-revision-query }}"
           - type: column
             items:
               - type: section
@@ -52,10 +52,10 @@ navigation:
                 items:
                   - type: link
                     text: "Python API"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/how-to-guides/api/python/start{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}"
                   - type: link
                     text: "Динамические таблицы"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/dynamic-tables/overview{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}"
                   - type: link
                     text: "Разработка SPYT-приложений"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/development/index{{ docs-revision-query }}"
@@ -69,7 +69,7 @@ navigation:
                 items:
                   - type: link
                     text: "MapReduce и распределённые вычисления"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/data-processing/overview{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/concepts/data-processing/overview{{ docs-revision-query }}"
                   - type: link
                     text: "Практические руководства SPYT"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/index{{ docs-revision-query }}"
@@ -89,10 +89,10 @@ navigation:
                 items:
                   - type: link
                     text: "Установка YTsaurus"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-ytsaurus{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/install-ytsaurus{{ docs-revision-query }}"
                   - type: link
                     text: "Эксплуатация кластера"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/how-to-guides/cluster-operations{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-operations{{ docs-revision-query }}"
                   - type: link
                     text: "Развёртывание SPYT"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/deployment/index{{ docs-revision-query }}"
@@ -107,7 +107,7 @@ navigation:
             url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
           - type: link
             text: "YTsaurus Core"
-            url: "{{ core-docs-root }}/{{ lang }}/user-guide/explanation/overview{{ docs-revision-query }}"
+            url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
           - type: link
             text: "YQL"
             url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
@@ -127,19 +127,19 @@ navigation:
                 items:
                   - type: link
                     text: "Команды CLI"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/api/cli/commands{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/api/cli/commands{{ docs-revision-query }}"
                   - type: link
                     text: "Коды ошибок"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/api/error-codes{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/api/error-codes{{ docs-revision-query }}"
                   - type: link
                     text: "Форматы данных"
-                    url: "{{ core-docs-root }}/{{ lang }}/user-guide/reference/storage/formats{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/storage/formats{{ docs-revision-query }}"
                   - type: link
                     text: "История изменений"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/reference/releases{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/releases{{ docs-revision-query }}"
                   - type: link
                     text: "Совместимость версий"
-                    url: "{{ core-docs-root }}/{{ lang }}/admin-guide/reference/compatibility{{ docs-revision-query }}"
+                    url: "{{ core-docs-root }}/{{ lang }}/reference/compatibility{{ docs-revision-query }}"
           - type: column
             items:
               - type: section
