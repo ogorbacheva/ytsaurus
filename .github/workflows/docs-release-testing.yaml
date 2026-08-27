@@ -6,7 +6,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      contents: read
     env:
       src-root: "./yt/docs"
       build-root: "./_docs-build"
@@ -37,9 +38,6 @@ jobs:
       - name: Check docs sources
         run: bash .github/scripts/check_docs_sources.sh "$GITHUB_WORKSPACE"
         shell: bash
-
-      - name: Delete search index
-        run: bash .github/scripts/delete_search_index.sh ${{ secrets.ALGOLIA_APP_ID }} ${{ secrets.ALGOLIA_API_KEY }}
 
       - name: Build doc md2html
         id: build-md2html
@@ -118,7 +116,9 @@ jobs:
   upload:
     needs: build
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Show docs revision
         run: |
