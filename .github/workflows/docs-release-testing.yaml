@@ -35,6 +35,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ inputs.mode == 'revision-preview' && format('docs-revision-preview-{0}', github.run_id) || 'docs-version-publication' }}
+  cancel-in-progress: false
+
 env:
   DIPLODOC_CLI_VERSION: "5.56.0"
   DOCS_SOURCE_ROOT: ./yt/docs

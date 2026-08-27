@@ -63,6 +63,12 @@ documentation revision second, and then registers the version labels
 serially. Only after all labels have been registered does it move each
 component's default/head to its configured `default_version`.
 
+`version-preview` and `version-matrix` runs share one GitHub Actions concurrency
+group and therefore cannot execute at the same time. A new version publication
+waits for the running one instead of cancelling it. `revision-preview` runs use
+an isolated concurrency group because they upload immutable revision artifacts
+and do not change named versions or a project's default/head.
+
 Consequently, a failed build or upload cannot move a component's default head
 to an incomplete publication. A failed version-registration step can leave
 some named versions updated, but it does not update any default head; rerunning
