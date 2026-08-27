@@ -20,7 +20,7 @@ A key-visitor stream solves this problem. A background task in the worker period
 2. **Emit**. Ready `TVisit` messages are delivered by the engine via `GetNextBatch` and reach the computation in `DoProcessVisit`.
 3. **Coverage**. After visits for a key range are delivered to the consumer, the range is marked as *Committed* in `TKeyVisitorStore`. The coverage is persisted to the system table `key_visitor_states`. That’s why a worker restart or partition rebalance doesn’t cause a re-scan.
 4. **End of pass**. When the coverage is complete, the background loop immediately calls `StartNewPass`. The pace is set by the throttler, so the next pass still takes `Period`. Rotation is atomic: a single Sync-transaction deletes the previous pass’s rows and seeds the first interval of the new one. If a crash happens midway, it rolls back, and the coverage is preserved.
-5. **Final pass**. When all input streams are Completed, the next pass is marked *Final*. After its commit, the visit stream becomes `Empty` and doesn’t start new passes. You’re guaranteed at least one full pass after the inputs finish.
+5. **Final pass**. When every stream the visitor follows is Completed (by default, all input and source streams of the computation—see `upstream_streams`), the next pass is marked *Final*. After its commit, the visit stream becomes `Empty` and doesn’t start new passes. You’re guaranteed at least one full pass after the inputs finish.
 
 ### Partitioning {#partitioning}
 
@@ -35,7 +35,7 @@ Inside a partition, the range is split into a statically defined number of *buck
 | Each key per period | You get exactly one visit per key (no duplicates or omissions). |
 | Worker restart | Coverage is preserved; rotation is atomic, and a crash keeps the old pass. |
 | Partition rebalance | The new worker sees the committed coverage via `key_visitor_states`. |
-| Input completion | At least one final pass is guaranteed; `Empty` is declared only after it. |
+| Completion of the followed streams | At least one final pass is guaranteed; `Empty` is declared only after it. Which streams are followed is set by `upstream_streams`; by default, all input and source streams. |
 | `Period` | Best-effort. Under throttler load or slow `KeyStates` reads, the achieved period grows. See observability below. |
 | Scan order | Within a bucket, keys are sorted; between buckets, the order is round-robin. Not event-time. |
 
@@ -70,6 +70,7 @@ To make a computation accept a visit stream, you must fill the `key_visitor_stre
 
 - `names`: a list of internal-state names to count keys from. If unspecified or empty, all keys from all internal states of the computation are used.
 - `external_names`: a list of [external-state managers](../../../flow/concepts/glossary.md#state) and visitor-driven external-state joiners (see [Static table joiner](#static-table-joiner)) for the computation, whose tables are used to count keys. This lets the visitor scan the external state (including that of companion computations) and evict outdated records via `clear()` in the visit handler. If only `external_names` is specified (without `names`), only the listed external state is scanned; internal states aren’t scanned. If neither `names` nor `external_names` is specified, all internal states are scanned, but external state and joiners aren’t; a joiner is scanned only if explicitly listed in `external_names`, and in no more than one visit stream of the computation (checked at spec submit time).
+- `upstream_streams`: which of the computation’s input and source streams the visitor follows, that is, whose completion it waits for before the final pass (see [Pass lifecycle](#pass-lifecycle)). When unspecified, all input and source streams of the computation. Only meaningful with `finite=%true` (see [Dynamic spec parameters](#dynamic-params)). For when the list needs narrowing, see [`streams_dependency`](#deps).
 
 ### Dynamic spec parameters {#dynamic-params}
 
@@ -111,6 +112,25 @@ If the computation **emits messages to output from `DoProcessVisit`**, you must 
 ```
 
 Here, `visits` is the output stream, `keys` is the input, and `visit_iter` is the key-visitor stream. For a computation with only a visit stream (no input), there’s a single parent: `"visits" = ["visit_iter"]`.
+
+If that output comes back to the same computation as an input stream, you get a **cyclic topology**: the cycle `visit_iter → requests → … → responses` closes on the computation’s own input stream. By default, the visitor follows that input, but it only completes once the visitor stops scanning the state.
+
+In a production pipeline this doesn’t matter: sources are infinite, input streams never complete, and no value of `upstream_streams` starts a final pass. It matters where all pipeline sources are [finite](../../../flow/python/testing.md) and the pipeline must reach [`completed`](../../../flow/concepts/glossary.md#start-stop-pause-pipeline), that is, in [integration tests](../../../flow/python/testing.md). There, keep in `upstream_streams` (see [Static spec parameters](#static-params)) only the input streams that don’t depend on the visitor:
+
+```yson
+"input_stream_ids" = ["keys"; "responses"];
+"output_stream_ids" = ["requests"];
+"key_visitor_streams" = {
+    "visit_iter" = {
+        "upstream_streams" = ["keys"];
+    };
+};
+"streams_dependency" = {
+    "requests" = ["keys"; "visit_iter"];
+};
+```
+
+Here, `responses` is produced by the visitor via `requests`, so the visitor follows `keys` only.
 
 ## Observability {#observability}
 

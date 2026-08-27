@@ -2,8 +2,8 @@ from base import ClickHouseTestBase, Clique, QueryFailedError
 
 from helpers import get_breakpoint_node, release_breakpoint, wait_breakpoint
 
-from yt_commands import (abort_transaction, authors, create, create_user, exists, get, lock, ls,
-                         raises_yt_error, read_table, remove, start_transaction, sync_mount_table,
+from yt_commands import (abort_transaction, authors, create, create_user, exists, get, lock, ls, move,
+                         raises_yt_error, read_table, remove, retry, start_transaction, sync_mount_table,
                          wait, write_table)
 
 import yt.yson as yson
@@ -40,8 +40,15 @@ class TestMaterializedViews(ClickHouseTestBase):
         create("table", "//tmp/target", attributes={"schema": self.SCHEMA})
 
     @staticmethod
-    def _statement_path(clique, database="YT"):
-        return clique.storage_artifacts_path + "/{}.mv".format(database)
+    def _statement_path(clique, database="YT", name="mv"):
+        return clique.storage_artifacts_path + "/{}.{}".format(database, name)
+
+    @staticmethod
+    def _partition_offsets(partition):
+        return {
+            key: partition[key]
+            for key in ("object_id", "next_row_index", "total_row_count")
+        }
 
     @authors("buyval01")
     def test_lifecycle(self):
@@ -67,7 +74,14 @@ class TestMaterializedViews(ClickHouseTestBase):
             progress_path = progress_root + "/" + view_id
             assert exists(progress_path)
             persisted_progress = get(progress_path)
-            assert persisted_progress["next_row_index"] == 0
+            partition = persisted_progress["partitions"][0]
+            assert self._partition_offsets(partition) == {
+                "object_id": get("//tmp/source/@id"),
+                "next_row_index": 0,
+                "total_row_count": 0,
+            }
+            assert partition["last_update"]
+            assert partition["last_error"] == ""
             assert persisted_progress["last_error"] == ""
 
             for instance in instances:
@@ -205,7 +219,15 @@ class TestMaterializedViews(ClickHouseTestBase):
             view_id = get(statement_path + "/@id")
             progress_root = clique.materialized_views_path + "/progress"
             progress_path = progress_root + "/" + view_id
-            assert get(progress_path)["next_row_index"] == 2
+            source_id = get("//tmp/source/@id")
+            partition = get(progress_path)["partitions"][0]
+            assert self._partition_offsets(partition) == {
+                "object_id": source_id,
+                "next_row_index": 2,
+                "total_row_count": 2,
+            }
+            assert partition["last_update"]
+            assert partition["last_error"] == ""
             assert read_table("//tmp/target") == []
 
             write_table("<append=%true>//tmp/source", expected_rows)
@@ -214,7 +236,14 @@ class TestMaterializedViews(ClickHouseTestBase):
             assert ls(progress_root) == [view_id]
             assert get(progress_path + "/@type") == "document"
             progress = get(progress_path)
-            assert progress["next_row_index"] == 34
+            partition = progress["partitions"][0]
+            assert self._partition_offsets(partition) == {
+                "object_id": source_id,
+                "next_row_index": 34,
+                "total_row_count": 34,
+            }
+            assert partition["last_update"]
+            assert partition["last_error"] == ""
 
             target_id = get("//tmp/target/@id")
 
@@ -232,7 +261,153 @@ class TestMaterializedViews(ClickHouseTestBase):
             wait(lambda: len(get_refresh_queries()) == len(expected_rows))
 
     @authors("buyval01")
-    def test_background_refresh_persists_initial_validation_error(self):
+    def test_table_range_background_refresh(self):
+        create("map_node", "//tmp/source_directory")
+        create("table", "//tmp/source_directory/initial", attributes={"schema": self.SCHEMA})
+        write_table("//tmp/source_directory/initial", [{"key": 0, "value": "initial"}])
+        test_alias = "mv_table_range_alias"
+
+        config_patch = {
+            "yt": {
+                "election_manager": {
+                    "lock_path": f"//sys/strawberry/chyt/{test_alias}/leader_lock",
+                    "lock_acquisition_period": 300,
+                    "transaction_timeout": 5000,
+                    "transaction_ping_period": 1000,
+                },
+                "materialized_views": {
+                    "scan_period": 100,
+                    "max_rows_per_refresh": 1,
+                    "transaction_timeout": 5000,
+                },
+            },
+        }
+
+        with Clique(
+                2,
+                alias=test_alias,
+                config_patch=config_patch,
+                export_query_log=True,
+                remove_storage_artifacts_on_exit=False) as clique:
+            clique.make_query(
+                'CREATE MATERIALIZED VIEW range_mv TO "//tmp/target" '
+                "AS SELECT key, concat(value, '-processed') AS value "
+                'FROM concatYtTablesRange("//tmp/source_directory") WHERE key != 2')
+
+            statement_path = self._statement_path(clique, name="range_mv")
+            initial_id = get("//tmp/source_directory/initial/@id")
+
+            view_id = get(statement_path + "/@id")
+            progress_path = clique.materialized_views_path + "/progress/" + view_id
+            target_id = get("//tmp/target/@id")
+
+            def get_partitions():
+                return {
+                    partition["object_id"]: self._partition_offsets(partition)
+                    for partition in get(progress_path)["partitions"]
+                }
+
+            def get_refresh_query_count():
+                return len({
+                    row["query_id"]
+                    for row in read_table(clique.query_log_table_path)
+                    if row.get("type") == "QueryFinish"
+                    and row.get("query_kind") == "Insert"
+                    and row.get("is_initial_query") == 1
+                    and target_id in row.get("query", "")
+                })
+
+            assert get_partitions() == {
+                initial_id: {
+                    "object_id": initial_id,
+                    "next_row_index": 1,
+                    "total_row_count": 1,
+                },
+            }
+            assert read_table("//tmp/target") == []
+
+            refresh_query_count = get_refresh_query_count()
+            create("table", "//tmp/empty_part", attributes={"schema": self.SCHEMA})
+            move("//tmp/empty_part", "//tmp/source_directory/empty_part")
+            empty_part_id = get("//tmp/source_directory/empty_part/@id")
+            wait(lambda: empty_part_id in get_partitions())
+            empty_partition = next(
+                partition
+                for partition in get(progress_path)["partitions"]
+                if partition["object_id"] == empty_part_id)
+            assert self._partition_offsets(empty_partition) == {
+                "object_id": empty_part_id,
+                "next_row_index": 0,
+                "total_row_count": 0,
+            }
+            assert empty_partition["last_update"]
+            assert get_refresh_query_count() == refresh_query_count
+            move("//tmp/source_directory/empty_part", "//tmp/empty_part")
+            wait(lambda: empty_part_id not in get_partitions())
+
+            source_rows = [
+                {"key": 1, "value": "new"},
+                {"key": 2, "value": "filtered"},
+            ]
+            rows = [{"key": 1, "value": "new-processed"}]
+            create("table", "//tmp/part", attributes={"schema": self.SCHEMA})
+            write_table("//tmp/part", source_rows)
+            move("//tmp/part", "//tmp/source_directory/part")
+            part_id = get("//tmp/source_directory/part/@id")
+            wait(lambda: read_table("//tmp/target") == rows)
+            wait(lambda: get_refresh_query_count() == 2)
+            assert get_partitions() == {
+                initial_id: {
+                    "object_id": initial_id,
+                    "next_row_index": 1,
+                    "total_row_count": 1,
+                },
+                part_id: {
+                    "object_id": part_id,
+                    "next_row_index": 2,
+                    "total_row_count": 2,
+                },
+            }
+
+            appended_source_rows = [{"key": 3, "value": "appended"}]
+            appended_rows = [{"key": 3, "value": "appended-processed"}]
+            write_table("<append=%true>//tmp/source_directory/part", appended_source_rows)
+            wait(lambda: read_table("//tmp/target") == rows + appended_rows)
+            wait(lambda: get_refresh_query_count() == 3)
+            assert get_partitions()[part_id] == {
+                "object_id": part_id,
+                "next_row_index": 3,
+                "total_row_count": 3,
+            }
+
+            move("//tmp/source_directory/part", "//tmp/detached_part")
+            wait(lambda: set(get_partitions()) == {initial_id})
+
+            move("//tmp/detached_part", "//tmp/source_directory/part")
+            reattached_part_id = get("//tmp/source_directory/part/@id")
+            wait(lambda: read_table("//tmp/target") == (rows + appended_rows) * 2)
+            wait(lambda: get_refresh_query_count() == 6)
+            assert set(get_partitions()) == {initial_id, reattached_part_id}
+            assert get_partitions()[reattached_part_id] == {
+                "object_id": reattached_part_id,
+                "next_row_index": 3,
+                "total_row_count": 3,
+            }
+
+        with Clique(2, alias=test_alias, config_patch=config_patch) as clique:
+            wait(lambda: clique.make_query("EXISTS TABLE range_mv") == [{"result": 1}])
+            assert "concatYtTablesRange" in clique.make_query("SHOW CREATE TABLE range_mv")[0]["statement"]
+
+            restart_rows = [{"key": 4, "value": "after-restart"}]
+            create("table", "//tmp/after_restart", attributes={"schema": self.SCHEMA})
+            write_table("//tmp/after_restart", restart_rows)
+            move("//tmp/after_restart", "//tmp/source_directory/after_restart")
+            wait(lambda: read_table("//tmp/target") == (rows + appended_rows) * 2 + [
+                {"key": 4, "value": "after-restart-processed"},
+            ])
+
+    @authors("buyval01")
+    def test_background_refresh_handles_source_replacement(self):
         config_patch = {
             "yt": {
                 "materialized_views": {
@@ -248,11 +423,38 @@ class TestMaterializedViews(ClickHouseTestBase):
 
             remove("//tmp/source")
             create("table", "//tmp/source", attributes={"schema": self.SCHEMA})
+            source_id = get("//tmp/source/@id")
+            rows = [{"key": 1, "value": "new-1"}]
+            write_table("//tmp/source", rows)
 
-            wait(
-                lambda: "source table was replaced" in get(progress_path)["last_error"],
-                ignore_exceptions=True,
-                timeout=10)
+            wait(lambda: read_table("//tmp/target") == rows, timeout=10)
+            progress = get(progress_path)
+            assert progress["last_error"] == ""
+            assert [self._partition_offsets(partition) for partition in progress["partitions"]] == [{
+                "object_id": source_id,
+                "next_row_index": 1,
+                "total_row_count": 1,
+            }]
+
+    @authors("buyval01")
+    def test_background_refresh_handles_target_replacement(self):
+        config_patch = {"yt": {"materialized_views": {"scan_period": 100}}}
+
+        with Clique(1, config_patch=config_patch, export_query_log=True) as clique:
+            clique.make_query(self.CREATE_MV_QUERY)
+
+            initial_rows = [{"key": 1, "value": "initial"}]
+            write_table("<append=%true>//tmp/source", initial_rows)
+            wait(lambda: read_table("//tmp/target") == initial_rows, timeout=10)
+
+            old_target_id = get("//tmp/target/@id")
+            retry(lambda: remove("//tmp/target"))
+            create("table", "//tmp/target", attributes={"schema": self.SCHEMA})
+            assert get("//tmp/target/@id") != old_target_id
+
+            new_rows = [{"key": 2, "value": "new"}]
+            write_table("<append=%true>//tmp/source", new_rows)
+            wait(lambda: read_table("//tmp/target") == new_rows, timeout=10)
 
     @authors("buyval01")
     def test_background_refresh_lock_contention(self):
@@ -294,6 +496,7 @@ class TestMaterializedViews(ClickHouseTestBase):
                 'AS SELECT key, accurateCast(value, \'Int64\') AS value FROM "//tmp/source"')
             view_id = get(self._statement_path(clique) + "/@id")
             progress_path = clique.materialized_views_path + "/progress/" + view_id
+            initial_last_update = get(progress_path)["partitions"][0]["last_update"]
 
             write_table("//tmp/source", [{"key": 1, "value": "not-an-integer"}])
 
@@ -302,12 +505,20 @@ class TestMaterializedViews(ClickHouseTestBase):
                 ignore_exceptions=True,
                 timeout=10)
             assert read_table("//tmp/int_target") == []
-            assert get(progress_path)["next_row_index"] == 0
+            progress = get(progress_path)
+            partition = progress["partitions"][0]
+            assert partition["next_row_index"] == 0
+            assert partition["last_update"] == initial_last_update
+            assert partition["last_error"] == ""
 
             expected_rows = [{"key": 2, "value": 42}]
             write_table("//tmp/source", [{"key": 2, "value": "42"}])
             wait(lambda: read_table("//tmp/int_target") == expected_rows, timeout=10)
-            assert get(progress_path)["last_error"] == ""
+            progress = get(progress_path)
+            partition = progress["partitions"][0]
+            assert progress["last_error"] == ""
+            assert partition["last_error"] == ""
+            assert partition["last_update"] != initial_last_update
 
     @authors("buyval01")
     def test_background_refresh_parent_transaction_abort(self):
@@ -329,6 +540,7 @@ class TestMaterializedViews(ClickHouseTestBase):
             view_id = get(self._statement_path(clique) + "/@id")
             progress_path = clique.materialized_views_path + "/progress/" + view_id
             target_id = get("//tmp/target/@id")
+            initial_last_update = get(progress_path)["partitions"][0]["last_update"]
 
             write_table("//tmp/source", [{"key": 1, "value": "new-1"}])
             wait(
@@ -346,7 +558,9 @@ class TestMaterializedViews(ClickHouseTestBase):
                 ignore_exceptions=True)
 
             assert read_table("//tmp/target") == []
-            assert get(progress_path)["next_row_index"] == 0
+            partition = get(progress_path)["partitions"][0]
+            assert partition["next_row_index"] == 0
+            assert partition["last_update"] == initial_last_update
 
     @authors("buyval01")
     def test_database_scoping(self):

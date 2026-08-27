@@ -148,9 +148,9 @@ void AppendFunctionImplementation(
                 });
             } catch (const std::exception& ex) {
                 YT_TLOG_WARNING("Failed to build native object code for UDF; falling back to IR bitcode")
-                    .WithFormat("UDF", "%Qv", functionName)
+                    .With("Udf", functionName)
                     .With("Symbol", functionSymbolName)
-                    .With(TError(ex));
+                    .With(ex);
             }
         }
 

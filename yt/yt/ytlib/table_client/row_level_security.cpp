@@ -54,7 +54,7 @@ bool ValidatePredicateApplicability(
             case EInapplicableRowAccessPredicateMode::Ignore: {
                 YT_TLOG_INFO("Ignored row access predicate")
                     .With("RowAccessPredicate", rowLevelAce.RowAccessPredicate)
-                    .With(TError(ex));
+                    .With(ex);
                 return false;
             }
             case EInapplicableRowAccessPredicateMode::Fail: {
@@ -63,7 +63,7 @@ bool ValidatePredicateApplicability(
                     "and ACE has %v=%lv",
                     TSerializableAccessControlEntry::InapplicableRowAccessPredicateModeKey,
                     EInapplicableRowAccessPredicateMode::Fail)
-                    << ex;
+                    .With(ex);
 
                 THROW_ERROR std::move(error);
             }

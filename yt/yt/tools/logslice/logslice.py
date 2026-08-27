@@ -161,6 +161,53 @@ def slice_failure_class(returncode, stderr):
     return "command"
 
 
+def preflight_failure_class(error):
+    """Classify failures that happen before remote log discovery starts.
+
+    Keep this deliberately narrow: only authentication failures receive the
+    structured ``authentication_unavailable`` outcome. Transport and other SSH
+    failures retain the existing diagnostic instead of being relabelled as an
+    authentication problem.
+    """
+    text = str(error).lower()
+    authentication_markers = (
+        "ssh_auth_sock does not exist",
+        "permission denied (publickey",
+        "agent refused operation",
+        "no identities available",
+    )
+    if any(marker in text for marker in authentication_markers):
+        return "authentication_unavailable"
+    return None
+
+
+def requested_component(host, override):
+    """Return the component intended by the caller before remote discovery."""
+    if override:
+        return override
+    _, component = infer_host_component(host)
+    return component or "unresolved"
+
+
+def report_authentication_preflight(host, component, start, end):
+    """Emit a bounded result for an SSH authentication failure.
+
+    No remote directory has been listed at this point, so ``files=0`` and
+    ``rotations_inspected=0`` are evidence boundaries rather than estimates.
+    The underlying SSH diagnostic is intentionally not copied into the record:
+    the outcome carries all useful classification without exposing agent or key
+    details.
+    """
+    eprint(
+        "preflight_result status=authentication_unavailable host={} "
+        "component={} window_start={} window_end={} rotations_inspected=0"
+        .format(host, component, start or "open", end or "open"))
+    eprint(
+        "summary timezone=unknown window_start={} window_end={} files=0 "
+        "matches=0 failure_class=authentication_unavailable exit_code={}"
+        .format(start or "open", end or "open", OPERATIONAL_FAILURE_EXIT))
+
+
 def validate_debug_window(log_types, start_time, end_time, allow_broad=False):
     """Reject unbounded or >60 s debug scans unless explicitly overridden."""
     if "debug" not in log_types or allow_broad:
@@ -1014,8 +1061,8 @@ def discover_component_candidates(ssh, log_type, start_time, end_time,
 def infer_host_component(host):
     """Infer ``(role, component)`` from known YP pod hostname markers."""
     short = host.split(".", 1)[0].lower()
-    node = re.match(
-        r"^(?P<prefix>[a-z]{3}\d+-\d+)-(?P<role>tab|dat|exec)-node(?:-|$)",
+    node = re.search(
+        r"(?:^|-)(?P<role>tab|dat|exec)-(?:node|sen)(?:-|$)",
         short,
     )
     if node:
@@ -1041,19 +1088,26 @@ def infer_host_component(host):
     if re.search(r"(?:^|-)clock\d*(?:-|$)", short):
         return "clock", "clock"
     if re.search(r"(?:^|-)master(?:-|$)", short) or \
-            re.match(r"^m\d+(?:-|$)", short):
+            re.match(r"^m(?:c)?\d+(?:-|$)", short):
         return "master", "master"
     return None, None
 
 
-def _master_base(component, available):
+def _resolve_base(role, component, available):
     if component in available:
         return component
-    matches = [
-        candidate for candidate in available
-        if candidate.startswith("master-")
-        and not candidate.startswith("master-cache")
-    ]
+    if role == "master":
+        matches = [
+            candidate for candidate in available
+            if candidate.startswith("master-")
+            and not candidate.startswith("master-cache")
+        ]
+    else:
+        prefix = component + "-"
+        matches = [
+            candidate for candidate in available
+            if candidate.startswith(prefix)
+        ]
     if not matches:
         return None
     return sorted(
@@ -1087,8 +1141,8 @@ def resolve_component_route(host, override, candidates):
             "cannot infer the YT component from host {!r}; discovered: {}; "
             "pass --component NAME".format(host, shown)
         )
-    base = _master_base(component, available) if role == "master" else component
-    if base not in available:
+    base = _resolve_base(role, component, available)
+    if base is None:
         raise ValueError(
             "host {!r} maps to role={} component={!r}, but that base was not "
             "found; discovered: {}; pass --component NAME only after verifying "
@@ -1289,8 +1343,6 @@ def main():
         if end_from_start is not None and not args.end:
             args.end = end_from_start
 
-    local_bin = resolve_logslice(args.logslice)
-
     start_time = parse_user_time(args.start) if args.start else None
     end_time = parse_user_time(args.end) if args.end else None
     if args.start and start_time is None:
@@ -1311,7 +1363,19 @@ def main():
         control_socket=args.control_socket,
         control_persist=args.control_persist,
         connect_timeout=args.connect_timeout)
-    ssh.connect()
+    try:
+        ssh.connect()
+    except SystemExit as error:
+        if preflight_failure_class(error) == "authentication_unavailable":
+            report_authentication_preflight(
+                args.host,
+                requested_component(args.host, args.component),
+                args.start,
+                args.end)
+            return OPERATIONAL_FAILURE_EXIT
+        raise
+
+    local_bin = resolve_logslice(args.logslice)
     ssh.copy_binary(local_bin, REMOTE_BIN)
     server_timezone = ssh.run(
         ["date", "+%z"], check=False, warn_on_error=True).strip() or "unknown"

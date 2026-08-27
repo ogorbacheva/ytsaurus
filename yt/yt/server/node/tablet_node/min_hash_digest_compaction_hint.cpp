@@ -8,6 +8,8 @@
 #include <yt/yt/ytlib/chunk_client/block_cache.h>
 #include <yt/yt/ytlib/chunk_client/chunk_reader.h>
 
+#include <yt/yt/ytlib/table_client/chunk_meta_extensions.h>
+
 #include <yt/yt/core/misc/sync_cache.h>
 
 #include <yt/yt/library/min_hash_digest/min_hash_digest.h>
@@ -62,22 +64,36 @@ private:
         auto chunkReadOptions = CreateChunkReadOptions();
 
         if (!blockIndex.IsFetched()) {
-            bool compressBlockLastKeys = Store_->GetTablet()->GetSettings().MountConfig->CompressBlockLastKeys;
-
             SubscribeWithErrorHandling(
-                Store_->GetCachedVersionedChunkMeta(
-                    chunkReader,
-                    chunkReadOptions,
-                    /*prepareColumnMeta*/ false,
-                    compressBlockLastKeys),
+                chunkReader->GetMeta(
+                    IChunkReader::TGetMetaOptions{
+                        .ClientOptions = chunkReadOptions,
+                    },
+                    /*partitionTags*/ {},
+                    /*extensionTags*/ std::vector<int>{
+                        TProtoExtensionTag<NTableClient::NProto::TDataBlockMetaExt>::Value,
+                        TProtoExtensionTag<NTableClient::NProto::TSystemBlockMetaExt>::Value,
+                    })
+                    .Apply(BIND([] (const TRefCountedChunkMetaPtr& chunkMeta) {
+                        return TMinHashDigestBlockIndex::FromChunkMeta(*chunkMeta);
+                    })),
                 std::bind_front(
-                    &TMinHashDigestFetchPipeline::MakeMinHashDigestRequest,
+                    &TMinHashDigestFetchPipeline::OnMinHashDigestBlockIndexReceived,
                     this,
                     chunkReader,
                     chunkReadOptions));
             return;
         }
 
+        MakeMinHashDigestRequest(chunkReader, chunkReadOptions);
+    }
+
+    void OnMinHashDigestBlockIndexReceived(
+        const IChunkReaderPtr& chunkReader,
+        const TClientChunkReadOptions& chunkReadOptions,
+        TMinHashDigestBlockIndex blockIndex)
+    {
+        Store_->SetMinHashDigestBlockIndex(blockIndex);
         MakeMinHashDigestRequest(chunkReader, chunkReadOptions);
     }
 
@@ -116,17 +132,17 @@ private:
             minHashDigest->Initialize(decompressedBlockData);
         });
 
-        YT_LOG_DEBUG("Put min hash digest block in block cache (StoreId: %v, ChunkId: %v)",
-            Store_->GetId(),
-            Store_->GetChunkId());
+        YT_TLOG_DEBUG("Put min hash digest block in block cache")
+            .With("StoreId", Store_->GetId())
+            .With("ChunkId", Store_->GetChunkId());
         Store_->GetBlockCache()->PutBlock(
             NChunkClient::TBlockId(Store_->GetChunkId(), Store_->GetMinHashDigestBlockIndex().GetBlockIndex()),
             EBlockType::MinHashDigest,
             TBlock(decompressedBlockData));
 
-        YT_LOG_DEBUG("Put min hash digest in deserialized cache (StoreId: %v, ChunkId: %v)",
-            Store_->GetId(),
-            Store_->GetChunkId());
+        YT_TLOG_DEBUG("Put min hash digest in deserialized cache")
+            .With("StoreId", Store_->GetId())
+            .With("ChunkId", Store_->GetChunkId());
         Store_->GetTablet()->GetMinHashDigestCache()->Insert(
             Store_->GetChunkId(),
             minHashDigest,

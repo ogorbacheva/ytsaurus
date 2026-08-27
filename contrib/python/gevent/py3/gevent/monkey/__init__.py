@@ -450,6 +450,9 @@ def patch_ssl(_warnings=None, _first_time=True):
     :mod:`ssl` with cooperative versions.
 
     This is only useful if :func:`patch_socket` has been called.
+
+    It is important to call this function before :mod:`ssl` has been imported.
+    For more information, see :mod:`gevent.ssl`.
     """
     may_need_warning = (
         _first_time
@@ -664,8 +667,16 @@ def patch_all(socket=True, dns=True, time=True, select=True, thread=True, os=Tru
        Add the ``contextvars`` argument.
     .. versionchanged:: 1.5
        Better handling of patching more than once.
+    .. versionchanged:: 26.7.0
+       A future version (released in early 2027) will make all arguments keyword-only. Users calling
+       this API positionally will need to migrate to keywords.
     """
     # pylint:disable=too-many-locals,too-many-branches
+
+    # See test__threading.py for implications of the order in which
+    # we patch modules. We could rearrange the arguments, but they're not
+    # keyword only; somebody could be calling ``patch_all(True, True, False, True)``
+    # so that would be a breaking change, requiring notification
 
     # Check to see if they're changing the patched list
     _warnings, first_time, modules_to_patch = _check_repatching(**locals())

@@ -145,10 +145,10 @@ void TFileResourceBase<TData>::ProcessTargets()
             auto error = TError("Failed to prepare file resource revision")
                 .With("update_state", UpdateState_)
                 .With("revision_id", target->RevisionId)
-                .With(TError(ex));
+                .With(ex);
             if (sourceRevision) {
-                error <<= TErrorAttribute("object_id", sourceRevision->ObjectId);
-                error <<= TErrorAttribute("display_version", sourceRevision->DisplayVersion);
+                error.Add("object_id", sourceRevision->ObjectId);
+                error.Add("display_version", sourceRevision->DisplayVersion);
             }
             YT_TLOG_WARNING("Failed to prepare file resource revision")
                 .With(error);

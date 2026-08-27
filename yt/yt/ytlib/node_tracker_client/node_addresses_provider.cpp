@@ -102,8 +102,8 @@ public:
             return MakeFuture<IChannelPtr>(TError(
                 NRpc::EErrorCode::TransportError,
                 "Channel terminated")
-                << NullChannel_->GetEndpointAttributes()
-                << TerminationError_);
+                .With(NullChannel_->GetEndpointAttributes())
+                .With(TerminationError_));
         }
         return ChannelPromise_;
     }
@@ -266,7 +266,7 @@ private:
             YT_TLOG_DEBUG("Finished updating node list");
         } catch (const std::exception& ex) {
             YT_TLOG_INFO("Failed updating node list")
-                .With(TError(ex));
+                .With(ex);
         }
     }
 };

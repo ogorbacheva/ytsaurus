@@ -111,6 +111,9 @@ void TChunkLocationConfig::ApplyDynamicInplace(const TChunkLocationDynamicConfig
         UpdateYsonStructField(FairShareWorkloadCategoryWeights[category], dynamicConfig.FairShareWorkloadCategoryWeights[category]);
     }
 
+    UpdateYsonStructField(WeightedRequestWeight, dynamicConfig.WeightedRequestWeight);
+    UpdateYsonStructField(UnweightedRequestWeight, dynamicConfig.UnweightedRequestWeight);
+
     UpdateYsonStructField(MemoryLimitFractionForStartingNewSessions, dynamicConfig.MemoryLimitFractionForStartingNewSessions);
 }
 
@@ -127,6 +130,13 @@ void TChunkLocationConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("fair_share_workload_category_weights", &TThis::FairShareWorkloadCategoryWeights)
         .Default();
+
+    registrar.Parameter("weighted_request_weight", &TThis::WeightedRequestWeight)
+        .GreaterThanOrEqual(0.0)
+        .Default(1.0);
+    registrar.Parameter("unweighted_request_weight", &TThis::UnweightedRequestWeight)
+        .GreaterThanOrEqual(0.0)
+        .Default(1.0);
 
     registrar.Parameter("memory_limit_fraction_for_starting_new_sessions", &TThis::MemoryLimitFractionForStartingNewSessions)
         .GreaterThanOrEqual(0.0)
@@ -176,6 +186,13 @@ void TChunkLocationDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("fair_share_workload_category_weights", &TThis::FairShareWorkloadCategoryWeights)
         .Default();
+
+    registrar.Parameter("weighted_request_weight", &TThis::WeightedRequestWeight)
+        .GreaterThanOrEqual(0.0)
+        .Optional();
+    registrar.Parameter("unweighted_request_weight", &TThis::UnweightedRequestWeight)
+        .GreaterThanOrEqual(0.0)
+        .Optional();
 
     registrar.Parameter("memory_limit_fraction_for_starting_new_sessions", &TThis::MemoryLimitFractionForStartingNewSessions)
         .GreaterThanOrEqual(0.0)
@@ -950,6 +967,17 @@ void TDataNodeConfig::Register(TRegistrar registrar)
     registrar.Parameter("enable_sequential_io_requests", &TThis::EnableSequentialIORequests)
         .Default(true);
 
+    registrar.Parameter("read_io_requests_mode", &TThis::ReadIORequestsMode)
+        .Default();
+
+    registrar.Parameter("max_in_flight_read_request_count", &TThis::MaxInFlightReadRequestCount)
+        .GreaterThan(0)
+        .Default(std::numeric_limits<int>::max());
+
+    registrar.Parameter("max_in_flight_read_data_size", &TThis::MaxInFlightReadDataSize)
+        .GreaterThan(0)
+        .Default(16_MB);
+
     registrar.Parameter("return_blocks_if_session_fails", &TThis::ReturnBlocksIfSessionFails)
         .Default(false);
 
@@ -1244,6 +1272,17 @@ void TDataNodeDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("enable_sequential_io_requests", &TThis::EnableSequentialIORequests)
         .Optional();
 
+    registrar.Parameter("read_io_requests_mode", &TThis::ReadIORequestsMode)
+        .Optional();
+
+    registrar.Parameter("max_in_flight_read_request_count", &TThis::MaxInFlightReadRequestCount)
+        .GreaterThan(0)
+        .Optional();
+
+    registrar.Parameter("max_in_flight_read_data_size", &TThis::MaxInFlightReadDataSize)
+        .GreaterThan(0)
+        .Optional();
+
     registrar.Parameter("return_blocks_if_session_fails", &TThis::ReturnBlocksIfSessionFails)
         .Optional();
 
@@ -1261,6 +1300,25 @@ void TDataNodeDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("overload_controller", &TThis::OverloadController)
         .DefaultNew();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+EReadIORequestsMode GetReadIORequestsMode(
+    const TDataNodeConfigPtr& config,
+    const TDataNodeDynamicConfigPtr& dynamicConfig)
+{
+    if (dynamicConfig->ReadIORequestsMode) {
+        return *dynamicConfig->ReadIORequestsMode;
+    }
+
+    if (config->ReadIORequestsMode) {
+        return *config->ReadIORequestsMode;
+    }
+
+    return dynamicConfig->EnableSequentialIORequests.value_or(config->EnableSequentialIORequests)
+        ? EReadIORequestsMode::Sequential
+        : EReadIORequestsMode::Parallel;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

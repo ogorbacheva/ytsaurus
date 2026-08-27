@@ -23,6 +23,7 @@
 #include <library/cpp/yson/node/node_io.h>
 #include <library/cpp/svnversion/svnversion.h>
 
+#include <util/generic/algorithm.h>
 #include <util/generic/vector.h>
 #include <util/generic/guid.h>
 #include <util/system/fs.h>
@@ -319,6 +320,12 @@ public:
         , Metrics(metricsRegistry->GetSensors()->GetSubgroup("counters", "gwm"))
         , UploaderMetrics(metricsRegistry->GetSensors()->GetSubgroup("counters", "uploader"))
         , LatencyHistogram(Metrics->GetHistogram("LeaderLatency", ExponentialHistogram(10, 2, 1)))
+        , AllocateWorkersWithExeFileCounter(
+            Metrics->GetSubgroup("component", "requests")
+                ->GetCounter("AllocateWorkersWithExeFile", /*derivative=*/true))
+        , AllocateWorkersWithoutExeFileCounter(
+            Metrics->GetSubgroup("component", "requests")
+                ->GetCounter("AllocateWorkersWithoutExeFile", /*derivative=*/true))
         , Workers(Coordinator->GetNodeId(), Metrics, metricsRegistry->GetSensors()->GetSubgroup("counters", "workers"))
         , Scheduler(NDq::IScheduler::Make(schedulerConfig, metricsRegistry))
         , MaxRequestsPerTick(schedulerConfig.GetMaxRequestsPerTick())
@@ -446,37 +453,40 @@ private:
         }
     }
 
-    std::pair<bool, TString> CheckFiles(const TVector<TFileResource>& files) {
+    TMaybe<TString> CheckFiles(const TVector<TFileResource>& files) {
         for (const auto& file : files) {
             if (file.GetObjectType() == Yql::DqsProto::TFile::EEXE_FILE) {
                 if (file.GetName().empty()) {
-                    return std::make_pair(false, "Unnamed exe file " + file.ShortDebugString());
+                    return "Unnamed exe file " + file.ShortDebugString();
                 }
             } else {
                 if (!NFs::Exists(file.GetLocalPath())) {
-                    return std::make_pair(false, "Unknown file " + file.ShortDebugString());
+                    return "Unknown file " + file.ShortDebugString();
                 }
             }
 
             if (file.GetObjectId().empty()) {
-                return std::make_pair(false, "Empty objectId (md5, revision) for " + file.ShortDebugString());
+                return "Empty objectId (md5, revision) for " + file.ShortDebugString();
             }
         }
 
-        return std::make_pair(true, "");
+        return {};
     }
 
     std::pair<bool, TString> MaybeUploadUnsafe(bool isForwarded, const TVector<TFileResource>& files, bool useCache = false) {
+        const bool hasExeFile = AnyOf(files, [] (const TFileResource& file) {
+            return file.GetObjectType() == Yql::DqsProto::TFile::EEXE_FILE;
+        });
+
         if (isForwarded) {
-            return std::make_pair(false, "");
+            // Upload/validation was already performed by the previous GWM hop,
+            // but the executable information is still present in the request.
+            return std::make_pair(hasExeFile, "");
         }
 
-        auto [hasExeFile,error] = CheckFiles(files);
-        if (!error.empty()) {
-            return std::make_pair(hasExeFile,error);
+        if (auto error = CheckFiles(files)) {
+            return std::make_pair(false, *error);
         }
-
-        bool flag = false;
 
         TVector<TResourceFile> preparedFiles;
         TVector<TString> preparedFilesIds;
@@ -497,7 +507,6 @@ private:
         }
 
         for (const auto& file : files) {
-            flag |= file.GetObjectType() == Yql::DqsProto::TFile::EEXE_FILE;
             if (Uploading.contains(file.GetObjectId())) {
                 continue;
             }
@@ -577,7 +586,7 @@ private:
             }
         }
 
-        return std::make_pair(flag, "");
+        return std::make_pair(hasExeFile, "");
     }
 
     std::pair<bool, TString> MaybeUpload(bool isForwarded, const TVector<TFileResource>& files, bool useCache = false) {
@@ -596,6 +605,12 @@ private:
         if (!err.empty()) {
             Send(ev->Sender, new TEvAllocateWorkersResponse(err, NYql::NDqProto::StatusIds::EXTERNAL_ERROR));
             return;
+        }
+
+        if (hasExeFile) {
+            *AllocateWorkersWithExeFileCounter += 1;
+        } else {
+            *AllocateWorkersWithoutExeFileCounter += 1;
         }
 
         if (!hasExeFile && LeaderRevision != Revision) {
@@ -1371,6 +1386,8 @@ private:
     TSensorsGroupPtr Metrics;
     TSensorsGroupPtr UploaderMetrics;
     THistogramPtr LatencyHistogram;
+    const TDynamicCounters::TCounterPtr AllocateWorkersWithExeFileCounter;
+    const TDynamicCounters::TCounterPtr AllocateWorkersWithoutExeFileCounter;
     THashMap<TString,NMonitoring::TDynamicCounters::TCounterPtr> LiteralQueries;
     TWorkersStorage Workers;
 

@@ -328,7 +328,7 @@ private:
                 Slot_->EstimateChangelogMediumBytes(changelogPayloadBytes),
                 context->GetTimeout());
         } catch (const std::exception& ex) {
-            THROW_ERROR TError(ex)
+            THROW_ERROR_EXCEPTION(ex)
                 .With("tablet_id", tabletId)
                 .With("table_path", tabletSnapshot->TablePath);
         }
@@ -367,10 +367,9 @@ private:
         }));
 
         if (auto delay = tabletSnapshot->Settings.MountConfig->Testing.WriteResponseDelay) {
-            YT_LOG_DEBUG("Response for TabletService.Write will be delayed for testing purposes "
-                "(%v, Delay: %v)",
-                tabletSnapshot->LoggingTags,
-                delay);
+            YT_TLOG_DEBUG("Response for TabletService.Write will be delayed for testing purposes")
+                .With(tabletSnapshot->LoggingTags)
+                .With("Delay", delay);
             TDelayedExecutor::WaitForDuration(delay);
         }
 

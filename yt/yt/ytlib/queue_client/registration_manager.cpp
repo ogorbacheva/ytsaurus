@@ -1,14 +1,14 @@
 #include "registration_manager.h"
 
-#include "registration_manager_base.h"
-#include "registration_manager_new.h"
 #include "config.h"
 #include "dynamic_state.h"
 #include "helpers.h"
+#include "registration_manager_base.h"
+#include "registration_manager_new.h"
 
 #include <yt/yt/ytlib/api/native/client.h>
-#include <yt/yt/ytlib/api/native/connection.h>
 #include <yt/yt/ytlib/api/native/config.h>
+#include <yt/yt/ytlib/api/native/connection.h>
 
 #include <yt/yt/ytlib/hive/cluster_directory.h>
 
@@ -159,8 +159,14 @@ protected:
             if (resolvedQueue && *resolvedQueue != keyQueue) {
                 continue;
             }
-            if (resolvedConsumer && *resolvedConsumer != keyConsumer) {
-                continue;
+            if (resolvedConsumer) {
+                if (resolvedConsumer->GetQueueConsumerName()) {
+                    if (*resolvedConsumer != keyConsumer) {
+                        continue;
+                    }
+                } else if (ToTablePath(*resolvedConsumer) != ToTablePath(keyConsumer)) {
+                    continue;
+                }
             }
 
             result.push_back(registration);
@@ -178,14 +184,14 @@ protected:
             GuardedRefreshCache();
         } catch (const std::exception& ex) {
             YT_TLOG_DEBUG("Could not refresh queue consumer registration cache")
-                .With(TError(ex));
+                .With(ex);
         }
 
         try {
             GuardedRefreshReplicationTableMappingCache();
         } catch (const std::exception& ex) {
             YT_TLOG_DEBUG("Could not refresh queue consumer replication table mapping cache")
-                .With(TError(ex));
+                .With(ex);
         }
     }
 
@@ -517,7 +523,7 @@ private:
             GuardedRefreshConfiguration();
         } catch (const std::exception& ex) {
             YT_TLOG_ERROR("Could not refresh queue consumer registration manager configuration")
-                .With(TError(ex));
+                .With(ex);
         }
     }
 

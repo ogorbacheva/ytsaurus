@@ -180,7 +180,7 @@ public:
                 .With("SecretId", request.SecretId)
                 .With("Signature", request.Signature)
                 .With("CallId", callId)
-                .With(TError(ex));
+                .With(ex);
         }
     }
 
@@ -353,7 +353,9 @@ private:
 
             return TDelegationTokenResponse{
                 .Token = response->GetChildValueOrThrow<std::string>("token"),
-                .TvmId = tvmService->GetSelfTvmIdOrThrow(),
+                .TvmId = request.ConsumerTvmId
+                    ? *request.ConsumerTvmId
+                    : tvmService->GetSelfTvmIdOrThrow(),
             };
         } catch (const std::exception& ex) {
             FailedCallCountCounter_.Increment();
@@ -423,7 +425,9 @@ private:
         BuildYsonFluently(jsonWriter.get())
             .BeginMap()
                 .Item("signature").Value(request.Signature)
-                .Item("tvm_client_id").Value(request.TvmId.value_or(DefaultTvmIdForNewTokens_))
+                .Item("tvm_client_id").Value(
+                    request.ConsumerTvmId.value_or(
+                        request.TvmId.value_or(DefaultTvmIdForNewTokens_)))
                 .DoIf(!request.Comment.empty(),
                     [&] (auto fluent) {
                         fluent.Item("comment").Value(request.Comment);
@@ -487,7 +491,7 @@ private:
             ParseJson(&stream, builder.get(), jsonConfig);
             return builder->EndTree()->AsMap();
         } catch (const std::exception& ex) {
-            THROW_ERROR TError(ESecretVaultErrorCode::MalformedResponse,
+            THROW_ERROR_EXCEPTION(ESecretVaultErrorCode::MalformedResponse,
                 "Error parsing Vault response");
         }
     }

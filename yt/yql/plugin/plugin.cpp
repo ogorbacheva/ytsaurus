@@ -39,7 +39,6 @@ TYqlNativePluginOptions ConvertToNativePluginOptions(
         .Libraries = ConvertToYsonString(config->Libraries),
         .InitialDynamicConfig = ConvertToYsonString(initialDynamicConfig),
         .YTTokenPath = config->YTTokenPath,
-        .YqlPluginSharedLibrary = config->YqlPluginSharedLibrary,
         .StartDqManager = startDqManager,
     };
 
@@ -59,6 +58,14 @@ TYqlQTWorkerPluginOptions ConvertToQtWorkerPluginOptions(
     options.QtWorkerLogBackend = std::move(qtWorkerLogBackend);
     options.GatewaysConfigPath = std::move(gatewaysConfigPath);
     return options;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TString DetectFlavorFromSettings(const NYson::TYsonString& settings)
+{
+    auto settingsMap = NYTree::ConvertTo<NYTree::IMapNodePtr>(settings);
+    return settingsMap->GetChildValueOrDefault<TString>("yql_flavor", TString{DefaultFlavor});
 }
 
 ////////////////////////////////////////////////////////////////////////////////

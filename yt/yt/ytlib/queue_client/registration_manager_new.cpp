@@ -22,6 +22,8 @@
 
 #include <util/random/normal.h>
 
+#include <span>
+
 ////////////////////////////////////////////////////////////////////////////////
 
 template <>
@@ -85,13 +87,13 @@ auto GroupByMany(F f, std::vector<T> values)
     groupedValues.reserve(values.size());
     for (auto& value : values) {
         auto groupKey = f(value);
-        if (groupKey.size() == 1) {
-            groupedValues[groupKey.front()].push_back(std::move(value));
-        } else {
-            for (auto& key : groupKey) {
-                groupedValues[key].push_back(value);
-            }
+        if (groupKey.empty()) {
+            continue;
         }
+        for (const auto& key : std::span(groupKey).first(groupKey.size() - 1)) {
+            groupedValues[key].push_back(value);
+        }
+        groupedValues[groupKey.back()].push_back(std::move(value));
     }
     return groupedValues;
 }
@@ -308,7 +310,7 @@ public:
             return RunGuarded();
         } catch (const std::exception& ex) {
             YT_TLOG_ERROR("Lookup session failed")
-                .With(TError(ex));
+                .With(ex);
             ProfilingCounters_->ErrorCounter.Increment();
             ProfilingCounters_->ErrorKeyCounter.Increment(Keys_.size());
             throw;
@@ -472,7 +474,7 @@ private:
                 // Lookup completely failed.
                 mergedResult.push_back(
                     TError("All replica lookups failed")
-                        << std::move(failedKeyResults));
+                        .With(std::move(failedKeyResults)));
             } else {
                 // NB(apachee): We chose random successful result to return,
                 // as current setup does not provide any means to deduce the freshest result.
@@ -698,7 +700,7 @@ private:
                         return std::vector<TConsumerReference>{v.Consumer};
                     }
                 };
-                return GroupByMany(getKeys, result);
+                return GroupByMany(getKeys, std::move(result));
             }));
     }
 };
@@ -896,7 +898,7 @@ private:
                 }
             } catch (const std::exception& ex) {
                 YT_TLOG_ERROR("Failed to set error response for batched requests upon destruction")
-                    .With(TError(ex));
+                    .With(ex);
             }
 
             YT_TLOG_DEBUG("Lookup request batcher destroyed");

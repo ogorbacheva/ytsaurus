@@ -282,6 +282,12 @@ struct TKeyVisitorStreamSpec
     // A visitor-driven joiner may be listed in at most one key-visitor stream.
     std::optional<THashSet<std::string>> ExternalNames;
 
+    // Input and source streams whose completion the visitor waits for before it may finalize.
+    // Unset — every input and source stream of the computation. Narrowing lets a visitor
+    // retire once the streams it actually feeds on are done, ignoring the ones that outlive
+    // it; an explicit empty set waits for nothing, so the visitor may finalize right away.
+    std::optional<THashSet<TStreamId>> UpstreamStreams;
+
     // Static — changing it invalidates persisted coverage intervals.
     int BucketCount{};
 
@@ -599,6 +605,16 @@ THashSet<TStreamId> ComputeAllowedInputStreams(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! The input and source streams whose completion the key-visitor stream |visitStreamId|
+//! waits for: its ``upstream_streams`` when set, every input and source stream of the
+//! computation otherwise. An empty result means the visitor has nothing to wait for and
+//! may finalize as soon as it starts.
+THashSet<TStreamId> ComputeKeyVisitorUpstreamStreams(
+    const TComputationSpec& computationSpec,
+    const TStreamId& visitStreamId);
+
+////////////////////////////////////////////////////////////////////////////////
+
 //! Resolves the effective ``use_compact_input_messages`` decision for a computation.
 //! An explicit spec value wins; otherwise compact deduplication is enabled whenever
 //! ``experimental_enable_non_uint_key`` is not set, i.e. partitioning is exclusively by
@@ -888,6 +904,15 @@ struct TDynamicComputationSpec
     std::optional<TThrottlerId> InputRowsThrottlerId;
     std::optional<TThrottlerId> InputBytesThrottlerId;
 
+    //! Quota classes attached to the requests each automatic input throttler
+    //! makes; each is validated against the classes its own throttler declares.
+    //! The class covers every request the computation sends to that throttler,
+    //! including ones made through a manually obtained handle for the same id.
+    //! A throttler with no class configured is served from the reserved
+    //! "default" class.
+    std::optional<TQuotaClassId> InputRowsThrottlerClassId;
+    std::optional<TQuotaClassId> InputBytesThrottlerClassId;
+
     //! YTQL predicate over message meta and payload; a message is skipped when it holds.
     std::optional<std::string> SkipIfExpression;
 
@@ -932,10 +957,24 @@ DEFINE_REFCOUNTED_TYPE(TDynamicResourceSpec);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TDynamicThrottlerClassSpec
+    : public NYTree::TYsonStruct
+{
+    double Weight = 1.0;
+
+    REGISTER_YSON_STRUCT(TDynamicThrottlerClassSpec);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDynamicThrottlerClassSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TDynamicThrottlerSpec
     : public NYTree::TYsonStruct
 {
-    //! Quota emitted globally per `Period`. Null means unlimited.
+    //! Quota emitted globally per second. Null means unlimited.
     std::optional<double> Limit;
 
     //! Quota bucket refill window on the server.
@@ -950,11 +989,19 @@ struct TDynamicThrottlerSpec
     //! Per-RPC timeout for RequestQuota calls.
     TDuration RpcTimeout;
 
+    THashMap<TQuotaClassId, TDynamicThrottlerClassSpecPtr> Classes;
+
+    std::optional<i64> MaxGrantAmount;
+
     //! Server-side token bucket config.
     NConcurrency::TThroughputThrottlerConfigPtr BuildThroughputConfig() const;
 
     //! Client-side prefetching config.
     NConcurrency::TPrefetchingThrottlerConfigPtr BuildPrefetchingConfig() const;
+
+    THashMap<std::string, double> BuildClassWeights() const;
+
+    bool ClientConfigEquals(const TDynamicThrottlerSpec& other) const;
 
     REGISTER_YSON_STRUCT(TDynamicThrottlerSpec);
 
@@ -1237,6 +1284,11 @@ THashMap<TStreamId, std::vector<TStreamId>> BuildStreamGraph(const TPipelineSpec
 void ValidateIsDirectedAcyclicGraph(const THashMap<TStreamId, std::vector<TStreamId>>& streamGraph);
 void ValidatePipelineSpec(const TPipelineSpecPtr& spec);
 void ValidateDynamicPipelineSpec(const TDynamicPipelineSpecPtr& spec);
+
+//! Shared quota-class invariants, used by both the pipeline spec and the
+//! distributed-throttler bucket config so the two cannot drift.
+void ValidateQuotaClassName(TStringBuf className);
+void ValidateQuotaClassWeight(double weight);
 
 //! Returns the deduplicated, stably sorted list of YT-path ownership claims declared by every
 //! entity in the pipeline. Same collection that ValidatePipelineSpec uses for conflict detection.

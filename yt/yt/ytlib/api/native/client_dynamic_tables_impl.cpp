@@ -1255,8 +1255,8 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
             if (resultOrError.IsOK()) {
                 return resultOrError.Value();
             } else {
-                resultOrError <<= TErrorAttribute("replica_cluster", replicaFallbackInfo.ClusterName);
-                resultOrError <<= TErrorAttribute("replica_path", replicaFallbackInfo.Path);
+                resultOrError.Add("replica_cluster", replicaFallbackInfo.ClusterName);
+                resultOrError.Add("replica_path", replicaFallbackInfo.Path);
             }
 
             YT_TLOG_DEBUG("Fallback to replica failed")
@@ -1676,7 +1676,7 @@ TDuration TClient::CheckPermissionsForQuery(
         if (tableInfoOrError.IsOK()) {
             const auto& tableInfo = tableInfoOrError.Value();
             if (tableInfo->UpstreamReplicaId) {
-                error <<= TErrorAttribute("replica_path", tableInfo->PhysicalPath);
+                error.Add("replica_path", tableInfo->PhysicalPath);
             }
         }
 
@@ -3157,7 +3157,6 @@ IUnversionedRowsetPtr TClient::DoPullQueueViaTabletNodeApi(
     ValidateTabletMountedOrFrozen(tableInfo, tabletInfo);
     auto channel = GetReadCellChannelOrThrow(tabletInfo->CellId);
     TQueryServiceProxy proxy(channel);
-    proxy.SetDefaultTimeout(options.Timeout.value_or(Connection_->GetConfig()->DefaultFetchTableRowsTimeout));
 
     auto req = proxy.FetchTableRows();
     ToProto(req->mutable_tablet_id(), tabletInfo->TabletId);
@@ -3168,6 +3167,12 @@ IUnversionedRowsetPtr TClient::DoPullQueueViaTabletNodeApi(
     req->set_max_row_count(rowBatchReadOptions.MaxRowCount);
     req->set_max_data_weight(rowBatchReadOptions.MaxDataWeight);
     ToProto(req->mutable_options()->mutable_workload_descriptor(), options.WorkloadDescriptor);
+
+    const auto& connectionConfig = Connection_->GetConfig();
+    req->SetTimeout(options.Timeout.value_or(connectionConfig->DefaultFetchTableRowsTimeout));
+    if (connectionConfig->PullQueueResponseCodec.has_value()) {
+        req->SetResponseCodec(connectionConfig->PullQueueResponseCodec.value());
+    }
 
     auto rsp = WaitFor(req->Invoke())
         .ValueOrThrow();
@@ -3730,6 +3735,8 @@ private:
         ReplicationProgress_ = FromProto<TReplicationProgress>(result->end_replication_progress());
         if (result->has_end_replication_row_index()) {
             ReplicationRowIndex_ = result->end_replication_row_index();
+        } else {
+            ReplicationRowIndex_.reset();
         }
 
         DataWeight_ += result->data_weight();

@@ -28,6 +28,8 @@
 
 #include <yt/yt/library/erasure/impl/public.h>
 
+#include <yt/yt/core/concurrency/async_semaphore.h>
+
 #include <yt/yt/core/rpc/service_detail.h>
 
 namespace NYT::NChunkServer {
@@ -408,12 +410,16 @@ struct IChunkManager
         NSequoiaClient::ESequoiaTransactionType transactionType,
         std::unique_ptr<NDataNodeTrackerClient::NProto::TReqReplaceLocationReplicas> request) = 0;
 
+    virtual NConcurrency::TAsyncSemaphoreGuard AcquireModifySequoiaReplicasSemaphoreGuard(
+        NSequoiaClient::ESequoiaTransactionType transactionType,
+        int replicaCount) = 0;
+
     virtual TFuture<void> ConfirmSequoiaChunk(
         NChunkClient::NProto::TReqConfirmChunk* request) = 0;
     virtual TFuture<void> ConfirmSequoiaChunkBatched(
-        NChunkClient::NProto::TReqConfirmChunk request, TGuid requestId) = 0;
+        NChunkClient::NProto::TReqConfirmChunk request, NRpc::TRequestId requestId) = 0;
 
-    virtual TError ExtractConfirmSequoiaChunkError(TGuid requestId) = 0;
+    virtual TError ExtractConfirmSequoiaChunkError(NRpc::TRequestId requestId) = 0;
 
     virtual bool IsChunkRecentlyConfirmed(TChunkId chunkId) = 0;
 

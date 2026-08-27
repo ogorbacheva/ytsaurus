@@ -1844,27 +1844,33 @@ class BaseTestSchedulingSegmentsMultiModule(YTEnvSetup):
         set("//sys/pool_trees/default/large_gpu/@mode", "fifo")
         wait(lambda: get(scheduler_orchid_pool_path("large_gpu") + "/mode", default=None) == "fifo")
 
+        # NB(babenko): Module assignment is greedy and irrevocable, so operations becoming visible to
+        # the segments manager in different iterations may be packed infeasibly; start them one by one.
         large_op1 = run_sleeping_vanilla(
             job_count=1,
             spec={"pool": "large_gpu"},
             task_patch={"gpu_limit": 8, "enable_gpu_layers": False},
         )
+        wait(lambda: are_almost_equal(self._get_dominant_fair_share(large_op1.id), 0.1))
+        wait(lambda: are_almost_equal(self._get_dominant_usage_share(large_op1.id), 0.1))
+
         large_op2 = run_sleeping_vanilla(
             job_count=5,
             spec={"pool": "large_gpu"},
             task_patch={"gpu_limit": 8, "enable_gpu_layers": False},
         )
+        wait(lambda: are_almost_equal(self._get_dominant_fair_share(large_op2.id), 0.5))
+        wait(lambda: are_almost_equal(self._get_dominant_usage_share(large_op2.id), 0.5))
+
         large_op3 = run_sleeping_vanilla(
             job_count=4,
             spec={"pool": "large_gpu", "is_gang": True},
             task_patch={"gpu_limit": 8, "enable_gpu_layers": False},
         )
-        wait(lambda: are_almost_equal(self._get_dominant_fair_share(large_op1.id), 0.1))
-        wait(lambda: are_almost_equal(self._get_dominant_usage_share(large_op1.id), 0.1))
-        wait(lambda: are_almost_equal(self._get_dominant_fair_share(large_op2.id), 0.5))
-        wait(lambda: are_almost_equal(self._get_dominant_usage_share(large_op2.id), 0.5))
         wait(lambda: are_almost_equal(self._get_dominant_fair_share(large_op3.id), 0.4))
         wait(lambda: are_almost_equal(self._get_dominant_usage_share(large_op3.id), 0.4))
+        wait(lambda: are_almost_equal(self._get_dominant_usage_share(large_op1.id), 0.1))
+        wait(lambda: are_almost_equal(self._get_dominant_usage_share(large_op2.id), 0.5))
 
         op = run_sleeping_vanilla(
             job_count=8,
@@ -2627,9 +2633,9 @@ class TestDefaultGpuFullHostPreemption(YTEnvSetup):
             track=False,
         )
         wait(lambda: big_mapper.get_running_jobs())
+        wait(lambda: len(preemptible_op.get_running_jobs()) == 0)
         for op in small_ops:
             assert len(op.get_running_jobs()) == 2
-        assert len(preemptible_op.get_running_jobs()) == 0
 
     @authors("severovv")
     def test_self_preemption(self):

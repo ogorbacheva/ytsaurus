@@ -157,7 +157,7 @@ private:
                 YT_TLOG_WARNING("Blackbox call attempt failed, backing off")
                     .With("CallId", callId)
                     .With("Attempt", attempt)
-                    .With(TError(ex));
+                    .With(ex);
                 auto error = TError("Blackbox call attempt %v failed", attempt)
                     .With(ex)
                     .With("call_id", callId)
@@ -240,7 +240,7 @@ private:
         TInstant deadline)
     {
         auto onError = [&] (TError error) {
-            error <<= TErrorAttribute("call_id", callId);
+            error.Add("call_id", callId);
             YT_TLOG_DEBUG("Blackbox call failed")
                 .With(error);
             THROW_ERROR(error);

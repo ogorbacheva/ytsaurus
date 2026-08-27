@@ -40,6 +40,11 @@ void TIOEngineConfigBase::Register(TRegistrar registrar)
         .GreaterThanOrEqual(1)
         .Default(256_MB);
 
+    registrar.Parameter("direct_io_block_size", &TThis::DirectIOBlockSize)
+        .Alias("direct_io_page_size")
+        .GreaterThan(0)
+        .Default(4_KB);
+
     registrar.Parameter("simulated_max_bytes_per_read", &TThis::SimulatedMaxBytesPerRead)
         .Default()
         .GreaterThan(0);
@@ -74,6 +79,19 @@ void TIOEngineConfigBase::Register(TRegistrar registrar)
         .Default(std::numeric_limits<i64>::max());
     registrar.Parameter("read_request_limit", &TThis::ReadRequestLimit)
         .Default(std::numeric_limits<i64>::max());
+
+    registrar.Postprocessor([] (TThis* config) {
+        THROW_ERROR_EXCEPTION_IF(
+            config->MaxBytesPerRead < config->DirectIOBlockSize,
+            "\"max_bytes_per_read\" must be at least \"direct_io_block_size\" (MaxBytesPerRead: %v, DirectIOBlockSize: %v)",
+            config->MaxBytesPerRead,
+            config->DirectIOBlockSize);
+        THROW_ERROR_EXCEPTION_IF(
+            config->MaxBytesPerWrite < config->DirectIOBlockSize,
+            "\"max_bytes_per_write\" must be at least \"direct_io_block_size\" (MaxBytesPerWrite: %v, DirectIOBlockSize: %v)",
+            config->MaxBytesPerWrite,
+            config->DirectIOBlockSize);
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -460,7 +478,8 @@ void TIOEngineBase::DoAllocate(const TAllocateRequest& request)
     if (result != 0) {
         if ((errno == EPERM || errno == EOPNOTSUPP) && mode == FALLOC_FL_CONVERT_UNWRITTEN) {
             if (EnableFallocateConvertUnwritten_.exchange(false)) {
-                YT_LOG_INFO(TError::FromSystem(), "fallocate call failed; disabling FALLOC_FL_CONVERT_UNWRITTEN mode");
+                YT_TLOG_INFO("fallocate call failed; disabling FALLOC_FL_CONVERT_UNWRITTEN mode")
+                    .With(TError::FromSystem());
             }
         } else {
             THROW_ERROR_EXCEPTION(NFS::EErrorCode::IOError, "fallocate call failed")
@@ -498,7 +517,8 @@ TSharedMutableRef TIOEngineBase::AllocateWriteBlob(
         if (hugePageBlobReservingResult.IsOK()) {
             hugePageBlob = hugePageBlobReservingResult.Value();
         } else {
-            YT_LOG_DEBUG(hugePageBlobReservingResult, "Failed to reserve huge page blob");
+            YT_TLOG_DEBUG("Failed to reserve huge page blob")
+                .With(hugePageBlobReservingResult);
             return TSharedMutableRef::AllocateAligned(size, directIoBlockSize, {.InitializeStorage = false}, {});
         }
     } else {
@@ -557,7 +577,8 @@ TSharedMutableRef TIOEngineBase::AllocateHugeBlob()
         if (hugePageBlobReservingResult.IsOK()) {
             hugePageBlob = hugePageBlobReservingResult.Value();
         } else {
-            YT_LOG_DEBUG(hugePageBlobReservingResult, "Failed to reserve huge page blob");
+            YT_TLOG_DEBUG("Failed to reserve huge page blob")
+                .With(hugePageBlobReservingResult);
         }
     }
     return hugePageBlob;
@@ -702,7 +723,8 @@ void TIOEngineBase::SetSickFlag(const TError& error)
             BIND(&TIOEngineBase::ResetSickFlag, MakeStrong(this)),
             *config->SicknessExpirationTimeout);
 
-        YT_LOG_WARNING(error, "Sick flag set");
+        YT_TLOG_WARNING("Sick flag set")
+            .With(error);
     }
 }
 
@@ -721,7 +743,7 @@ void TIOEngineBase::ResetSickFlag()
     Sick_ = false;
     SickGauge_.Update(false);
 
-    YT_LOG_WARNING("Sick flag reset");
+    YT_TLOG_WARNING("Sick flag reset");
 }
 
 ////////////////////////////////////////////////////////////////////////////////

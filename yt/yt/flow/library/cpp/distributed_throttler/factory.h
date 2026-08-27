@@ -23,17 +23,25 @@ namespace NYT::NFlow::NDistributedThrottler {
 struct IDistributedThrottlerFactory
     : public TRefCounted
 {
-    //! Returns a stable handle for the given throttler, creating it on first
-    //! call. The handle survives Reconfigure: when the underlying client is
-    //! rebuilt, the same pointer keeps working with the new config. Safe to
-    //! cache in user code.
+    //! Returns a stable handle for the given throttler. The handle survives
+    //! Reconfigure: when the underlying client is rebuilt, the same pointer
+    //! keeps working with the new config. Safe to cache in user code.
     //! Throws if the name is not in the current configs.
-    virtual NConcurrency::IThroughputThrottlerPtr GetClient(
+    virtual NConcurrency::IThroughputThrottlerPtr GetClientOrThrow(
+        std::string_view throttlerName) = 0;
+
+    virtual NConcurrency::IThroughputThrottlerPtr TryGetClient(
         std::string_view throttlerName) = 0;
 
     //! Priority key attached to every subsequent RequestQuota RPC.
     //! Smaller value == higher priority on the server's queue.
     virtual void SetPriority(TPriority priority) = 0;
+
+    //! Quota classes attached to subsequent RequestQuota RPCs, keyed by
+    //! throttler id. Every handle for a given id shares the class, so a
+    //! throttler missing from the map sends no class and is served from the
+    //! reserved default class.
+    virtual void SetQuotaClasses(THashMap<TThrottlerId, TQuotaClassId> quotaClassIds) = 0;
 
     //! Replaces the throttler configs. Handles whose spec is unchanged keep
     //! their prefetch state; changed ones get a freshly-built underlying

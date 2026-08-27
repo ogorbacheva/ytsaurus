@@ -17,8 +17,10 @@ SRCS(
     late_data_partitions_ut.cpp
     message_filter_ut.cpp
     meta_setter_ut.cpp
+    registry_ut.cpp
     resource_ut.cpp
     state_client_ut.cpp
+    state_providers_ut.cpp
     swift_map_validation_ut.cpp
     timer_store_ut.cpp
     transform_ordered_source_validation_ut.cpp

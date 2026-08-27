@@ -1062,7 +1062,6 @@ private:
         SetRequestWorkloadDescriptor(req, Config_->WorkloadDescriptor);
         ToProto(req->mutable_session_id(), SessionId_);
         req->set_sync_on_close(Config_->SyncOnClose);
-        req->set_enable_direct_io(Config_->EnableDirectIO);
         req->set_disable_send_blocks(disableSendBlocks);
         req->set_use_probe_put_blocks(isOffshore ? false : Config_->UseProbePutBlocks);
         req->set_preallocate_disk_space(isOffshore ? false : Config_->PreallocateDiskSpace);
@@ -1432,6 +1431,8 @@ void TGroup::ProbePutBlocks(const TReplicationWriterPtr& writer, const IChunkWri
             auto req = proxy.ProbePutBlocks();
             req->set_cumulative_block_size(CumulativeBlockSize_);
             ToProto(req->mutable_session_id(), writer->SessionId_);
+            SetRequestIoConsumed(req, options.ClientOptions, writer->Config_->IoConsumedReportWindow);
+            SetRequestIoFairShareWeight(req, writer->Config_->IoFairShareWeight);
             auto rspOrError = WaitFor(req->Invoke());
 
             if (rspOrError.IsOK()) {

@@ -343,9 +343,9 @@ public:
 
         if (!MultipleTables_) {
             if (TableId_ && tabletSnapshot->TableId != TableId_) {
-                YT_LOG_ERROR("Found different tables in query, profiling will be incorrect (TableId1: %v, TableId2: %v)",
-                    TableId_,
-                    tabletSnapshot->TableId);
+                YT_TLOG_ERROR("Found different tables in query, profiling will be incorrect")
+                    .With("TableId1", TableId_)
+                    .With("TableId2", tabletSnapshot->TableId);
                 MultipleTables_ = true;
             }
 
@@ -672,11 +672,11 @@ private:
 
         bool regroupByTablets = Query_->GroupClause && Query_->GroupClause->CommonPrefixWithPrimaryKey > 0;
 
-        YT_LOG_DEBUG("Coordinating query (Ordered: %v, Prefetching: %v, RegroupByTablets: %v, MergeVersionedRows: %v)",
-            Query_->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit) == EScanOrder::Ordered,
-            Query_->IsPrefetching(),
-            regroupByTablets,
-            QueryOptions_.MergeVersionedRows);
+        YT_TLOG_DEBUG("Coordinating query")
+            .With("ScanOrder", Query_->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit))
+            .With("Prefetching", Query_->IsPrefetching())
+            .With("RegroupByTablets", regroupByTablets)
+            .With("MergeVersionedRows", QueryOptions_.MergeVersionedRows);
 
         TGetSubreader getSubqueryReader;
         if (!QueryOptions_.MergeVersionedRows && !regroupByTablets && Query_->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit) == EScanOrder::Unordered) {
@@ -778,7 +778,8 @@ private:
                 // Copy query to generate new id.
                 auto bottomQuery = New<TQuery>(*bottomQueryPattern);
 
-                YT_LOG_DEBUG("Evaluating bottom query (BottomQueryId: %v)", bottomQuery->Id);
+                YT_TLOG_DEBUG("Evaluating bottom query")
+                    .With("BottomQueryId", bottomQuery->Id);
 
                 auto pipe = CreateSchemafulPipe(MemoryChunkProvider_);
 
@@ -804,7 +805,8 @@ private:
                 auto joinProfilerRegistry = TJoinProfilerRegistry(
                     joinExecutePlanBuilder.Build({.MaxSubqueries = 1}),
                     [=, Logger = Logger] (TQueryStatistics statistics) mutable {
-                        YT_LOG_DEBUG("Remote subquery statistics (Statistics: %v)", statistics);
+                        YT_TLOG_DEBUG("Remote subquery statistics")
+                            .With("Statistics", statistics);
                         subqueryResults->Enqueue(std::move(statistics));
                     },
                     MemoryChunkProvider_,
@@ -865,7 +867,8 @@ private:
                             joinClause,
                             executePlanCallback,
                             [=, Logger = Logger] (TQueryStatistics statistics) mutable {
-                                YT_LOG_DEBUG("Remote subquery statistics %v", statistics);
+                                YT_TLOG_DEBUG("Remote subquery reports statistics")
+                                    .With("Statistics", statistics);
                                 subqueryResults->Enqueue(std::move(statistics));
                             },
                             [=] () {
@@ -902,14 +905,16 @@ private:
                 ] (TErrorOr<TQueryStatistics>&& result) {
                     if (!result.IsOK()) {
                         pipe->Fail(result);
-                        YT_LOG_DEBUG(result, "Bottom query failed (SubqueryId: %v)", bottomQuery->Id);
+                        YT_TLOG_DEBUG("Bottom query failed")
+                            .With("SubqueryId", bottomQuery->Id)
+                            .With(result);
                         return result;
                     } else {
                         auto& statistics = result.Value();
 
-                        YT_LOG_DEBUG("Bottom query finished (SubqueryId: %v, Statistics: %v)",
-                            bottomQuery->Id,
-                            statistics);
+                        YT_TLOG_DEBUG("Bottom query finished")
+                            .With("SubqueryId", bottomQuery->Id)
+                            .With("Statistics", statistics);
 
                         subqueryResults->DequeueAll(/*reverse*/ true, [&] (TQueryStatistics& innerStatistics) {
                             statistics.AddInnerStatistics(std::move(innerStatistics));
@@ -929,7 +934,8 @@ private:
                 const ISchemafulUnversionedReaderPtr& reader,
                 TFuture<TFeatureFlags> responseFeatureFlags
             ) {
-                YT_LOG_DEBUG("Evaluating front query (FrontQueryId: %v)", frontQuery->Id);
+                YT_TLOG_DEBUG("Evaluating front query")
+                    .With("FrontQueryId", frontQuery->Id);
 
                 auto result = Evaluator_->Run(
                     frontQuery,
@@ -944,7 +950,8 @@ private:
                     RequestFeatureFlags_,
                     responseFeatureFlags);
 
-                YT_LOG_DEBUG("Finished evaluating front query (FrontQueryId: %v)", frontQuery->Id);
+                YT_TLOG_DEBUG("Finished evaluating front query")
+                    .With("FrontQueryId", frontQuery->Id);
 
                 return result;
             });
@@ -994,11 +1001,9 @@ private:
 
                     prefixRanges.emplace_back(lowerBound, upperBound);
 
-                    YT_LOG_DEBUG_IF(QueryOptions_.VerboseLogging, "Transforming range [%v .. %v] -> [%v .. %v]",
-                        range.first,
-                        range.second,
-                        lowerBound,
-                        upperBound);
+                    YT_TLOG_DEBUG_IF(QueryOptions_.VerboseLogging, "Transforming range")
+                        .WithFormat("OldRange", "[%v .. %v]", range.first, range.second)
+                        .WithFormat("NewRange", "[%v .. %v]", lowerBound, upperBound);
                 }
             }
 
@@ -1026,11 +1031,9 @@ private:
 
                 prefixRanges.emplace_back(lowerBound, upperBound);
 
-                YT_LOG_DEBUG_IF(QueryOptions_.VerboseLogging, "Transforming range [%v .. %v] -> [%v .. %v]",
-                    range.first,
-                    range.second,
-                    lowerBound,
-                    upperBound);
+                YT_TLOG_DEBUG_IF(QueryOptions_.VerboseLogging, "Transforming range")
+                    .WithFormat("OldRange", "[%v .. %v]", range.first, range.second)
+                    .WithFormat("NewRange", "[%v .. %v]", lowerBound, upperBound);
             }
 
             for (const auto& key : split.Keys) {
@@ -1124,9 +1127,9 @@ private:
                 ? *queryEngineConfig->MaxSubsplitsPerTablet
                 : Config_->MaxSubsplitsPerTablet;
 
-            YT_LOG_DEBUG("Splitting tablet (TabletId: %v, MaxSubsplitsPerTablet: %v)",
-                tabletId,
-                maxSubsplitsPerTablet);
+            YT_TLOG_DEBUG("Splitting tablet")
+                .With("TabletId", tabletId)
+                .With("MaxSubsplitsPerTablet", maxSubsplitsPerTablet);
 
             auto tabletSplits = SplitTablet(
                 TRange(partitions),
@@ -1223,7 +1226,7 @@ private:
 
     std::vector<NQueryClient::TDataSource> GetClassifiedDataSources()
     {
-        YT_LOG_DEBUG("Classifying data sources into ranges and lookup keys");
+        YT_TLOG_DEBUG("Classifying data sources into ranges and lookup keys");
 
         std::vector<NQueryClient::TDataSource> classifiedDataSources;
 
@@ -1319,9 +1322,9 @@ private:
             pushKeys();
         }
 
-        YT_LOG_DEBUG("Splitting ranges (RangeCount: %v, KeyCount: %v)",
-            rangeCount,
-            keyCount);
+        YT_TLOG_DEBUG("Splitting ranges")
+            .With("RangeCount", rangeCount)
+            .With("KeyCount", keyCount);
 
         return classifiedDataSources;
     }
@@ -1448,10 +1451,10 @@ private:
                     }
 
                     if (QueryOptions_.VerboseLogging) {
-                        YT_LOG_DEBUG("Preparing sample key prefixes (PartitionIndex: %v, KeyWidth: %v, SamplesInPartition: %v)",
-                            partitionIndex,
-                            keyWidth,
-                            std::ssize(partitionSampleKeys));
+                        YT_TLOG_DEBUG("Preparing sample key prefixes")
+                            .With("PartitionIndex", partitionIndex)
+                            .With("KeyWidth", keyWidth)
+                            .With("SamplesInPartition", std::ssize(partitionSampleKeys));
                     }
 
                     auto maxKeyWidth = partitionSampleKeys.Empty() ? keyWidth : partitionSampleKeys.Front().GetCount();
@@ -1468,11 +1471,11 @@ private:
                         }
 
                         if (QueryOptions_.VerboseLogging) {
-                            YT_LOG_DEBUG("Iteration (KeyWidth: %v, MaxWeight: %v, Weights: %v, SamplePrefixes: %v)",
-                                keyWidth,
-                                maxWeight,
-                                weights,
-                                MakeFormattableView(sampleKeyPrefixes, TKeyFormatter()));
+                            YT_TLOG_DEBUG("Iteration")
+                                .With("KeyWidth", keyWidth)
+                                .With("MaxWeight", maxWeight)
+                                .With("Weights", weights)
+                                .With("SamplePrefixes", MakeFormattableView(sampleKeyPrefixes, TKeyFormatter()));
                         }
 
                         // Stop when maxWeight is less than square root of sample key count per parittion.
@@ -1485,7 +1488,9 @@ private:
                         (*partitionIt)->PivotKey);
 
                     if (QueryOptions_.VerboseLogging) {
-                        YT_LOG_DEBUG("Prepared sample key prefixes (KeyWidth: %v, OptimalKeyWidth: %v)", keyWidth, optimalKeyWidth);
+                        YT_TLOG_DEBUG("Prepared sample key prefixes")
+                            .With("KeyWidth", keyWidth)
+                            .With("OptimalKeyWidth", optimalKeyWidth);
                     }
 
                     keyWidth = optimalKeyWidth;
@@ -1501,12 +1506,12 @@ private:
                 YT_VERIFY(rowCountPerSampleRange > 0);
 
                 if (QueryOptions_.VerboseLogging) {
-                    YT_LOG_DEBUG("Processing partition (PartitionIndex: %v, InitialRanges: %v, SamplePrefixes: %v, Weights: %v, RowCountPerSampleRange: %v)",
-                        partitionIndex,
-                        MakeFormattableView(TRange(rangesIt, rangesItEnd), TRangeFormatter()),
-                        MakeFormattableView(sampleKeyPrefixes, TKeyFormatter()),
-                        weights,
-                        rowCountPerSampleRange);
+                    YT_TLOG_DEBUG("Processing partition")
+                        .With("PartitionIndex", partitionIndex)
+                        .With("InitialRanges", MakeFormattableView(TRange(rangesIt, rangesItEnd), TRangeFormatter()))
+                        .With("SamplePrefixes", MakeFormattableView(sampleKeyPrefixes, TKeyFormatter()))
+                        .With("Weights", weights)
+                        .With("RowCountPerSampleRange", rowCountPerSampleRange);
                 }
 
                 std::vector<TSampleRange> sampleRanges;
@@ -1533,13 +1538,13 @@ private:
                     });
 
                 if (QueryOptions_.VerboseLogging) {
-                    YT_LOG_DEBUG("Got grouped by samples ranges (PartitionIndex: %v, SampleRanges: %v)",
-                        partitionIndex,
-                        MakeFormattableView(sampleRanges, [] (TStringBuilderBase* builder, const TSampleRange& item) {
-                            builder->AppendFormat("Sample: %kv .. %kv, Ranges: %v",
-                                item.LowerSampleKey,
-                                item.UpperSampleKey,
-                                MakeFormattableView(item.Ranges, TRangeFormatter()));
+                    YT_TLOG_DEBUG("Got grouped by samples ranges")
+                        .With("PartitionIndex", partitionIndex)
+                        .With("SampleRanges", MakeFormattableView(sampleRanges, [] (TStringBuilderBase* builder, const TSampleRange& item) {
+                                builder->AppendFormat("Sample: %kv .. %kv, Ranges: %v",
+                                    item.LowerSampleKey,
+                                    item.UpperSampleKey,
+                                    MakeFormattableView(item.Ranges, TRangeFormatter()));
                         }));
                 }
                 partitionRanges.push_back({std::move(sampleRanges), partitionIndex});
@@ -1558,12 +1563,12 @@ private:
         int targetGroupCount = std::min<int>(totalWeight == 0 ? 1 : totalWeight / weightPerSubquery, maxGroups);
         YT_VERIFY(targetGroupCount > 0);
 
-        YT_LOG_DEBUG("Regrouping by weight (TotalWeight: %v, MaxWeight %v, MinWeightPerSubquery: %v, MaxGroups: %v, TargetGroupCount: %v)",
-            totalWeight,
-            maxWeight,
-            minWeightPerSubquery,
-            maxGroups,
-            targetGroupCount);
+        YT_TLOG_DEBUG("Regrouping by weight")
+            .With("TotalWeight", totalWeight)
+            .With("MaxWeight", maxWeight)
+            .With("MinWeightPerSubquery", minWeightPerSubquery)
+            .With("MaxGroups", maxGroups)
+            .With("TargetGroupCount", targetGroupCount);
 
         i64 currentSummaryWeight = 0;
         int groupId = 0;
@@ -1642,7 +1647,9 @@ private:
                             }
                         }
 
-                        YT_LOG_DEBUG("Making group (GroupIndex: %v, Weight: %v)", groupIndex++, currentGroupWeight);
+                        YT_TLOG_DEBUG("Making group")
+                            .With("GroupIndex", groupIndex++)
+                            .With("Weight", currentGroupWeight);
 
                         groupedReadRanges.push_back(std::move(tabletBoundsGroup));
                         // NB: we plan to reuse this buffer for the next group, but C++ moved-from containers are formally in "valid but unspecified state".
@@ -1713,26 +1720,26 @@ private:
             keyCount += dataSplit.Keys.size();
         }
 
-        YT_LOG_DEBUG("Generating reader (SplitCount: %v, PartitionBounds: %v, SortedRanges: %v, OrderedRanges: %v, Keys: %v)",
-            dataSplits.size(),
-            partitionBounds,
-            sortedRangeCount,
-            orderedRangeCount,
-            keyCount);
+        YT_TLOG_DEBUG("Generating reader")
+            .With("SplitCount", dataSplits.size())
+            .With("PartitionBounds", partitionBounds)
+            .With("SortedRanges", sortedRangeCount)
+            .With("OrderedRanges", orderedRangeCount)
+            .With("Keys", keyCount);
 
         if (QueryOptions_.VerboseLogging) {
             for (const auto& dataSplit : dataSplits) {
-                YT_LOG_DEBUG("Read items in split (TabletId: %v, Partitions: %v, Ranges: %v, Keys: %v)",
-                    dataSplit.TabletId,
-                    MakeFormattableView(
-                        dataSplit.PartitionBounds,
-                        [] (TStringBuilderBase* builder, const TPartitionBounds& source) {
-                            builder->AppendFormat("%v: %v",
-                                source.PartitionIndex,
-                                MakeFormattableView(source.Bounds, TRangeFormatter()));
-                        }),
-                    MakeFormattableView(dataSplit.Ranges, TRangeFormatter()),
-                    MakeFormattableView(dataSplit.Keys, TKeyFormatter()));
+                YT_TLOG_DEBUG("Read items in split")
+                    .With("TabletId", dataSplit.TabletId)
+                    .With("Partitions", MakeFormattableView(
+                            dataSplit.PartitionBounds,
+                            [] (TStringBuilderBase* builder, const TPartitionBounds& source) {
+                                builder->AppendFormat("%v: %v",
+                                    source.PartitionIndex,
+                                    MakeFormattableView(source.Bounds, TRangeFormatter()));
+                            }))
+                    .With("Ranges", MakeFormattableView(dataSplit.Ranges, TRangeFormatter()))
+                    .With("Keys", MakeFormattableView(dataSplit.Keys, TKeyFormatter()));
             }
         }
 
@@ -1881,7 +1888,8 @@ private:
             }
         }
 
-        YT_LOG_DEBUG("Creating reader balancing queue (Size:% v)", count);
+        YT_TLOG_DEBUG("Creating reader balancing queue")
+            .With("Size", count);
 
         return result;
     }

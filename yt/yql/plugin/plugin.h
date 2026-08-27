@@ -2,12 +2,9 @@
 
 #include "public.h"
 
-#include <yt/yql/plugin/bridge/interface.h>
-
 #include <yt/yt/ytlib/yql_client/public.h>
 
 #include <yt/yt/core/ytree/public.h>
-#include <yt/yt/ytlib/yql_client/public.h>
 
 #include <library/cpp/logger/log.h>
 
@@ -46,8 +43,6 @@ struct TYqlNativePluginOptions
 
     THolder<TLogBackend> LogBackend;
 
-    std::optional<TString> YqlPluginSharedLibrary;
-
     bool StartDqManager;
 };
 
@@ -81,6 +76,12 @@ struct TClustersResult
     std::optional<TString> YsonError;
 };
 
+enum EQueryFileContentType
+{
+    RawInlineData,
+    Url,
+};
+
 struct TQueryFile
 {
     TStringBuf Name;
@@ -101,9 +102,6 @@ struct TGetDeclaredParametersInfoResult
 
 
 //! This interface encapsulates YT <-> YQL integration.
-//! There are two major implementation: one of them is based
-//! on YQL code and another wraps the pure C bridge interface, which
-//! is implemented by a dynamic library.
 /*!
 *  \note Thread affinity: any
 */
@@ -164,6 +162,12 @@ TYqlQTWorkerPluginOptions ConvertToQtWorkerPluginOptions(
     THolder<TLogBackend> qtWorkerLogBackend,
     int qtWorkerInspectorPort,
     TString gatewaysConfigPath);
+
+////////////////////////////////////////////////////////////////////////////////
+
+inline constexpr TStringBuf DefaultFlavor = "default";
+
+TString DetectFlavorFromSettings(const NYson::TYsonString& settings);
 
 ////////////////////////////////////////////////////////////////////////////////
 

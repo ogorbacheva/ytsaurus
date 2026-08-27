@@ -575,6 +575,55 @@ class TestQueueController(TestQueueAgentBase):
         assert len(partitions) == 2
         assert partitions[0]["next_row_index"] == 0
 
+    @authors("panesher")
+    @pytest.mark.parametrize("multi_consumer", [True, False])
+    @pytest.mark.parametrize("meta", [
+        {"foo": "bar"},
+        YsonEntity(),
+        1,
+        "hello world",
+    ])
+    def test_consumer_with_strange_meta(self, multi_consumer: bool, meta):
+        consumer_path = self.create_consumer_path()
+        self._create_consumer(consumer_path, multi_consumer=multi_consumer)
+        queue_path = self.create_queue_path()
+        self._create_queue(queue_path, partition_count=3)
+        insert_rows(queue_path, [{
+            "$tablet_index": 0,
+            "data": f"hello world {insert_index}",
+        } for insert_index in range(3)])
+        if multi_consumer:
+            consumer_ref = GenericObjectPath(consumer_path, "primary", "my_1")
+        else:
+            consumer_ref = GenericObjectPath(consumer_path, "primary")
+
+        queue_ref = GenericObjectPath(queue_path, "primary")
+        register_queue_consumer(queue_ref, consumer_ref, vital=False)
+        insert_rows(consumer_path, [{
+            "queue_cluster": "primary",
+            "queue_path": queue_path,
+            "partition_index": 0,
+            "offset": 1,
+            "meta": meta,
+        } | ({"queue_consumer_name": "my_1"} if multi_consumer else {})])
+
+        self._wait_for_component_passes()
+
+        orchid = QueueAgentOrchid()
+        consumer_orchid = orchid.get_consumer_orchid(consumer_ref)
+        queue_orchid = orchid.get_queue_orchid(queue_ref)
+        consumer_orchid.wait_fresh_pass()
+        queue_orchid.wait_fresh_pass()
+
+        consumer_status = consumer_orchid.get_status()
+        assert f"primary:{queue_path}" in consumer_status["queues"]
+        assert "error" not in consumer_status
+
+        queue_status = queue_orchid.get_status()
+        assert "error" not in queue_status
+        assert queue_status["alerts"] == {}
+        assert consumer_path in str(queue_status["registrations"][0]["consumer"])
+
 
 class TestRates(TestQueueAgentBase):
     DELTA_QUEUE_AGENT_DYNAMIC_CONFIG = {
@@ -1318,21 +1367,6 @@ class TestMultipleAgents(TestQueueAgentBase):
 
     NUM_QUEUE_AGENTS_PRIMARY = 5
 
-    DELTA_QUEUE_AGENT_CONFIG = {
-        "election_manager": {
-            "transaction_timeout": 5000,
-            "transaction_ping_period": 100,
-            "lock_acquisition_period": 100,
-            "leader_cache_update_period": 100,
-        },
-        "multi_consumer_names_garbage_collector_election_manager": {
-            "transaction_timeout": 5000,
-            "transaction_ping_period": 100,
-            "lock_acquisition_period": 100,
-            "leader_cache_update_period": 100,
-        },
-    }
-
     DELTA_QUEUE_AGENT_DYNAMIC_CONFIG = {
         "queue_agent": {
             "pass_period": 75,
@@ -1735,19 +1769,6 @@ class TestOrchid(TestMultipleAgents):
 
 
 class TestMasterIntegration(TestQueueAgentBase):
-    DELTA_QUEUE_AGENT_CONFIG = {
-        "election_manager": {
-            "transaction_timeout": 5000,
-            "transaction_ping_period": 100,
-            "lock_acquisition_period": 100,
-        },
-        "multi_consumer_names_garbage_collector_election_manager": {
-            "transaction_timeout": 5000,
-            "transaction_ping_period": 100,
-            "lock_acquisition_period": 100,
-        },
-    }
-
     DELTA_QUEUE_AGENT_DYNAMIC_CONFIG = {
         "cypress_synchronizer": {
             "policy": "polling",
@@ -3262,14 +3283,7 @@ class TestDynamicConfig(TestQueueAgentBase):
 
 class TestQueueStaticExportBase(TestQueueAgentBase, QueueStaticExportHelpers):
     NUM_SECONDARY_MASTER_CELLS = 2
-    DELTA_QUEUE_AGENT_CONFIG = {
-        "multi_consumer_names_garbage_collector_election_manager": {
-            "transaction_timeout": 5000,
-            "transaction_ping_period": 100,
-            "lock_acquisition_period": 100,
-            "leader_cache_update_period": 100,
-        },
-    }
+
     DELTA_QUEUE_AGENT_DYNAMIC_CONFIG = {
         "cypress_synchronizer": {
             "policy": "watching",
@@ -3501,21 +3515,6 @@ class TestQueueStaticExportUser(TestQueueStaticExportBase):
 
     NUM_SECONDARY_MASTER_CELLS = 0
     MASTER_CELL_DESCRIPTORS = {}
-
-    DELTA_QUEUE_AGENT_CONFIG = {
-        "election_manager": {
-            "transaction_timeout": 5000,
-            "transaction_ping_period": 100,
-            "lock_acquisition_period": 100,
-            "leader_cache_update_period": 100,
-        },
-        "multi_consumer_names_garbage_collector_election_manager": {
-            "transaction_timeout": 5000,
-            "transaction_ping_period": 100,
-            "lock_acquisition_period": 100,
-            "leader_cache_update_period": 100,
-        },
-    }
 
     QUEUE_AGENT_CUSTOM_USER = "queue_agent_custom"
     EXPORT_USER = "queue_export_custom"
@@ -6856,7 +6855,7 @@ class TestExportWithHunkStorage(TestQueueStaticExportBase):
         wait(lambda: len(ls(export_dir)) == 1)
         export_table = "{}/{}".format(export_dir, ls(export_dir)[0])
 
-        assert get(f"{export_table}/@data_weight") == 67
+        assert get(f"{export_table}/@data_weight") == 47
         assert get(f"{export_table}/@chunk_count") == 2
 
         chunk_format_statistics = get(f"{export_table}/@chunk_format_statistics")

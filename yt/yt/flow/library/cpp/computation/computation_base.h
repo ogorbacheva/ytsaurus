@@ -163,7 +163,8 @@ protected:
     //! Returns the distributed throttler client for the given id.
     //! Throws if |throttlerId| is not in the dynamic pipeline spec's
     //! `throttlers` — this is a configuration error.
-    NConcurrency::IThroughputThrottlerPtr GetThrottler(const TThrottlerId& throttlerId);
+    NConcurrency::IThroughputThrottlerPtr GetThrottlerOrThrow(const TThrottlerId& throttlerId);
+    NConcurrency::IThroughputThrottlerPtr TryGetThrottler(const TThrottlerId& throttlerId);
 
 protected:
     const NDistributedThrottler::IDistributedThrottlerFactoryPtr& GetThrottlerFactory() const
@@ -370,6 +371,17 @@ private:
 //! by at most one stream. Visitor-driven-ness comes from the registry trait, so unregistered
 //! classes are skipped (reported by #TRegistry::ValidateComputationSpec separately).
 void ValidateKeyVisitorJoinerBindings(const TComputationSpec& spec);
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! True once every stream the key-visitor stream |visitStreamId| waits for is listed in
+//! |completedUpstreamStreams|, which holds the input and source streams that have nothing
+//! left to deliver to this partition. This is the signal that lets the visitor arm its
+//! final pass.
+bool IsKeyVisitorUpstreamCompleted(
+    const TComputationSpec& spec,
+    const TStreamId& visitStreamId,
+    const THashSet<TStreamId>& completedUpstreamStreams);
 
 ////////////////////////////////////////////////////////////////////////////////
 

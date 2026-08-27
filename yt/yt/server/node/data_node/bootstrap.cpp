@@ -30,7 +30,7 @@
 
 #include <yt/yt/server/node/tablet_node/config.h>
 
-#include <yt/yt/server/lib/distributed_chunk_session_server/distributed_chunk_session_service.h>
+#include <yt/yt/server/lib/distributed_chunk_session_server/session_service.h>
 
 #include <yt/yt/ytlib/chunk_client/medium_directory.h>
 
@@ -102,7 +102,7 @@ public:
 
     void Initialize() override
     {
-        YT_LOG_INFO("Initializing data node");
+        YT_TLOG_INFO("Initializing data node");
 
         // Cycles are fine for bootstrap.
         GetDynamicConfigManager()

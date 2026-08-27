@@ -1,10 +1,11 @@
 #include <yt/yt/tests/cpp/test_base/api_test_base.h>
 
 #include <yt/yt/ytlib/distributed_chunk_session_client/config.h>
-#include <yt/yt/ytlib/distributed_chunk_session_client/distributed_chunk_session_controller.h>
-#include <yt/yt/ytlib/distributed_chunk_session_client/distributed_chunk_session_pool.h>
-#include <yt/yt/ytlib/distributed_chunk_session_client/distributed_chunk_session_reader.h>
-#include <yt/yt/ytlib/distributed_chunk_session_client/distributed_chunk_writer.h>
+#include <yt/yt/ytlib/distributed_chunk_session_client/session_controller.h>
+#include <yt/yt/ytlib/distributed_chunk_session_client/session_pool.h>
+#include <yt/yt/ytlib/distributed_chunk_session_client/session_reader.h>
+#include <yt/yt/ytlib/distributed_chunk_session_client/seal_summary_fetcher.h>
+#include <yt/yt/ytlib/distributed_chunk_session_client/session_writer.h>
 
 #include <yt/yt/ytlib/table_client/chunk_meta_extensions.h>
 #include <yt/yt/ytlib/table_client/config.h>
@@ -15,6 +16,7 @@
 #include <yt/yt/ytlib/chunk_client/chunk_reader_options.h>
 #include <yt/yt/ytlib/chunk_client/chunk_service_proxy.h>
 #include <yt/yt/ytlib/chunk_client/data_node_service_proxy.h>
+#include <yt/yt/ytlib/chunk_client/throttler_manager.h>
 
 #include <yt/yt/ytlib/api/native/client.h>
 #include <yt/yt/ytlib/api/native/connection.h>
@@ -535,6 +537,84 @@ TEST_F(TDistributedChunkSessionTest, StartSessionReturnsStartedSessionInfo)
     EXPECT_FALSE(startedSession.SequencerNode.GetDefaultAddress().empty());
 
     EnsureControllerIsDestroyed(std::move(controller));
+}
+
+TEST_F(TDistributedChunkSessionTest, MasterSealSummaryFetchWaitsForThrottler)
+{
+    constexpr int RecordCount = 3;
+
+    auto chunkInfo = WriteRecordsAndSealChunk(RecordCount);
+    auto throttlerManager = New<TThrottlerManager>(
+        TThroughputThrottlerConfig::Create(0));
+
+    auto fetchFuture = FetchDistributedChunkSessionSealSummaries(
+        NativeClient_,
+        ActionQueue_->GetInvoker(),
+        throttlerManager,
+        {chunkInfo.ChunkId});
+    auto throttler = throttlerManager->GetThrottler(CellTagFromId(chunkInfo.ChunkId));
+
+    WaitUntil(
+        [&] { return throttler->GetQueueTotalAmount() == 1; },
+        "Seal-summary fetch was not throttled");
+    EXPECT_FALSE(fetchFuture.IsSet());
+
+    throttlerManager->Reconfigure(New<TThroughputThrottlerConfig>());
+
+    auto sealSummaries = WaitFor(fetchFuture)
+        .ValueOrThrow();
+    ASSERT_EQ(sealSummaries.size(), 1u);
+
+    EXPECT_EQ(sealSummaries[0].ChunkId, chunkInfo.ChunkId);
+    EXPECT_EQ(sealSummaries[0].RecordCount, RecordCount);
+    EXPECT_GT(sealSummaries[0].CompressedDataSize, 0);
+}
+
+TEST_F(TDistributedChunkSessionTest, MasterSealSummaryFetchOmitsUnsealedChunk)
+{
+    auto controller = CreateDistributedChunkSessionController(
+        NativeClient_,
+        ControllerConfig_,
+        Transaction_->GetId(),
+        WriterOptions_,
+        WriterConfig_,
+        ActionQueue_->GetInvoker());
+
+    auto startedSession = WaitFor(controller->StartSession())
+        .ValueOrThrow();
+
+    auto sealSummaries = WaitFor(FetchDistributedChunkSessionSealSummaries(
+        NativeClient_,
+        ActionQueue_->GetInvoker(),
+        New<TThrottlerManager>(New<TThroughputThrottlerConfig>()),
+        {startedSession.SessionId.ChunkId}))
+        .ValueOrThrow();
+    EXPECT_TRUE(sealSummaries.empty());
+
+    WaitFor(controller->Close())
+        .ThrowOnError();
+    EnsureControllerIsDestroyed(std::move(controller));
+}
+
+TEST_F(TDistributedChunkSessionTest, MasterSealSummaryFetchOmitsMissingChunk)
+{
+    constexpr int RecordCount = 3;
+
+    auto chunkInfo = WriteRecordsAndSealChunk(RecordCount);
+    auto missingChunkId = MakeRandomId(
+        EObjectType::JournalChunk,
+        CellTagFromId(chunkInfo.ChunkId));
+
+    auto sealSummaries = WaitFor(FetchDistributedChunkSessionSealSummaries(
+        NativeClient_,
+        ActionQueue_->GetInvoker(),
+        New<TThrottlerManager>(New<TThroughputThrottlerConfig>()),
+        {chunkInfo.ChunkId, missingChunkId}))
+        .ValueOrThrow();
+
+    ASSERT_EQ(sealSummaries.size(), 1u);
+    EXPECT_EQ(sealSummaries[0].ChunkId, chunkInfo.ChunkId);
+    EXPECT_EQ(sealSummaries[0].RecordCount, RecordCount);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1674,6 +1754,54 @@ TEST_F(TDistributedChunkSessionTest, PrefetchAdvancesWithoutRead)
     Sleep(TDuration::Seconds(1));
 
     EXPECT_GT(stats->ReadBlocksCount.load(), readCountAfterFirstRead);
+}
+
+TEST_F(TDistributedChunkSessionTest, RecoveryCancellationDoesNotTerminate)
+{
+    // The single window covers the phantom record past the end of the chunk, so its read
+    // returns empty and the window enters recovery. The minute-long backoff parks the
+    // recovery fiber in TDelayedExecutor::WaitForDuration; the non-graceful shutdown then
+    // cancels it there, which used to hit RecoverWindow's noexcept and terminate.
+    constexpr int WrittenCount = 1;
+    constexpr int PhantomCount = 2;
+    auto chunkInfo = WriteRecordsAndSealChunk(WrittenCount);
+
+    auto config = MakePrefetchReaderConfig(
+        /*windowCount*/ 1,
+        /*sequentialReadSize*/ 100,
+        /*depth*/ 1);
+    config->MaxReadAttempts = 2;
+    config->ErrorBackoff = TExponentialBackoffOptions{
+        .InvocationCount = std::numeric_limits<int>::max(),
+        .MinBackoff = TDuration::Minutes(1),
+        .MaxBackoff = TDuration::Minutes(1),
+        .BackoffMultiplier = 1.0,
+        .BackoffJitter = 0.0,
+    };
+
+    auto readerActionQueue = CreateSuspendableActionQueue("ReaderRecoveryTest");
+    auto reader = CreateDistributedChunkSessionReader(
+        config,
+        NativeClient_,
+        New<TChunkReaderHost>(NativeClient_),
+        chunkInfo.ChunkId,
+        chunkInfo.Replicas,
+        chunkInfo.ReadQuorum,
+        /*startRecordIndex*/ WrittenCount,
+        /*rangeEndRecordIndex*/ std::nullopt,
+        readerActionQueue->GetInvoker());
+    reader->SetAllWritersFinished(PhantomCount, chunkInfo.CompressedDataSize);
+
+    Y_UNUSED(reader->Read());
+    auto statistics = reader->GetStatistics();
+    WaitUntil(
+        [&] {
+            return statistics->PrefetchRetryCount.load() > 0 &&
+                statistics->MasterRefreshCount.load() > 0;
+        },
+        "Reader recovery did not enter backoff");
+
+    readerActionQueue->Shutdown(/*graceful*/ false);
 }
 
 TEST_F(TDistributedChunkSessionTest, Phase2PerWindowBudgetTerminatesUnreadableWindow)

@@ -82,10 +82,9 @@ TFetchedArtifactKey FetchLayerArtifactKeyIfRevisionChanged(
     userObject.Path = path;
 
     {
-        YT_LOG_INFO(
-            "Fetching layer basic attributes (LayerPath: %v, OldContentRevision: %x)",
-            path,
-            contentRevision);
+        YT_TLOG_INFO("Fetching layer basic attributes")
+            .With("LayerPath", path)
+            .WithFormat("OldContentRevision", "%x", contentRevision);
 
         TGetUserObjectBasicAttributesOptions options;
         options.SuppressAccessTracking = true;
@@ -116,7 +115,9 @@ TFetchedArtifactKey FetchLayerArtifactKeyIfRevisionChanged(
 
     // COMPAT(shakurov): remove this once YT-13605 is deployed everywhere.
     if (userObject.ContentRevision == NHydra::NullRevision) {
-        YT_LOG_INFO("Fetching layer revision (LayerPath: %v, OldContentRevision: %x)", path, contentRevision);
+        YT_TLOG_INFO("Fetching layer revision")
+            .With("LayerPath", path)
+            .WithFormat("OldContentRevision", "%x", contentRevision);
         try {
             FetchContentRevision(bootstrap, &userObject);
         } catch (const std::exception& ex) {
@@ -131,18 +132,16 @@ TFetchedArtifactKey FetchLayerArtifactKeyIfRevisionChanged(
     };
 
     if (contentRevision == userObject.ContentRevision) {
-        YT_LOG_INFO(
-            "Layer revision not changed, using cached (LayerPath: %v, ObjectId: %v)",
-            path,
-            objectId);
+        YT_TLOG_INFO("Layer revision not changed, using cached")
+            .With("LayerPath", path)
+            .With("ObjectId", objectId);
         return result;
     }
 
-    YT_LOG_INFO(
-        "Fetching layer chunk specs (LayerPath: %v, ObjectId: %v, ContentRevision: %x)",
-        path,
-        objectId,
-        userObject.ContentRevision);
+    YT_TLOG_INFO("Fetching layer chunk specs")
+        .With("LayerPath", path)
+        .With("ObjectId", objectId)
+        .WithFormat("ContentRevision", "%x", userObject.ContentRevision);
 
     const auto& client = bootstrap->GetClient();
     const auto& connection = client->GetNativeConnection();
@@ -244,7 +243,7 @@ TErrorOr<std::string> TryParseControllerAgentAddress(
         return TError(
             "No suitable controller agent address exists from %v",
             GetValues(addresses))
-            .With(TError(ex));
+            .With(ex);
     }
 }
 
@@ -354,23 +353,30 @@ const TVolumeResultPtr& GetNonRootVolumeResultByVolumeId(const std::string& volu
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void FromProto(TSandboxNbdRootVolumeData* nbd, const NScheduler::NProto::TNbdDiskRequest& protoNbd)
+void FromProto(TSandboxNbdRootVolumeSpec* nbd, const NScheduler::NProto::TNbdDiskRequest& protoNbd)
 {
-    nbd->Size = protoNbd.disk_request().storage_request_common_parameters().disk_space();
-    nbd->MediumIndex = static_cast<int>(protoNbd.disk_request().medium_index());
+    nbd->DeviceSize = protoNbd.disk_request().storage_request_common_parameters().disk_space();
 
-    const auto& nbdDisk = protoNbd.nbd();
-    if (nbdDisk.has_data_node_address()) {
-        nbd->DataNodeAddress = nbdDisk.data_node_address();
+    switch (protoNbd.backend_case()) {
+        case NScheduler::NProto::TNbdDiskRequest::kChunkNbd: {
+            const auto& protoChunkDisk = protoNbd.chunk_nbd();
+            nbd->BackendSpec = TChunkNbdVolumeSpec{
+                .MediumIndex = static_cast<int>(protoNbd.disk_request().medium_index()),
+                .DataNodeRpcTimeout = FromProto<TDuration>(protoChunkDisk.data_node_rpc_timeout()),
+                .DataNodeAddress = YT_OPTIONAL_FROM_PROTO(protoChunkDisk, data_node_address),
+                .DataNodeNbdServiceRpcTimeout = FromProto<TDuration>(protoChunkDisk.data_node_nbd_service_rpc_timeout()),
+                .DataNodeNbdServiceMakeTimeout = FromProto<TDuration>(protoChunkDisk.data_node_nbd_service_make_timeout()),
+                .MasterRpcTimeout = FromProto<TDuration>(protoChunkDisk.master_rpc_timeout()),
+                .MinDataNodeCount = protoChunkDisk.min_data_node_count(),
+                .MaxDataNodeCount = protoChunkDisk.max_data_node_count(),
+                .MultiplexingParallelism = protoChunkDisk.multiplexing_parallelism(),
+            };
+            break;
+        }
+
+        case NScheduler::NProto::TNbdDiskRequest::BACKEND_NOT_SET:
+            THROW_ERROR_EXCEPTION("NBD disk request specifies no backend");
     }
-
-    nbd->DataNodeRpcTimeout = FromProto<TDuration>(nbdDisk.data_node_rpc_timeout());
-    nbd->MasterRpcTimeout = FromProto<TDuration>(nbdDisk.master_rpc_timeout());
-    nbd->DataNodeNbdServiceRpcTimeout = FromProto<TDuration>(nbdDisk.data_node_nbd_service_rpc_timeout());
-    nbd->DataNodeNbdServiceMakeTimeout = FromProto<TDuration>(nbdDisk.data_node_nbd_service_make_timeout());
-    nbd->MinDataNodeCount = nbdDisk.min_data_node_count();
-    nbd->MaxDataNodeCount = nbdDisk.max_data_node_count();
-    nbd->MultiplexingParallelism = nbdDisk.multiplexing_parallelism();
 }
 
 void FromProto(TTmpfsVolumeParams* tmpfs, const NScheduler::NProto::TTmpfsStorageRequest& protoTmpfs)

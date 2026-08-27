@@ -13,6 +13,8 @@
 
 #include <yt/yt/server/lib/exec_node/config.h>
 
+#include <yt/yt/server/lib/nbd/block_device.h>
+
 #include <yt/yt/server/lib/nbd/chunk/chunk_block_device.h>
 #include <yt/yt/server/lib/nbd/chunk/chunk_handler.h>
 #include <yt/yt/server/lib/nbd/chunk/config.h>
@@ -36,6 +38,8 @@
 #include <yt/yt/core/concurrency/periodic_executor.h>
 
 #include <yt/yt/core/logging/log.h>
+
+#include <yt/yt/core/misc/collection_helpers.h>
 
 #include <yt/yt/library/profiling/sensor.h>
 
@@ -142,22 +146,19 @@ TFuture<IVolumePtr> TSquashFSVolumeCache::GetOrCreateVolume(
         DownloadAndPrepareVolume(artifactKey, downloadOptions, tag)
             .Subscribe(BIND([=, cookie = std::move(cookie)] (const TErrorOr<TIntrusivePtr<TCachedVolume<TArtifactKey>>>& volumeOrError) mutable {
                 if (volumeOrError.IsOK()) {
-                    YT_LOG_DEBUG(
-                        "Squashfs volume has been inserted into cache (VolumeId: %v)",
-                        volumeOrError.Value()->GetId());
+                    YT_TLOG_DEBUG("Squashfs volume has been inserted into cache")
+                        .With("VolumeId", volumeOrError.Value()->GetId());
                     cookie.EndInsert(volumeOrError.Value());
                 } else {
-                    YT_LOG_DEBUG(
-                        volumeOrError,
-                        "Canceling insertion of Squashfs volume into cache");
+                    YT_TLOG_DEBUG("Canceling insertion of Squashfs volume into cache")
+                        .With(volumeOrError);
                     cookie.Cancel(volumeOrError);
                 }
             })
             .Via(GetCurrentInvoker()));
     } else {
-        YT_LOG_DEBUG(
-            "Squashfs volume is either already in the cache or is being inserted (VolumeId: %v)",
-            value.IsSet() && value.GetOrCrash().IsOK() ? ToString(value.GetOrCrash().Value()->GetId()) : "<importing>");
+        YT_TLOG_DEBUG("Squashfs volume is either already in the cache or is being inserted")
+            .With("VolumeId", value.IsSet() && value.GetOrCrash().IsOK() ? ToString(value.GetOrCrash().Value()->GetId()) : "<importing>");
     }
 
     return value.As<IVolumePtr>();
@@ -168,10 +169,9 @@ TFuture<TSquashFSVolumePtr> TSquashFSVolumeCache::DownloadAndPrepareVolume(
     const TArtifactDownloadOptions& downloadOptions,
     TGuid tag)
 {
-    YT_LOG_DEBUG(
-        "Downloading and preparing squashfs volume (Tag: %v, CypressPath: %v)",
-        tag,
-        artifactKey.data_source().path());
+    YT_TLOG_DEBUG("Downloading and preparing squashfs volume")
+        .With("Tag", tag)
+        .With("CypressPath", artifactKey.data_source().path());
 
     return ArtifactCache_->DownloadArtifact(artifactKey, downloadOptions)
         .Apply(BIND([=, this, this_ = MakeStrong(this)] (const IVolumeArtifactPtr& artifact) {
@@ -199,10 +199,9 @@ TSquashFSVolumePtr TSquashFSVolumeCache::CreateSquashFSVolume(
 {
     auto squashFSFilePath = artifact->GetFileName();
 
-    YT_LOG_DEBUG(
-        "Creating squashfs volume (Tag: %v, SquashFSFilePath: %v)",
-        tag,
-        squashFSFilePath);
+    YT_TLOG_DEBUG("Creating squashfs volume")
+        .With("Tag", tag)
+        .With("SquashFSFilePath", squashFSFilePath);
 
     auto location = PickVolumeLocation();
     auto volumeMetaFuture = location->CreateSquashFSVolume(tag, tagSet, std::move(volumeCreateTimeGuard), artifactKey, squashFSFilePath);
@@ -226,11 +225,10 @@ TSquashFSVolumePtr TSquashFSVolumeCache::CreateSquashFSVolume(
     auto volume = WaitFor(volumeFuture)
         .ValueOrThrow();
 
-    YT_LOG_INFO(
-        "Created squashfs volume (Tag: %v, VolumeId: %v, SquashFSFilePath: %v)",
-        tag,
-        volume->GetId(),
-        squashFSFilePath);
+    YT_TLOG_INFO("Created squashfs volume")
+        .With("Tag", tag)
+        .With("VolumeId", volume->GetId())
+        .With("SquashFSFilePath", squashFSFilePath);
 
     return volume;
 }
@@ -266,7 +264,7 @@ TFuture<IVolumePtr> TNbdVolumeFactory::GetOrCreateVolume(
         .WithTag("DeviceId", deviceId)
         .WithTag("CypressPath", artifactKey.data_source().path());
 
-    YT_LOG_DEBUG("Getting RO NBD volume");
+    YT_TLOG_DEBUG("Getting RO NBD volume");
 
     auto nbdConfig = DynamicConfigManager_->GetConfig()->ExecNode->Nbd;
     auto nbdServer = Bootstrap_->GetNbdServer();
@@ -277,7 +275,8 @@ TFuture<IVolumePtr> TNbdVolumeFactory::GetOrCreateVolume(
             .With("path", artifactKey.data_source().path())
             .With("filesystem", FromProto<ELayerFilesystem>(artifactKey.filesystem()));
 
-        YT_LOG_ERROR(error, "Failed to get or create RO NBD volume");
+        YT_TLOG_ERROR("Failed to get or create RO NBD volume")
+            .With(error);
         return MakeFuture<IVolumePtr>(std::move(error));
     }
 
@@ -292,23 +291,20 @@ TFuture<IVolumePtr> TNbdVolumeFactory::GetOrCreateVolume(
                     cookie = std::move(cookie)
                 ] (const TErrorOr<IVolumePtr>& volumeOrError) mutable {
                     if (volumeOrError.IsOK()) {
-                        YT_LOG_DEBUG(
-                            "RO NBD volume has been inserted into cache (VolumeId: %v)",
-                            volumeOrError.Value()->GetId());
+                        YT_TLOG_DEBUG("RO NBD volume has been inserted into cache")
+                            .With("VolumeId", volumeOrError.Value()->GetId());
                         auto volume = DynamicPointerCast<TVolume>(volumeOrError.Value());
                         cookie.EndInsert(volume);
                     } else {
-                        YT_LOG_WARNING(
-                            volumeOrError,
-                            "Canceling insertion of RO NBD volume into cache");
+                        YT_TLOG_WARNING("Canceling insertion of RO NBD volume into cache")
+                            .With(volumeOrError);
                         cookie.Cancel(volumeOrError);
                     }
                 })
                 .Via(nbdServer->GetInvoker()));
     } else {
-        YT_LOG_DEBUG(
-            "RO NBD volume is either already in the cache or is being inserted (VolumeId: %v)",
-            value.IsSet() && value.GetOrCrash().IsOK() ? ToString(value.GetOrCrash().Value()->GetId()) : "<importing>");
+        YT_TLOG_DEBUG("RO NBD volume is either already in the cache or is being inserted")
+            .With("VolumeId", value.IsSet() && value.GetOrCrash().IsOK() ? ToString(value.GetOrCrash().Value()->GetId()) : "<importing>");
     }
 
     return value
@@ -338,9 +334,9 @@ TFuture<IVolumePtr> TNbdVolumeFactory::CreateVolume(
         .WithTag("DeviceId", options.DeviceId);
 
     // NB. RW NBD volumes are not cached.
-    YT_LOG_DEBUG("Creating RW NBD volume");
+    YT_TLOG_DEBUG("Creating RW NBD volume");
 
-    return PrepareNbdSession(options)
+    auto volumeFuture = PrepareRWChunkNbdSession(options)
         .Apply(BIND(
             [
                 tag,
@@ -351,27 +347,30 @@ TFuture<IVolumePtr> TNbdVolumeFactory::CreateVolume(
             ] (const TErrorOr<std::optional<std::tuple<NRpc::IChannelPtr, TSessionId>>>& rspOrError) mutable {
                 THROW_ERROR_EXCEPTION_IF_FAILED(rspOrError);
 
+                auto& chunkOptions = GetOrCrash<TChunkNbdVolumeOptions>(options.BackendOptions);
+
                 const auto& response = rspOrError.Value();
                 if (!response) {
                     THROW_ERROR_EXCEPTION("Could not find suitable data node to host NBD disk")
-                        .With("medium_index", options.MediumIndex)
-                        .With("size", options.Size)
-                        .With("fs_type", options.Filesystem);
+                        .With("medium_index", chunkOptions.Spec.MediumIndex)
+                        .With("size", options.DeviceSize)
+                        .With("filesystem_type", options.FilesystemType);
                 }
 
                 const auto& [channel, sessionId] = *response;
-                options.DataNodeChannel = channel;
-                options.SessionId = sessionId;
+                chunkOptions.DataNodeChannel = channel;
+                chunkOptions.SessionId = sessionId;
 
-                YT_LOG_DEBUG(
-                    "Prepared NBD session (SessionId: %v, MediumIndex: %v, Size: %v, FsType: %v)",
-                    sessionId,
-                    options.MediumIndex,
-                    options.Size,
-                    options.Filesystem);
+                YT_TLOG_DEBUG("Prepared NBD session")
+                    .With("SessionId", sessionId)
+                    .With("MediumIndex", chunkOptions.Spec.MediumIndex)
+                    .With("Size", options.DeviceSize)
+                    .With("FilesystemType", options.FilesystemType);
 
-                return PrepareRWNbdVolume(tag, options);
-            }))
+                return PrepareRWChunkNbdVolume(tag, options);
+            })).As<IVolumePtr>();
+
+    return volumeFuture
         .Apply(BIND(
             [options] (const TErrorOr<IVolumePtr>& errorOrVolume) {
                 if (!errorOrVolume.IsOK()) {
@@ -382,8 +381,7 @@ TFuture<IVolumePtr> TNbdVolumeFactory::CreateVolume(
                 }
 
                 return errorOrVolume.Value();
-            })
-        ).As<IVolumePtr>();
+            }));
 }
 
 void TNbdVolumeFactory::ValidatePrepareRONbdVolumeOptions(const TPrepareRONbdVolumeOptions& options)
@@ -430,9 +428,8 @@ TNbdVolumeFactory::TInsertCookie TNbdVolumeFactory::GetInsertCookie(const std::s
         if (auto device = nbdServer->FindDevice(deviceId)) {
             // Remove volume from cache if its device has any errors.
             if (auto error = device->GetError(); !error.IsOK()) {
-                YT_LOG_WARNING(
-                    error,
-                    "Cached RO NBD device has errors, removing it from cache and recreating it");
+                YT_TLOG_WARNING("Cached RO NBD device has errors, removing it from cache and recreating it")
+                    .With(error);
                 // Remove volume from cache.
                 TryRemove(deviceId, /*forbidResurrection*/ true);
                 // Start a new insertion.
@@ -448,7 +445,7 @@ TFuture<IBlockDevicePtr> TNbdVolumeFactory::InitializeNbdDevice(
     const IBlockDevicePtr& device,
     const NLogging::TLogger& Logger) const
 {
-    YT_LOG_DEBUG("Initializing NBD device");
+    YT_TLOG_DEBUG("Initializing NBD device");
 
     return device->Initialize()
         .Apply(BIND(
@@ -462,7 +459,7 @@ TFuture<IBlockDevicePtr> TNbdVolumeFactory::InitializeNbdDevice(
                     THROW_ERROR_EXCEPTION("Failed to initialize NBD device")
                         .With(error);
                 }
-                YT_LOG_DEBUG("Initialized NBD device");
+                YT_TLOG_DEBUG("Initialized NBD device");
                 return device;
             })
             .AsyncVia(Bootstrap_->GetNbdServer()->GetInvoker()))
@@ -480,9 +477,9 @@ TFuture<IVolumePtr> TNbdVolumeFactory::CreateNbdVolume(
         .WithTag("JobId", options.JobId)
         .WithTag("DeviceId", options.DeviceId)
         .WithTag("IsReadOnly", options.IsReadOnly)
-        .WithTag("Filesystem", options.Filesystem);
+        .WithTag("FilesystemType", options.FilesystemType);
 
-    YT_LOG_DEBUG("Creating NBD volume");
+    YT_TLOG_DEBUG("Creating NBD volume");
 
     auto nbdServer = Bootstrap_->GetNbdServer();
 
@@ -505,10 +502,10 @@ TFuture<IVolumePtr> TNbdVolumeFactory::CreateNbdVolume(
             ] (const TErrorOr<TVolumeMeta>& errorOrVolumeMeta) mutable {
                 if (!errorOrVolumeMeta.IsOK()) {
                     THROW_ERROR_EXCEPTION("Failed to create NBD volume")
-                        << errorOrVolumeMeta;
+                        .With(errorOrVolumeMeta);
                 }
 
-                YT_LOG_DEBUG("Created NBD volume");
+                YT_TLOG_DEBUG("Created NBD volume");
 
                 return volumeFactory(
                     std::move(tagSet),
@@ -534,7 +531,7 @@ TFuture<IVolumePtr> TNbdVolumeFactory::PrepareNbdVolume(
 {
     auto nbdServer = Bootstrap_->GetNbdServer();
 
-    YT_LOG_DEBUG("Preparing NBD volume");
+    YT_TLOG_DEBUG("Preparing NBD volume");
 
     TEventTimerGuard volumeCreateTimeGuard(TVolumeProfilerCounters::Get()->GetTimer(tagSet, "/create_time"));
 
@@ -551,7 +548,7 @@ TFuture<IVolumePtr> TNbdVolumeFactory::PrepareNbdVolume(
             ] (const TErrorOr<IBlockDevicePtr>& errorOrDevice) {
                 if (!errorOrDevice.IsOK()) {
                     THROW_ERROR_EXCEPTION("Failed to prepare NBD volume")
-                        << errorOrDevice;
+                        .With(errorOrDevice);
                 }
 
                 const auto& device = errorOrDevice.Value();
@@ -577,17 +574,17 @@ TFuture<IVolumePtr> TNbdVolumeFactory::PrepareNbdVolume(
             ] (const TErrorOr<IVolumePtr>& errorOrVolume) {
                 if (!errorOrVolume.IsOK()) {
                     if (auto device = nbdServer->TryUnregisterDevice(options.DeviceId)) {
-                        YT_LOG_DEBUG("Finalizing RO NBD device");
+                        YT_TLOG_DEBUG("Finalizing RO NBD device");
                         YT_UNUSED_FUTURE(device->Finalize());
                     } else {
-                        YT_LOG_WARNING("Failed to unregister NBD device");
+                        YT_TLOG_WARNING("Failed to unregister NBD device");
                     }
 
                     THROW_ERROR_EXCEPTION("Failed to prepare NBD volume")
-                        << errorOrVolume;
+                        .With(errorOrVolume);
                 }
 
-                YT_LOG_DEBUG("Prepared NBD volume");
+                YT_TLOG_DEBUG("Prepared NBD volume");
 
                 return errorOrVolume.Value();
             })
@@ -605,8 +602,8 @@ IImageReaderPtr TNbdVolumeFactory::CreateArtifactReader(
 
     auto path = NYPath::TYPath(artifactKey.data_source().path());
 
-    YT_LOG_DEBUG("Creating NBD artifact reader (Path: %v)",
-        path);
+    YT_TLOG_DEBUG("Creating NBD artifact reader")
+        .With("Path", path);
 
     std::vector<NChunkClient::NProto::TChunkSpec> chunkSpecs(
         artifactKey.chunk_specs().begin(),
@@ -639,7 +636,7 @@ TFuture<IBlockDevicePtr> TNbdVolumeFactory::CreateRONbdDevice(
         .WithTag("CypressPath", artifactKey.data_source().path())
         .WithTag("Filesystem", FromProto<ELayerFilesystem>(artifactKey.filesystem()));
 
-    YT_LOG_DEBUG("Creating NBD device");
+    YT_TLOG_DEBUG("Creating NBD device");
 
     auto device = CreateImageBlockDevice(
         deviceId,
@@ -648,7 +645,7 @@ TFuture<IBlockDevicePtr> TNbdVolumeFactory::CreateRONbdDevice(
         Bootstrap_->GetNbdServer()->GetInvoker(),
         Bootstrap_->GetNbdServer()->GetLogger());
 
-    YT_LOG_DEBUG("Created NBD device");
+    YT_TLOG_DEBUG("Created NBD device");
 
     return InitializeNbdDevice(device, Logger);
 }
@@ -687,7 +684,7 @@ TFuture<IVolumePtr> TNbdVolumeFactory::PrepareRONbdVolume(
         TCreateNbdVolumeOptions{
             .JobId = jobId,
             .DeviceId = artifactKey.nbd_device_id(),
-            .Filesystem = ToString(FromProto<ELayerFilesystem>(artifactKey.filesystem())),
+            .FilesystemType = ToString(FromProto<ELayerFilesystem>(artifactKey.filesystem())),
             .IsReadOnly = true,
         },
         MakeVolumeFactory<TRONbdVolume>());
@@ -695,39 +692,42 @@ TFuture<IVolumePtr> TNbdVolumeFactory::PrepareRONbdVolume(
 
 // RW NBD volumes.
 
-TFuture<IBlockDevicePtr> TNbdVolumeFactory::CreateRWNbdDevice(
+TFuture<IBlockDevicePtr> TNbdVolumeFactory::CreateRWChunkNbdDevice(
     TGuid tag,
     TPrepareRWNbdVolumeOptions options)
 {
+    auto& chunkOptions = GetOrCrash<TChunkNbdVolumeOptions>(options.BackendOptions);
+
     auto Logger = ExecNodeLogger()
         .WithTag("Tag", tag)
         .WithTag("JobId", options.JobId)
         .WithTag("DeviceId", options.DeviceId)
         .WithTag("Type", "RW")
-        .WithTag("DiskSize", options.Size)
-        .WithTag("DiskMediumIndex", options.MediumIndex)
-        .WithTag("DiskFilesystem", options.Filesystem);
+        .WithTag("DiskSize", options.DeviceSize)
+        .WithTag("DiskMediumIndex", chunkOptions.Spec.MediumIndex)
+        .WithTag("DiskFilesystemType", options.FilesystemType);
 
     auto nbdConfig = DynamicConfigManager_->GetConfig()->ExecNode->Nbd;
     if (!nbdConfig || !nbdConfig->Enabled || !nbdConfig->ReadWriteEnabled) {
         auto error = TError("RW NBD disks are disabled")
             .With("device_id", options.DeviceId)
             .With("job_id", options.JobId)
-            .With("size", options.Size);
+            .With("size", options.DeviceSize);
 
-        YT_LOG_ERROR(error, "Failed to create RW NBD volume");
+        YT_TLOG_ERROR("Failed to create RW NBD volume")
+            .With(error);
         return MakeFuture<IBlockDevicePtr>(std::move(error));
     }
 
     auto config = New<TChunkBlockDeviceConfig>();
-    config->Size = options.Size;
-    config->MediumIndex = options.MediumIndex;
-    config->FsType = options.Filesystem;
-    config->DataNodeNbdServiceRpcTimeout = options.DataNodeNbdServiceRpcTimeout;
-    config->DataNodeNbdServiceMakeTimeout = options.DataNodeNbdServiceMakeTimeout;
-    config->MultiplexingParallelism = options.MultiplexingParallelism;
+    config->Size = options.DeviceSize;
+    config->MediumIndex = chunkOptions.Spec.MediumIndex;
+    config->FsType = options.FilesystemType;
+    config->DataNodeNbdServiceRpcTimeout = chunkOptions.Spec.DataNodeNbdServiceRpcTimeout;
+    config->DataNodeNbdServiceMakeTimeout = chunkOptions.Spec.DataNodeNbdServiceMakeTimeout;
+    config->MultiplexingParallelism = chunkOptions.Spec.MultiplexingParallelism;
 
-    YT_LOG_DEBUG("Creating NBD device");
+    YT_TLOG_DEBUG("Creating NBD device");
 
     auto device = CreateChunkBlockDevice(
         std::move(options.DeviceId),
@@ -735,35 +735,36 @@ TFuture<IBlockDevicePtr> TNbdVolumeFactory::CreateRWNbdDevice(
         Bootstrap_->GetDefaultInThrottler(),
         Bootstrap_->GetDefaultOutThrottler(),
         Bootstrap_->GetNbdServer()->GetInvoker(),
-        std::move(options.DataNodeChannel),
-        std::move(options.SessionId),
+        std::move(chunkOptions.DataNodeChannel),
+        std::move(chunkOptions.SessionId),
         Bootstrap_->GetNbdServer()->GetLogger());
 
-    YT_LOG_DEBUG("Created NBD device");
+    YT_TLOG_DEBUG("Created NBD device");
 
     return InitializeNbdDevice(device, Logger);
 }
 
-TFuture<IVolumePtr> TNbdVolumeFactory::PrepareRWNbdVolume(
+TFuture<IVolumePtr> TNbdVolumeFactory::PrepareRWChunkNbdVolume(
     TGuid tag,
     TPrepareRWNbdVolumeOptions options)
 {
     const auto jobId = options.JobId;
     const auto deviceId = options.DeviceId;
-    const auto filesystem = options.Filesystem;
+    const auto filesystemType = options.FilesystemType;
+    const auto& chunkOptions = GetOrCrash<TChunkNbdVolumeOptions>(options.BackendOptions);
 
     auto Logger = ExecNodeLogger()
         .WithTag("Tag", tag)
         .WithTag("JobId", options.JobId)
         .WithTag("DeviceId", options.DeviceId)
         .WithTag("Type", "RW")
-        .WithTag("VolumeSize", options.Size)
-        .WithTag("VolumeMediumIndex", options.MediumIndex)
-        .WithTag("VolumeFilesystem", options.Filesystem);
+        .WithTag("VolumeSize", options.DeviceSize)
+        .WithTag("VolumeMediumIndex", chunkOptions.Spec.MediumIndex)
+        .WithTag("VolumeFilesystemType", options.FilesystemType);
 
     auto tagSet = TTagSet({{"type", "nbd"}});
 
-    auto deviceFuture = CreateRWNbdDevice(tag, std::move(options));
+    auto deviceFuture = CreateRWChunkNbdDevice(tag, std::move(options));
 
     return PrepareNbdVolume(
         Logger,
@@ -773,7 +774,7 @@ TFuture<IVolumePtr> TNbdVolumeFactory::PrepareRWNbdVolume(
         TCreateNbdVolumeOptions{
             .JobId = jobId,
             .DeviceId = deviceId,
-            .Filesystem = ToString(filesystem),
+            .FilesystemType = ToString(filesystemType),
             .IsReadOnly = false,
         },
         MakeVolumeFactory<TRWNbdVolume>());
@@ -783,8 +784,9 @@ TFuture<std::vector<std::string>> TNbdVolumeFactory::FindDataNodesWithMedium(
     const TSessionId& sessionId,
     const TPrepareRWNbdVolumeOptions& options)
 {
-    if (options.DataNodeAddress) {
-        return MakeFuture<std::vector<std::string>>({*options.DataNodeAddress});
+    const auto& chunkOptions = GetOrCrash<TChunkNbdVolumeOptions>(options.BackendOptions);
+    if (chunkOptions.Spec.DataNodeAddress) {
+        return MakeFuture<std::vector<std::string>>({*chunkOptions.Spec.DataNodeAddress});
     }
 
     // Create AllocateWriteTargets request.
@@ -792,15 +794,15 @@ TFuture<std::vector<std::string>> TNbdVolumeFactory::FindDataNodesWithMedium(
     auto channel = Bootstrap_->GetMasterChannel(std::move(cellTag));
     TChunkServiceProxy proxy(channel);
     auto req = proxy.AllocateWriteTargets();
-    req->SetTimeout(options.MasterRpcTimeout);
+    req->SetTimeout(chunkOptions.Spec.MasterRpcTimeout);
     auto* subrequest = req->add_subrequests();
     ToProto(subrequest->mutable_session_id(), sessionId);
-    subrequest->set_min_target_count(options.MinDataNodeCount);
-    subrequest->set_desired_target_count(options.MaxDataNodeCount);
+    subrequest->set_min_target_count(chunkOptions.Spec.MinDataNodeCount);
+    subrequest->set_desired_target_count(chunkOptions.Spec.MaxDataNodeCount);
     subrequest->set_is_nbd_chunk(true);
 
     // Invoke AllocateWriteTargets request and process response.
-    return req->Invoke().Apply(BIND([this, this_ = MakeStrong(this), mediumIndex = options.MediumIndex] (const TErrorOr<TChunkServiceProxy::TRspAllocateWriteTargetsPtr>& rspOrError) {
+    return req->Invoke().Apply(BIND([this, this_ = MakeStrong(this), mediumIndex = chunkOptions.Spec.MediumIndex] (const TErrorOr<TChunkServiceProxy::TRspAllocateWriteTargetsPtr>& rspOrError) {
         if (!rspOrError.IsOK()) {
             THROW_ERROR_EXCEPTION("Failed to find suitable data nodes")
                 .With("medium_index", mediumIndex)
@@ -838,48 +840,46 @@ std::optional<std::tuple<NRpc::IChannelPtr, NYT::NChunkClient::TSessionId>> TNbd
     std::vector<std::string> addresses,
     TPrepareRWNbdVolumeOptions options)
 {
-    YT_LOG_DEBUG(
-        "Trying to open NBD session on any suitable data node (SessionId: %v, DataNodeAddresses: %v, MediumIndex: %v, Size: %v, FsType: %v, DataNodeRpcTimeout: %v)",
-        sessionId,
-        addresses,
-        options.MediumIndex,
-        options.Size,
-        options.Filesystem,
-        options.DataNodeRpcTimeout);
+    const auto& chunkOptions = GetOrCrash<TChunkNbdVolumeOptions>(options.BackendOptions);
+
+    YT_TLOG_DEBUG("Trying to open NBD session on any suitable data node")
+        .With("SessionId", sessionId)
+        .With("DataNodeAddresses", addresses)
+        .With("MediumIndex", chunkOptions.Spec.MediumIndex)
+        .With("Size", options.DeviceSize)
+        .With("FilesystemType", options.FilesystemType)
+        .With("DataNodeRpcTimeout", chunkOptions.Spec.DataNodeRpcTimeout);
 
     for (const auto& address : addresses) {
         auto channel = Bootstrap_->GetConnection()->GetChannelFactory()->CreateChannel(address);
         if (!channel) {
-            YT_LOG_DEBUG(
-                "Failed to create channel to data node (Address: %v)",
-                address);
+            YT_TLOG_DEBUG("Failed to create channel to data node")
+                .With("Address", address);
             continue;
         }
 
         NChunkClient::TDataNodeNbdServiceProxy proxy(channel);
         auto req = proxy.OpenSession();
-        req->SetTimeout(options.DataNodeRpcTimeout);
+        req->SetTimeout(chunkOptions.Spec.DataNodeRpcTimeout);
         ToProto(req->mutable_session_id(), sessionId);
-        req->set_size(options.Size);
-        req->set_fs_type(ToProto(options.Filesystem));
+        req->set_size(options.DeviceSize);
+        req->set_fs_type(ToProto(options.FilesystemType));
 
         auto rspOrError = WaitFor(req->Invoke());
 
         if (!rspOrError.IsOK()) {
-            YT_LOG_INFO(
-                rspOrError,
-                "Failed to open NBD session, skip data node (Address: %v)",
-                address);
+            YT_TLOG_INFO("Failed to open NBD session, skip data node")
+                .With("Address", address)
+                .With(rspOrError);
             continue;
         }
 
-        YT_LOG_INFO(
-            "Opened NBD session (SessionId: %v, DataNodeAddress: %v, MediumIndex: %v, Size: %v, FsType: %v)",
-            sessionId,
-            address,
-            options.MediumIndex,
-            options.Size,
-            options.Filesystem);
+        YT_TLOG_INFO("Opened NBD session")
+            .With("SessionId", sessionId)
+            .With("DataNodeAddress", address)
+            .With("MediumIndex", chunkOptions.Spec.MediumIndex)
+            .With("Size", options.DeviceSize)
+            .With("FilesystemType", options.FilesystemType);
 
         return std::make_tuple(std::move(channel), sessionId);
     }
@@ -887,18 +887,19 @@ std::optional<std::tuple<NRpc::IChannelPtr, NYT::NChunkClient::TSessionId>> TNbd
     return std::nullopt;
 }
 
-TFuture<std::optional<std::tuple<NRpc::IChannelPtr, NYT::NChunkClient::TSessionId>>> TNbdVolumeFactory::PrepareNbdSession(
+TFuture<std::optional<std::tuple<NRpc::IChannelPtr, NYT::NChunkClient::TSessionId>>> TNbdVolumeFactory::PrepareRWChunkNbdSession(
     const TPrepareRWNbdVolumeOptions& options)
 {
-    auto sessionId = GenerateSessionId(options.MediumIndex);
+    const auto& chunkOptions = GetOrCrash<TChunkNbdVolumeOptions>(options.BackendOptions);
 
-    YT_LOG_DEBUG(
-        "Prepare NBD session (SessionId: %v, MediumIndex: %v, Size: %v, FsType: %v, DeviceId: %v)",
-        sessionId,
-        options.MediumIndex,
-        options.Size,
-        options.Filesystem,
-        options.DeviceId);
+    auto sessionId = GenerateSessionId(chunkOptions.Spec.MediumIndex);
+
+    YT_TLOG_DEBUG("Prepare NBD session")
+        .With("SessionId", sessionId)
+        .With("MediumIndex", chunkOptions.Spec.MediumIndex)
+        .With("Size", options.DeviceSize)
+        .With("FilesystemType", options.FilesystemType)
+        .With("DeviceId", options.DeviceId);
 
     return FindDataNodesWithMedium(sessionId, options)
         .Apply(BIND(
@@ -912,10 +913,11 @@ TFuture<std::optional<std::tuple<NRpc::IChannelPtr, NYT::NChunkClient::TSessionI
 
                 auto dataNodeAddresses = rspOrError.Value();
                 if (dataNodeAddresses.empty()) {
+                    const auto& chunkOptions = GetOrCrash<TChunkNbdVolumeOptions>(options.BackendOptions);
                     THROW_ERROR_EXCEPTION("No data node address suitable for NBD disk has been found")
-                        .With("medium_index", options.MediumIndex)
-                        .With("size", options.Size)
-                        .With("fs_type", options.Filesystem);
+                        .With("medium_index", chunkOptions.Spec.MediumIndex)
+                        .With("size", options.DeviceSize)
+                        .With("filesystem_type", options.FilesystemType);
                 }
 
                 return BIND(
@@ -1000,20 +1002,18 @@ TFuture<void> TLayerCache::Initialize()
             TArtifactKey key;
             key.MergeFrom(layerMeta.artifact_key());
 
-            YT_LOG_DEBUG(
-                "Loading existing cached Porto layer (LayerId: %v, ArtifactPath: %v)",
-                layerMeta.Id,
-                layerMeta.artifact_key().data_source().path());
+            YT_TLOG_DEBUG("Loading existing cached Porto layer")
+                .With("LayerId", layerMeta.Id)
+                .With("ArtifactPath", layerMeta.artifact_key().data_source().path());
 
             auto layer = New<TLayer>(layerMeta, key, location);
             auto cookie = BeginInsert(layer->GetKey());
             if (cookie.IsActive()) {
                 cookie.EndInsert(layer);
             } else {
-                YT_LOG_DEBUG(
-                    "Failed to insert cached Porto layer (LayerId: %v, ArtifactPath: %v)",
-                    layerMeta.Id,
-                    layerMeta.artifact_key().data_source().path());
+                YT_TLOG_DEBUG("Failed to insert cached Porto layer")
+                    .With("LayerId", layerMeta.Id)
+                    .With("ArtifactPath", layerMeta.artifact_key().data_source().path());
             }
         }
     }
@@ -1108,7 +1108,8 @@ TFuture<void> TLayerCache::Disable(const TError& reason)
 {
     YT_ASSERT_INVOKER_AFFINITY(ControlInvoker_);
 
-    YT_LOG_WARNING(reason, "Layer cache is disabled");
+    YT_TLOG_WARNING("Layer cache is disabled")
+        .With(reason);
 
     for (const auto& location : LayerLocations_) {
         location->Disable(reason, false);
@@ -1144,11 +1145,11 @@ TFuture<TLayerPtr> TLayerCache::GetOrCreateLayer(
         .WithTag("JobId", options.JobId)
         .WithTag("CypressPath", options.ArtifactKey.data_source().path());
 
-    YT_LOG_DEBUG("Getting layer");
+    YT_TLOG_DEBUG("Getting layer");
 
     auto layer = FindLayerInTmpfs(artifactKey, tag);
     if (layer) {
-        YT_LOG_DEBUG("Found layer in tmpfs cache");
+        YT_TLOG_DEBUG("Found layer in tmpfs cache");
         return MakeFuture(layer);
     }
 
@@ -1158,22 +1159,19 @@ TFuture<TLayerPtr> TLayerCache::GetOrCreateLayer(
         DownloadAndImportLayer(artifactKey, downloadOptions, tag, nullptr)
             .Subscribe(BIND([=, cookie = std::move(cookie)] (const TErrorOr<TLayerPtr>& layerOrError) mutable {
                 if (layerOrError.IsOK()) {
-                    YT_LOG_DEBUG(
-                        "Layer has been inserted into cache (LayerId: %v)",
-                        layerOrError.Value()->GetMeta().Id);
+                    YT_TLOG_DEBUG("Layer has been inserted into cache")
+                        .With("LayerId", layerOrError.Value()->GetMeta().Id);
                     cookie.EndInsert(layerOrError.Value());
                 } else {
-                    YT_LOG_DEBUG(
-                        layerOrError,
-                        "Canceling insertion of layer into cache");
+                    YT_TLOG_DEBUG("Canceling insertion of layer into cache")
+                        .With(layerOrError);
                     cookie.Cancel(layerOrError);
                 }
             })
             .Via(GetCurrentInvoker()));
     } else {
-        YT_LOG_DEBUG(
-            "Layer is either already in the cache or is being inserted (LayerId: %v)",
-            value.IsSet() && value.GetOrCrash().IsOK() ? ToString(value.GetOrCrash().Value()->GetMeta().Id) : "<importing>");
+        YT_TLOG_DEBUG("Layer is either already in the cache or is being inserted")
+            .With("LayerId", value.IsSet() && value.GetOrCrash().IsOK() ? ToString(value.GetOrCrash().Value()->GetMeta().Id) : "<importing>");
     }
 
     return value;
@@ -1256,25 +1254,24 @@ i64 TLayerCache::GetWeight(const TLayerPtr& layer) const
 
 void TLayerCache::OnAdded(const TLayerPtr& layer)
 {
-    YT_LOG_DEBUG(
-        "Layer added to cache (LayerId: %v, ArtifactPath: %v, Size: %v)",
-        layer->GetMeta().Id,
-        layer->GetCypressPath(),
-        layer->GetSize());
+    YT_TLOG_DEBUG("Layer added to cache")
+        .With("LayerId", layer->GetMeta().Id)
+        .With("ArtifactPath", layer->GetCypressPath())
+        .With("Size", layer->GetSize());
 }
 
 void TLayerCache::OnRemoved(const TLayerPtr& layer)
 {
-    YT_LOG_DEBUG(
-        "Layer removed from cache (LayerId: %v, ArtifactPath: %v, Size: %v)",
-        layer->GetMeta().Id,
-        layer->GetCypressPath(),
-        layer->GetSize());
+    YT_TLOG_DEBUG("Layer removed from cache")
+        .With("LayerId", layer->GetMeta().Id)
+        .With("ArtifactPath", layer->GetCypressPath())
+        .With("Size", layer->GetSize());
 }
 
 void TLayerCache::OnWeightUpdated(i64 weightDelta)
 {
-    YT_LOG_DEBUG("Layer cache weight updated (WeightDelta: %v)", weightDelta);
+    YT_TLOG_DEBUG("Layer cache weight updated")
+        .With("WeightDelta", weightDelta);
 }
 
 void TLayerCache::ProfileLocation(const TLayerLocationPtr& location)
@@ -1325,15 +1322,14 @@ TFuture<TLayerPtr> TLayerCache::DownloadAndImportLayer(
         .WithTag("LayerId", layerId)
         .WithTag("ArtifactPath", artifactKey.data_source().path());
 
-    YT_LOG_DEBUG(
-        "Start loading layer into cache (HasTargetLocation: %v)",
-        static_cast<bool>(location));
+    YT_TLOG_DEBUG("Start loading layer into cache")
+        .With("HasTargetLocation", static_cast<bool>(location));
 
     auto downloadCpuStart = GetCpuInstant();
     return ArtifactCache_->DownloadArtifact(artifactKey, downloadOptions)
         .Apply(BIND([=, this, this_ = MakeStrong(this)] (const IVolumeArtifactPtr& artifactChunk) mutable {
             auto downloadCpuDuration = GetCpuInstant() - downloadCpuStart;
-            YT_LOG_DEBUG("Layer artifact loaded, starting import");
+            YT_TLOG_DEBUG("Layer artifact loaded, starting import");
 
             // NB(psushin): we limit number of concurrently imported layers, since this is heavy operation
             // which may delay light operations performed in the same IO thread pool inside Porto daemon.

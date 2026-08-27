@@ -132,6 +132,7 @@ private:
             *queryStatistics = TQueryStatistics::FromExecutionStatistics(
                 statistics,
                 options.StatisticsAggregation);
+
             YT_TLOG_DEBUG("Finalizing evaluation")
                 .With("QueryStatistics", *queryStatistics);
 
@@ -197,7 +198,7 @@ private:
                 &executionContext);
         } catch (const std::exception& ex) {
             YT_TLOG_DEBUG("Query evaluation failed")
-                .With(TError(ex));
+                .With(ex);
             THROW_ERROR_EXCEPTION("Query evaluation failed").With(ex);
         }
     }

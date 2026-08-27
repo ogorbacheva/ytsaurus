@@ -352,6 +352,26 @@ double TChunkLocation::GetFairShareWorkloadCategoryWeight(EWorkloadCategory cate
     return config->FairShareWorkloadCategoryWeights[category].value_or(DefaultFairShareWorkloadCategoryWeights[category]);
 }
 
+std::vector<std::pair<std::string, double>> TChunkLocation::BuildFairShareTags(
+    EWorkloadCategory category,
+    const std::optional<NIO::TIOFairShareState>& fairShareState) const
+{
+    auto config = GetRuntimeConfig();
+
+    std::vector<std::pair<std::string, double>> tags;
+    tags.emplace_back(
+        ToString(category),
+        GetFairShareWorkloadCategoryWeight(category));
+
+    tags.emplace_back(
+        fairShareState ? "weighted" : "unweighted",
+        fairShareState
+            ? config->WeightedRequestWeight
+            : config->UnweightedRequestWeight);
+
+    return tags;
+}
+
 THazardPtr<TChunkLocationConfig> TChunkLocation::GetRuntimeConfig() const
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
@@ -442,7 +462,9 @@ bool TChunkLocation::Resurrect()
         return false;
     }
 
-    YT_LOG_WARNING("Location resurrection (LocationUuid: %v, LocationIndex: %v)", GetUuid(), GetIndex());
+    YT_TLOG_WARNING("Location resurrection")
+        .With("LocationUuid", GetUuid())
+        .With("LocationIndex", GetIndex());
 
     YT_UNUSED_FUTURE(BIND([=, this, this_ = MakeStrong(this)] {
         try {
@@ -457,7 +479,8 @@ bool TChunkLocation::Resurrect()
                 .ThrowOnError();
             ChunkStoreHost_->ScheduleMasterHeartbeat();
         } catch (const std::exception& ex) {
-            YT_LOG_ERROR(ex, "Error during location resurrection");
+            YT_TLOG_ERROR("Error during location resurrection")
+                .With(ex);
 
             ChangeState(ELocationState::Disabled, ELocationState::Enabling, ex);
         }
@@ -542,7 +565,8 @@ void TChunkLocation::PushProbePutBlocksRequestSupplier(const TProbePutBlocksRequ
     DoCheckProbePutBlocksRequests();
 
     if (ContainsProbePutBlocksRequestSupplier(supplier) && supplier->HasRequests()) {
-        YT_LOG_DEBUG("Supplier with probe put blocks request is delayed (SessionId: %v)", supplier->GetSessionId());
+        YT_TLOG_DEBUG("Supplier with probe put blocks request is delayed")
+            .With("SessionId", supplier->GetSessionId());
         ReportThrottledProbingWrite();
     }
 }
@@ -601,13 +625,12 @@ void TChunkLocation::DoCheckFifoProbePutBlocksRequests()
             request->WorkloadDescriptor,
             memoryDifference);
 
-        YT_LOG_DEBUG("Resource acquisition "
-            "(SessionId: %v, MemoryDifference: %v, CumulativeBlockSize: %v, RequestedCumulativeBlockSize: %v, Error: %v)",
-            supplier->GetSessionId(),
-            memoryDifference,
-            request->CumulativeBlockSize,
-            supplier->GetMaxRequestedMemory(),
-            memoryGuard);
+        YT_TLOG_DEBUG("Resource acquisition")
+            .With("SessionId", supplier->GetSessionId())
+            .With("MemoryDifference", memoryDifference)
+            .With("CumulativeBlockSize", request->CumulativeBlockSize)
+            .With("RequestedCumulativeBlockSize", supplier->GetMaxRequestedMemory())
+            .With("Error", memoryGuard);
 
         if (!memoryGuard.IsOK()) {
             return;
@@ -641,21 +664,24 @@ void TChunkLocation::DoCheckFairShareProbePutBlocksRequests()
         return CreateFairShareQueueSlot(
             request->CumulativeBlockSize - supplier->GetCurrentApprovedMemory(),
             std::vector<IFairShareHierarchicalSlotQueueResourcePtr>{},
-            CreateHierarchyLevels<std::string>({{
-                ToString(request->WorkloadDescriptor.Category),
-                GetFairShareWorkloadCategoryWeight(request->WorkloadDescriptor.Category),
-            }}));
+            CreateHierarchyLevels(BuildFairShareTags(
+                request->WorkloadDescriptor.Category,
+                request->FairShareState)));
     };
 
     auto slots = RangeTo<std::vector<TFairShareHierarchicalSlotQueueSlotPtr<std::string>>>(
         ProbePutBlocksRequests_ | std::views::transform(createSelectionSlot));
 
     while (!ProbePutBlocksRequests_.empty()) {
-        auto supplierIndex = std::max_element(
+        auto supplierIndex = std::min_element(
             slots.begin(),
             slots.end(),
             [&fairShareScheduler] (const auto& lhs, const auto& rhs) {
-                return fairShareScheduler->CompareSlots(lhs, rhs, /*isSlot*/ true);
+                return std::is_lt(fairShareScheduler->CompareSlots(
+                    lhs,
+                    rhs,
+                    /*isSlot*/ true,
+                    CompareByEnqueueTime<std::string>));
             }) - slots.begin();
 
         auto supplier = ProbePutBlocksRequests_[supplierIndex];
@@ -670,13 +696,12 @@ void TChunkLocation::DoCheckFairShareProbePutBlocksRequests()
             request->WorkloadDescriptor,
             memoryDifference);
 
-        YT_LOG_DEBUG("Resource acquisition "
-            "(SessionId: %v, MemoryDifference: %v, CumulativeBlockSize: %v, RequestedCumulativeBlockSize: %v, Error: %v)",
-            supplier->GetSessionId(),
-            memoryDifference,
-            request->CumulativeBlockSize,
-            supplier->GetMaxRequestedMemory(),
-            memoryGuard);
+        YT_TLOG_DEBUG("Resource acquisition")
+            .With("SessionId", supplier->GetSessionId())
+            .With("MemoryDifference", memoryDifference)
+            .With("CumulativeBlockSize", request->CumulativeBlockSize)
+            .With("RequestedCumulativeBlockSize", supplier->GetMaxRequestedMemory())
+            .With("Error", memoryGuard);
 
         if (!memoryGuard.IsOK()) {
             return;
@@ -840,11 +865,11 @@ void TChunkLocation::UpdateUsedMemory(
     i64 result;
     result = PerformanceCounters_->UsedMemory[direction][category].fetch_add(delta) + delta;
 
-    YT_LOG_TRACE("Used memory updated (Direction: %v, Category: %v, UsedMemory: %v, Delta: %v)",
-        direction,
-        category,
-        result,
-        delta);
+    YT_TLOG_TRACE("Used memory updated")
+        .With("Direction", direction)
+        .With("Category", category)
+        .With("UsedMemory", result)
+        .With("Delta", delta);
 }
 
 void TChunkLocation::IncreaseCompletedIOSize(
@@ -1247,9 +1272,10 @@ public:
                 DeviceId_ = NFS::GetDeviceId(config->Path);
             }
         } catch (const std::exception& ex) {
-            YT_LOG_WARNING(ex, "Failed to get location device id (LocationPath: %v, DeviceName: %v)",
-                config->Path,
-                config->DeviceName);
+            YT_TLOG_WARNING("Failed to get location device id")
+                .With("LocationPath", config->Path)
+                .With("DeviceName", config->DeviceName)
+                .With(ex);
         }
     }
 
@@ -1301,11 +1327,14 @@ private:
                     counters.DiskRead = stat->SectorsRead * UnixSectorSize;
                     counters.DiskWritten = stat->SectorsWritten * UnixSectorSize;
                 } else {
-                    YT_LOG_WARNING("Missing disk statistics (DeviceId: %v, Func: GetCounters)",
-                        *DeviceId_);
+                    YT_TLOG_WARNING("Missing disk statistics")
+                        .With("DeviceId", *DeviceId_)
+                        .With("Func", "GetCounters");
                 }
             } catch (const std::exception& ex) {
-                YT_LOG_WARNING(ex, "Failed to get disk statistics (Func: GetCounters)");
+                YT_TLOG_WARNING("Failed to get disk statistics")
+                    .With("Func", "GetCounters")
+                    .With(ex);
             }
         }
 
@@ -1364,12 +1393,15 @@ private:
                         "/disk/io_in_progress",
                         stat->IOCurrentlyInProgress);
                 } else {
-                    YT_LOG_WARNING("Missing disk statistics (DeviceId: %v, Func: CollectSensors)",
-                        *DeviceId_);
+                    YT_TLOG_WARNING("Missing disk statistics")
+                        .With("DeviceId", *DeviceId_)
+                        .With("Func", "CollectSensors");
                 }
             } catch (const std::exception& ex) {
                 if (!ErrorLogged_) {
-                    YT_LOG_ERROR(ex, "Failed to get disk statistics (Func: CollectSensors)");
+                    YT_TLOG_ERROR("Failed to get disk statistics")
+                        .With("Func", "CollectSensors")
+                        .With(ex);
                     ErrorLogged_ = true;
                 }
             }
@@ -1476,7 +1508,7 @@ TErrorOr<double> TStoreLocation::EvaluateIOWeight(const NOrm::NQuery::IExpressio
     if (value.IsOK() && value.Value().Type == NTableClient::EValueType::Double) {
         return value.Value().Data.Double;
     } else {
-        return TError("Failure in evaluation of IO weight formula") << value;
+        return TError("Failure in evaluation of IO weight formula").With(value);
     }
 }
 
@@ -1660,14 +1692,15 @@ void TStoreLocation::RegisterTrashChunk(TChunkId chunkId)
         UpdateTrashChunkCount(+1);
         UpdateTrashSpace(+diskSpace);
 
-        YT_LOG_DEBUG("Trash chunk registered (ChunkId: %v, Timestamp: %v, DiskSpace: %v)",
-            chunkId,
-            timestamp,
-            diskSpace);
+        YT_TLOG_DEBUG("Trash chunk registered")
+            .With("ChunkId", chunkId)
+            .With("Timestamp", timestamp)
+            .With("DiskSpace", diskSpace);
     } catch (const std::exception& ex) {
         // This is racy, trash file can be removed anytime.
-        YT_LOG_WARNING(ex, "Failed to register trash chunk (ChunkId: %v)",
-            chunkId);
+        YT_TLOG_WARNING("Failed to register trash chunk")
+            .With("ChunkId", chunkId)
+            .With(ex);
     }
 }
 
@@ -1725,8 +1758,8 @@ void TStoreLocation::CheckTrashWatermark()
         return;
     }
 
-    YT_LOG_INFO("Low available disk space, starting trash cleanup (AvailableSpace: %v)",
-        availableSpace);
+    YT_TLOG_INFO("Low available disk space, starting trash cleanup")
+        .With("AvailableSpace", availableSpace);
 
     while (availableSpace < config->TrashCleanupWatermark) {
         TTrashChunkEntry entry;
@@ -1745,8 +1778,8 @@ void TStoreLocation::CheckTrashWatermark()
         availableSpace += entry.DiskSpace;
     }
 
-    YT_LOG_INFO("Finished trash cleanup (AvailableSpace: %v)",
-        availableSpace);
+    YT_TLOG_INFO("Finished trash cleanup")
+        .With("AvailableSpace", availableSpace);
 }
 
 void TStoreLocation::RemoveTrashFiles(const TTrashChunkEntry& entry)
@@ -1760,15 +1793,16 @@ void TStoreLocation::RemoveTrashFiles(const TTrashChunkEntry& entry)
         }
     }
 
-    YT_LOG_DEBUG("Trash chunk removed (ChunkId: %v, DiskSpace: %v)",
-        entry.ChunkId,
-        entry.DiskSpace);
+    YT_TLOG_DEBUG("Trash chunk removed")
+        .With("ChunkId", entry.ChunkId)
+        .With("DiskSpace", entry.DiskSpace);
 }
 
 void TStoreLocation::MoveChunkFilesToTrash(TChunkId chunkId)
 {
     try {
-        YT_LOG_DEBUG("Started moving chunk files to trash (ChunkId: %v)", chunkId);
+        YT_TLOG_DEBUG("Started moving chunk files to trash")
+            .With("ChunkId", chunkId);
 
         auto partNames = GetChunkPartNames(chunkId);
         auto directory = NFS::GetDirectoryName(GetChunkPath(chunkId));
@@ -1783,7 +1817,8 @@ void TStoreLocation::MoveChunkFilesToTrash(TChunkId chunkId)
             }
         }
 
-        YT_LOG_DEBUG("Finished moving chunk files to trash (ChunkId: %v)", chunkId);
+        YT_TLOG_DEBUG("Finished moving chunk files to trash")
+            .With("ChunkId", chunkId);
 
         RegisterTrashChunk(chunkId);
 
@@ -1803,7 +1838,7 @@ void TStoreLocation::RemoveLocationChunks()
     YT_ASSERT_INVOKER_AFFINITY(GetAuxPoolInvoker());
 
     auto state = GetState();
-    YT_LOG_FATAL_IF(
+    YT_TLOG_FATAL_IF(
         state != ELocationState::Disabling,
         "Remove location chunks should be called when state is equal to ELocationState::Disabling");
 
@@ -1827,7 +1862,10 @@ bool TStoreLocation::ScheduleDisable(const TError& reason)
         return false;
     }
 
-    YT_LOG_WARNING(reason, "Disabling location (LocationUuid: %v, LocationIndex: %v)", GetUuid(), GetIndex());
+    YT_TLOG_WARNING("Disabling location")
+        .With("LocationUuid", GetUuid())
+        .With("LocationIndex", GetIndex())
+        .With(reason);
 
     // No new actions can appear here. Please see TDiskLocation::RegisterAction.
     auto error = TError(NChunkClient::EErrorCode::LocationDisabled,
@@ -1849,7 +1887,8 @@ bool TStoreLocation::ScheduleDisable(const TError& reason)
         try {
             CreateDisableLockFile(reason);
         } catch (const std::exception& ex) {
-            YT_LOG_ERROR(ex, "Creating disable lock file failed");
+            YT_TLOG_ERROR("Creating disable lock file failed")
+                .With(ex);
         }
 
         try {
@@ -1873,16 +1912,17 @@ bool TStoreLocation::ScheduleDisable(const TError& reason)
             UnlockChunkLocks();
             ResetLocationStatistic();
             ChunkStoreHost_->ScheduleMasterHeartbeat();
-            YT_LOG_INFO("Location disabling finished");
+            YT_TLOG_INFO("Location disabling finished");
         } catch (const std::exception& ex) {
-            YT_LOG_FATAL(ex, "Location disabling error");
+            YT_TLOG_FATAL("Location disabling error")
+                .With(ex);
         }
 
         auto finish = ChangeState(ELocationState::Disabled, ELocationState::Disabling, reason);
 
         if (!finish) {
-            YT_LOG_ALERT("Detect location state racing (CurrentState: %v)",
-                GetState());
+            YT_TLOG_ALERT("Detect location state racing")
+                .With("CurrentState", GetState());
         }
     })
         .AsyncVia(GetAuxPoolInvoker())
@@ -1965,9 +2005,9 @@ std::optional<TChunkDescriptor> TStoreLocation::RepairJournalChunk(TChunkId chun
             descriptor.RowCount = -1;
             descriptor.OpeningDelayed = true;
 
-            YT_LOG_DEBUG("Created journal chunk descriptor with delayed opening (ChunkId: %v, DiskSpace: %v)",
-                chunkId,
-                descriptor.DiskSpace);
+            YT_TLOG_DEBUG("Created journal chunk descriptor with delayed opening")
+                .With("ChunkId", chunkId)
+                .With("DiskSpace", descriptor.DiskSpace);
         } else {
             // NB: This also creates the index file, if missing.
             auto changelog = WaitFor(dispatcher->OpenJournal(this, chunkId))
@@ -1998,9 +2038,9 @@ std::optional<TChunkDescriptor> TStoreLocation::RepairChunk(TChunkId chunkId)
 
     auto chunkMasterCellTag = CellTagFromId(chunkId);
     if (!masterCellTags.contains(chunkMasterCellTag)) {
-        YT_LOG_DEBUG("Chunk from unknown master was scanned (ChunkId: %v, MasterCellTag: %v)",
-            chunkId,
-            chunkMasterCellTag);
+        YT_TLOG_DEBUG("Chunk from unknown master was scanned")
+            .With("ChunkId", chunkId)
+            .With("MasterCellTag", chunkMasterCellTag);
     }
 
     switch (chunkType) {
@@ -2015,9 +2055,9 @@ std::optional<TChunkDescriptor> TStoreLocation::RepairChunk(TChunkId chunkId)
             break;
 
         default:
-            YT_LOG_WARNING("Invalid chunk type, skipped (ChunkId: %v, ChunkType: %v)",
-                chunkId,
-                chunkType);
+            YT_TLOG_WARNING("Invalid chunk type, skipped")
+                .With("ChunkId", chunkId)
+                .With("ChunkType", chunkType);
             break;
     }
     return optionalDescriptor;
@@ -2073,7 +2113,7 @@ void TStoreLocation::DoScanTrash()
         TDelayedExecutor::WaitForDuration(TDuration::Seconds(1));
     }
 
-    YT_LOG_INFO("Started scanning location trash");
+    YT_TLOG_INFO("Started scanning location trash");
 
     ForceHashDirectories(GetTrashPath());
 
@@ -2087,7 +2127,8 @@ void TStoreLocation::DoScanTrash()
             TChunkId chunkId;
             auto bareFileName = NFS::GetFileNameWithoutExtension(fileName);
             if (!TChunkId::FromString(bareFileName, &chunkId)) {
-                YT_LOG_ERROR("Unrecognized file in location trash directory (FileName: %v)", fileName);
+                YT_TLOG_ERROR("Unrecognized file in location trash directory")
+                    .With("FileName", fileName);
                 continue;
             }
             trashChunkIds.insert(chunkId);
@@ -2098,8 +2139,8 @@ void TStoreLocation::DoScanTrash()
         }
     }
 
-    YT_LOG_INFO("Finished scanning location trash (ChunkCount: %v)",
-        trashChunkIds.size());
+    YT_TLOG_INFO("Finished scanning location trash")
+        .With("ChunkCount", trashChunkIds.size());
 }
 
 void TStoreLocation::DoAsyncScanTrash()
@@ -2111,7 +2152,8 @@ void TStoreLocation::DoAsyncScanTrash()
             if (error.IsOK()) {
                 TrashCheckExecutor_->Start();
             } else {
-                YT_LOG_ERROR(error, "Error scanning location trash");
+                YT_TLOG_ERROR("Error scanning location trash")
+                    .With(error);
             }
         }));
 }

@@ -32,6 +32,12 @@ public:
         builder.Payload().SetValue(
             MakeUnversionedInt64Value(GetColumnValue<i64>(message, "value")),
             "value");
+        builder.Payload().SetValue(
+            MakeUnversionedStringValue(GetColumnValue<TStringBuf>(message, "source")),
+            "source");
+        builder.Payload().SetValue(
+            MakeUnversionedInt64Value(GetColumnValue<i64>(message, "event_time")),
+            "event_time");
         auto out = builder.Finish();
         out.MessageId = message.MessageId;
         output->AddMessage(std::move(out));
@@ -52,13 +58,19 @@ public:
 
     void DoProcessMessage(const TMessage& message, IOutputCollectorPtr output) override
     {
-        WaitFor(GetThrottler(TThrottlerId("api"))->Throttle(1))
+        WaitFor(GetThrottlerOrThrow(TThrottlerId("api"))->Throttle(1))
             .ThrowOnError();
 
         auto builder = MakeOutputMessageBuilder();
         builder.Payload().SetValue(
             MakeUnversionedInt64Value(GetColumnValue<i64>(message, "value")),
             "value");
+        builder.Payload().SetValue(
+            MakeUnversionedStringValue(GetColumnValue<TStringBuf>(message, "source")),
+            "source");
+        builder.Payload().SetValue(
+            MakeUnversionedInt64Value(GetColumnValue<i64>(message, "event_time")),
+            "event_time");
         output->AddMessage(builder.Finish());
     }
 };

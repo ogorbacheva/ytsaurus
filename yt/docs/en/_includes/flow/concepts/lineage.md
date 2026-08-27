@@ -21,19 +21,28 @@ In most cases, you don’t need to manage lineage explicitly—the framework aut
 
 ## When to set lineage explicitly {#explicit-lineage}
 
-By default, the entire current batch is considered the parent of the output message. Setting lineage explicitly lets you narrow this set to a specific subset of input objects. This makes the computation of `EventTimestamp` and `AlignmentTimestamp` more precise.
+The parents to specify are the input messages of the **current call** of the batch function that the given output was actually derived from (in companion SDKs, their `message_id`); messages from other batches cannot be parents.
+
+Whether this is mandatory depends on the computation type:
+
+- **Swift**: every output message must have **exactly one parent**, so in a batch function with more than one message in the batch setting lineage is **mandatory** — narrow the parents down to a single input message. With the "whole batch" default, processing fails with the error `Message should have exactly one parent message`. Multiple parents per output message are allowed only with the [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees) parameter enabled.
+- **Transform**: setting lineage is optional, but with the "whole batch" default the `EventTimestamp` of every output message (unless set explicitly when building it) equals the minimum over the whole batch, which skews event time and [watermarks](../../../flow/concepts/watermarks.md). Narrow the parents if your pipeline relies on event time.
+
+In row functions (`RowFunction` / `DoProcessMessage`) explicit lineage is not needed: the framework sets the current input message as the parent automatically.
 
 ## API {#api}
 
-You set lineage using the `SetParents` / `set_parent_ids` / `setParentIds` method on the `OutputCollector` object. The method returns a **new** collector with the lineage context attached. All calls to `AddMessage` / `add_message` / `addMessage` on this collector will carry that lineage.
+You set lineage using the `SetParents` / `set_parent_ids` / `setParentIds` / `WithParentIDs` method on the `OutputCollector` object. The method returns a **new** collector with the lineage context attached. All calls to `AddMessage` / `add_message` / `addMessage` on this collector will carry that lineage.
 
 For more details on how to use this in each language:
 - [C++](../../../flow/cpp/computation.md#output-collector)
 - [Java](../../../flow/java/computation.md#output-collector)
 - [Python](../../../flow/python/computation.md#output-collector)
+- [Go](../../../flow/go/computation.md#output-collector)
 
 ## See also
 
 - [Message Processing Order](../../../flow/concepts/ordering.md)
 - [Computation](../../../flow/concepts/computation.md)
 - [Core Concepts (Glossary)](../../../flow/concepts/glossary.md)
+- [Computation (Go)](../../../flow/go/computation.md)

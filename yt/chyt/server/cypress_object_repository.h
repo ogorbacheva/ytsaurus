@@ -55,13 +55,13 @@ public:
     struct TMaterializedView
     {
         DB::ASTPtr CreateQuery;
+        EMaterializedViewSourceType SourceType;
         NYPath::TYPath SourcePath;
         NYPath::TYPath TargetPath;
         std::string Creator;
         std::string ObjectName;
         NObjectClient::TObjectId ObjectId;
         NObjectClient::TObjectId SourceObjectId;
-        NObjectClient::TObjectId TargetObjectId;
         NHydra::TRevision Revision;
     };
 

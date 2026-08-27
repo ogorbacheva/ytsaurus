@@ -754,8 +754,10 @@ class DynamicTablesSingleCellBase(DynamicTablesBase):
         set("//tmp/t2/@profiling_mode", "tag")
         assert get("//tmp/t2/@profiling_mode") == "tag"
 
-    @authors("navasardianna")
+    @authors("ifsmirnov")
     def test_update_content_revision(self):
+        if self.USE_SEQUOIA:
+            pytest.skip("YT-29373: Sequoia content revision should be handled separately")
         set("//sys/@config/tablet_manager/update_table_content_revision_on_heartbeat", True)
 
         sync_create_cells(1)
@@ -771,16 +773,20 @@ class DynamicTablesSingleCellBase(DynamicTablesBase):
         for i in range(0, 3):
             # Waiting for all content revision updates to reach the master.
             time.sleep(2)
-            old_content_revision = get(f"#{table_id}/@content_revision", driver=driver)
+            old_content_revision_native = get(f"#{table_id}/@content_revision")
+            old_content_revision_external = get(f"#{table_id}/@content_revision", driver=driver)
             insert_rows("//tmp/t", [{"key": i, "value": "0"}])
-            wait(lambda: get(f"#{table_id}/@content_revision", driver=driver) != old_content_revision)
+            wait(lambda: get(f"#{table_id}/@content_revision") != old_content_revision_native)
+            wait(lambda: get(f"#{table_id}/@content_revision", driver=driver) != old_content_revision_external)
 
         # Waiting for all content revision updates to reach the master.
         time.sleep(2)
 
-        content_revision = get(f"#{table_id}/@content_revision", driver=driver)
+        content_revision_native = get(f"#{table_id}/@content_revision")
+        content_revision_external = get(f"#{table_id}/@content_revision", driver=driver)
         time.sleep(3)
-        assert get(f"#{table_id}/@content_revision", driver=driver) == content_revision
+        assert get(f"#{table_id}/@content_revision") == content_revision_native
+        assert get(f"#{table_id}/@content_revision", driver=driver) == content_revision_external
 
     @authors("akozhikhov")
     def test_inherited_profiling_mode_without_tag(self):
@@ -4493,11 +4499,17 @@ class TestTabletOrchid(DynamicTablesBase):
         actual = lookup_rows("//tmp/t", [{"key": i} for i in range(100, 200, 2)], use_lookup_cache=True)
         assert_items_equal(actual, expected)
 
-        def check_zero_passive():
+        # NB: @chunk_ids appears at the master before the node adds the chunk store and its backing
+        # store; passive memory is already zero in that window, so it alone is not a valid barrier.
+        def check_flush_applied_at_node():
             memory_stats = get_stats()
-            return memory_stats["total"]["tablet_dynamic"]["passive"] == 0
+            total = memory_stats["total"]
+            return (
+                total["tablet_dynamic"]["passive"] == 0 and
+                total["tablet_dynamic"]["backing"] > 0 and
+                total["tablet_static"]["usage"] > 0)
 
-        wait(check_zero_passive)
+        wait(check_flush_applied_at_node)
 
         memory_stats = get_stats()
         total = memory_stats["total"]

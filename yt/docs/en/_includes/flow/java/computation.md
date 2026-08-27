@@ -20,6 +20,8 @@ For more on processing guarantees, see the [Processing guarantees](../../../flow
 For Java and Kotlin pipelines, you choose between `Swift` or `Transform` by setting `computation_class_name` in the static spec:
 - `NYT::NFlow::NCompanion::TTransformCompanionComputation` — for `Transform`.
 - `NYT::NFlow::NCompanion::TSwiftMapCompanionComputation` — for `Swift`.
+- `NYT::NFlow::NCompanion::TTransformOrderedSourceCompanionComputation` — for `Transform` source.
+- `NYT::NFlow::NCompanion::TSwiftOrderedSourceCompanionComputation` — for `Swift` source.
 
 ## Creating a Computation {#computation}
 
@@ -73,9 +75,11 @@ You must provide `processFunction` (`null` is not allowed): you don’t register
 
 ## SourceComputation {#sourcecomputation}
 
-`SourceComputation` is the top node in the pipeline graph that reads data from external sources. For more details, see [Source Computation](../../../flow/concepts/computation.md#tswiftorderedsourcecomputation).
+`SourceComputation` is the top node in the pipeline graph that reads data from external sources. On the worker side, it corresponds to [TSwiftOrderedSourceComputation](../../../flow/concepts/computation.md#tswiftorderedsourcecomputation) or [TTransformOrderedSourceComputation](../../../flow/concepts/computation.md#ttransformorderedsourcecomputation).
 
 In Java, `SourceComputation` extends `Computation`. Like `Computation`, it requires the `processFunction` parameter.
+
+In the static spec, for deterministic processing without custom state, you specify `TSwiftOrderedSourceCompanionComputation`. If `SourceComputation` uses internal state or non-deterministic logic, you specify `TTransformOrderedSourceCompanionComputation`: the worker materializes the output and records it together with the state and the source offset. The internal state key in such a computation is the source partition key.
 
 ### Parameters
 
@@ -112,7 +116,7 @@ For a passthrough Source, don’t use Java. Specify `NYT::NFlow::TSwiftPassthrou
 
 ### Interaction with Worker {#companion-info}
 
-When you initialize `Worker`, it requests information about registered `Computation` and `SourceComputation` objects from the Java [companion](../../../flow/concepts/glossary.md#companion). `TSwiftOrderedSourceCompanionComputation` sends each input message to the Java companion, which applies `ProcessFunction` to it and returns the result. The Worker makes one request to the companion for each message.
+When you initialize `Worker`, it requests information about registered `Computation` and `SourceComputation` objects from the Java [companion](../../../flow/concepts/glossary.md#companion). The source computation on the worker side sends input messages to the Java companion, which applies `ProcessFunction` to them and returns the result.
 
 ## Process Function
 
@@ -181,6 +185,8 @@ Let’s walk through the code line by line:
 
 - `onMessages(List<ExtendedMessage> messages, OutputCollector output, RuntimeContext ctx)` — called for a batch of messages.
 - `onTimers(List<Timer> timers, OutputCollector output, RuntimeContext ctx)` — called for a batch of timers.
+
+A batch corresponds to one worker request and may contain messages with different [keys](../../../flow/concepts/glossary.md#key); per-key grouping, if needed, is done in the function code (see [Companion](../../../flow/concepts/companion.md#schema)).
 
 #### Example of a batch function
 

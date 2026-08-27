@@ -8,6 +8,7 @@
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
+#include <library/cpp/yt/threading/atomic_object.h>
 #include <library/cpp/yt/threading/spin_lock.h>
 
 namespace NYT::NFlow::NDistributedThrottler {
@@ -17,7 +18,7 @@ namespace NYT::NFlow::NDistributedThrottler {
 namespace {
 
 // Stable wrapper around an IThroughputThrottler whose underlying instance can
-// be swapped atomically. Returned to users from GetClient and reused across
+// be swapped atomically. Returned to users from GetClientOrThrow and reused across
 // Reconfigure: when the spec changes the factory rebuilds the inner client
 // and stores it here, so a cached pointer keeps working with the fresh config.
 class TThrottlerWrapper
@@ -128,13 +129,21 @@ public:
         }
     }
 
-    NConcurrency::IThroughputThrottlerPtr GetClient(std::string_view throttlerName) override
+    NConcurrency::IThroughputThrottlerPtr GetClientOrThrow(std::string_view throttlerName) override
+    {
+        if (auto client = TryGetClient(throttlerName)) {
+            return client;
+        }
+        THROW_ERROR_EXCEPTION("Throttler %Qv is not configured for this client",
+            throttlerName);
+    }
+
+    NConcurrency::IThroughputThrottlerPtr TryGetClient(std::string_view throttlerName) override
     {
         auto guard = Guard(Lock_);
         auto it = Wrappers_.find(throttlerName);
         if (it == Wrappers_.end() || !it->second.Spec) {
-            THROW_ERROR_EXCEPTION("Throttler %Qv is not configured for this client",
-                throttlerName);
+            return nullptr;
         }
         return it->second.Wrapper;
     }
@@ -142,6 +151,18 @@ public:
     void SetPriority(TPriority priority) override
     {
         Priority_.store(priority, std::memory_order::relaxed);
+    }
+
+    void SetQuotaClasses(THashMap<TThrottlerId, TQuotaClassId> quotaClassIds) override
+    {
+        auto guard = Guard(Lock_);
+        QuotaClassIds_ = std::move(quotaClassIds);
+        // Wrappers may already exist (they are built from the initial configs),
+        // so push the new classes into them right away; wrappers created later
+        // pick their class up in EnsureWrapper.
+        for (auto& [name, entry] : Wrappers_) {
+            entry.QuotaClassId->Store(GetQuotaClassId(name));
+        }
     }
 
     void Reconfigure(
@@ -165,10 +186,15 @@ public:
     }
 
 private:
+    using TQuotaClassIdHolderPtr = std::shared_ptr<NThreading::TAtomicObject<TQuotaClassId>>;
+
     struct TWrapperEntry
     {
         TDynamicThrottlerSpecPtr Spec;
         TThrottlerWrapperPtr Wrapper;
+        //! Outlives client rebuilds, so a client built by an earlier
+        //! Reconfigure keeps observing later class changes.
+        TQuotaClassIdHolderPtr QuotaClassId;
     };
 
     const std::function<NRpc::IChannelPtr()> ChannelProvider_;
@@ -181,30 +207,44 @@ private:
 
     YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
     THashMap<TThrottlerId, TWrapperEntry> Wrappers_;
+    THashMap<TThrottlerId, TQuotaClassId> QuotaClassIds_;
+
+    //! Caller must hold Lock_.
+    TQuotaClassId GetQuotaClassId(const TThrottlerId& throttlerName) const
+    {
+        auto it = QuotaClassIds_.find(throttlerName);
+        return it == QuotaClassIds_.end() ? TQuotaClassId{} : it->second;
+    }
 
     // Make sure a wrapper for the given name exists and is wired to a client
-    // built from |spec|. If the spec is byte-equal to the previous one, the
-    // existing client (and its prefetch state) is kept. Caller must hold Lock_.
+    // built from |spec|. If the client-side part of the spec is equal to the
+    // previous one, the existing client (and its prefetch state) is kept.
+    // Caller must hold Lock_.
     void EnsureWrapper(
         const TThrottlerId& throttlerName,
         const TDynamicThrottlerSpecPtr& spec,
         const TGuard<NThreading::TSpinLock>& /*guard*/)
     {
         auto& entry = Wrappers_[throttlerName];
+        if (!entry.QuotaClassId) {
+            entry.QuotaClassId = std::make_shared<NThreading::TAtomicObject<TQuotaClassId>>(
+                GetQuotaClassId(throttlerName));
+        }
         if (!entry.Wrapper) {
             entry.Wrapper = New<TThrottlerWrapper>(throttlerName);
-        } else if (entry.Spec && *entry.Spec == *spec) {
+        } else if (entry.Spec && entry.Spec->ClientConfigEquals(*spec)) {
             // Refresh the pointer so the previous shared spec can be released.
             entry.Spec = spec;
             return;
         }
         entry.Spec = spec;
-        entry.Wrapper->SetUnderlying(BuildClient(throttlerName, spec));
+        entry.Wrapper->SetUnderlying(BuildClient(throttlerName, spec, entry.QuotaClassId));
     }
 
     NConcurrency::IThroughputThrottlerPtr BuildClient(
         const TThrottlerId& throttlerName,
-        const TDynamicThrottlerSpecPtr& spec)
+        const TDynamicThrottlerSpecPtr& spec,
+        TQuotaClassIdHolderPtr quotaClassId)
     {
         auto clientConfig = New<TDistributedThrottlerClientConfig>();
         clientConfig->ThrottlerName = throttlerName;
@@ -219,6 +259,9 @@ private:
             [weakSelf = MakeWeak(this)] () -> TPriority {
                 auto self = weakSelf.Lock();
                 return self ? self->Priority_.load(std::memory_order::relaxed) : TPriority{0};
+            },
+            [quotaClassId = std::move(quotaClassId)] () -> TQuotaClassId {
+                return quotaClassId->Load();
             },
             StatusProfiler_->WithPrefix(Format("/%v", throttlerName)),
             Logger_.WithTag("ThrottlerName", throttlerName),

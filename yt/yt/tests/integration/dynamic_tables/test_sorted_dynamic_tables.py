@@ -817,6 +817,8 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
 
         sync_unmount_table("//tmp/t")
         memory_size = get("//tmp/t/@tablet_statistics/uncompressed_data_size")
+        # Allowance for the active store lookup hash table now charged to tablet static category.
+        lht_tax = 16_000_000 if enable_lookup_hash_table else 0
 
         lower_bound = 3800
         upper_bound = 5200
@@ -830,7 +832,7 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
 
         def _check_memory_usage():
             memory_usage = get("//sys/cluster_nodes/{}/@statistics/memory/tablet_static/used".format(node))
-            return 0 < memory_usage < memory_size
+            return 0 < memory_usage - lht_tax < memory_size
         if optimize_for == "lookup":
             wait(_check_memory_usage)
 
@@ -2359,13 +2361,12 @@ class TestWriteRetries(TestSortedDynamicTablesBase):
 
     @authors("alexelexa")
     def test_first_batch_write_retries_after_tablet_moving(self):
-        if len(self.get_cluster_names()) > 1:
-            pytest.skip()
-
         path = "//tmp/tablet_moved"
-        cell_ids, _ = self._prepare_test(path, failure_probability=0., retry_count=0)
+        cell_ids, data_path = self._prepare_test(path, failure_probability=0., retry_count=0)
+        data_driver = self._get_data_driver()
 
-        h = SmoothMovementHelper(get(f"{path}/@tablets/0/tablet_id"), cell_id=cell_ids[1])
+        tablet_id = get(f"{data_path}/@tablets/0/tablet_id", driver=data_driver)
+        h = SmoothMovementHelper(tablet_id, cell_id=cell_ids[1], driver=data_driver)
         h.start(stage="waiting_for_locks_before_switch")
 
         with raises_yt_error("Cannot write into tablet since it is a smooth movement source in stage \"waiting_for_locks_before_switch\""):

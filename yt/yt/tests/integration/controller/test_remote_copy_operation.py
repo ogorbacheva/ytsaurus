@@ -71,6 +71,11 @@ class TestSchedulerRemoteCopyCommandsBase(YTEnvSetup):
                     "use_remote_master_caches": True,
                 },
             },
+            "remote_operations": {
+                "remote_0": {
+                    "allowed_users": ["root"],
+                },
+            },
         },
     }
 
@@ -1293,6 +1298,21 @@ class TestSchedulerRemoteCopyCommands(TestSchedulerRemoteCopyCommandsBase):
         # NB: remote_copy jobs do not operate on rows, so row count should be zero.
         assert assert_statistic("chunk_reader_statistics.row_count", lambda actual: actual is None)
 
+    @authors("coteeq")
+    def test_no_cluster_attribute(self):
+        skip_if_component_old(self.Env, (26, 2), "controller-agent")
+        create("table", "//tmp/t1", driver=self.remote_driver)
+        write_table("//tmp/t1", {"a": "c"}, driver=self.remote_driver)
+
+        create("table", "//tmp/t2")
+
+        with raises_yt_error("\"cluster\" attribute is not allowed"):
+            remote_copy(
+                in_='<cluster="some_cluster">//tmp/t1',
+                out="//tmp/t2",
+                spec={"cluster_name": self.REMOTE_CLUSTER_NAME},
+            )
+
 
 ##################################################################
 
@@ -2228,7 +2248,7 @@ class TestSchedulerRemoteCopyDynamicTablesWithHunks(TestSchedulerRemoteCopyDynam
         statistics = get(f"#{root_chunk_list_id}/@statistics")
         assert statistics["row_count"] == 8
         assert statistics["chunk_count"] == 6
-        assert statistics["data_weight"] == 232
+        assert statistics["data_weight"] == 192
         assert statistics["hunk_data_weight"] == 160
         statistics = get(f"#{hunk_root_chunk_list_id}/@statistics")
         assert statistics["chunk_count"] == 8
@@ -2237,7 +2257,7 @@ class TestSchedulerRemoteCopyDynamicTablesWithHunks(TestSchedulerRemoteCopyDynam
         snapshot_statistics = get("//tmp/t2/@snapshot_statistics")
         assert snapshot_statistics["row_count"] == 8
         assert snapshot_statistics["chunk_count"] == 14
-        assert snapshot_statistics["data_weight"] == 392
+        assert snapshot_statistics["data_weight"] == 352
 
     @authors("alexelexa", "akozhikhov")
     @pytest.mark.parametrize("max_inline_hunk_size", [15, 1000000000])
@@ -2576,8 +2596,8 @@ class TestSchedulerRemoteCopyWithClusterThrottlers(TestSchedulerRemoteCopyComman
         },
     }
 
-    CHUNK_COUNT = 32
-    BANDWIDTH_LIMIT = 10 ** 7
+    CHUNK_COUNT = 4
+    BANDWIDTH_LIMIT = 4 * 10 ** 6
     THROTTLER_JITTER_MULTIPLIER = 0.5
     DATA_WEIGHT_SIZE_PER_CHUNK = 10 ** 7
 
@@ -2737,7 +2757,7 @@ class TestSchedulerRemoteCopyWithClusterThrottlers(TestSchedulerRemoteCopyComman
         remote_copy_end_time = time.time()
 
         # Check result table on local cluster.
-        assert read_table("//tmp/local_table") == [{"v": "0" * self.DATA_WEIGHT_SIZE_PER_CHUNK} for c in range(self.CHUNK_COUNT)]
+        assert read_table("//tmp/local_table", verbose=False) == [{"v": "0" * self.DATA_WEIGHT_SIZE_PER_CHUNK} for c in range(self.CHUNK_COUNT)]
         assert not get("//tmp/local_table/@sorted")
 
         # Check that throttling has happened.
@@ -2801,10 +2821,10 @@ class TestSchedulerRemoteCopyWithClusterThrottlers(TestSchedulerRemoteCopyComman
         remote_copy_end_time = time.time()
 
         # Check that throttling has been disabled.
-        assert (remote_copy_end_time - remote_copy_start_time) < (self.CHUNK_COUNT * self.DATA_WEIGHT_SIZE_PER_CHUNK * self.THROTTLER_JITTER_MULTIPLIER / self.BANDWIDTH_LIMIT)
+        assert (remote_copy_end_time - remote_copy_start_time) < (self.CHUNK_COUNT * self.DATA_WEIGHT_SIZE_PER_CHUNK / self.BANDWIDTH_LIMIT)
 
         # Check result table on local cluster.
-        assert read_table("//tmp/local_table") == [{"v": "0" * self.DATA_WEIGHT_SIZE_PER_CHUNK} for c in range(self.CHUNK_COUNT)]
+        assert read_table("//tmp/local_table", verbose=False) == [{"v": "0" * self.DATA_WEIGHT_SIZE_PER_CHUNK} for c in range(self.CHUNK_COUNT)]
         assert not get("//tmp/local_table/@sorted")
 
     @authors("yuryalekseev")

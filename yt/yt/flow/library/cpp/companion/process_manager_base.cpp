@@ -261,7 +261,7 @@ void TProcessManagerBase::DoStart()
         try {
             ValidateParameters();
         } catch (const std::exception& ex) {
-            auto error = TError("Companion process parameters are invalid").With(TError(ex));
+            auto error = TError("Companion process parameters are invalid").With(ex);
             ErrorState_->SetError(error);
             THROW_ERROR error;
         }
@@ -297,10 +297,12 @@ void TProcessManagerBase::OnProcessStopped(const TError& error, const std::strin
 
     auto exitCode = error.Attributes().Find<int>("exit_code");
 
+    // A companion that drains and exits on its own reports success, and an OK error cannot be attached as
+    // an inner one. The stop is still worth surfacing: the process was supposed to keep running.
     auto stopError = TError("Companion process was stopped")
-        .With(error);
+        .WithIf(!error.IsOK(), error);
     if (exitCode) {
-        stopError <<= TErrorAttribute("exit_code", *exitCode);
+        stopError.Add("exit_code", *exitCode);
     }
 
     ErrorState_->SetError(stopError);
@@ -360,7 +362,7 @@ void TProcessManagerBase::StopIncarnation()
         } catch (const std::exception& ex) {
             YT_TLOG_WARNING("Failed to kill process properly")
                 .With("Pid", processToKill->GetProcessId())
-                .With(TError(ex));
+                .With(ex);
             KillProcessWithChildren(processToKill->GetProcessId());
         }
     }

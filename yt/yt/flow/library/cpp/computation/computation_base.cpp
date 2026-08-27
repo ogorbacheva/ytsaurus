@@ -85,6 +85,23 @@ THashMap<NDistributedThrottler::TThrottlerId, TDynamicThrottlerSpecPtr> ToFactor
     return result;
 }
 
+THashMap<NDistributedThrottler::TThrottlerId, NDistributedThrottler::TQuotaClassId> ToFactoryQuotaClasses(
+    const TDynamicComputationSpecPtr& dynamicSpec)
+{
+    THashMap<NDistributedThrottler::TThrottlerId, NDistributedThrottler::TQuotaClassId> result;
+    auto add = [&] (
+        const std::optional<TThrottlerId>& throttlerId,
+        const std::optional<TQuotaClassId>& quotaClassId) {
+        if (throttlerId && quotaClassId) {
+            result[NDistributedThrottler::TThrottlerId(throttlerId->Underlying())] =
+                std::string(quotaClassId->Underlying());
+        }
+    };
+    add(dynamicSpec->InputRowsThrottlerId, dynamicSpec->InputRowsThrottlerClassId);
+    add(dynamicSpec->InputBytesThrottlerId, dynamicSpec->InputBytesThrottlerClassId);
+    return result;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 TComputationBase::TComputationBase(
@@ -119,6 +136,7 @@ TComputationBase::TComputationBase(
     // TODO(mikari): move dynamic spec to ctor.
     RetryableClient_->Reconfigure(GetDynamicSpec()->RetryableRequest);
     TransactionManager_->Reconfigure(GetDynamicSpec()->RetryableRequest);
+    ThrottlerFactory_->SetQuotaClasses(ToFactoryQuotaClasses(GetDynamicSpec()));
 
     // Subscribe to reconfigure to update CurrentDynamic* fields and call ReconfigureCallbacks_.
     SubscribeOnReconfigure(BIND(
@@ -126,6 +144,7 @@ TComputationBase::TComputationBase(
             // RetryableClient and TransactionManager reconfiguration.
             RetryableClient_->Reconfigure(GetDynamicSpec()->RetryableRequest);
             TransactionManager_->Reconfigure(GetDynamicSpec()->RetryableRequest);
+            ThrottlerFactory_->SetQuotaClasses(ToFactoryQuotaClasses(GetDynamicSpec()));
             // Cheap when specs haven't changed — the factory diffs them.
             ThrottlerFactory_->Reconfigure(ToFactoryThrottlers(GetDynamicContext()->Throttlers));
         }),
@@ -222,10 +241,16 @@ TWatermarkStatePtr TComputationBase::GetWatermarkState() const
     return WatermarkState_;
 }
 
-NConcurrency::IThroughputThrottlerPtr TComputationBase::GetThrottler(const TThrottlerId& throttlerId)
+NConcurrency::IThroughputThrottlerPtr TComputationBase::GetThrottlerOrThrow(const TThrottlerId& throttlerId)
 {
     YT_VERIFY(ThrottlerFactory_);
-    return ThrottlerFactory_->GetClient(throttlerId.Underlying());
+    return ThrottlerFactory_->GetClientOrThrow(throttlerId.Underlying());
+}
+
+NConcurrency::IThroughputThrottlerPtr TComputationBase::TryGetThrottler(const TThrottlerId& throttlerId)
+{
+    YT_VERIFY(ThrottlerFactory_);
+    return ThrottlerFactory_->TryGetClient(throttlerId.Underlying());
 }
 
 const THashMap<TStreamId, TStreamTraverseDataPtr>& TComputationBase::GetInputTraverse() const
@@ -1205,8 +1230,8 @@ THashMap<TStreamId, TInflightStreamTraverseDataPtr> TUniversalComputationBase::B
     }
 
     // Materialize source / source-substitute inflights first so we can hand the
-    // KeyVisitors an "all upstream non-visit streams are completed" signal —
-    // visit-streams use it to terminate finite-input pipelines.
+    // KeyVisitors their "upstream streams are completed" signal — visit-streams use
+    // it to terminate finite-input pipelines.
     for (const auto& sourceStreamId : GetKeys(GetSpec()->SourceStreams)) {
         inflights[sourceStreamId] = CloneYsonStruct(emptyStream);
     }
@@ -1215,15 +1240,17 @@ THashMap<TStreamId, TInflightStreamTraverseDataPtr> TUniversalComputationBase::B
         inflights[*ActiveSourceStreamId_] = ActiveSource_->BuildInflight();
     }
 
-    bool upstreamCompleted = true;
-    if (ActiveSource_) {
-        upstreamCompleted &= inflights[*ActiveSourceStreamId_]->Empty;
+    THashSet<TStreamId> completedUpstreamStreams;
+    if (ActiveSource_ && inflights[*ActiveSourceStreamId_]->Empty) {
+        completedUpstreamStreams.insert(*ActiveSourceStreamId_);
     }
-    for (const auto& [_, streamData] : GetInputTraverse()) {
-        upstreamCompleted &= (streamData->State >= EStreamState::Completed);
+    for (const auto& [streamId, streamData] : GetInputTraverse()) {
+        if (streamData->State >= EStreamState::Completed) {
+            completedUpstreamStreams.insert(streamId);
+        }
     }
-    if (upstreamCompleted) {
-        for (const auto& [_, visitor] : KeyVisitors_) {
+    for (const auto& [streamId, visitor] : KeyVisitors_) {
+        if (IsKeyVisitorUpstreamCompleted(*GetSpec(), streamId, completedUpstreamStreams)) {
             visitor->SetUpstreamCompleted();
         }
     }
@@ -1471,7 +1498,7 @@ void TUniversalComputationBase::ThrottleInputBatch(
     std::vector<TFuture<void>> futures;
     if (rowsThrottlerId) {
         i64 size = std::ssize(messages) + std::ssize(timers) + std::ssize(visits);
-        futures.push_back(GetThrottler(*rowsThrottlerId)->Throttle(size));
+        futures.push_back(GetThrottlerOrThrow(*rowsThrottlerId)->Throttle(size));
     }
     if (bytesThrottlerId) {
         i64 totalBytes = 0;
@@ -1484,7 +1511,7 @@ void TUniversalComputationBase::ThrottleInputBatch(
         for (const auto& visit : visits) {
             totalBytes += visit->ByteSize;
         }
-        futures.push_back(GetThrottler(*bytesThrottlerId)->Throttle(totalBytes));
+        futures.push_back(GetThrottlerOrThrow(*bytesThrottlerId)->Throttle(totalBytes));
     }
 
     WaitFor(AllSucceeded(std::move(futures)))
@@ -1786,7 +1813,8 @@ void TUniversalComputationBase::InitBufferWarmupState()
             GetContext()->PartitionBufferState->SeedWarmup(warmup);
         }
     } catch (const std::exception& ex) {
-        YT_LOG_WARNING(ex, "Failed to recover the buffer warmup state; starting cold");
+        YT_TLOG_WARNING("Failed to recover the buffer warmup state; starting cold")
+            .With(ex);
         BufferWarmupState_ = nullptr;
     }
 }
@@ -2095,6 +2123,20 @@ void ValidateKeyVisitorJoinerBindings(const TComputationSpec& spec)
                 streamId);
         }
     }
+}
+
+bool IsKeyVisitorUpstreamCompleted(
+    const TComputationSpec& spec,
+    const TStreamId& visitStreamId,
+    const THashSet<TStreamId>& completedUpstreamStreams)
+{
+    auto upstreamStreams = ComputeKeyVisitorUpstreamStreams(spec, visitStreamId);
+    for (const auto& streamId : upstreamStreams) {
+        if (!completedUpstreamStreams.contains(streamId)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void TUniversalComputationBase::ValidateSpec(const TComputationSpec& spec)

@@ -480,6 +480,17 @@ private:
         ValidateTableType(InputManager_->GetInputTables()[0]);
     }
 
+    void ValidateInputTablePaths() const override
+    {
+        for (const auto& path : GetInputTablePaths()) {
+            if (path.GetCluster()) {
+                THROW_ERROR_EXCEPTION(
+                    "\"cluster\" attribute is not allowed on an input table path for \"remote_copy\" operation")
+                    .With("input_table_path", path);
+            }
+        }
+    }
+
     void ValidateUpdatingTablesTypes() const override
     {
         // NB(coteeq): remote_copy always has one input table.
@@ -678,10 +689,10 @@ private:
 
         InputSliceDataWeight_ = JobSizeConstraints_->GetInputSliceDataWeight();
 
-        YT_LOG_INFO("Calculated operation parameters (JobCount: %v, MaxDataWeightPerJob: %v, InputSliceDataWeight: %v)",
-            JobSizeConstraints_->GetJobCount(),
-            JobSizeConstraints_->GetMaxDataWeightPerJob(),
-            InputSliceDataWeight_);
+        YT_TLOG_INFO("Calculated operation parameters")
+            .With("JobCount", JobSizeConstraints_->GetJobCount())
+            .With("MaxDataWeightPerJob", JobSizeConstraints_->GetMaxDataWeightPerJob())
+            .With("InputSliceDataWeight", InputSliceDataWeight_);
     }
 
     void FetchInputTableAttributes()
@@ -915,7 +926,7 @@ private:
     void ProcessInputs()
     {
         YT_PROFILE_TIMING("/operations/remote_copy/input_processing_time") {
-            YT_LOG_INFO("Processing inputs");
+            YT_TLOG_INFO("Processing inputs");
 
             MainTask_->SetIsInput(true);
             if (HunkTask_) {
@@ -926,7 +937,8 @@ private:
             }
 
             auto sliceCount = AddInputSlices();
-            YT_LOG_INFO("Processed inputs (Slices: %v)", sliceCount);
+            YT_TLOG_INFO("Processed inputs")
+                .With("Slices", sliceCount);
         }
     }
 
@@ -1030,12 +1042,12 @@ private:
 
         auto masterCacheAddresses = GetRemoteMasterCacheAddresses();
         if (masterCacheAddresses.empty()) {
-            YT_LOG_DEBUG("Not using remote master caches for remote copy operation");
+            YT_TLOG_DEBUG("Not using remote master caches for remote copy operation");
         } else {
             connectionConfig->Static->OverrideMasterAddresses(masterCacheAddresses);
 
-            YT_LOG_DEBUG("Using remote master caches for remote copy operation (Addresses: %v)",
-                masterCacheAddresses);
+            YT_TLOG_DEBUG("Using remote master caches for remote copy operation")
+                .With("Addresses", masterCacheAddresses);
         }
 
         auto* remoteCopyJobSpecExt = JobSpecTemplate_.MutableExtension(TRemoteCopyJobSpecExt::remote_copy_job_spec_ext);

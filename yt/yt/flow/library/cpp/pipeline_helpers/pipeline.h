@@ -24,18 +24,24 @@ bool IsGracefulUpdateFromEnv();
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! Polls until the target state is reached or the overall wait budget expires.
+//! The timeout passed to each GetPipelineState request is the lesser of requestTimeout
+//! and the remaining wait budget.
 void WaitPipelineState(
     const std::string& clusterUrl,
     const std::optional<std::string>& proxyRole,
     const NYPath::TYPath& root,
     EPipelineState state,
-    TDuration waitTimeout = DefaultWaitPipelineTimeout);
+    TDuration waitTimeout = DefaultWaitPipelineTimeout,
+    TDuration requestTimeout = DefaultWaitPipelineStateRequestTimeout);
 
+//! Same as above, using an existing client.
 void WaitPipelineState(
     NApi::IClientPtr client,
     const NYPath::TYPath& root,
     EPipelineState state,
-    TDuration waitTimeout = DefaultWaitPipelineTimeout);
+    TDuration waitTimeout = DefaultWaitPipelineTimeout,
+    TDuration requestTimeout = DefaultWaitPipelineStateRequestTimeout);
 
 void RunPipeline(
     const std::string& clusterUrl,
@@ -65,9 +71,12 @@ void WaitPipeline(
     const std::optional<std::string>& proxyRole,
     const NYPath::TYPath& root);
 
+//! Tails the controller log until the pipeline completes or the controller stays
+//! unreachable for |controllerUnavailableTimeout|.
 void WaitPipeline(
     NApi::IClientPtr client,
-    const NYPath::TRichYPath& pipelinePath);
+    const NYPath::TRichYPath& pipelinePath,
+    TDuration controllerUnavailableTimeout = DefaultWaitPipelineTimeout);
 
 ////////////////////////////////////////////////////////////////////////////////
 

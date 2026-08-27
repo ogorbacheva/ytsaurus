@@ -16,10 +16,23 @@ Averaging period for the average rate in the [token bucket](https://en.wikipedia
 **Default value**: `5s`
 Target interval between client requests to the controller (the prefetch size adjusts to this interval). ||
 || `retrying_channel` | **Type**: `NYT::TIntrusivePtr<`[NYT::NRpc::TRetryingChannelConfig](./all_yson_structs#NYT_NRpc_TRetryingChannelConfig)`>`
-**Default value**: `{'enable_exponential_retry_backoffs': true, 'retry_attempts': 100, 'retry_timeout': 600000}`
+**Default value**:
+
+```yson
+{
+    "enable_exponential_retry_backoffs" = %true;
+    "retry_attempts" = 100;
+    "retry_timeout" = 600000;
+}
+```
 Retry parameters for requests to the throttler service. The defaults are designed to survive a controller leader change even if it takes a long time. ||
 || `rpc_timeout` | **Type**: [TDuration](./all_yson_structs#TDuration)
 **Default value**: `30s`
 Timeout for a single `RequestQuota` request. ||
+|| `classes` | **Type**: `THashMap<NYT::NFlow::TStrongIdentifierTypedef<NYT::NFlow::TQuotaClassIdTag>, NYT::TIntrusivePtr<`[NYT::NFlow::TDynamicThrottlerClassSpec](./all_yson_structs#NYT_NFlow_TDynamicThrottlerClassSpec)`>>`
+**Default value**: `{}`
+Named weighted quota classes. Backlogged classes share bandwidth in proportion to their weights and idle shares are redistributed. ||
+|| `max_grant_amount` | **Type**: `std::optional<long>`
+Maximum server scheduling chunk in absolute quota units. It bounds the delay before active classes are reconsidered. If unset, a single request is granted whole, so it holds the token bucket for its entire prefetch window and delays every other class by that long. ||
 |#
 

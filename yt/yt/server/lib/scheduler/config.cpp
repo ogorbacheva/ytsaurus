@@ -274,6 +274,23 @@ void TGpuSchedulingPolicyTestingOptions::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TGpuSchedulingPolicyModuleConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("module_reconsideration_timeout", &TThis::ModuleReconsiderationTimeout)
+        .Default();
+
+    registrar.Parameter("module_share_to_network_priority", &TThis::ModuleShareToNetworkPriority)
+        .Default();
+
+    registrar.Postprocessor([&] (TGpuSchedulingPolicyModuleConfig* config) {
+        if (config->ModuleShareToNetworkPriority) {
+            ValidateModuleShareToNetworkPriority(*config->ModuleShareToNetworkPriority);
+        }
+    });
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TGpuSchedulingPolicyConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("mode", &TThis::Mode)
@@ -289,6 +306,9 @@ void TGpuSchedulingPolicyConfig::Register(TRegistrar registrar)
         .Default(ESchedulingSegmentModuleType::DataCenter);
 
     registrar.Parameter("modules", &TThis::Modules)
+        .Default();
+
+    registrar.Parameter("module_configs", &TThis::ModuleConfigs)
         .Default();
 
     registrar.Parameter("priority_module_binding_timeout", &TThis::PriorityModuleBindingTimeout)
@@ -311,7 +331,12 @@ void TGpuSchedulingPolicyConfig::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Postprocessor([&] (TGpuSchedulingPolicyConfig* config) {
+        // Merge legacy "modules" into "module_configs", so that after postprocessing
+        // "module_configs" is the single source of truth for the module set.
         for (const auto& module : config->Modules) {
+            config->ModuleConfigs.emplace(module, New<TGpuSchedulingPolicyModuleConfig>());
+        }
+        for (const auto& [module, _] : config->ModuleConfigs) {
             ValidateGpuSchedulingModuleName(module);
         }
 
@@ -745,6 +770,18 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
     registrar.Postprocessor([&] (TStrategyTreeConfig* config) {
         if (!config->NonPreemptibleResourceUsageThreshold) {
             THROW_ERROR_EXCEPTION("\"non_preemptible_resource_usage_threshold\" must not be null");
+        }
+    });
+
+    registrar.Postprocessor([&] (TStrategyTreeConfig* config) {
+        // NB: The GPU policy is the tree's primary scheduling policy iff it runs in the allocating mode.
+        // Any other mode leaves the tree without a primary policy, so it must be paired with the classic policy kind.
+        if (config->PolicyKind == EPolicyKind::Gpu &&
+            config->GpuSchedulingPolicy->Mode != EGpuSchedulingPolicyMode::Allocating)
+        {
+            THROW_ERROR_EXCEPTION("GPU policy kind requires GPU scheduling policy to be in %Qlv mode",
+                EGpuSchedulingPolicyMode::Allocating)
+                .With("gpu_scheduling_policy_mode", config->GpuSchedulingPolicy->Mode);
         }
     });
 

@@ -251,6 +251,34 @@
             "uri": "https://{canondata_backend}/1775059/5da38bec41be3cf08ed419d22e7761bde07c61d1/resource.tar.gz#test.test_bigdate-table_int_cast-default.txt-Results_/results.txt"
         }
     ],
+    "test.test[blocks-block_input_empty_streams--Debug]": [
+        {
+            "checksum": "2b5138fccd4f2c023d0928a61ff8c905",
+            "size": 3650,
+            "uri": "https://{canondata_backend}/1937027/6bef03af1615d4537107fa8cd45446af8172a892/resource.tar.gz#test.test_blocks-block_input_empty_streams--Debug_/opt.yql"
+        }
+    ],
+    "test.test[blocks-block_input_empty_streams--Peephole]": [
+        {
+            "checksum": "91d816145b4aee8bd302be769df8b6dd",
+            "size": 3017,
+            "uri": "https://{canondata_backend}/1937027/6bef03af1615d4537107fa8cd45446af8172a892/resource.tar.gz#test.test_blocks-block_input_empty_streams--Peephole_/opt.yql"
+        }
+    ],
+    "test.test[blocks-block_input_empty_streams--Plan]": [
+        {
+            "checksum": "d06cf77590b3ac4286c22da625c4222c",
+            "size": 9510,
+            "uri": "https://{canondata_backend}/1937027/6bef03af1615d4537107fa8cd45446af8172a892/resource.tar.gz#test.test_blocks-block_input_empty_streams--Plan_/plan.txt"
+        }
+    ],
+    "test.test[blocks-block_input_empty_streams--Results]": [
+        {
+            "checksum": "14a5b5a6bcda149e4735b110402744e5",
+            "size": 1417,
+            "uri": "https://{canondata_backend}/1937027/6bef03af1615d4537107fa8cd45446af8172a892/resource.tar.gz#test.test_blocks-block_input_empty_streams--Results_/results.txt"
+        }
+    ],
     "test.test[blocks-boolean_ops--Debug]": [
         {
             "checksum": "c519de92458d0fb7fea6aa2c6ef66a8e",
@@ -2019,6 +2047,48 @@
         },
         {
             "uri": "file://test.test_select-struct_access_without_table_name--Results_/extracted"
+        }
+    ],
+    "test.test[select_yql-from_table_func_range-default.txt-Debug]": [
+        {
+            "checksum": "62fb441677e1f3bb990d57c61bac3251",
+            "size": 1230,
+            "uri": "https://{canondata_backend}/1784826/96e611973413c5c5c550255f21dc053526b28ce3/resource.tar.gz#test.test_select_yql-from_table_func_range-default.txt-Debug_/opt.yql"
+        }
+    ],
+    "test.test[select_yql-from_table_func_range-default.txt-Plan]": [
+        {
+            "checksum": "6716f9037452e082c4fa482780110d46",
+            "size": 2806,
+            "uri": "https://{canondata_backend}/1784826/96e611973413c5c5c550255f21dc053526b28ce3/resource.tar.gz#test.test_select_yql-from_table_func_range-default.txt-Plan_/plan.txt"
+        }
+    ],
+    "test.test[select_yql-from_table_func_range-default.txt-Results]": [
+        {
+            "checksum": "5e492d81685e43ed747902356b4f7a05",
+            "size": 2226,
+            "uri": "https://{canondata_backend}/1784826/96e611973413c5c5c550255f21dc053526b28ce3/resource.tar.gz#test.test_select_yql-from_table_func_range-default.txt-Results_/results.txt"
+        }
+    ],
+    "test.test[select_yql-insert_into_values_minimal-default.txt-Debug]": [
+        {
+            "checksum": "cb8a8eae7ce74a2924c2c41c3f6e418c",
+            "size": 1718,
+            "uri": "https://{canondata_backend}/1903885/2b130edf63d617210f88b9a8fc9ec5d2f09c2e0d/resource.tar.gz#test.test_select_yql-insert_into_values_minimal-default.txt-Debug_/opt.yql"
+        }
+    ],
+    "test.test[select_yql-insert_into_values_minimal-default.txt-Plan]": [
+        {
+            "checksum": "0ddad86a71199c7ecce9377a2a27f8d4",
+            "size": 5168,
+            "uri": "https://{canondata_backend}/1903885/2b130edf63d617210f88b9a8fc9ec5d2f09c2e0d/resource.tar.gz#test.test_select_yql-insert_into_values_minimal-default.txt-Plan_/plan.txt"
+        }
+    ],
+    "test.test[select_yql-insert_into_values_minimal-default.txt-Results]": [
+        {
+            "checksum": "be249f98dc2716ef63bcf745c510f97c",
+            "size": 689,
+            "uri": "https://{canondata_backend}/1903885/2b130edf63d617210f88b9a8fc9ec5d2f09c2e0d/resource.tar.gz#test.test_select_yql-insert_into_values_minimal-default.txt-Results_/results.txt"
         }
     ],
     "test.test[simple_columns-simple_columns_join_coalesce_qualified_all_disable-default.txt-Debug]": [

@@ -3131,26 +3131,40 @@ class TestChaos(ChaosTestBase):
         self._sync_alter_replica(card_id, replicas, replica_ids, 1, enabled=True)
         wait(lambda: select_rows("key, value from [//tmp/r]", driver=remote_driver0) == data_values[:2])
 
-        def _insistent_trim_rows(table, driver=None):
+        def _insistent_trim_rows(table, row_count, driver=None):
             try:
-                trim_rows(table, 0, 1, driver=driver)
+                trim_rows(table, 0, row_count, driver=driver)
                 return True
             except YtError as err:
                 print_debug("Table {0} trim failed: ".format(table), err)
                 return False
 
-        wait(lambda: _insistent_trim_rows("//tmp/t"))
+        wait(lambda: _insistent_trim_rows("//tmp/t", 1))
         assert select_rows("key, value from [//tmp/t]") == data_values[1:2]
 
         sync_flush_table("//tmp/r", driver=remote_driver0)
         values = [{"$tablet_index": 0, "key": i, "value": str(i)} for i in range(2, 3)]
         insert_rows("//tmp/t", values)
-        wait(lambda: _insistent_trim_rows("//tmp/r", driver=remote_driver0))
+        wait(lambda: _insistent_trim_rows("//tmp/r", 1, driver=remote_driver0))
 
-        # Ensure all replication is complete
+        # Ensure all replication is complete.
         self._sync_alter_replica(card_id, replicas, replica_ids, 1, mode="sync")
 
         assert select_rows("key, value from [//tmp/r]", driver=remote_driver0) == data_values[1:]
+
+        # All replicas are sync now.
+        values = [{"$tablet_index": 0, "key": i, "value": str(i)} for i in range(3, 4)]
+        insert_rows("//tmp/t", values)
+        wait(lambda: _insistent_trim_rows("//tmp/r", 4, driver=remote_driver0))
+        wait(lambda: _insistent_trim_rows("//tmp/t", 4))
+        assert select_rows("key, value from [//tmp/r]", driver=remote_driver0) == []
+        assert select_rows("key, value from [//tmp/t]") == []
+        self._sync_alter_replica(card_id, replicas, replica_ids, 1, mode="async")
+
+        values = [{"$tablet_index": 0, "key": i, "value": str(i)} for i in range(3, 4)]
+        insert_rows("//tmp/t", values)
+        data_values = [{"key": i, "value": str(i)} for i in range(3, 4)]
+        wait(lambda: select_rows("key, value from [//tmp/r]", driver=remote_driver0) == data_values)
 
     @authors("osidorkin")
     def test_ordered_chaos_table_trim_without_flush(self):
@@ -5195,6 +5209,7 @@ class TestChaosRpcProxy(TestChaos):
     ENABLE_MULTIDAEMON = True
     DRIVER_BACKEND = "rpc"
     ENABLE_RPC_PROXY = True
+    NUM_CHAOS_CACHES = 1
     DELTA_RPC_DRIVER_CONFIG = {
         "table_mount_cache": {
             "expire_after_successful_update_time": 0,
@@ -5478,6 +5493,68 @@ class TestChaosNativeProxy(ChaosTestBase):
 ##################################################################
 
 
+class TestStandaloneChaosCache(ChaosTestBase):
+    ENABLE_MULTIDAEMON = True
+    NUM_MASTER_CACHES = 0
+    NUM_CHAOS_CACHES = 1
+
+    REPLICATION_CARD_CACHE_CONFIG = {
+        "enable_watching": False,
+        "expire_after_successful_update_time": 60000,
+        "refresh_time": 60000,
+    }
+
+    DELTA_DRIVER_CONFIG = {
+        "replication_card_cache": deepcopy(REPLICATION_CARD_CACHE_CONFIG),
+    }
+
+    def _create_native_driver(self):
+        config = deepcopy(self.Env.configs["driver"])
+        config["connection_type"] = "native"
+        config["api_version"] = 3
+        return Driver(config)
+
+    @authors("shamteev")
+    def test_replication_card_cache_hit(self):
+        assert self.Env.configs["master_cache"] == []
+        assert len(self.Env.configs["chaos_cache"]) == 1
+
+        cache_config = self.Env.configs["chaos_cache"][0]
+        cache_address = "{}:{}".format(self.Env.yt_config.fqdn, cache_config["rpc_port"])
+        assert self.Env.configs["driver"]["replication_card_cache"]["addresses"] == [cache_address]
+
+        cell_id = self._sync_create_chaos_bundle_and_cell()
+        replicas = [
+            {"cluster_name": "primary", "content_type": "data", "mode": "sync", "enabled": True, "replica_path": "//tmp/ds"},
+            {"cluster_name": "primary", "content_type": "queue", "mode": "sync", "enabled": True, "replica_path": "//tmp/qs"},
+        ]
+        self._create_chaos_tables(cell_id, replicas)
+
+        profiler = profiler_factory().at_chaos_cache(cache_address)
+        hit_sensor = "chaos_cache/chaos_cache/hit_request_count"
+        miss_sensor = "chaos_cache/chaos_cache/miss_request_count"
+
+        def get_request_counts():
+            hit_count = sum(projection["value"] for projection in profiler.get_all(hit_sensor))
+            miss_count = sum(projection["value"] for projection in profiler.get_all(miss_sensor))
+            return hit_count, miss_count
+
+        initial_request_count = sum(get_request_counts())
+
+        first_driver = self._create_native_driver()
+        insert_rows("//tmp/ds", [{"key": 1, "value": "first"}], driver=first_driver)
+        wait(lambda: sum(get_request_counts()) > initial_request_count)
+
+        hit_count_before_second_request, _ = get_request_counts()
+
+        second_driver = self._create_native_driver()
+        insert_rows("//tmp/ds", [{"key": 2, "value": "second"}], driver=second_driver)
+        wait(lambda: get_request_counts()[0] > hit_count_before_second_request)
+
+
+##################################################################
+
+
 class TestChaosRpcProxyWithReplicationCardCache(ChaosTestBase):
     ENABLE_MULTIDAEMON = True
     NUM_REMOTE_CLUSTERS = 1
@@ -5748,6 +5825,7 @@ class TestChaosMetaCluster(ChaosTestBase):
     ENABLE_MULTIDAEMON = True
     NUM_REMOTE_CLUSTERS = 3
     NUM_CHAOS_NODES = 2
+    NUM_TEST_PARTITIONS = 3
 
     DELTA_CHAOS_NODE_CONFIG = {
         "chaos_node": {
