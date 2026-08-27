@@ -14,12 +14,18 @@ from typing import Any
 
 MODE_REVISION = "revision-preview"
 MODE_VERSION = "version-preview"
-MODES = (MODE_REVISION, MODE_VERSION)
+MODE_MATRIX = "version-matrix"
+SINGLE_BUILD_MODES = (MODE_REVISION, MODE_VERSION)
+MODES = (*SINGLE_BUILD_MODES, MODE_MATRIX)
 ALL_MODULES = "all"
+REVISION_ROUTING_SCHEMA = "per-target-v1"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 LABEL_RE = re.compile(r"^[0-9]+\.[0-9]+$")
 ARTIFACT_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 VARIABLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+ROUTE_QUERY_RE = re.compile(
+    r"^$|^\?revision=[A-Za-z0-9._-]+$|^\?version=[0-9]+\.[0-9]+$"
+)
 
 
 class VersionPlanError(RuntimeError):
@@ -32,6 +38,49 @@ def versioned_docs_revision(
     """Return a stable commit-shaped namespace for one profiled documentation build."""
     identity = f"version-preview\0{source_revision}\0{component_name}\0{version_label}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:40]
+
+
+def revision_preview_docs_revision(
+    source_revision: str,
+    selected_names: list[str],
+    all_module_names: list[str],
+) -> str:
+    """Return a collision-free namespace for one revision-preview route plan."""
+    if set(selected_names) == set(all_module_names):
+        return source_revision
+    identity = "\0".join(
+        (
+            "revision-preview",
+            REVISION_ROUTING_SCHEMA,
+            source_revision,
+            *sorted(selected_names),
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:40]
+
+
+def resolve_route_queries(
+    module_names: list[str], selected_names: list[str], selected_query: str
+) -> dict[str, str]:
+    """Resolve the query attached to links targeting each documentation project."""
+    if not ROUTE_QUERY_RE.fullmatch(selected_query):
+        raise VersionPlanError(f"Invalid selected route query: {selected_query!r}")
+    if len(module_names) != len(set(module_names)):
+        raise VersionPlanError("Module names must be unique")
+    if not selected_names:
+        raise VersionPlanError("At least one route query target is required")
+    if len(selected_names) != len(set(selected_names)):
+        raise VersionPlanError("Route query targets must be unique")
+    selected = set(selected_names)
+    unknown = selected - set(module_names)
+    if unknown:
+        raise VersionPlanError(
+            "Route query targets unknown modules: " + ", ".join(sorted(unknown))
+        )
+    return {
+        name: selected_query if name in selected else ""
+        for name in module_names
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -221,7 +270,7 @@ def resolve_plan(
 ) -> dict[str, Any]:
     if not revision or any(character.isspace() for character in revision):
         raise VersionPlanError("Revision must be a non-empty scalar")
-    if mode not in MODES:
+    if mode not in SINGLE_BUILD_MODES:
         raise VersionPlanError(f"Unsupported mode: {mode}")
 
     module_map = {module["name"]: module for module in modules}
@@ -236,7 +285,6 @@ def resolve_plan(
         }
 
     if mode == MODE_REVISION:
-        docs_revision = revision
         if component_name in ("", ALL_MODULES):
             selected_names = list(module_map)
         elif component_name in module_map:
@@ -246,7 +294,11 @@ def resolve_plan(
             raise VersionPlanError(
                 f"Unknown module {component_name!r}; choose: {available}"
             )
-        build_vars = {"docs-revision-query": f"?revision={docs_revision}"}
+        docs_revision = revision_preview_docs_revision(
+            revision, selected_names, list(module_map)
+        )
+        selected_route_query = f"?revision={docs_revision}"
+        build_vars = {"docs-revision-query": selected_route_query}
         for component in components.values():
             label = component["default_version"]
             values = component_build_vars(
@@ -290,6 +342,11 @@ def resolve_plan(
         update_only_version = (
             "false" if version_label == component["default_version"] else "true"
         )
+        selected_route_query = f"?version={version_label}"
+
+    route_queries = resolve_route_queries(
+        list(module_map), selected_names, selected_route_query
+    )
 
     upload_matrix = {
         "include": [
@@ -309,12 +366,75 @@ def resolve_plan(
         "docs_revision": docs_revision,
         "modules": selected_names,
         "docs_revision_query": build_vars["docs-revision-query"],
+        "route_queries": route_queries,
         "build_vars": build_vars,
         "upload_matrix": upload_matrix,
         "component": resolved_component,
         "version_label": resolved_version,
         "artifact_version": artifact_version,
         "release_ref": release_ref,
+    }
+
+
+def resolve_version_matrix(
+    *,
+    revision: str,
+    modules: list[dict[str, Any]],
+    components: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Expand every configured component version into an isolated build row."""
+    rows: list[dict[str, Any]] = []
+    default_rows: list[dict[str, Any]] = []
+    module_map = {module["name"]: module for module in modules}
+
+    for component_name in sorted(components):
+        component = components[component_name]
+        version_labels = sorted(
+            component["version_map"],
+            key=lambda label: tuple(int(part) for part in label.split(".")),
+        )
+        for version_label in version_labels:
+            plan = resolve_plan(
+                mode=MODE_VERSION,
+                component_name=component_name,
+                version_label=version_label,
+                revision=revision,
+                modules=modules,
+                components=components,
+            )
+            module = module_map[component_name]
+            row = {
+                "module": component_name,
+                "version_label": version_label,
+                "artifact_version": plan["artifact_version"],
+                "release_ref": plan["release_ref"],
+                "docs_revision": plan["docs_revision"],
+                "build_vars": json.dumps(
+                    plan["build_vars"], separators=(",", ":"), sort_keys=True
+                ),
+                "route_queries": json.dumps(
+                    plan["route_queries"], separators=(",", ":"), sort_keys=True
+                ),
+                "storage_suffix": f"/{module['storage_prefix']}",
+                "viewer_url": module["viewer_url"],
+                "is_default": version_label == component["default_version"],
+                "artifact_name": f"version-{component_name}-{version_label}",
+            }
+            rows.append(row)
+            if row["is_default"]:
+                default_rows.append(row)
+
+    if not rows:
+        raise VersionPlanError("Version matrix must contain at least one build")
+    if len(default_rows) != len(components):
+        raise VersionPlanError("Version matrix must contain one default per component")
+
+    return {
+        "mode": MODE_MATRIX,
+        "source_revision": revision,
+        "matrix_size": len(rows),
+        "version_matrix": {"include": rows},
+        "default_matrix": {"include": default_rows},
     }
 
 
@@ -325,12 +445,32 @@ def write_github_output(path: Path, plan: dict[str, Any]) -> None:
         "docs_revision": plan["docs_revision"],
         "modules": json.dumps(plan["modules"], separators=(",", ":")),
         "docs_revision_query": plan["docs_revision_query"],
+        "route_queries": json.dumps(plan["route_queries"], separators=(",", ":")),
         "build_vars": json.dumps(plan["build_vars"], separators=(",", ":")),
         "upload_matrix": json.dumps(plan["upload_matrix"], separators=(",", ":")),
         "component": plan["component"],
         "version_label": plan["version_label"],
         "artifact_version": plan["artifact_version"],
         "release_ref": plan["release_ref"],
+    }
+    with path.open("a", encoding="utf-8") as output:
+        for name, value in values.items():
+            if "\n" in value or "\r" in value:
+                raise VersionPlanError(f"GitHub output {name} contains a newline")
+            output.write(f"{name}={value}\n")
+
+
+def write_matrix_github_output(path: Path, plan: dict[str, Any]) -> None:
+    values = {
+        "mode": plan["mode"],
+        "source_revision": plan["source_revision"],
+        "matrix_size": str(plan["matrix_size"]),
+        "version_matrix": json.dumps(
+            plan["version_matrix"], separators=(",", ":"), sort_keys=True
+        ),
+        "default_matrix": json.dumps(
+            plan["default_matrix"], separators=(",", ":"), sort_keys=True
+        ),
     }
     with path.open("a", encoding="utf-8") as output:
         for name, value in values.items():
@@ -346,16 +486,31 @@ def main() -> int:
         components = load_versions(
             args.registry, {module["name"] for module in modules}
         )
-        plan = resolve_plan(
-            mode=args.mode,
-            component_name=args.component,
-            version_label=args.version,
-            revision=args.revision,
-            modules=modules,
-            components=components,
-        )
-        if args.github_output:
-            write_github_output(args.github_output, plan)
+        if args.mode == MODE_MATRIX:
+            if args.component not in ("", ALL_MODULES):
+                raise VersionPlanError(
+                    "version-matrix requires an empty component or 'all'"
+                )
+            if args.version:
+                raise VersionPlanError("version-matrix requires an empty version")
+            plan = resolve_version_matrix(
+                revision=args.revision,
+                modules=modules,
+                components=components,
+            )
+            if args.github_output:
+                write_matrix_github_output(args.github_output, plan)
+        else:
+            plan = resolve_plan(
+                mode=args.mode,
+                component_name=args.component,
+                version_label=args.version,
+                revision=args.revision,
+                modules=modules,
+                components=components,
+            )
+            if args.github_output:
+                write_github_output(args.github_output, plan)
         print(json.dumps(plan, ensure_ascii=False, sort_keys=True))
     except VersionPlanError as error:
         print(f"Version plan error: {error}", file=sys.stderr)

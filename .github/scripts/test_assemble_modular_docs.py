@@ -44,7 +44,7 @@ class AssembleModularDocsTest(unittest.TestCase):
             "  chyt-docs-root: https://example.test/docs/chyt\n"
             "  yql-docs-root: https://example.test/docs\n"
             "  flow-docs-root: https://example.test/docs/flow\n"
-            "  demo-docs-root: https://example.test/docs/demo\n"
+            "  demo-docs-root: https://example.test/docs\n"
             "  docs-revision-query: \"\"\n",
             encoding="utf-8",
         )
@@ -73,14 +73,14 @@ class AssembleModularDocsTest(unittest.TestCase):
         (self.source / "public" / "demo" / "ru" / "presets.yaml").write_text(
             "public:\n"
             "  lang: ru\n"
-            "  generated-link: \"{{ docs-root }}/{{ lang }}/preset"
+            "  generated-link: \"{{ demo-docs-root }}/{{ lang }}/preset"
             "{{ docs-revision-query }}\"\n",
             encoding="utf-8",
         )
         (self.source / "public" / "demo" / "ru" / "index.yaml").write_text(
             "blocks:\n"
             "  - type: basic-card\n"
-            "    url: '{{ docs-root }}/{{ lang }}/start{{ docs-revision-query }}'\n",
+            "    url: '{{ demo-docs-root }}/{{ lang }}/start{{ docs-revision-query }}'\n",
             encoding="utf-8",
         )
         (self.source / "common" / "demo" / "ru" / "_includes" / "note.md").write_text(
@@ -90,6 +90,15 @@ class AssembleModularDocsTest(unittest.TestCase):
         )
         (self.source / "public" / "demo" / "ru" / "guide.md").write_text(
             "# Guide {#section}\n", encoding="utf-8"
+        )
+        (self.source / "public" / "demo" / "ru" / "preset.md").write_text(
+            "# Preset\n", encoding="utf-8"
+        )
+        (self.source / "public" / "demo" / "ru" / "start.md").write_text(
+            "# Start\n", encoding="utf-8"
+        )
+        (self.source / "public" / "demo" / "ru" / "preview.md").write_text(
+            "# Preview\n", encoding="utf-8"
         )
         self.registry.write_text(
             json.dumps(
@@ -135,6 +144,14 @@ class AssembleModularDocsTest(unittest.TestCase):
 
     def make_bilingual_core_fixture(self) -> tuple[Path, Path]:
         public_demo = self.source / "public" / "demo"
+        for relative in ("ru/presets.yaml", "ru/index.yaml"):
+            path = public_demo / relative
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "demo-docs-root", "core-docs-root"
+                ),
+                encoding="utf-8",
+            )
         config = public_demo / ".yfm"
         config.write_text(
             config.read_text(encoding="utf-8").replace("[ru]", "[ru, en]"),
@@ -164,6 +181,57 @@ class AssembleModularDocsTest(unittest.TestCase):
         document["modules"][0]["languages"] = ["ru", "en"]
         self.registry.write_text(json.dumps(document), encoding="utf-8")
         return public_core, common_core
+
+    def add_other_module_fixture(self) -> None:
+        presets = self.source / "public" / "presets.yaml"
+        presets.write_text(
+            presets.read_text(encoding="utf-8").replace(
+                "  docs-revision-query: \"\"\n",
+                "  other-docs-root: https://example.test/docs/other\n"
+                "  docs-revision-query: \"\"\n",
+            ),
+            encoding="utf-8",
+        )
+        other = self.source / "public" / "other"
+        (other / "ru").mkdir(parents=True)
+        (other / ".yfm").write_text(
+            "langs: [ru]\n"
+            "docs-viewer:\n"
+            "  project-name: other-docs\n"
+            "  langs: [ru]\n",
+            encoding="utf-8",
+        )
+        (other / "ru" / "toc.yaml").write_text(
+            "title: Other\nhref: index.md\n", encoding="utf-8"
+        )
+        (other / "ru" / "presets.yaml").write_text(
+            "public:\n  lang: ru\n", encoding="utf-8"
+        )
+        (other / "ru" / "index.md").write_text(
+            "# Other\n", encoding="utf-8"
+        )
+        (other / "ru" / "guide.md").write_text(
+            "# Other guide\n", encoding="utf-8"
+        )
+        guide = self.source / "public" / "demo" / "ru" / "guide.md"
+        guide.write_text(
+            guide.read_text(encoding="utf-8")
+            + "[Other]({{ other-docs-root }}/{{ lang }}/guide"
+            "{{ docs-revision-query }})\n",
+            encoding="utf-8",
+        )
+        document = json.loads(self.registry.read_text(encoding="utf-8"))
+        document["modules"].append(
+            {
+                "name": "other",
+                "project_name": "other-docs",
+                "viewer_url": "https://demo-bucket---other-docs.viewer.ydocs.io",
+                "languages": ["ru"],
+                "common": False,
+                "storage_prefix": "other-docs",
+            }
+        )
+        self.registry.write_text(json.dumps(document), encoding="utf-8")
 
     def test_assembles_public_and_common_without_internal(self) -> None:
         result = self.run_script()
@@ -199,8 +267,7 @@ class AssembleModularDocsTest(unittest.TestCase):
             b"shared image",
         )
         self.assertIn(
-            "{{ demo-docs-root }}/{{ lang }}/guide"
-            "{{ docs-revision-query }}#section",
+            "{{ demo-docs-root }}/{{ lang }}/guide#section",
             (
                 self.output
                 / "demo"
@@ -314,8 +381,7 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         generated = (self.output / "demo" / "ru" / "common" / "_includes" / "note.md")
         self.assertIn(
-            "{{ demo-docs-root }}/{{ lang }}/guide"
-            "{{ docs-revision-query }}#section",
+            "{{ demo-docs-root }}/{{ lang }}/guide#section",
             generated.read_text(encoding="utf-8"),
         )
         self.assertIn(
@@ -395,17 +461,17 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("docs-revision-query must be empty", result.stderr)
 
-    def test_missing_yql_docs_root_blocks_assembly(self) -> None:
+    def test_missing_registered_docs_root_blocks_assembly(self) -> None:
         presets = self.source / "public" / "presets.yaml"
         presets.write_text(
             presets.read_text(encoding="utf-8").replace(
-                "  yql-docs-root: https://example.test/docs\n", ""
+                "  demo-docs-root: https://example.test/docs\n", ""
             ),
             encoding="utf-8",
         )
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("missing yql-docs-root", result.stderr)
+        self.assertIn("missing demo-docs-root", result.stderr)
 
     def test_public_revision_preview_is_generated_and_noindex(self) -> None:
         source_config = self.source / "public" / "demo" / ".yfm"
@@ -446,6 +512,80 @@ class AssembleModularDocsTest(unittest.TestCase):
         source = source_config.read_text(encoding="utf-8")
         self.assertNotIn("unrestrict-revision-access", source)
         self.assertNotIn("no-index", source)
+
+    def test_partial_preview_materializes_queries_only_for_selected_targets(self) -> None:
+        self.add_other_module_fixture()
+        result = self.run_script(
+            "--module",
+            "demo",
+            "--docs-revision-query",
+            "?revision=abc123",
+            "--route-queries",
+            json.dumps({"demo": "?revision=abc123", "other": ""}),
+            "--public-revision-preview",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        generated_guide = (
+            self.output / "demo" / "ru" / "guide.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("{{ other-docs-root }}/{{ lang }}/guide)", generated_guide)
+        self.assertNotIn("other-docs-root }}/{{ lang }}/guide?revision=", generated_guide)
+        generated_note = (
+            self.output / "demo" / "ru" / "common" / "_includes" / "note.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "{{ demo-docs-root }}/{{ lang }}/guide?revision=abc123#section",
+            generated_note,
+        )
+        manifest = json.loads(
+            (self.output / "assembly-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            manifest["modules"][0]["route_queries"],
+            {"demo": "?revision=abc123", "other": ""},
+        )
+
+    def test_route_query_map_rejects_query_for_unselected_target(self) -> None:
+        self.add_other_module_fixture()
+        result = self.run_script(
+            "--module",
+            "demo",
+            "--docs-revision-query",
+            "?revision=abc123",
+            "--route-queries",
+            json.dumps(
+                {
+                    "demo": "?revision=abc123",
+                    "other": "?revision=abc123",
+                }
+            ),
+            "--public-revision-preview",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unselected module other", result.stderr)
+
+    def test_version_preview_rejects_empty_selected_route_query(self) -> None:
+        result = self.run_script(
+            "--docs-revision",
+            "version-preview-revision",
+            "--route-queries",
+            json.dumps({"demo": ""}),
+            "--public-version-preview",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must use a version query", result.stderr)
+
+    def test_unregistered_canonical_route_blocks_assembly(self) -> None:
+        guide = self.source / "public" / "demo" / "ru" / "guide.md"
+        guide.write_text(
+            guide.read_text(encoding="utf-8")
+            + "[Unknown]({{ unknown-docs-root }}/{{ lang }}/guide"
+            "{{ docs-revision-query }})\n",
+            encoding="utf-8",
+        )
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unregistered module unknown", result.stderr)
 
     def test_public_preview_overrides_language_specific_docs_root(self) -> None:
         language_presets = (
@@ -546,7 +686,7 @@ class AssembleModularDocsTest(unittest.TestCase):
         (self.source / "public" / "demo" / "ru" / "index.yaml").write_text(
             "blocks:\n"
             "  - type: basic-card\n"
-            "    url: '{{ core-docs-root }}/{{ lang }}/../outside"
+            "    url: '{{ demo-docs-root }}/{{ lang }}/../outside"
             "{{ docs-revision-query }}'\n",
             encoding="utf-8",
         )
@@ -760,7 +900,7 @@ class AssembleModularDocsTest(unittest.TestCase):
         presets = self.source / "public" / "presets.yaml"
         presets.write_text(
             presets.read_text(encoding="utf-8").replace(
-                "  demo-docs-root: https://example.test/docs/demo\n", ""
+                "  demo-docs-root: https://example.test/docs\n", ""
             ),
             encoding="utf-8",
         )

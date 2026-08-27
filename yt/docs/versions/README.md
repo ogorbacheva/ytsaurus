@@ -42,12 +42,36 @@ The lock file is intentionally checked in. Release discovery automation may
 propose updates, but a documentation build never silently replaces a locked
 artifact version with the newest tag.
 
-Both workflow modes resolve their variables from this file. A
+All workflow modes resolve their variables from this file. A
 `revision-preview` uses every component's `default_version`; a
-`version-preview` uses the explicitly selected component and label.
+`version-preview` uses the explicitly selected component and label; a
+`version-matrix` expands every configured component and label.
 
-Every `version-preview` gets a deterministic 40-character documentation
-revision derived from the source commit, component, and version label. This
-keeps differently profiled builds from the same Git commit in separate S3
-prefixes. Rebuilding the same component label from the same commit reuses the
-same revision; a different component or label cannot overwrite it.
+## Publishing the complete version matrix
+
+Run the **Docs modular upload [testing only]** workflow manually with these
+inputs:
+
+- `mode`: `version-matrix`;
+- `component`: `all`;
+- `version`: empty.
+
+This mode reads every component and version directly from
+`component-versions.json`; the workflow does not contain a second hard-coded
+version list. It builds and verifies every matrix row first, uploads every
+documentation revision second, and then registers the version labels
+serially. Only after all labels have been registered does it move each
+component's default/head to its configured `default_version`.
+
+Consequently, a failed build or upload cannot move a component's default head
+to an incomplete publication. A failed version-registration step can leave
+some named versions updated, but it does not update any default head; rerunning
+the workflow is safe because a component, version label, and source revision
+resolve to the same deterministic documentation revision.
+
+Every `version-preview` and every row of `version-matrix` gets a deterministic
+40-character documentation revision derived from the source commit,
+component, and version label. This keeps differently profiled builds from the
+same Git commit in separate S3 prefixes. Rebuilding the same component label
+from the same commit reuses the same revision; a different component or label
+cannot overwrite it.

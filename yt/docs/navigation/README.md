@@ -45,12 +45,28 @@ The templates reuse the modular routing variables from `public/presets.yaml`:
 
 - `<module>-docs-root` variables identify independently published projects;
 - `lang` selects the matching language;
-- `docs-revision-query` keeps links between registered projects on the same
-  testing revision.
+- `docs-revision-query` marks the place where the assembler writes the query
+  for the target project.
 
 During a revision preview, the assembler replaces the registered project roots
-with their Viewer URLs from `.github/docs-modules.json`. In production, the
-same variables resolve to `ytsaurus.tech` routes.
+with their Viewer URLs from `.github/docs-modules.json` and materializes a
+query for every cross-project route. A full preview points all registered
+projects at one shared revision. A partial preview adds its revision only to
+links targeting projects selected for that build; links to untouched projects
+open their published default instead of requesting an artifact that was never
+uploaded there.
+
+Partial preview revisions are derived from the source revision and the sorted
+set of selected projects. Thus two runs for the same commit but different
+project sets cannot overwrite one another under the same `rev/` prefix. A
+version preview writes `?version=<label>` only for the selected component and
+never combines `version` with `revision`. In production, the project-root
+variables resolve to `ytsaurus.tech` routes.
+
+This routing prevents a foreign-revision 404, but a partial preview is not a
+sticky multi-project snapshot: after following a link to an untouched
+project, subsequent navigation uses that project's published default. Use a
+full preview when all transitions must remain inside one coherent preview.
 
 YQL keeps its existing content path, `/<lang>/yql/...`, inside its independent
 project. It is part of `revision-preview`, but intentionally has no entry in

@@ -4,15 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build all modules by revision or one named component version
+        description: Build revisions, one version, or the complete configured version matrix
         required: true
         default: revision-preview
         type: choice
         options:
           - revision-preview
           - version-preview
+          - version-matrix
       component:
-        description: Module to build; version-preview accepts only versioned components
+        description: Module to build; use all for version-matrix
         required: true
         default: all
         type: choice
@@ -27,7 +28,7 @@ on:
           - flow
           # END docs module choices
       version:
-        description: Version label from yt/docs/versions/component-versions.json
+        description: Version label for version-preview; leave empty for version-matrix
         required: false
         type: string
 
@@ -45,6 +46,7 @@ env:
 jobs:
   build:
     name: Build documentation modules (${{ inputs.mode }})
+    if: ${{ inputs.mode != 'version-matrix' }}
     runs-on: ubuntu-latest
     outputs:
       upload_matrix: ${{ steps.version-plan.outputs.upload_matrix }}
@@ -54,6 +56,7 @@ jobs:
       artifact_version: ${{ steps.version-plan.outputs.artifact_version }}
       release_ref: ${{ steps.version-plan.outputs.release_ref }}
       docs_revision: ${{ steps.version-plan.outputs.docs_revision }}
+      route_queries: ${{ steps.version-plan.outputs.route_queries }}
     steps:
       - name: Checkout selected revision
         uses: actions/checkout@v4
@@ -119,6 +122,7 @@ jobs:
           SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
           DOCS_REVISION: ${{ steps.version-plan.outputs.docs_revision }}
           DOCS_REVISION_QUERY: ${{ steps.version-plan.outputs.docs_revision_query }}
+          ROUTE_QUERIES: ${{ steps.version-plan.outputs.route_queries }}
           PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
         run: |
           set -euo pipefail
@@ -129,6 +133,7 @@ jobs:
             --output-root "${DOCS_INPUT_ROOT}" \
             --docs-revision "${DOCS_REVISION}" \
             --docs-revision-query "${DOCS_REVISION_QUERY}" \
+            --route-queries "${ROUTE_QUERIES}" \
             --clean
           )
           while IFS= read -r module; do
@@ -180,6 +185,7 @@ jobs:
           SELECTED_MODULES: ${{ steps.version-plan.outputs.modules }}
           DOCS_REVISION: ${{ steps.version-plan.outputs.docs_revision }}
           DOCS_REVISION_QUERY: ${{ steps.version-plan.outputs.docs_revision_query }}
+          ROUTE_QUERIES: ${{ steps.version-plan.outputs.route_queries }}
           PREVIEW_MODE: ${{ steps.version-plan.outputs.mode }}
           VERSION_COMPONENT: ${{ steps.version-plan.outputs.component }}
           VERSION_LABEL: ${{ steps.version-plan.outputs.version_label }}
@@ -196,12 +202,42 @@ jobs:
               '.modules[] | select(.name == $module) | .viewer_url' \
               .github/docs-modules.json
           }
+          route_query() {
+            jq -er --arg module "$1" '.[$module]' <<<"${ROUTE_QUERIES}"
+          }
           landing_url=$(viewer_url landing)
           core_url=$(viewer_url core)
           spyt_url=$(viewer_url spyt)
           chyt_url=$(viewer_url chyt)
           yql_url=$(viewer_url yql)
           flow_url=$(viewer_url flow)
+          landing_query=$(route_query landing)
+          core_query=$(route_query core)
+          spyt_query=$(route_query spyt)
+          chyt_query=$(route_query chyt)
+          yql_query=$(route_query yql)
+          flow_query=$(route_query flow)
+
+          while IFS= read -r target; do
+            query=$(route_query "${target}")
+            expected_query=''
+            if module_selected "${target}"; then
+              if [[ "${PREVIEW_MODE}" == 'revision-preview' ]]; then
+                expected_query="${DOCS_REVISION_QUERY}"
+              else
+                expected_query="?version=${VERSION_LABEL}"
+              fi
+            fi
+            if [[ "${query}" != "${expected_query}" ]]; then
+              printf 'Invalid route query for %s: expected %q, found %q\n' \
+                "${target}" "${expected_query}" "${query}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.modules[].name' .github/docs-modules.json)
+
+          jq -e --argjson expected "${ROUTE_QUERIES}" \
+            'all(.modules[]; .route_queries == $expected)' \
+            "${DOCS_INPUT_ROOT}/assembly-manifest.json" >/dev/null
 
           while IFS=$'\t' read -r module project_name; do
             module_url=$(viewer_url "${module}")
@@ -239,6 +275,13 @@ jobs:
             exit 1
           fi
 
+          conflicting_queries='[?&]revision=[^&"[:space:]<>]*&version=|[?&]version=[^&"[:space:]<>]*&revision='
+          if grep -R -n -E --exclude-dir=_bundle "${conflicting_queries}" \
+            "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; then
+            echo 'A generated URL combines revision and version.' >&2
+            exit 1
+          fi
+
           legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt|yql|flow)([^A-Za-z0-9_-]|$)'
           if grep -R -n -E "${legacy_self_routes}" "${DOCS_INPUT_ROOT}"; then
             echo 'Legacy same-module routes remain in assembled inputs.' >&2
@@ -248,41 +291,41 @@ jobs:
           for language in ru en; do
             if module_selected landing; then
               landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
-              expected_url="${core_url}/${language}/tutorials/quick-start${DOCS_REVISION_QUERY}"
+              expected_url="${core_url}/${language}/tutorials/quick-start${core_query}"
               grep -Fq "${expected_url}" "${landing_page}"
-              expected_flow_url="${flow_url}/${language}/tutorials/quick-start${DOCS_REVISION_QUERY}"
+              expected_flow_url="${flow_url}/${language}/tutorials/quick-start${flow_query}"
               grep -Fq "${expected_flow_url}" "${landing_page}"
             fi
 
             if module_selected core; then
               core_page="${BUILD_OUTPUT_HTML}/core/${language}/reference/releases.html"
-              expected_chyt_url="${chyt_url}/${language}/user-guide/reference/release-notes${DOCS_REVISION_QUERY}"
+              expected_chyt_url="${chyt_url}/${language}/user-guide/reference/release-notes${chyt_query}"
               grep -Fq "${expected_chyt_url}" "${core_page}"
 
               core_self_page="${BUILD_OUTPUT_HTML}/core/${language}/reference/faq.html"
-              expected_core_self_url="${core_url}/${language}/reference/data-processing/operations/merge${DOCS_REVISION_QUERY}"
+              expected_core_self_url="${core_url}/${language}/reference/data-processing/operations/merge${core_query}"
               grep -Fq "${expected_core_self_url}" "${core_self_page}"
 
               core_audience_page="${BUILD_OUTPUT_HTML}/core/${language}/how-to-guides/install-excel.html"
-              expected_core_audience_url="${core_url}/${language}/concepts/excel${DOCS_REVISION_QUERY}"
+              expected_core_audience_url="${core_url}/${language}/concepts/excel${core_query}"
               grep -Fq "${expected_core_audience_url}" "${core_audience_page}"
             fi
 
             if module_selected spyt; then
               spyt_page="${BUILD_OUTPUT_HTML}/spyt/${language}/reference/data-types.html"
-              expected_core_url="${core_url}/${language}/reference/storage/data-types${DOCS_REVISION_QUERY}"
+              expected_core_url="${core_url}/${language}/reference/storage/data-types${core_query}"
               grep -Fq "${expected_core_url}" "${spyt_page}"
-              expected_spyt_self_url="${spyt_url}/${language}/reference/read-options${DOCS_REVISION_QUERY}#schema_hint"
+              expected_spyt_self_url="${spyt_url}/${language}/reference/read-options${spyt_query}#schema_hint"
               grep -Fq "${expected_spyt_self_url}" "${spyt_page}"
             fi
 
             if module_selected chyt; then
               chyt_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/yt-tables.html"
-              expected_core_url="${core_url}/${language}/concepts/storage/static-tables${DOCS_REVISION_QUERY}"
+              expected_core_url="${core_url}/${language}/concepts/storage/static-tables${core_query}"
               grep -Fq "${expected_core_url}" "${chyt_page}"
 
               chyt_self_page="${BUILD_OUTPUT_HTML}/chyt/${language}/user-guide/reference/faq.html"
-              expected_chyt_self_url="${chyt_url}/${language}/user-guide/explanation/general${DOCS_REVISION_QUERY}"
+              expected_chyt_self_url="${chyt_url}/${language}/user-guide/explanation/general${chyt_query}"
               grep -Fq "${expected_chyt_self_url}" "${chyt_self_page}"
             fi
 
@@ -296,11 +339,11 @@ jobs:
 
             if module_selected flow; then
               flow_page="${BUILD_OUTPUT_HTML}/flow/${language}/concepts/glossary.html"
-              expected_flow_self_url="${flow_url}/${language}/concepts/watermarks${DOCS_REVISION_QUERY}#eventtimestamp"
+              expected_flow_self_url="${flow_url}/${language}/concepts/watermarks${flow_query}#eventtimestamp"
               grep -Fq "${expected_flow_self_url}" "${flow_page}"
 
               flow_quick_start="${BUILD_OUTPUT_HTML}/flow/${language}/tutorials/quick-start.html"
-              expected_core_url="${core_url}/${language}/concepts/storage/cypress${DOCS_REVISION_QUERY}"
+              expected_core_url="${core_url}/${language}/concepts/storage/cypress${core_query}"
               grep -Fq "${expected_core_url}" "${flow_quick_start}"
               grep -Fq '_images/flow_noop_pipeline.png' "${flow_quick_start}"
               test -f "${BUILD_OUTPUT_MD}/flow/${language}/reference/configuration/all_yson_structs.md"
@@ -310,12 +353,12 @@ jobs:
           while IFS=$'\t' read -r module language; do
             toc="${BUILD_OUTPUT_MD}/${module}/${language}/toc.yaml"
             grep -Fq 'navigation:' "${toc}"
-            grep -Fq "${landing_url}/${language}/${DOCS_REVISION_QUERY}" "${toc}"
-            grep -Fq "${core_url}/${language}/concepts/overview${DOCS_REVISION_QUERY}" "${toc}"
-            grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs${DOCS_REVISION_QUERY}" "${toc}"
-            grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt${DOCS_REVISION_QUERY}" "${toc}"
-            grep -Fq "${yql_url}/${language}/yql/${DOCS_REVISION_QUERY}" "${toc}"
-            grep -Fq "${flow_url}/${language}/tutorials/quick-start${DOCS_REVISION_QUERY}" "${toc}"
+            grep -Fq "${landing_url}/${language}/${landing_query}" "${toc}"
+            grep -Fq "${core_url}/${language}/concepts/overview${core_query}" "${toc}"
+            grep -Fq "${spyt_url}/${language}/how-to-guides/run-spark-jobs${spyt_query}" "${toc}"
+            grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt${chyt_query}" "${toc}"
+            grep -Fq "${yql_url}/${language}/yql/${yql_query}" "${toc}"
+            grep -Fq "${flow_url}/${language}/tutorials/quick-start${flow_query}" "${toc}"
           done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
             '.modules[] | select(.name as $name | ($selected | index($name))) | .name as $module | .languages[] | [$module, .] | @tsv' \
             .github/docs-modules.json)
@@ -351,6 +394,7 @@ jobs:
           ARTIFACT_VERSION: ${{ steps.version-plan.outputs.artifact_version }}
           RELEASE_REF: ${{ steps.version-plan.outputs.release_ref }}
           BUILD_VARS: ${{ steps.version-plan.outputs.build_vars }}
+          ROUTE_QUERIES: ${{ steps.version-plan.outputs.route_queries }}
         run: |
           set -euo pipefail
           mkdir -p inputs
@@ -365,6 +409,7 @@ jobs:
             --arg artifact_version "${ARTIFACT_VERSION}" \
             --arg release_ref "${RELEASE_REF}" \
             --argjson build_vars "${BUILD_VARS}" \
+            --argjson route_queries "${ROUTE_QUERIES}" \
             '{
               mode: $mode,
               source_revision: $source_revision,
@@ -374,7 +419,8 @@ jobs:
               version_label: $version_label,
               artifact_version: $artifact_version,
               release_ref: $release_ref,
-              build_vars: $build_vars
+              build_vars: $build_vars,
+              route_queries: $route_queries
             }' > inputs/version-plan.json
         shell: bash
 
@@ -416,6 +462,7 @@ jobs:
 
   upload:
     name: Upload ${{ matrix.module }} testing revision
+    if: ${{ inputs.mode != 'version-matrix' }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -578,6 +625,7 @@ jobs:
 
   summary:
     name: Testing documentation links
+    if: ${{ inputs.mode != 'version-matrix' }}
     needs: [build, upload]
     runs-on: ubuntu-latest
     env:
@@ -619,5 +667,346 @@ jobs:
               printf '| %s | [RU](%s/ru/%s) | [EN](%s/en/%s) |\n' \
                 "${title}" "${viewer_url%/}" "${query}" "${viewer_url%/}" "${query}"
             done < <(jq -r '.include[] | [.module, .viewer_url] | @tsv' <<<"${UPLOAD_MATRIX}")
+          } >> "${GITHUB_STEP_SUMMARY}"
+        shell: bash
+
+  matrix-plan:
+    name: Resolve complete component version matrix
+    if: ${{ inputs.mode == 'version-matrix' }}
+    runs-on: ubuntu-latest
+    outputs:
+      version_matrix: ${{ steps.version-matrix.outputs.version_matrix }}
+      default_matrix: ${{ steps.version-matrix.outputs.default_matrix }}
+      matrix_size: ${{ steps.version-matrix.outputs.matrix_size }}
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v4
+
+      - name: Resolve configured versions
+        id: version-matrix
+        env:
+          PREVIEW_COMPONENT: ${{ inputs.component }}
+          PREVIEW_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/resolve_docs_version.py \
+            --registry "${DOCS_SOURCE_ROOT}/versions/component-versions.json" \
+            --modules-registry .github/docs-modules.json \
+            --mode version-matrix \
+            --component "${PREVIEW_COMPONENT}" \
+            --version "${PREVIEW_VERSION}" \
+            --revision "${GITHUB_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
+        shell: bash
+
+      - name: Test matrix build tooling
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sync_docs_workflow_modules.py --check
+          python3 .github/scripts/build_global_navigation.py \
+            --source-root "${DOCS_SOURCE_ROOT}" \
+            --registry .github/docs-modules.json \
+            --check
+          python3 .github/scripts/check_core_structure.py
+          python3 .github/scripts/check_flow_structure.py
+          python3 .github/scripts/check_yql_snapshot.py
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+          bash -n \
+            .github/scripts/build_version_matrix_row.sh \
+            .github/scripts/publish_docs_revision.sh
+        shell: bash
+
+      - name: Write planned matrix to summary
+        env:
+          VERSION_MATRIX: ${{ steps.version-matrix.outputs.version_matrix }}
+          MATRIX_SIZE: ${{ steps.version-matrix.outputs.matrix_size }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## Configured documentation version matrix\n\n'
+            printf 'Builds: `%s`\n\n' "${MATRIX_SIZE}"
+            printf '| Component | Version | Artifact | Default |\n'
+            printf '| --- | --- | --- | --- |\n'
+            jq -r '.include[] | [
+              .module,
+              .version_label,
+              .artifact_version,
+              (if .is_default then "yes" else "" end)
+            ] | @tsv' <<<"${VERSION_MATRIX}" |
+              while IFS=$'\t' read -r module version artifact is_default; do
+                printf '| %s | %s | %s | %s |\n' \
+                  "${module}" "${version}" "${artifact}" "${is_default}"
+              done
+          } >> "${GITHUB_STEP_SUMMARY}"
+        shell: bash
+
+  matrix-build:
+    name: Build ${{ matrix.module }} ${{ matrix.version_label }}
+    if: ${{ inputs.mode == 'version-matrix' }}
+    needs: matrix-plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.matrix-plan.outputs.version_matrix) }}
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install pinned Diplodoc CLI
+        run: npm install --global "@diplodoc/cli@${DIPLODOC_CLI_VERSION}"
+        shell: bash
+
+      - name: Build and verify isolated component version
+        env:
+          VERSION_COMPONENT: ${{ matrix.module }}
+          VERSION_LABEL: ${{ matrix.version_label }}
+          ARTIFACT_VERSION: ${{ matrix.artifact_version }}
+          DOCS_REVISION: ${{ matrix.docs_revision }}
+          BUILD_VARS: ${{ matrix.build_vars }}
+          ROUTE_QUERIES: ${{ matrix.route_queries }}
+        run: .github/scripts/build_version_matrix_row.sh
+        shell: bash
+
+      - name: Upload verified version artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            build-output-md/${{ matrix.module }}/
+            build-logs/${{ matrix.module }}-${{ matrix.version_label }}.log
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  matrix-upload:
+    name: Upload ${{ matrix.module }} ${{ matrix.version_label }} revision
+    if: ${{ inputs.mode == 'version-matrix' }}
+    needs: [matrix-plan, matrix-build]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.matrix-plan.outputs.version_matrix) }}
+    steps:
+      - name: Checkout publication tooling
+        uses: actions/checkout@v4
+
+      - name: Download verified version artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: .
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install pinned Diplodoc CLI
+        run: npm install --global "@diplodoc/cli@${DIPLODOC_CLI_VERSION}"
+        shell: bash
+
+      - name: Upload revision without changing versions or head
+        env:
+          VERSION_COMPONENT: ${{ matrix.module }}
+          DOCS_REVISION: ${{ matrix.docs_revision }}
+          STORAGE_SUFFIX: ${{ matrix.storage_suffix }}
+          STORAGE_ENDPOINT: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
+          STORAGE_REGION: ${{ vars.DIPLODOC_STORAGE_REGION }}
+          STORAGE_BUCKET: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
+          STORAGE_ACCESS_KEY_ID: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
+          STORAGE_SECRET_ACCESS_KEY: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+        run: .github/scripts/publish_docs_revision.sh
+        shell: bash
+
+      - name: Verify uploaded revision
+        env:
+          REVISION: ${{ matrix.docs_revision }}
+          VIEWER_URL: ${{ matrix.viewer_url }}
+        run: |
+          set -euo pipefail
+          for language in ru en; do
+            url="${VIEWER_URL%/}/${language}/?revision=${REVISION}"
+            for attempt in $(seq 1 12); do
+              status=$(curl \
+                --silent \
+                --show-error \
+                --location \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                "${url}" || true)
+              if [[ "${status}" == 200 ]]; then
+                printf '%s is available\n' "${url}"
+                break
+              fi
+              if [[ "${attempt}" == 12 ]]; then
+                printf 'Viewer check failed after %s attempts: %s returned HTTP %s\n' \
+                  "${attempt}" "${url}" "${status:-no response}" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+        shell: bash
+
+  matrix-register:
+    name: Register ${{ matrix.module }} ${{ matrix.version_label }}
+    if: ${{ inputs.mode == 'version-matrix' }}
+    needs: [matrix-plan, matrix-upload]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.matrix-plan.outputs.version_matrix) }}
+    steps:
+      - name: Register named version without changing head
+        uses: diplodoc-platform/docs-release-action@v2
+        with:
+          revision: ${{ matrix.docs_revision }}
+          version: ${{ matrix.version_label }}
+          update-only-version: "true"
+          storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}${{ matrix.storage_suffix }}"
+          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          server: https://viewer.ydocs.io
+          project-link: "${{ matrix.viewer_url }}/ru/?version=${{ matrix.version_label }}"
+
+      - name: Verify named version
+        env:
+          VERSION_LABEL: ${{ matrix.version_label }}
+          VIEWER_URL: ${{ matrix.viewer_url }}
+        run: |
+          set -euo pipefail
+          for language in ru en; do
+            url="${VIEWER_URL%/}/${language}/?version=${VERSION_LABEL}"
+            for attempt in $(seq 1 12); do
+              status=$(curl \
+                --silent \
+                --show-error \
+                --location \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                "${url}" || true)
+              if [[ "${status}" == 200 ]]; then
+                printf '%s is available\n' "${url}"
+                break
+              fi
+              if [[ "${attempt}" == 12 ]]; then
+                printf 'Version check failed after %s attempts: %s returned HTTP %s\n' \
+                  "${attempt}" "${url}" "${status:-no response}" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+        shell: bash
+
+  matrix-default-heads:
+    name: Set ${{ matrix.module }} ${{ matrix.version_label }} as default
+    if: ${{ inputs.mode == 'version-matrix' }}
+    needs: [matrix-plan, matrix-register]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.matrix-plan.outputs.default_matrix) }}
+    steps:
+      - name: Move component head to configured default
+        uses: diplodoc-platform/docs-release-action@v2
+        with:
+          revision: ${{ matrix.docs_revision }}
+          version: ${{ matrix.version_label }}
+          update-only-version: "false"
+          storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}${{ matrix.storage_suffix }}"
+          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          server: https://viewer.ydocs.io
+          project-link: "${{ matrix.viewer_url }}/ru/?version=${{ matrix.version_label }}"
+
+      - name: Verify default head
+        env:
+          VIEWER_URL: ${{ matrix.viewer_url }}
+        run: |
+          set -euo pipefail
+          for language in ru en; do
+            url="${VIEWER_URL%/}/${language}/"
+            for attempt in $(seq 1 12); do
+              status=$(curl \
+                --silent \
+                --show-error \
+                --location \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --connect-timeout 10 \
+                --max-time 30 \
+                --output /dev/null \
+                --write-out '%{http_code}' \
+                "${url}" || true)
+              if [[ "${status}" == 200 ]]; then
+                printf '%s is available as the default head\n' "${url}"
+                break
+              fi
+              if [[ "${attempt}" == 12 ]]; then
+                printf 'Default head check failed after %s attempts: %s returned HTTP %s\n' \
+                  "${attempt}" "${url}" "${status:-no response}" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+        shell: bash
+
+  matrix-summary:
+    name: Complete component version matrix
+    if: ${{ inputs.mode == 'version-matrix' }}
+    needs: [matrix-plan, matrix-default-heads]
+    runs-on: ubuntu-latest
+    env:
+      VERSION_MATRIX: ${{ needs.matrix-plan.outputs.version_matrix }}
+      MATRIX_SIZE: ${{ needs.matrix-plan.outputs.matrix_size }}
+    steps:
+      - name: Write version links to job summary
+        run: |
+          set -euo pipefail
+          {
+            printf '## Complete documentation version matrix published\n\n'
+            printf 'Source revision: `%s`\n\n' "${GITHUB_SHA}"
+            printf 'Published builds: `%s`\n\n' "${MATRIX_SIZE}"
+            printf '| Component | Version | Default | RU | EN |\n'
+            printf '| --- | --- | --- | --- | --- |\n'
+            jq -r '.include[] | [
+              .module,
+              .version_label,
+              (if .is_default then "yes" else "" end),
+              .viewer_url
+            ] | @tsv' <<<"${VERSION_MATRIX}" |
+              while IFS=$'\t' read -r module version is_default viewer_url; do
+                query="?version=${version}"
+                printf '| %s | %s | %s | [RU](%s/ru/%s) | [EN](%s/en/%s) |\n' \
+                  "${module}" \
+                  "${version}" \
+                  "${is_default}" \
+                  "${viewer_url%/}" \
+                  "${query}" \
+                  "${viewer_url%/}" \
+                  "${query}"
+              done
           } >> "${GITHUB_STEP_SUMMARY}"
         shell: bash

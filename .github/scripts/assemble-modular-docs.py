@@ -19,17 +19,20 @@ PROJECT_NAME_RE = re.compile(r"^\s*project-name:\s*['\"]?([^'\"\s#]+)", re.MULTI
 CONFIG_LANGS_RE = re.compile(r"^[ \t]*langs:[ \t]*\[([^]]+)]", re.MULTILINE)
 PRESET_SCALAR_RE = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):(?:\s+(.*?))?\s*$")
 PLACEHOLDER_RE = re.compile(r"{{\s*([A-Za-z0-9][A-Za-z0-9_.-]*)\s*}}")
+DOCS_REVISION_PLACEHOLDER_RE = re.compile(r"{{\s*docs-revision-query\s*}}")
 REVISION_QUERY_RE = re.compile(r"^$|^\?revision=[A-Za-z0-9._-]+$")
 DOCS_REVISION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 VIEWER_URL_RE = re.compile(
     r"^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.viewer\.ydocs\.io$"
 )
-ROUTE_ROOT_RE = re.compile(r"{{\s*(landing|core|spyt|chyt|yql|flow)-docs-root\s*}}")
+ROUTE_ROOT_RE = re.compile(
+    r"{{\s*(?P<module>[a-z0-9][a-z0-9-]*)-docs-root\s*}}"
+)
 MODULAR_ROUTE_RE = re.compile(
-    r"{{\s*(?P<module>landing|core|spyt|chyt|yql|flow)-docs-root\s*}}/"
+    r"{{\s*(?P<module>[a-z0-9][a-z0-9-]*)-docs-root\s*}}/"
     r"{{\s*lang\s*}}/"
     r"(?P<path>[A-Za-z0-9_./-]*)"
-    r"{{\s*docs-revision-query\s*}}"
+    r"(?P<query>{{\s*docs-revision-query\s*}})"
     r"(?:#[^\s)\]\[\"'<>]*)?"
 )
 DOCS_ROOT_PREFIX_RE = re.compile(r"{{\s*docs_root\s*}}/(?P<prefix>[^/\s)\]\[\"'<>]+)")
@@ -132,6 +135,13 @@ def parse_args() -> argparse.Namespace:
             "Revision used for Viewer asset URLs. Required for a public "
             "version preview; inferred from docs-revision-query for a "
             "revision preview."
+        ),
+    )
+    parser.add_argument(
+        "--route-queries",
+        help=(
+            "JSON object mapping every registered module to the query appended "
+            "to links targeting that project."
         ),
     )
     preview_group = parser.add_mutually_exclusive_group()
@@ -422,6 +432,98 @@ def preview_docs_roots(
     return overrides
 
 
+def load_route_queries(
+    raw: str | None,
+    modules: list[dict[str, Any]],
+    selected_names: set[str],
+    public_preview_mode: str | None,
+    docs_revision_query: str,
+) -> dict[str, str]:
+    """Validate the authoritative per-target routing query map."""
+    module_names = [module["name"] for module in modules]
+    if raw is None:
+        selected_query = docs_revision_query
+        return {
+            name: selected_query if name in selected_names else ""
+            for name in module_names
+        }
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise AssemblyError(f"Invalid route-queries JSON: {error}") from error
+    if not isinstance(document, dict):
+        raise AssemblyError("route-queries must be a JSON object")
+    expected = set(module_names)
+    actual = set(document)
+    if actual != expected:
+        missing = ", ".join(sorted(expected - actual)) or "none"
+        unexpected = ", ".join(sorted(actual - expected)) or "none"
+        raise AssemblyError(
+            f"route-queries keys do not match the module registry; "
+            f"missing: {missing}; unexpected: {unexpected}"
+        )
+    for name, query in document.items():
+        if not isinstance(query, str) or not (
+            query == ""
+            or REVISION_QUERY_RE.fullmatch(query)
+            or re.fullmatch(r"\?version=[0-9]+\.[0-9]+", query)
+        ):
+            raise AssemblyError(f"Invalid route query for {name}: {query!r}")
+        if name not in selected_names and query:
+            raise AssemblyError(
+                f"Unselected module {name} must not receive a route query"
+            )
+    if public_preview_mode == "revision":
+        for name in selected_names:
+            if document[name] != docs_revision_query:
+                raise AssemblyError(
+                    f"Selected revision-preview module {name} must use "
+                    f"{docs_revision_query!r}"
+                )
+    elif public_preview_mode == "version":
+        for name in selected_names:
+            if not re.fullmatch(r"\?version=[0-9]+\.[0-9]+", document[name]):
+                raise AssemblyError(
+                    f"Version-preview module {name} must use a version query"
+                )
+    elif any(document.values()):
+        raise AssemblyError("Non-preview assembly must not contain route queries")
+    return {name: document[name] for name in module_names}
+
+
+def materialize_modular_route_queries(
+    destination: Path, route_queries: dict[str, str]
+) -> int:
+    """Replace generic route queries in a generated project with target queries."""
+    replacements = 0
+    for path in sorted(destination.rglob("*")):
+        if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
+            continue
+        content = path.read_text(encoding="utf-8")
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal replacements
+            target = match.group("module")
+            if target not in route_queries:
+                raise AssemblyError(
+                    f"Modular route references unregistered module {target}: {path}"
+                )
+            replacements += 1
+            return match.group(0).replace(
+                match.group("query"), route_queries[target], 1
+            )
+
+        rendered = MODULAR_ROUTE_RE.sub(replace, content)
+        if DOCS_REVISION_PLACEHOLDER_RE.search(rendered):
+            raise AssemblyError(
+                f"Generic docs-revision-query remains outside a canonical "
+                f"target route: {path}"
+            )
+        if rendered != content:
+            path.write_text(rendered, encoding="utf-8")
+    return replacements
+
+
 def override_public_scalars(path: Path, overrides: dict[str, str]) -> None:
     """Replace existing public preset scalars in a generated preset copy."""
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -512,15 +614,11 @@ def validate_config_languages(config: Path, expected: list[str]) -> None:
         )
 
 
-def validate_docs_roots(variables: dict[str, str]) -> None:
-    for name in (
-        "landing-docs-root",
-        "core-docs-root",
-        "spyt-docs-root",
-        "chyt-docs-root",
-        "yql-docs-root",
-        "flow-docs-root",
-    ):
+def validate_docs_roots(
+    variables: dict[str, str], modules: list[dict[str, Any]]
+) -> None:
+    for module in modules:
+        name = f"{module['name']}-docs-root"
         value = variables.get(name)
         if not value:
             raise AssemblyError(f"Shared public preset is missing {name}")
@@ -758,8 +856,27 @@ def validate_modular_routes(source_root: Path, modules: list[dict[str, Any]]) ->
                     if relative_parts and relative_parts[0] in module["languages"]
                     else None
                 )
-                route_roots = list(ROUTE_ROOT_RE.finditer(text))
-                routes = list(MODULAR_ROUTE_RE.finditer(text))
+                route_roots = [
+                    match
+                    for match in ROUTE_ROOT_RE.finditer(text)
+                    if match.group("module") in registry
+                ]
+                all_routes = list(MODULAR_ROUTE_RE.finditer(text))
+                unregistered_routes = [
+                    route
+                    for route in all_routes
+                    if route.group("module") not in registry
+                ]
+                if unregistered_routes:
+                    raise AssemblyError(
+                        "Modular route references unregistered module "
+                        f"{unregistered_routes[0].group('module')}: {path}"
+                    )
+                routes = [
+                    route
+                    for route in all_routes
+                    if route.group("module") in registry
+                ]
                 if len(route_roots) != len(routes):
                     raise AssemblyError(
                         f"Malformed modular route in {path}; expected "
@@ -811,6 +928,7 @@ def assemble_module(
     docs_revision: str | None,
     public_preview_mode: str | None,
     preview_roots: dict[str, str],
+    route_queries: dict[str, str],
     navigation_assets: Path,
 ) -> dict[str, Any]:
     name = module["name"]
@@ -900,6 +1018,9 @@ def assemble_module(
     legacy_self_routes_rewritten, hardcoded_self_routes_rewritten = rewrite_self_routes(
         destination, public_source, name, module["languages"]
     )
+    modular_route_queries_materialized = materialize_modular_route_queries(
+        destination, route_queries
+    )
 
     for language in module["languages"]:
         language_root = destination / language
@@ -949,6 +1070,8 @@ def assemble_module(
         "common": module["common"],
         "public_revision_preview": public_preview_mode == "revision",
         "public_version_preview": public_preview_mode == "version",
+        "route_queries": route_queries,
+        "modular_route_queries_materialized": modular_route_queries_materialized,
         "legacy_self_routes_rewritten": legacy_self_routes_rewritten,
         "hardcoded_self_routes_rewritten": hardcoded_self_routes_rewritten,
         "code_directives_materialized": code_directives_materialized,
@@ -1003,7 +1126,17 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
     if docs_revision is not None and not DOCS_REVISION_RE.fullmatch(docs_revision):
         raise AssemblyError("docs-revision must contain only safe revision characters")
 
-    modules = load_registry(args.registry.resolve())
+    registered_modules = load_registry(args.registry.resolve())
+    known_names = {module["name"] for module in registered_modules}
+    if args.modules:
+        requested = set(args.modules)
+        unknown = requested - known_names
+        if unknown:
+            raise AssemblyError(f"Unknown requested modules: {', '.join(sorted(unknown))}")
+        selected_names = requested
+    else:
+        selected_names = known_names
+
     public_preview_mode: str | None = None
     if args.public_revision_preview:
         public_preview_mode = "revision"
@@ -1029,17 +1162,22 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     preview_roots: dict[str, str] = {}
     if public_preview_mode:
-        preview_roots = preview_docs_roots(modules, shared_variables)
+        preview_roots = preview_docs_roots(registered_modules, shared_variables)
         shared_variables.update(preview_roots)
-    validate_docs_roots(shared_variables)
-    validate_modular_routes(source_root, modules)
-    if args.modules:
-        requested = set(args.modules)
-        known = {module["name"] for module in modules}
-        unknown = requested - known
-        if unknown:
-            raise AssemblyError(f"Unknown requested modules: {', '.join(sorted(unknown))}")
-        modules = [module for module in modules if module["name"] in requested]
+    route_queries = load_route_queries(
+        args.route_queries,
+        registered_modules,
+        selected_names,
+        public_preview_mode,
+        docs_revision_query,
+    )
+    validate_docs_roots(shared_variables, registered_modules)
+    validate_modular_routes(source_root, registered_modules)
+    modules = [
+        module
+        for module in registered_modules
+        if module["name"] in selected_names
+    ]
 
     if output_root.exists():
         if not args.clean:
@@ -1071,6 +1209,7 @@ def run(args: argparse.Namespace) -> list[dict[str, Any]]:
             docs_revision,
             public_preview_mode,
             preview_roots,
+            route_queries,
             navigation_assets,
         )
         for module in modules
