@@ -35,6 +35,12 @@ docs-viewer:
   gtm:
     id: GTM-W2MMVTR
 
+yafeedback:
+  ownerId:
+    ru: 47e5fcf7-a17e-46df-bc61-2d70740fccb0
+    en: 47e5fcf7-a17e-46df-bc61-2d70740fccb0
+  hideHeader: true
+
 resources:
   csp:
     - script-src-elem:
