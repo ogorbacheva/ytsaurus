@@ -28,7 +28,10 @@ python3 .github/scripts/build_global_navigation.py --check
 The generator reads its targets from the module registry, validates every
 registered cross-project link against the corresponding local language tree,
 validates project-local header icons, and fails if a language has no navigation
-template.
+template. Links between registered documentation projects explicitly use
+`target: "_self"` in the language templates because Viewer treats absolute URLs
+on another project hostname as external and otherwise opens them in a new tab.
+Truly external links, such as GitHub, use `target: "_blank"`.
 
 Header SVG files live in `_assets/navigation/`. The modular assembler copies
 them into every project and adds a hidden `_navigation-assets.md` page for each

@@ -22,12 +22,15 @@ navigation:
                   - type: link
                     text: "Platform overview"
                     url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Quick start"
                     url: "{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Architecture and core concepts"
                     url: "{{ core-docs-root }}/{{ lang }}/concepts/basic-concepts{{ docs-revision-query }}"
+                    target: "_self"
           - type: column
             items:
               - type: section
@@ -36,15 +39,19 @@ navigation:
                   - type: link
                     text: "Run your first YQL query"
                     url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Run a Spark job"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/run-spark-jobs{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Run your first CHYT query"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/how-to-guides/try-chyt{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Launch your first Flow pipeline"
                     url: "{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
+                    target: "_self"
       - type: dropdown
         text: "Guides"
         items:
@@ -56,18 +63,23 @@ navigation:
                   - type: link
                     text: "Python API"
                     url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Dynamic tables"
                     url: "{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Develop SPYT applications"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/development/index{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "CHYT CLI and Python API"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/cli-and-api{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Develop Flow pipelines"
                     url: "{{ flow-docs-root }}/{{ lang }}/concepts/language-choice{{ docs-revision-query }}"
+                    target: "_self"
           - type: column
             items:
               - type: section
@@ -76,21 +88,27 @@ navigation:
                   - type: link
                     text: "MapReduce and distributed compute"
                     url: "{{ core-docs-root }}/{{ lang }}/concepts/data-processing/overview{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "SPYT how-to guides"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/index{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Structured Streaming"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/structured-streaming/index{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Queries and data in CHYT"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/queries/execute{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "YQL"
                     url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Stream processing with Flow"
                     url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+                    target: "_self"
           - type: column
             items:
               - type: section
@@ -99,39 +117,50 @@ navigation:
                   - type: link
                     text: "Install YTsaurus"
                     url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/install-ytsaurus{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Operate a cluster"
                     url: "{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-operations{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Deploy SPYT"
                     url: "{{ spyt-docs-root }}/{{ lang }}/how-to-guides/deployment/index{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Install CHYT"
                     url: "{{ chyt-docs-root }}/{{ lang }}/admin-guide/how-to-guides/install-chyt{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Deploy Flow"
                     url: "{{ flow-docs-root }}/{{ lang }}/how-to-guides/deployment/launch-vanilla{{ docs-revision-query }}"
+                    target: "_self"
       - type: dropdown
         text: "Components"
         items:
           - type: link
             text: "All components"
             url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+            target: "_self"
           - type: link
             text: "YTsaurus Core"
             url: "{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+            target: "_self"
           - type: link
             text: "YQL"
             url: "{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}"
+            target: "_self"
           - type: link
             text: "SPYT"
             url: "{{ spyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+            target: "_self"
           - type: link
             text: "CHYT"
             url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}"
+            target: "_self"
           - type: link
             text: "Flow"
             url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
+            target: "_self"
       - type: dropdown
         text: "Reference"
         items:
@@ -143,18 +172,23 @@ navigation:
                   - type: link
                     text: "CLI commands"
                     url: "{{ core-docs-root }}/{{ lang }}/reference/api/cli/commands{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Error codes"
                     url: "{{ core-docs-root }}/{{ lang }}/reference/api/error-codes{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Data formats"
                     url: "{{ core-docs-root }}/{{ lang }}/reference/storage/formats{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Release notes"
                     url: "{{ core-docs-root }}/{{ lang }}/reference/releases{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Version compatibility"
                     url: "{{ core-docs-root }}/{{ lang }}/reference/compatibility{{ docs-revision-query }}"
+                    target: "_self"
           - type: column
             items:
               - type: section
@@ -163,21 +197,27 @@ navigation:
                   - type: link
                     text: "YQL syntax"
                     url: "{{ yql-docs-root }}/{{ lang }}/yql/syntax/{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "YQL built-in functions"
                     url: "{{ yql-docs-root }}/{{ lang }}/yql/builtins/{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "SPYT reference"
                     url: "{{ spyt-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "CHYT configuration"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/cliques/configuration{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "CHYT release notes"
                     url: "{{ chyt-docs-root }}/{{ lang }}/user-guide/reference/release-notes{{ docs-revision-query }}"
+                    target: "_self"
                   - type: link
                     text: "Flow reference"
                     url: "{{ flow-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
+                    target: "_self"
     rightItems:
       - type: link
         text: "GitHub"

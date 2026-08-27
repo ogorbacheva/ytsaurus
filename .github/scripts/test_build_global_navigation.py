@@ -65,15 +65,19 @@ class BuildGlobalNavigationTest(unittest.TestCase):
             "      - type: link\n"
             '        url: "{{ core-docs-root }}/{{ lang }}/guide'
             '{{ docs-revision-query }}"\n'
+            '        target: "_self"\n'
             "      - type: link\n"
             '        url: "{{ spyt-docs-root }}/{{ lang }}/'
             '{{ docs-revision-query }}"\n'
+            '        target: "_self"\n'
             "      - type: link\n"
             '        url: "{{ chyt-docs-root }}/{{ lang }}/guide'
             '{{ docs-revision-query }}"\n'
+            '        target: "_self"\n'
             "      - type: link\n"
             '        url: "{{ yql-docs-root }}/{{ lang }}/yql/'
             '{{ docs-revision-query }}"\n'
+            '        target: "_self"\n'
             "    rightItems:\n"
             "      - type: link\n"
             '        icon: "_assets/navigation/github.svg"\n'
@@ -131,6 +135,7 @@ class BuildGlobalNavigationTest(unittest.TestCase):
                 )
                 self.assertIn("navigation:", content)
                 self.assertIn("items:", content)
+                self.assertEqual(content.count('target: "_self"'), 4)
 
     def test_check_reports_all_stale_targets_without_writing(self) -> None:
         toc = self.source / "public" / "core" / "ru" / "toc.yaml"
