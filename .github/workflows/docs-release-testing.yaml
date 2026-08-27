@@ -110,18 +110,46 @@ jobs:
     permissions:
       actions: read
       contents: read
+    env:
+      STORAGE_BUCKET_BASE: ${{ inputs.storage_profile == 'legacy-ytsaurus' && vars.DIPLODOC_YTSAURUS_STORAGE_BUCKET || vars.DIPLODOC_STORAGE_BUCKET }}
+      STORAGE_ENDPOINT: ${{ inputs.storage_profile == 'legacy-ytsaurus' && vars.DIPLODOC_YTSAURUS_STORAGE_ENDPOINT || vars.DIPLODOC_STORAGE_ENDPOINT }}
+      STORAGE_REGION: ${{ inputs.storage_profile == 'legacy-ytsaurus' && vars.DIPLODOC_YTSAURUS_STORAGE_REGION || vars.DIPLODOC_STORAGE_REGION }}
+      STORAGE_ACCESS_KEY_ID: ${{ inputs.storage_profile == 'legacy-ytsaurus' && secrets.DIPLODOC_YTSAURUS_ACCESS_KEY_ID || secrets.DIPLODOC_ACCESS_KEY_ID }}
+      STORAGE_SECRET_ACCESS_KEY: ${{ inputs.storage_profile == 'legacy-ytsaurus' && secrets.DIPLODOC_YTSAURUS_SECRET_ACCESS_KEY || secrets.DIPLODOC_SECRET_ACCESS_KEY }}
     steps:
+      - name: Validate storage profile
+        run: |
+          if [[ -z "${STORAGE_BUCKET_BASE}" || -z "${STORAGE_ENDPOINT}" || -z "${STORAGE_REGION}" ]]; then
+            echo "::error::Variables are not configured for storage profile '${{ inputs.storage_profile }}'."
+            exit 1
+          fi
+          if [[ -z "${STORAGE_ACCESS_KEY_ID}" || -z "${STORAGE_SECRET_ACCESS_KEY}" ]]; then
+            echo "::error::Secrets are not configured for storage profile '${{ inputs.storage_profile }}'."
+            exit 1
+          fi
+        shell: bash
       - name: Show docs revision
         run: |
           echo "Revision: "${{ github.sha }}
           echo "Storage profile: "${{ inputs.storage_profile }}
-          echo "Storage bucket: "${{ inputs.storage_profile == 'legacy-ytsaurus' && 'ytsaurus' || vars.DIPLODOC_STORAGE_BUCKET }}
+          echo "Storage bucket: "${STORAGE_BUCKET_BASE}
       - name: Upload to testing
         uses: diplodoc-platform/docs-upload-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
-          storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
-          storage-bucket: ${{ inputs.storage_profile == 'legacy-ytsaurus' && 'ytsaurus' || vars.DIPLODOC_STORAGE_BUCKET }}
-          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
-          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          storage-endpoint: ${{ env.STORAGE_ENDPOINT }}
+          storage-region: ${{ env.STORAGE_REGION }}
+          storage-bucket: ${{ env.STORAGE_BUCKET_BASE }}
+          storage-access-key-id: ${{ env.STORAGE_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ env.STORAGE_SECRET_ACCESS_KEY }}
+      - name: Verify uploaded revision
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.STORAGE_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.STORAGE_REGION }}
+        run: |
+          aws s3api head-object \
+            --endpoint-url "${STORAGE_ENDPOINT}" \
+            --bucket "${STORAGE_BUCKET_BASE}-stable" \
+            --key "rev/${GITHUB_SHA}/.yfm"
+        shell: bash
