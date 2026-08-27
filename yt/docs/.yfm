@@ -45,9 +45,13 @@ resources:
   csp:
     - script-src-elem:
         - https://mc.yandex.ru
+        - https://surveys.yandex.ru
     - connect-src:
         - https://*.algolia.net
         - https://*.algolianet.com
+        - https://surveys.yandex.ru
+    - frame-src:
+        - https://yandex.ru
     - img-src:
         - https://storage.yandexcloud.net
 
