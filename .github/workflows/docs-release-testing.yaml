@@ -149,7 +149,7 @@ jobs:
           AWS_DEFAULT_REGION: ${{ env.STORAGE_REGION }}
         run: |
           aws s3api head-object \
-            --endpoint-url "${STORAGE_ENDPOINT}" \
+            --region "${STORAGE_REGION}" \
             --bucket "${STORAGE_BUCKET_BASE}-stable" \
             --key "rev/${GITHUB_SHA}/.yfm"
         shell: bash
