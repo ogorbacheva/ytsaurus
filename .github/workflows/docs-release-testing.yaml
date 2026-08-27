@@ -2,6 +2,15 @@ name: Docs manual Upload [to testing only]
 
 on:
   workflow_dispatch:
+    inputs:
+      storage_profile:
+        description: Storage profile for the revision upload
+        required: true
+        type: choice
+        default: legacy-ytsaurus
+        options:
+          - legacy-ytsaurus
+          - configured
 
 jobs:
   build:
@@ -105,13 +114,14 @@ jobs:
       - name: Show docs revision
         run: |
           echo "Revision: "${{ github.sha }}
+          echo "Storage profile: "${{ inputs.storage_profile }}
+          echo "Storage bucket: "${{ inputs.storage_profile == 'legacy-ytsaurus' && 'ytsaurus' || vars.DIPLODOC_STORAGE_BUCKET }}
       - name: Upload to testing
         uses: diplodoc-platform/docs-upload-action@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          version: "${{ github.ref_name }}"
           storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
           storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
-          storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
+          storage-bucket: ${{ inputs.storage_profile == 'legacy-ytsaurus' && 'ytsaurus' || vars.DIPLODOC_STORAGE_BUCKET }}
           storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
           storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
