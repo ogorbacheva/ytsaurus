@@ -142,14 +142,21 @@ jobs:
           storage-bucket: ${{ env.STORAGE_BUCKET_BASE }}
           storage-access-key-id: ${{ env.STORAGE_ACCESS_KEY_ID }}
           storage-secret-access-key: ${{ env.STORAGE_SECRET_ACCESS_KEY }}
-      - name: Verify uploaded revision
+      - name: Verify uploaded revision and assets
         env:
           AWS_ACCESS_KEY_ID: ${{ env.STORAGE_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ env.STORAGE_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ env.STORAGE_REGION }}
         run: |
-          aws s3api head-object \
-            --region "${STORAGE_REGION}" \
-            --bucket "${STORAGE_BUCKET_BASE}-stable" \
-            --key "rev/${GITHUB_SHA}/.yfm"
+          for object in \
+            .yfm \
+            _assets/script/feedback-position.js \
+            images/yql-how-to-try.png
+          do
+            echo "Verify ${object}"
+            aws s3api head-object \
+              --region "${STORAGE_REGION}" \
+              --bucket "${STORAGE_BUCKET_BASE}-stable" \
+              --key "rev/${GITHUB_SHA}/${object}"
+          done
         shell: bash
