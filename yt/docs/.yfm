@@ -42,6 +42,8 @@ yafeedback:
   hideHeader: true
 
 resources:
+  script:
+    - _assets/script/feedback-position.js
   csp:
     - script-src-elem:
         - https://mc.yandex.ru
