@@ -53,6 +53,10 @@ navigation:
                     text: "Запустить первый Flow-пайплайн"
                     url: "{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
                     target: "_self"
+                  - type: link
+                    text: "Подключить Apache Flink к YTsaurus"
+                    url: "{{ flyt-docs-root }}/{{ lang }}/reference/flink-connector-ytsaurus{{ docs-revision-query }}"
+                    target: "_self"
       - type: dropdown
         text: "Руководства"
         items:
@@ -162,6 +166,10 @@ navigation:
             text: "Flow"
             url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
             target: "_self"
+          - type: link
+            text: "FLYT"
+            url: "{{ flyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+            target: "_self"
       - type: dropdown
         text: "Справочники"
         items:
@@ -218,6 +226,10 @@ navigation:
                   - type: link
                     text: "Справочник Flow"
                     url: "{{ flow-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
+                    target: "_self"
+                  - type: link
+                    text: "Справочник FLYT"
+                    url: "{{ flyt-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
                     target: "_self"
     rightItems:
       - type: link

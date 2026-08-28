@@ -120,3 +120,15 @@ blocks:
         media:
           image: '_assets/hub/pict4.svg'
         border: true
+      - type: layout-item
+        content:
+          title: 'FLYT'
+          text: 'Apache Flink поверх YTsaurus: коннектор к динамическим таблицам и формат YSON.'
+          links:
+            - text: 'Открыть документацию'
+              url: '{{ flyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}'
+              theme: normal
+              arrow: true
+        media:
+          image: '_assets/hub/pict4.svg'
+        border: true

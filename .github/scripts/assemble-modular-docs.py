@@ -51,7 +51,7 @@ OG_URL_PROPERTY_RE = re.compile(
     r"[ \t]*-[ \t]+property:[ \t]*['\"]og:url['\"][ \t]*"
 )
 HARDCODED_COMPONENT_RE = re.compile(
-    r"https://ytsaurus\.tech/docs/(?P<module>core|spyt|chyt|yql|flow)(?:/|\b)"
+    r"https://ytsaurus\.tech/docs/(?P<module>core|spyt|chyt|yql|flow|flyt)(?:/|\b)"
 )
 INDEX_NAMES = ("index.md", "index.yaml", "index.yml")
 TEXT_SUFFIXES = {".md", ".yaml", ".yml"}

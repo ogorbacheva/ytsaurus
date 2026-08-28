@@ -1,3 +1,6 @@
+title: FLYT
+href: index.md
+# BEGIN GENERATED GLOBAL NAVIGATION
 navigation:
   logo:
     url: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
@@ -234,3 +237,28 @@ navigation:
         icon: "_assets/navigation/github.svg"
         target: "_blank"
       - type: controls
+# END GENERATED GLOBAL NAVIGATION
+items:
+  - name: Back to the documentation home
+    href: "{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+
+  - name: GET STARTED
+    labeled: true
+    items:
+      - name: FLYT overview
+        href: index.md
+      - name: Try FLYT
+        href: reference/flink-connector-ytsaurus.md
+      - name: Contact support
+        href: "{{ community-tg }}"
+
+  - name: USER GUIDE
+    labeled: true
+    items:
+      - name: Reference
+        href: reference/index.md
+        items:
+          - name: Apache Flink Connector YTsaurus
+            href: reference/flink-connector-ytsaurus.md
+          - name: YSON Formatter for Apache Flink
+            href: reference/flink-yson.md

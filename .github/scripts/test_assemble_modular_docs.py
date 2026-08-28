@@ -44,6 +44,7 @@ class AssembleModularDocsTest(unittest.TestCase):
             "  chyt-docs-root: https://example.test/docs/chyt\n"
             "  yql-docs-root: https://example.test/docs\n"
             "  flow-docs-root: https://example.test/docs/flow\n"
+            "  flyt-docs-root: https://example.test/docs/flyt\n"
             "  demo-docs-root: https://example.test/docs\n"
             "  docs-revision-query: \"\"\n",
             encoding="utf-8",

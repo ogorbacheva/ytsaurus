@@ -16,6 +16,12 @@ The registry keeps two different values for every documentation version:
 For example, CHYT documentation label `2.17` builds with
 `chyt-version=2.17` and `chyt-release-version=2.17.4`.
 
+FLYT uses the Connector release line as its selector: label `1.10` sets
+`flyt-connector-version=1.10` and the exact artifact variable
+`flyt-connector-release-version=1.10.0`. The YSON Formatter has an independent
+release cycle, so its exact `flyt-yson-version=1.1.0` is stored as an additional
+build variable and does not create a second version selector.
+
 `default_version` identifies the currently recommended documentation line. It
 is metadata for automation, not a special Diplodoc label named `latest`. When
 that label is published by `version-preview`, the workflow updates both the

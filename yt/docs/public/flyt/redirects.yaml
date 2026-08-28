@@ -1,0 +1,19 @@
+common:
+  - from: /flyt/index.md
+    to: /index.md
+    type: redirect
+  - from: /user-guide/data-processing/flyt/index.md
+    to: /index.md
+    type: redirect
+  - from: /user-guide/data-processing/flyt/overview.md
+    to: /index.md
+    type: redirect
+  - from: /user-guide/data-processing/flyt/flink-connector-ytsaurus.md
+    to: /reference/flink-connector-ytsaurus.md
+    type: redirect
+  - from: /user-guide/data-processing/flyt/flink-yson.md
+    to: /reference/flink-yson.md
+    type: redirect
+
+ru: []
+en: []

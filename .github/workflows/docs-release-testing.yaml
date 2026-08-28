@@ -26,6 +26,7 @@ on:
           - chyt
           - yql
           - flow
+          - flyt
           # END docs module choices
       version:
         description: Version label for version-preview; leave empty for version-matrix
@@ -101,6 +102,7 @@ jobs:
           python3 .github/scripts/rewrite_core_route_links.py
           python3 .github/scripts/check_flow_structure.py
           python3 .github/scripts/rewrite_flow_route_links.py
+          python3 .github/scripts/check_flyt_structure.py
         shell: bash
 
       - name: Verify generated global navigation
@@ -215,12 +217,14 @@ jobs:
           chyt_url=$(viewer_url chyt)
           yql_url=$(viewer_url yql)
           flow_url=$(viewer_url flow)
+          flyt_url=$(viewer_url flyt)
           landing_query=$(route_query landing)
           core_query=$(route_query core)
           spyt_query=$(route_query spyt)
           chyt_query=$(route_query chyt)
           yql_query=$(route_query yql)
           flow_query=$(route_query flow)
+          flyt_query=$(route_query flyt)
 
           while IFS= read -r target; do
             query=$(route_query "${target}")
@@ -272,7 +276,7 @@ jobs:
             '.modules[] | select(.name as $name | ($selected | index($name))) | [.name, .project_name] | @tsv' \
             .github/docs-modules.json)
 
-          unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|yql-docs-root|flow-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
+          unresolved_route_vars='\{\{[[:space:]]*(landing-docs-root|core-docs-root|spyt-docs-root|chyt-docs-root|yql-docs-root|flow-docs-root|flyt-docs-root|docs-revision-query|lang)[[:space:]]*\}\}'
           if grep -R -n -E --exclude-dir=_bundle "${unresolved_route_vars}" \
             "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; then
             echo 'Unresolved modular routing variables found in build output.' >&2
@@ -286,7 +290,7 @@ jobs:
             exit 1
           fi
 
-          legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt|yql|flow)([^A-Za-z0-9_-]|$)'
+          legacy_self_routes='\{\{[[:space:]]*docs_root[[:space:]]*\}\}/(core|spyt|chyt|yql|flow|flyt)([^A-Za-z0-9_-]|$)'
           if grep -R -n -E "${legacy_self_routes}" "${DOCS_INPUT_ROOT}"; then
             echo 'Legacy same-module routes remain in assembled inputs.' >&2
             exit 1
@@ -299,6 +303,8 @@ jobs:
               grep -Fq "${expected_url}" "${landing_page}"
               expected_flow_url="${flow_url}/${language}/tutorials/quick-start${flow_query}"
               grep -Fq "${expected_flow_url}" "${landing_page}"
+              expected_flyt_url="${flyt_url}/${language}/${flyt_query}"
+              grep -Fq "${expected_flyt_url}" "${landing_page}"
             fi
 
             if module_selected core; then
@@ -352,6 +358,14 @@ jobs:
               grep -Fq '_images/flow_noop_pipeline.png' "${flow_quick_start}"
               test -f "${BUILD_OUTPUT_MD}/flow/${language}/reference/configuration/all_yson_structs.md"
             fi
+
+            if module_selected flyt; then
+              flyt_page="${BUILD_OUTPUT_HTML}/flyt/${language}/reference/flink-connector-ytsaurus.html"
+              test -f "${flyt_page}"
+              grep -Fq "${core_url}/${language}/concepts/dynamic-tables/sorted-dynamic-tables${core_query}" "${flyt_page}"
+              grep -Fq '_images/flyt-connector-simple-sink-job-ui.png' "${flyt_page}"
+              test -f "${BUILD_OUTPUT_MD}/flyt/${language}/_images/flyt-connector-simple-sink-job-ui.png"
+            fi
           done
 
           while IFS=$'\t' read -r module language; do
@@ -363,6 +377,7 @@ jobs:
             grep -Fq "${chyt_url}/${language}/user-guide/how-to-guides/try-chyt${chyt_query}" "${toc}"
             grep -Fq "${yql_url}/${language}/yql/${yql_query}" "${toc}"
             grep -Fq "${flow_url}/${language}/tutorials/quick-start${flow_query}" "${toc}"
+            grep -Fq "${flyt_url}/${language}/reference/flink-connector-ytsaurus${flyt_query}" "${toc}"
           done < <(jq -r --argjson selected "${SELECTED_MODULES}" \
             '.modules[] | select(.name as $name | ($selected | index($name))) | .name as $module | .languages[] | [$module, .] | @tsv' \
             .github/docs-modules.json)
@@ -666,6 +681,7 @@ jobs:
                 spyt) title='SPYT' ;;
                 chyt) title='CHYT' ;;
                 flow) title='Flow' ;;
+                flyt) title='FLYT' ;;
                 *) title="${module}" ;;
               esac
               printf '| %s | [RU](%s/ru/%s) | [EN](%s/en/%s) |\n' \
@@ -713,6 +729,7 @@ jobs:
             --check
           python3 .github/scripts/check_core_structure.py
           python3 .github/scripts/check_flow_structure.py
+          python3 .github/scripts/check_flyt_structure.py
           python3 .github/scripts/check_yql_snapshot.py
           python3 -m unittest discover -s .github/scripts -p 'test_*.py'
           bash -n \

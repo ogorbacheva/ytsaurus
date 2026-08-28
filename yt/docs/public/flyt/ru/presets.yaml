@@ -1,0 +1,6 @@
+default:
+
+public:
+  lang: ru
+  source-root: https://github.com/ytsaurus/ytsaurus/tree/main
+  community-tg: https://t.me/ytsaurus_ru

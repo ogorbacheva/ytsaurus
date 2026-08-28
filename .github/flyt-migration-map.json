@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "module": "flyt",
+  "source_revision": "cbc129ea4a8258cc3470dab52641c7ed3b9ec1ab",
+  "source_file_count": 29,
+  "entries": [
+    {
+      "language": "ru",
+      "kind": "public-wrapper",
+      "source": "yt/docs/ru/user-guide/data-processing/flyt/overview.md",
+      "source_sha256": "b39f3dd35c37b99e358cc1ebb967110d1180ccf7221c1e0fa2b967b024047e0a",
+      "destination": "public/flyt/ru/index.md"
+    },
+    {
+      "language": "ru",
+      "kind": "public-wrapper",
+      "source": "yt/docs/ru/user-guide/data-processing/flyt/flink-connector-ytsaurus.md",
+      "source_sha256": "d9d687fd1ba753ca93101f7bc47df455ccd9c2532e2010c9ac5c2cb982d83935",
+      "destination": "public/flyt/ru/reference/flink-connector-ytsaurus.md"
+    },
+    {
+      "language": "ru",
+      "kind": "public-wrapper",
+      "source": "yt/docs/ru/user-guide/data-processing/flyt/flink-yson.md",
+      "source_sha256": "82879456fd79fd26c19d9f0994b990662ec02b8681abb0391d10d3d10b5bbbda",
+      "destination": "public/flyt/ru/reference/flink-yson.md"
+    },
+    {
+      "language": "ru",
+      "kind": "public-include",
+      "source": "yt/docs/ru/_includes/user-guide/data-processing/flyt/overview.md",
+      "source_sha256": "5f31fd9432185db631e70a3e8d9b1315551e8d96c5959e59b29ac5eb5d7c3a84",
+      "destination": "common/flyt/ru/_includes/index.md"
+    },
+    {
+      "language": "ru",
+      "kind": "public-include",
+      "source": "yt/docs/ru/_includes/user-guide/data-processing/flyt/flink-connector-ytsaurus.md",
+      "source_sha256": "616999ad463a3c2ea615373ff795f16c299d0248a92079783e470843b0505a71",
+      "destination": "common/flyt/ru/_includes/reference/flink-connector-ytsaurus.md"
+    },
+    {
+      "language": "ru",
+      "kind": "public-include",
+      "source": "yt/docs/ru/_includes/user-guide/data-processing/flyt/flink-yson.md",
+      "source_sha256": "d0d9ed5cd169dec56f9ede240aad7464719e3b1386dc8d024cf40fb90979bc16",
+      "destination": "common/flyt/ru/_includes/reference/flink-yson.md"
+    },
+    {
+      "language": "en",
+      "kind": "public-wrapper",
+      "source": "yt/docs/en/user-guide/data-processing/flyt/overview.md",
+      "source_sha256": "55515e583d66bf10c26effe6fce8cf6492e772251f58a44d4ec817c3313cd0a1",
+      "destination": "public/flyt/en/index.md"
+    },
+    {
+      "language": "en",
+      "kind": "public-wrapper",
+      "source": "yt/docs/en/user-guide/data-processing/flyt/flink-connector-ytsaurus.md",
+      "source_sha256": "d9d687fd1ba753ca93101f7bc47df455ccd9c2532e2010c9ac5c2cb982d83935",
+      "destination": "public/flyt/en/reference/flink-connector-ytsaurus.md"
+    },
+    {
+      "language": "en",
+      "kind": "public-wrapper",
+      "source": "yt/docs/en/user-guide/data-processing/flyt/flink-yson.md",
+      "source_sha256": "82879456fd79fd26c19d9f0994b990662ec02b8681abb0391d10d3d10b5bbbda",
+      "destination": "public/flyt/en/reference/flink-yson.md"
+    },
+    {
+      "language": "en",
+      "kind": "public-include",
+      "source": "yt/docs/en/_includes/user-guide/data-processing/flyt/overview.md",
+      "source_sha256": "f7f077f04a35ac57eaf3f0c3bf6815adea1c66bd0dc502752cf2857d9cb44269",
+      "destination": "common/flyt/en/_includes/index.md"
+    },
+    {
+      "language": "en",
+      "kind": "public-include",
+      "source": "yt/docs/en/_includes/user-guide/data-processing/flyt/flink-connector-ytsaurus.md",
+      "source_sha256": "08ac93c7f50f157b12d849b8167f013c9b0fe55a588ae73ff6b390a75d2baad8",
+      "destination": "common/flyt/en/_includes/reference/flink-connector-ytsaurus.md"
+    },
+    {
+      "language": "en",
+      "kind": "public-include",
+      "source": "yt/docs/en/_includes/user-guide/data-processing/flyt/flink-yson.md",
+      "source_sha256": "d55985ad01b1514a9f541c48d8233c2dc1994f0ae1f48addc0f485bbcc0b1dc3",
+      "destination": "common/flyt/en/_includes/reference/flink-yson.md"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-page",
+      "source": "yt/docs/ru/yandex-specific/user-guide/data-processing/flyt/overview.md",
+      "source_sha256": "bc8aec11e07050d912c4c0a7628840670c353983647bfb33ef3d5094d532bd70",
+      "destination": "internal/ru/flyt/index.md"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-page",
+      "source": "yt/docs/ru/yandex-specific/user-guide/data-processing/flyt/quickstart.md",
+      "source_sha256": "db7d3d64aa5b6d001e8431a844515f6c108f7a99006436748019231cb39d9506",
+      "destination": "internal/ru/flyt/tutorials/quick-start.md"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-page",
+      "source": "yt/docs/ru/yandex-specific/user-guide/data-processing/flyt/examples.md",
+      "source_sha256": "5fab9b4bf70d60a11c32388c319367625ac7029bfa4d774471ca82c51d92d60f",
+      "destination": "internal/ru/flyt/tutorials/examples.md"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-page",
+      "source": "yt/docs/ru/yandex-specific/user-guide/data-processing/flyt/start-macros.md",
+      "source_sha256": "ade74d3695ed77e2e761a116111db15b183d25f2237cd0e882d383f78f0204cf",
+      "destination": "internal/ru/flyt/how-to-guides/start-in-network-project.md"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-page",
+      "source": "yt/docs/ru/yandex-specific/user-guide/data-processing/flyt/reference.md",
+      "source_sha256": "5d0519fd720ecc15c8967517d9bbe37eba0bbb79d511b0364ee3abbc0e54ee9f",
+      "destination": "internal/ru/flyt/reference/cli.md"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-page",
+      "source": "yt/docs/ru/yandex-specific/user-guide/data-processing/flyt/flink-connector-ytsaurus.md",
+      "source_sha256": "ec09a98cbabba91bdeae783f44e2ed54b6bdb6a80152de900b0b3b1c78686e53",
+      "destination": "internal/ru/flyt/reference/flink-connector-ytsaurus.md"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-page",
+      "source": "yt/docs/ru/yandex-specific/user-guide/data-processing/flyt/flink-yson.md",
+      "source_sha256": "d268479938b7d9bf1f01c99c9a80a0f7dea07d8f6c9092cf0e2fd90eda21edfd",
+      "destination": "internal/ru/flyt/reference/flink-yson.md"
+    },
+    {
+      "language": "shared",
+      "kind": "public-image",
+      "source": "yt/docs/images/flyt-connector-lookup-join-flink-sql-result.png",
+      "source_sha256": "de398629e6c297e61653771561e78dfc9a3492644deffe1b88d978de7a380ebe",
+      "destination": "common/flyt/_images/flyt-connector-lookup-join-flink-sql-result.png"
+    },
+    {
+      "language": "shared",
+      "kind": "public-image",
+      "source": "yt/docs/images/flyt-connector-lookup-join-job-ui.png",
+      "source_sha256": "c33b5bf98d6d28acbf4be4100eef1c95f9eabde169f3f7c5cadadad0c840c357",
+      "destination": "common/flyt/_images/flyt-connector-lookup-join-job-ui.png"
+    },
+    {
+      "language": "shared",
+      "kind": "public-image",
+      "source": "yt/docs/images/flyt-connector-partitioned-table-result-ui.png",
+      "source_sha256": "b6d00fe266dbec911fde7c92658c66d4da2859fa64da0784414209527efa2bf1",
+      "destination": "common/flyt/_images/flyt-connector-partitioned-table-result-ui.png"
+    },
+    {
+      "language": "shared",
+      "kind": "public-image",
+      "source": "yt/docs/images/flyt-connector-simple-sink-job-ui.png",
+      "source_sha256": "6eba158f708c88d61b4990526449d5471a60104b070d7546e04b627f17146027",
+      "destination": "common/flyt/_images/flyt-connector-simple-sink-job-ui.png"
+    },
+    {
+      "language": "shared",
+      "kind": "public-image",
+      "source": "yt/docs/images/flyt-connector-simple-sink-result-ui.png",
+      "source_sha256": "dbd785bad6333fc647c3a565a86045a478bcd224b5b1d058f41358fb8cc95f37",
+      "destination": "common/flyt/_images/flyt-connector-simple-sink-result-ui.png"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-image",
+      "source": "yt/docs/ru/yandex-specific/images/flyt-abort-operation.png",
+      "source_sha256": "0de8adf1c9b4defde8c34385e9732ead11f2b445b69540746c8916a19caad8f9",
+      "destination": "internal/ru/flyt/_images/flyt-abort-operation.png"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-image",
+      "source": "yt/docs/ru/yandex-specific/images/flyt-flink-ui.png",
+      "source_sha256": "648363d42dcd21d093be68480636260912cce7fa19ff166ef28a9730834db9e9",
+      "destination": "internal/ru/flyt/_images/flyt-flink-ui.png"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-image",
+      "source": "yt/docs/ru/yandex-specific/images/flyt-operation.png",
+      "source_sha256": "b7f63e707d184dabad9d1b930e36d6cda5c5ce89a00141a5eac3b7185b26ccf1",
+      "destination": "internal/ru/flyt/_images/flyt-operation.png"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-image",
+      "source": "yt/docs/ru/yandex-specific/images/flyt-quickstart-stderr.png",
+      "source_sha256": "74ff01f6c573356d27ef46a2be0de10796bb2cea1e8ee8768353ad3c178c0a2e",
+      "destination": "internal/ru/flyt/_images/flyt-quickstart-stderr.png"
+    },
+    {
+      "language": "ru",
+      "kind": "internal-image",
+      "source": "yt/docs/ru/yandex-specific/images/flyt-run-terminal.png",
+      "source_sha256": "08d507fdc369f1d28866bf4d7b55bc8160d3176913ae20b7618cd665595eb782",
+      "destination": "internal/ru/flyt/_images/flyt-run-terminal.png"
+    }
+  ]
+}

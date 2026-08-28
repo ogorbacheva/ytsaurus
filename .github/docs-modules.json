@@ -48,6 +48,14 @@
       "languages": ["ru", "en"],
       "common": true,
       "storage_prefix": "flow"
+    },
+    {
+      "name": "flyt",
+      "project_name": "flyt",
+      "viewer_url": "https://common-ytsaurus---flyt.viewer.ydocs.io",
+      "languages": ["ru", "en"],
+      "common": true,
+      "storage_prefix": "flyt"
     }
   ]
 }

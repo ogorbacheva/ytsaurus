@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "wiki": "https://wiki.yandex-team.ru/infrastructure/ype/editorial/projects/yt-doc/proekty/redizajjn-dokumentacii/#component-release-cycles",
-    "checked_at": "2026-08-12"
+    "checked_at": "2026-08-28"
   },
   "components": [
     {
@@ -109,6 +109,30 @@
           "label": "2.11",
           "artifact_version": "2.11.0",
           "release_ref": "spyt/2.11.0"
+        }
+      ]
+    },
+    {
+      "name": "flyt",
+      "selector": "minor",
+      "docs_source": "profiled-current-checkout",
+      "default_version": "1.10",
+      "profile_variable": "flyt-connector-version",
+      "artifact_variable": "flyt-connector-release-version",
+      "release_source": {
+        "repository": "ytsaurus/ytsaurus-flyt",
+        "tag_pattern": "^flink-connector-ytsaurus/[0-9]+\\.[0-9]+\\.[0-9]+$",
+        "published_when": "maven_central_artifact_exists"
+      },
+      "versions": [
+        {
+          "label": "1.10",
+          "artifact_version": "1.10.0",
+          "release_ref": "flink-connector-ytsaurus/1.10.0",
+          "additional_build_vars": {
+            "flyt-yson-version": "1.1.0",
+            "flink-version": "1.20.X"
+          }
         }
       ]
     }

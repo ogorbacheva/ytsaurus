@@ -1,0 +1,5 @@
+log-levels:
+  YFM001: 'disabled'
+  # Shared include files are reached through public wrappers in toc.yaml.
+  YFM003: 'disabled'
+  YFM010: 'disabled'

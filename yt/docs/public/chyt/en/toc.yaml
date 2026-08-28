@@ -52,6 +52,10 @@ navigation:
                     text: "Launch your first Flow pipeline"
                     url: "{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}"
                     target: "_self"
+                  - type: link
+                    text: "Connect Apache Flink to YTsaurus"
+                    url: "{{ flyt-docs-root }}/{{ lang }}/reference/flink-connector-ytsaurus{{ docs-revision-query }}"
+                    target: "_self"
       - type: dropdown
         text: "Guides"
         items:
@@ -161,6 +165,10 @@ navigation:
             text: "Flow"
             url: "{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}"
             target: "_self"
+          - type: link
+            text: "FLYT"
+            url: "{{ flyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}"
+            target: "_self"
       - type: dropdown
         text: "Reference"
         items:
@@ -217,6 +225,10 @@ navigation:
                   - type: link
                     text: "Flow reference"
                     url: "{{ flow-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
+                    target: "_self"
+                  - type: link
+                    text: "FLYT reference"
+                    url: "{{ flyt-docs-root }}/{{ lang }}/reference/index{{ docs-revision-query }}"
                     target: "_self"
     rightItems:
       - type: link

@@ -6,6 +6,10 @@ default:
   chyt-release-version: "2.18.6"
   spyt-version: "2.11"
   spyt-release-version: "2.11.0"
+  flyt-connector-version: "1.10"
+  flyt-connector-release-version: "1.10.0"
+  flyt-yson-version: "1.1.0"
+  flink-version: 1.20.X
   strawberry-version: 0.0.17
   qt-version: 0.1.2
   yt-stable-branch: "25.4"
@@ -34,6 +38,7 @@ public:
   chyt-docs-root: https://ytsaurus.tech/docs/chyt
   yql-docs-root: https://ytsaurus.tech/docs
   flow-docs-root: https://ytsaurus.tech/docs/flow
+  flyt-docs-root: https://ytsaurus.tech/docs/flyt
   docs-revision-query: ""
   yql:
     udf-cpp-dir: https://github.com/ytsaurus/ytsaurus/tree/main/yql/essentials/udfs
