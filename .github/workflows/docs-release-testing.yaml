@@ -150,8 +150,7 @@ jobs:
         run: |
           for object in \
             .yfm \
-            _assets/script/feedback-position.js \
-            images/yql-how-to-try.png
+            _assets/style/feedback-position.css
           do
             echo "Verify ${object}"
             aws s3api head-object \
