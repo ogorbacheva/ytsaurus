@@ -1,0 +1,6 @@
+@media (min-width: 481px) {
+    #dc-widgets [data-theme] > div:first-child > div > button:not([class]) {
+        top: auto !important;
+        bottom: 280px !important;
+    }
+}
