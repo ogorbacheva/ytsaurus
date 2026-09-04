@@ -2,6 +2,10 @@ allowHTML: true
 apply-presets: true
 varsPreset: public
 langs: [ru, en]
+allowCustomResources: true
+resources:
+  style:
+    - ru/_assets/style/landing.css
 
 docs-viewer:
   project-name: landing

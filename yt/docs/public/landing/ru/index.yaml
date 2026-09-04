@@ -1,134 +1,354 @@
 fullScreen: true
 blocks:
-  - type: header-block
-    width: s
-    offset: default
-    title: 'Документация YTsaurus'
-    description: 'Масштабируемая платформа больших данных: распределённое хранилище, MapReduce, SQL, Spark и ClickHouse — в одном кластере.'
-    verticalOffset: l
-    buttons:
-      - text: 'Начать работу'
-        primary: true
-        theme: action
-        size: xl
-        url: '{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
-      - text: 'GitHub'
-        theme: outlined
-        size: xl
-        url: 'https://github.com/ytsaurus/ytsaurus'
-
   - type: card-layout-block
-    title: 'Выбрать по задаче'
+    className: ytsaurus-landing-search
     colSizes:
       all: 12
-      md: 4
+    children:
+      - type: layout-item
+        className: ytsaurus-landing-search-card
+        content:
+          title: 'Поиск по документации'
+          text: 'Введите запрос'
+        border: true
+
+  - type: content-layout-block
+    className: ytsaurus-landing-section-heading
+    textContent:
+      title: 'Как устроена система'
+      text: 'Выберите интерфейс для работы или перейдите к документации нужного слоя платформы.'
+    size: l
+
+  - type: card-layout-block
+    className: ytsaurus-landing-architecture-interfaces
+    title: 'Интерфейсы'
+    colSizes:
+      all: 12
+      sm: 4
+    children:
+      - type: basic-card
+        className: ytsaurus-landing-interface-card
+        title: 'SDK'
+        text: 'Клиентские библиотеки для работы с данными и вычислениями.'
+        urlTitle: 'Начать работу с Python API'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}'
+        border: line
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        className: ytsaurus-landing-interface-card
+        title: 'YQL'
+        text: 'SQL-подобный язык запросов и обработки данных YTsaurus.'
+        urlTitle: 'Открыть документацию YQL'
+        url: '{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}'
+        border: line
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        className: ytsaurus-landing-interface-card
+        title: 'CLI'
+        text: 'Команды для работы с кластером из терминала.'
+        urlTitle: 'Установить YTsaurus CLI'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/api/cli/install{{ docs-revision-query }}'
+        border: line
+        controlPosition: content
+        animated: false
+
+  - type: card-layout-block
+    className: ytsaurus-landing-architecture-layers
+    title: 'Слои платформы'
+    colSizes:
+      all: 12
+    children:
+      - type: basic-card
+        className: ytsaurus-landing-layer-card ytsaurus-landing-layer-processing
+        title: 'Слой обработки данных'
+        text: 'MapReduce и подключаемые движки YQL, SPYT, CHYT, Flow и FLYT.'
+        urlTitle: 'Перейти к обработке данных'
+        url: '{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}#processing'
+        border: line
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        className: ytsaurus-landing-layer-card ytsaurus-landing-layer-storage
+        title: 'Кипарис и слой хранения'
+        text: 'Метаинформация, статические и динамические таблицы.'
+        urlTitle: 'Перейти к хранению данных'
+        url: '{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}#storage'
+        border: line
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        className: ytsaurus-landing-layer-card ytsaurus-landing-layer-infrastructure
+        title: 'Инфраструктурный слой'
+        text: 'Компоненты, конфигурация, безопасность и эксплуатация кластера.'
+        urlTitle: 'Перейти к администрированию'
+        url: '{{ landing-docs-root }}/{{ lang }}/{{ docs-revision-query }}#administration'
+        border: line
+        controlPosition: content
+        animated: false
+
+  - type: content-layout-block
+    className: ytsaurus-landing-section-heading
+    textContent:
+      title: 'Хранение данных'
+      text: '<span id="storage"></span>Как устроены данные в YTsaurus и как решать основные задачи хранения.'
+    size: l
+
+  - type: card-layout-block
+    className: ytsaurus-landing-card-row
+    title: 'Основные понятия'
+    colSizes:
+      all: 12
       sm: 6
+      md: 4
+    children:
+      - type: basic-card
+        title: 'Кипарис'
+        text: 'Дерево метаинформации и объекты системы.'
+        urlTitle: 'Узнать, как устроен Кипарис'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/storage/cypress{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Статические таблицы'
+        text: 'Устройство, хранение и чтение неизменяемых табличных данных.'
+        urlTitle: 'Прочитать о статических таблицах'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/storage/static-tables{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Динамические таблицы'
+        text: 'NoSQL-хранилище для изменяемых данных с транзакциями и репликацией.'
+        urlTitle: 'Прочитать о динамических таблицах'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+
+  - type: card-layout-block
+    className: ytsaurus-landing-card-row ytsaurus-landing-card-row-secondary
+    title: 'Практические задачи'
+    colSizes:
+      all: 12
+      sm: 6
+      md: 4
+    children:
+      - type: basic-card
+        title: 'Работать с Кипарисом'
+        text: 'Создавать объекты и управлять деревом метаинформации.'
+        urlTitle: 'Посмотреть пример работы с Кипарисом'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/storage/cypress-example{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Изменять данные из консоли'
+        text: 'Создать динамическую таблицу, добавить и удалить строки.'
+        urlTitle: 'Добавить и удалить данные из консоли'
+        url: '{{ core-docs-root }}/{{ lang }}/tutorials/dynamic-tables/add-remove-line{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Создать резервную копию'
+        text: 'Сохранить и восстановить состояние динамической таблицы.'
+        urlTitle: 'Создать резервную копию динамической таблицы'
+        url: '{{ core-docs-root }}/{{ lang }}/tutorials/dynamic-tables/backup-table{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+
+  - type: content-layout-block
+    className: ytsaurus-landing-section-heading
+    textContent:
+      title: 'Обработка данных'
+      text: '<span id="processing"></span>Вычислительная модель платформы и готовые инструменты для пакетных, SQL- и потоковых задач.'
+    size: l
+
+  - type: card-layout-block
+    className: ytsaurus-landing-card-row
+    title: 'Основные понятия'
+    colSizes:
+      all: 12
+      sm: 6
+      md: 4
+    children:
+      - type: basic-card
+        title: 'Распределённые вычисления'
+        text: 'Модель выполнения операций Map, Reduce, Sort, Merge и Vanilla.'
+        urlTitle: 'Прочитать о распределённых вычислениях'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/data-processing/overview{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Планировщик и пулы'
+        text: 'Распределение ресурсов между операциями и пользователями.'
+        urlTitle: 'Прочитать о планировщике и пулах'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/data-processing/scheduler/scheduler-and-pools{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Query Tracker'
+        text: 'Запуск запросов разных движков и просмотр истории выполнения.'
+        urlTitle: 'Прочитать о Query Tracker'
+        url: '{{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+
+  - type: card-layout-block
+    className: ytsaurus-landing-card-row ytsaurus-landing-card-row-secondary
+    title: 'Практические задачи'
+    colSizes:
+      all: 12
+      sm: 6
+      md: 4
     children:
       - type: basic-card
         title: 'Начать работу с YTsaurus'
         text: 'Запустить локальный кластер и выполнить первые команды.'
+        urlTitle: 'Открыть быстрый старт YTsaurus'
         url: '{{ core-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
       - type: basic-card
-        title: 'Хранить и организовывать данные'
-        text: 'Кипарис, статические таблицы, схемы, транзакции и файлы.'
-        url: '{{ core-docs-root }}/{{ lang }}/concepts/storage/cypress{{ docs-revision-query }}'
+        title: 'Выполнить YQL-запрос'
+        text: 'Обработать данные с помощью SQL-подобного языка YQL.'
+        urlTitle: 'Выполнить первый YQL-запрос'
+        url: '{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
       - type: basic-card
-        title: 'Построить low-latency сервис или очередь'
-        text: 'Динамические таблицы, транзакции, репликация и очереди.'
-        url: '{{ core-docs-root }}/{{ lang }}/concepts/dynamic-tables/overview{{ docs-revision-query }}'
+        title: 'Запустить Spark-задачу'
+        text: 'Использовать Apache Spark поверх данных YTsaurus.'
+        urlTitle: 'Запустить Spark-задачу'
+        url: '{{ spyt-docs-root }}/{{ lang }}/how-to-guides/run-spark-jobs{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
       - type: basic-card
-        title: 'Запустить пакетные вычисления'
-        text: 'Map, Reduce, MapReduce, Sort, Merge и Vanilla.'
-        url: '{{ core-docs-root }}/{{ lang }}/reference/data-processing/operations/overview{{ docs-revision-query }}'
-      - type: basic-card
-        title: 'Выполнить SQL-запрос'
-        text: 'Запускать запросы и смотреть историю через Query Tracker.'
-        url: '{{ core-docs-root }}/{{ lang }}/concepts/query-tracker/about{{ docs-revision-query }}'
-      - type: basic-card
-        title: 'Работать со Spark'
-        text: 'Запускать Spark-задачи поверх данных YTsaurus.'
-        url: '{{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}'
-      - type: basic-card
-        title: 'Построить streaming pipeline'
-        text: 'Обрабатывать потоки через Spark Structured Streaming.'
-        url: '{{ spyt-docs-root }}/{{ lang }}/concepts/structured-streaming/index{{ docs-revision-query }}'
-      - type: basic-card
-        title: 'Обрабатывать события непрерывно'
-        text: 'Строить stateful-пайплайны потоковой обработки в YTsaurus Flow.'
+        title: 'Запустить Flow-пайплайн'
+        text: 'Обрабатывать поток событий с состоянием и гарантиями доставки.'
+        urlTitle: 'Запустить первый Flow-пайплайн'
         url: '{{ flow-docs-root }}/{{ lang }}/tutorials/quick-start{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
       - type: basic-card
-        title: 'Подключиться через API и инструменты'
-        text: 'Начать работу с Python API и клиентскими библиотеками.'
-        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/api/python/start{{ docs-revision-query }}'
-      - type: basic-card
-        title: 'Установить и администрировать платформу'
-        text: 'Развернуть кластер, настроить компоненты и эксплуатацию.'
-        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-operations{{ docs-revision-query }}'
+        title: 'Подключить Apache Flink'
+        text: 'Работать с динамическими таблицами через FLYT Connector.'
+        urlTitle: 'Открыть документацию FLYT'
+        url: '{{ flyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
 
   - type: card-layout-block
-    title: 'Выбрать компонент'
+    className: ytsaurus-landing-card-row
+    title: 'Администрирование'
+    description: '<span id="administration"></span>Развёртывание, безопасность и эксплуатация кластера.'
     colSizes:
       all: 12
-      md: 4
       sm: 6
+      md: 4
     children:
-      - type: layout-item
-        content:
-          title: 'YTsaurus Core'
-          text: 'Кипарис, хранение, динамические таблицы, MapReduce, API и эксплуатация базового кластера.'
-          links:
-            - text: 'Открыть документацию'
-              url: '{{ core-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}'
-              theme: normal
-              arrow: true
-        media:
-          image: '_assets/hub/pict1.svg'
-        border: true
-      - type: layout-item
-        content:
-          title: 'CHYT'
-          text: 'ClickHouse поверх YTsaurus: OLAP-запросы, клики, API, установка и эксплуатация.'
-          links:
-            - text: 'Открыть документацию'
-              url: '{{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}'
-              theme: normal
-              arrow: true
-        media:
-          image: '_assets/hub/pict3.svg'
-        border: true
-      - type: layout-item
-        content:
-          title: 'SPYT'
-          text: 'Apache Spark поверх YTsaurus: Spark SQL, Structured Streaming, кластеры и Jupyter.'
-          links:
-            - text: 'Открыть документацию'
-              url: '{{ spyt-docs-root }}/{{ lang }}/concepts/index{{ docs-revision-query }}'
-              theme: normal
-              arrow: true
-        media:
-          image: '_assets/hub/pict4.svg'
-        border: true
-      - type: layout-item
-        content:
-          title: 'Flow'
-          text: 'Потоковая обработка данных: пайплайны, состояния, гарантии, коннекторы и SDK для нескольких языков.'
-          links:
-            - text: 'Открыть документацию'
-              url: '{{ flow-docs-root }}/{{ lang }}/concepts/overview{{ docs-revision-query }}'
-              theme: normal
-              arrow: true
-        media:
-          image: '_assets/hub/pict4.svg'
-        border: true
-      - type: layout-item
-        content:
-          title: 'FLYT'
-          text: 'Apache Flink поверх YTsaurus: коннектор к динамическим таблицам и формат YSON.'
-          links:
-            - text: 'Открыть документацию'
-              url: '{{ flyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}'
-              theme: normal
-              arrow: true
-        media:
-          image: '_assets/hub/pict4.svg'
-        border: true
+      - type: basic-card
+        title: 'Развернуть кластер'
+        text: 'Подготовить спецификацию и установить YTsaurus.'
+        urlTitle: 'Установить YTsaurus'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/install-ytsaurus{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Настроить доступы'
+        text: 'Организовать внешний доступ к кластеру в Kubernetes.'
+        urlTitle: 'Настроить внешний доступ к YTsaurus'
+        url: '{{ core-docs-root }}/{{ lang }}/how-to-guides/cluster-access-proxy/overview{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Изменить конфигурацию'
+        text: 'Переопределить параметры серверных компонентов кластера.'
+        urlTitle: 'Настроить переопределение конфигурации'
+        url: '{{ core-docs-root }}/{{ lang }}/reference/config-overrides{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+
+  - type: card-layout-block
+    className: ytsaurus-landing-card-row
+    title: 'ML'
+    description: 'Инструменты для разработки и запуска задач машинного обучения.'
+    colSizes:
+      all: 12
+      sm: 6
+      md: 4
+    children:
+      - type: basic-card
+        title: 'Работать в Jupyter'
+        text: 'Разрабатывать и запускать Spark-приложения в ноутбуках.'
+        urlTitle: 'Открыть руководство по Jupyter в SPYT'
+        url: '{{ spyt-docs-root }}/{{ lang }}/how-to-guides/development/jupyter{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Использовать GPU'
+        text: 'Запускать вычисления SPYT на графических ускорителях.'
+        urlTitle: 'Использовать GPU в SPYT'
+        url: '{{ spyt-docs-root }}/{{ lang }}/how-to-guides/use-gpu{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        title: 'Оптимизировать Spark-задачи'
+        text: 'Настроить чтение, ресурсы и выполнение Spark-приложений.'
+        urlTitle: 'Оптимизировать Spark-задачи'
+        url: '{{ spyt-docs-root }}/{{ lang }}/how-to-guides/optimize-jobs{{ docs-revision-query }}'
+        border: shadow
+        controlPosition: content
+        animated: false
+
+  - type: card-layout-block
+    className: ytsaurus-landing-services
+    title: 'По сервисам'
+    colSizes:
+      all: 12
+      sm: 4
+    children:
+      - type: basic-card
+        className: ytsaurus-landing-service-card
+        title: 'YQL'
+        text: 'SQL-подобные запросы и библиотека встроенных функций.'
+        urlTitle: 'Открыть документацию YQL'
+        url: '{{ yql-docs-root }}/{{ lang }}/yql/{{ docs-revision-query }}'
+        border: line
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        className: ytsaurus-landing-service-card
+        title: 'SPYT'
+        text: 'Apache Spark, Spark SQL, Structured Streaming и Jupyter.'
+        urlTitle: 'Открыть документацию SPYT'
+        url: '{{ spyt-docs-root }}/{{ lang }}/{{ docs-revision-query }}'
+        border: line
+        controlPosition: content
+        animated: false
+      - type: basic-card
+        className: ytsaurus-landing-service-card
+        title: 'CHYT'
+        text: 'ClickHouse поверх YTsaurus для интерактивной аналитики.'
+        urlTitle: 'Открыть документацию CHYT'
+        url: '{{ chyt-docs-root }}/{{ lang }}/user-guide/explanation/about-chyt{{ docs-revision-query }}'
+        border: line
+        controlPosition: content
+        animated: false

@@ -1,0 +1,127 @@
+.ytsaurus-landing-search {
+    max-width: 860px;
+    margin-right: auto;
+    margin-left: auto;
+}
+
+.ytsaurus-landing-search-card {
+    position: relative;
+    min-height: 120px;
+    cursor: default;
+    border-radius: 20px;
+    background: var(--g-color-base-generic-ultralight, #f4f4f5);
+    box-shadow: none;
+}
+
+.ytsaurus-landing-search-card::after {
+    position: absolute;
+    top: 50%;
+    right: 32px;
+    width: 22px;
+    height: 22px;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    color: var(--g-color-text-secondary, #6f6f76);
+    content: '';
+    transform: translateY(-62%);
+}
+
+.ytsaurus-landing-search-card::before {
+    position: absolute;
+    z-index: 1;
+    top: calc(50% + 9px);
+    right: 27px;
+    width: 10px;
+    height: 2px;
+    background: var(--g-color-text-secondary, #6f6f76);
+    content: '';
+    transform: rotate(45deg);
+}
+
+.ytsaurus-landing-section-heading {
+    padding-bottom: 0;
+}
+
+.ytsaurus-landing-architecture-interfaces,
+.ytsaurus-landing-architecture-layers {
+    max-width: 900px;
+    margin-right: auto;
+    margin-left: auto;
+}
+
+.ytsaurus-landing-interface-card,
+.ytsaurus-landing-layer-card,
+.ytsaurus-landing-service-card {
+    transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.ytsaurus-landing-interface-card:hover,
+.ytsaurus-landing-layer-card:hover,
+.ytsaurus-landing-service-card:hover {
+    transform: translateY(-2px);
+}
+
+.ytsaurus-landing-architecture-layers {
+    position: relative;
+    padding-top: 0;
+}
+
+.ytsaurus-landing-architecture-layers::before {
+    display: block;
+    width: 2px;
+    height: 28px;
+    margin: -14px auto 16px;
+    background: var(--g-color-line-generic-accent, #d9d9de);
+    content: '';
+}
+
+.ytsaurus-landing-layer-card {
+    min-height: 92px;
+    text-align: center;
+}
+
+.ytsaurus-landing-layer-processing {
+    background: color-mix(in srgb, var(--g-color-base-info-light, #e7f2ff) 72%, transparent);
+}
+
+.ytsaurus-landing-layer-storage {
+    background: color-mix(in srgb, var(--g-color-base-positive-light, #e7f7ed) 72%, transparent);
+}
+
+.ytsaurus-landing-layer-infrastructure {
+    background: color-mix(in srgb, var(--g-color-base-warning-light, #fff3d6) 72%, transparent);
+}
+
+.ytsaurus-landing-card-row-secondary {
+    padding-top: 0;
+}
+
+.ytsaurus-landing-services {
+    padding-bottom: 80px;
+}
+
+@media (max-width: 767px) {
+    .ytsaurus-landing-search-card {
+        min-height: 96px;
+        border-radius: 16px;
+    }
+
+    .ytsaurus-landing-search-card::after {
+        right: 24px;
+    }
+
+    .ytsaurus-landing-search-card::before {
+        right: 19px;
+    }
+
+    .ytsaurus-landing-architecture-layers::before {
+        height: 20px;
+        margin-top: -10px;
+        margin-bottom: 12px;
+    }
+
+    .ytsaurus-landing-layer-card {
+        min-height: auto;
+        text-align: left;
+    }
+}
