@@ -4,6 +4,8 @@ varsPreset: public
 langs: [ru, en]
 allowCustomResources: true
 resources:
+  script:
+    - ru/_assets/script/landing-search.js
   style:
     - ru/_assets/style/landing.css
 extensions:

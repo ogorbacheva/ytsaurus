@@ -160,8 +160,10 @@ html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 + p {
     font: inherit;
     font-size: 18px;
     opacity: 1;
-    cursor: not-allowed;
+    cursor: text;
 }
+.yt-landing-search input:disabled { cursor: not-allowed; }
+.yt-landing-search input:focus-visible { outline: 2px solid var(--yt-brand-hover); outline-offset: 3px; }
 .yt-landing-search input::placeholder { color: var(--yt-muted); opacity: 1; }
 .yt-landing-search p { margin: 12px 0 0 !important; color: var(--yt-muted); font-size: 13px; }
 .yt-landing-anchor { scroll-margin-top: 100px; }
