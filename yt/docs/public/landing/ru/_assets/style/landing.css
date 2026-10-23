@@ -275,7 +275,7 @@ html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-card-layout-block__title
 .yt-landing-domain .pc-title__description .yfm { color: var(--yt-muted); font-size: 15px; line-height: 22px; }
 html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-title__description p + p { margin-top: 12px; }
 .yt-landing-domain .pc-title__description strong { display: block; margin-top: 24px; font-size: 11px; text-transform: uppercase; }
-.yt-landing-domain .pc-title__description a { color: var(--yt-ink); text-decoration: underline; text-underline-offset: 4px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-title__description a { color: var(--yt-ink); text-decoration: underline; text-underline-offset: 4px; }
 .yt-landing-domain .pc-card-layout-block__content { min-width: 0; border-left: 1px solid var(--yt-line); }
 .yt-landing-domain .pc-card-layout-block__content > .row { display: flex; flex-direction: column; }
 html:has(#ytsaurus-docs-landing) .yt-landing-task {
@@ -391,3 +391,5 @@ html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-title__description p {
 .yt-landing-task-index > p { display: contents; }
 
 html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-content__notice p { color: #000; }
+
+html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-title__description a:hover { color: var(--yt-brand-hover); }
