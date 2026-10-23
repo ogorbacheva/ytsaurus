@@ -321,6 +321,10 @@ jobs:
             done
             test -f "${BUILD_OUTPUT_MD}/landing/ru/index.md"
             test ! -f "${BUILD_OUTPUT_MD}/landing/ru/index.yaml"
+            if grep -Fq 'landing-runtime.cjs' "${BUILD_OUTPUT_MD}/landing/.yfm"; then
+              echo 'Build-only landing extension leaked into the publish config.' >&2
+              exit 1
+            fi
             for output_root in "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; do
               test -s "${output_root}/landing/ru/_assets/style/landing.css"
               test -s "${output_root}/landing/ru/_assets/fonts/OFL.txt"

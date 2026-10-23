@@ -7,6 +7,7 @@ const path = require('node:path');
 // Resolve next to the CLI for both local and global npm installations.
 const cliRequire = createRequire(require.main?.filename || __filename);
 const {getHooks} = cliRequire('@diplodoc/cli/lib/program');
+const yaml = cliRequire('js-yaml');
 
 class Extension {
     apply(program) {
@@ -21,6 +22,22 @@ class Extension {
                     path.join(run.input, 'ru/_assets/fonts'),
                     path.join(run.output, 'ru/_assets/fonts'),
                 );
+                if (run.config.outputFormat === 'md') {
+                    // Publishing consumes built resources and must not try to
+                    // load this source-only build extension from the artifact.
+                    const configPath = path.join(run.output, '.yfm');
+                    const config = yaml.load(await run.read(configPath));
+                    const extensions = (config.extensions || []).filter((extension) => {
+                        const name = typeof extension === 'string' ? extension : extension.name;
+                        return path.basename(name) !== 'landing-runtime.cjs';
+                    });
+                    if (extensions.length) {
+                        config.extensions = extensions;
+                    } else {
+                        delete config.extensions;
+                    }
+                    await run.write(configPath, yaml.dump(config, {lineWidth: -1}), true);
+                }
                 for (const [entry, filename] of [
                     ['runtime', 'page-constructor-extension.js'],
                     ['styles', 'page-constructor-extension.css'],
