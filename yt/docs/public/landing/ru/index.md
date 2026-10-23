@@ -1,14 +1,15 @@
 <div id="ytsaurus-docs-landing"></div>
 
-<p class="yt-landing-eyebrow">Документация YTsaurus</p>
+# Документация YTsaurus
 
-# Понять систему.<br>Решить задачу.
-
-<p class="yt-landing-lead">Начните с устройства платформы или сразу выберите, что хотите сделать с данными.</p>
+<p class="yt-landing-lead">Понять систему. Решить задачу.</p>
 
 <div class="yt-landing-search" role="search" aria-label="Поиск по документации">
-  <label for="yt-landing-search">Поиск по документации</label>
-  <input id="yt-landing-search" type="search" placeholder="Например, создать динамическую таблицу" disabled aria-describedby="yt-landing-search-status">
+  <label class="yt-landing-search-label" for="yt-landing-search">Поиск по документации</label>
+  <div class="yt-landing-search-field">
+    <span class="yt-landing-search-icon" aria-hidden="true"></span>
+    <input id="yt-landing-search" type="search" placeholder="Поиск по документации" disabled aria-describedby="yt-landing-search-status">
+  </div>
   <p id="yt-landing-search-status">Поиск пока недоступен</p>
 </div>
 

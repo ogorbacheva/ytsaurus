@@ -74,9 +74,10 @@ html:has(#ytsaurus-docs-landing) .dc-doc-page__content {
 }
 html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h1 {
     max-width: 760px;
-    margin: 16px auto 24px;
-    font-size: 48px;
-    line-height: 52px;
+    margin: 0 auto 12px;
+    font-size: 36px;
+    line-height: 44px;
+    text-align: center;
     font-weight: 600;
     letter-spacing: normal;
 }
@@ -91,47 +92,78 @@ html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 + p {
     max-width: 640px;
     color: var(--yt-muted);
 }
-.yt-landing-eyebrow {
-    max-width: 760px;
-    margin: 0 auto !important;
-    font-size: 13px;
-    line-height: 18px;
-    font-weight: 600;
-    text-transform: uppercase;
-    color: var(--yt-muted);
-}
 .yt-landing-lead {
     max-width: 760px;
     margin: 0 auto !important;
     color: var(--yt-muted);
     font-size: 17px;
     line-height: 24px;
+    text-align: center;
 }
 .yt-landing-search {
     max-width: 760px;
-    margin: 32px auto 64px;
+    margin: 28px auto 80px;
+    text-align: center;
 }
-.yt-landing-search label {
-    display: block;
-    margin-bottom: 10px;
-    font-size: 15px;
-    font-weight: 600;
+.yt-landing-search-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+.yt-landing-search-field { position: relative; }
+.yt-landing-search-icon {
+    position: absolute;
+    top: 50%;
+    left: 24px;
+    width: 24px;
+    height: 24px;
+    color: var(--yt-ink);
+    transform: translateY(-50%);
+    pointer-events: none;
+}
+.yt-landing-search-icon::before {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 18px;
+    height: 18px;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    content: '';
+}
+.yt-landing-search-icon::after {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    width: 9px;
+    height: 2px;
+    border-radius: 1px;
+    background: currentColor;
+    transform: rotate(45deg);
+    transform-origin: left center;
+    content: '';
 }
 .yt-landing-search input {
     box-sizing: border-box;
     width: 100%;
-    min-height: 56px;
-    padding: 16px 20px;
-    border: 1px solid var(--yt-line);
+    min-height: 72px;
+    padding: 22px 24px 22px 64px;
+    border: 2px solid var(--yt-brand);
     border-radius: 16px;
     background: var(--yt-paper);
+    box-shadow: 0 8px 32px rgb(255 178 62 / 12%);
     color: var(--yt-muted);
     font: inherit;
+    font-size: 18px;
     opacity: 1;
     cursor: not-allowed;
 }
 .yt-landing-search input::placeholder { color: var(--yt-muted); opacity: 1; }
-.yt-landing-search p { margin: 8px 0 0 !important; color: var(--yt-muted); font-size: 13px; }
+.yt-landing-search p { margin: 12px 0 0 !important; color: var(--yt-muted); font-size: 13px; }
 .yt-landing-anchor { scroll-margin-top: 100px; }
 
 /* Remove article/constructor gutters only inside this landing. */
@@ -327,10 +359,12 @@ html:has(#ytsaurus-docs-landing) .g-root_theme_dark {
 }
 @media (max-width: 620px) {
     html:has(#ytsaurus-docs-landing) .dc-doc-page__content { width: calc(100% - 32px); padding-top: 32px; }
-    html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h1 { font-size: 32px; line-height: 40px; }
+    html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h1 { font-size: 28px; line-height: 36px; }
     html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 { font-size: 28px; line-height: 36px; margin-top: 48px; }
-    .yt-landing-search { margin-bottom: 40px; }
-    .yt-landing-search input { font-size: 13px; padding-inline: 12px; }
+    .yt-landing-lead { font-size: 15px; line-height: 22px; }
+    .yt-landing-search { margin-top: 24px; margin-bottom: 48px; }
+    .yt-landing-search-icon { left: 18px; }
+    .yt-landing-search input { min-height: 64px; font-size: 16px; padding: 18px 16px 18px 54px; }
     .yt-landing-system .pc-card-layout-block__content > .row { display: flex; flex-direction: column; }
     html:has(#ytsaurus-docs-landing) .yt-landing-overview { padding: 28px 24px; }
     html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-title-item { font-size: 28px; line-height: 36px; }
