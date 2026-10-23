@@ -7,7 +7,11 @@
       "viewer_url": "https://common-ytsaurus---landing.viewer.ydocs.io",
       "languages": ["ru", "en"],
       "common": false,
-      "storage_prefix": "landing"
+      "storage_prefix": "landing",
+      "preview_link_revisions": {
+        "flow": "94154befd7d3640950ec9aae2772a9521deccd49",
+        "yql": "94154befd7d3640950ec9aae2772a9521deccd49"
+      }
     },
     {
       "name": "core",

@@ -6,6 +6,8 @@ allowCustomResources: true
 resources:
   style:
     - ru/_assets/style/landing.css
+extensions:
+  - name: './_extensions/landing-runtime.cjs'
 
 docs-viewer:
   project-name: landing

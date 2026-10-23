@@ -441,10 +441,22 @@ def load_route_queries(
 ) -> dict[str, str]:
     """Validate the authoritative per-target routing query map."""
     module_names = [module["name"] for module in modules]
+    published_queries: dict[str, str] = {}
+    if public_preview_mode == "revision" and len(selected_names) == 1:
+        selected_module = next(module for module in modules if module["name"] in selected_names)
+        revisions = selected_module.get("preview_link_revisions", {})
+        if not isinstance(revisions, dict):
+            raise AssemblyError("preview_link_revisions must be an object")
+        for target, revision in revisions.items():
+            if target not in module_names or target in selected_names:
+                raise AssemblyError(f"Invalid preview link target: {target!r}")
+            if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+                raise AssemblyError(f"Invalid published preview revision for {target}")
+            published_queries[target] = f"?revision={revision}"
     if raw is None:
         selected_query = docs_revision_query
         return {
-            name: selected_query if name in selected_names else ""
+            name: selected_query if name in selected_names else published_queries.get(name, "")
             for name in module_names
         }
     try:
@@ -469,7 +481,7 @@ def load_route_queries(
             or re.fullmatch(r"\?version=[0-9]+\.[0-9]+", query)
         ):
             raise AssemblyError(f"Invalid route query for {name}: {query!r}")
-        if name not in selected_names and query:
+        if name not in selected_names and query and query != published_queries.get(name):
             raise AssemblyError(
                 f"Unselected module {name} must not receive a route query"
             )

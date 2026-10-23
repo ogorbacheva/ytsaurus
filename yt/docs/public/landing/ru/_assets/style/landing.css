@@ -1,127 +1,393 @@
-.ytsaurus-landing-search {
-    max-width: 860px;
-    margin-right: auto;
-    margin-left: auto;
+/* Brand typography and colors: https://ytsaurus.tech/ru.
+ * Layout: landing-practical-prototype/index.html in the task workspace.
+ * Scope all overrides to the Russian Markdown landing, including PC roots. */
+@font-face {
+    font-family: Manrope;
+    src: url('../fonts/Manrope-Regular.ttf') format('truetype');
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+@font-face {
+    font-family: Manrope;
+    src: url('../fonts/Manrope-Medium.ttf') format('truetype');
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+}
+@font-face {
+    font-family: Manrope;
+    src: url('../fonts/Manrope-SemiBold.ttf') format('truetype');
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+}
+@font-face {
+    font-family: Manrope;
+    src: url('../fonts/Manrope-Bold.ttf') format('truetype');
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
 }
 
-.ytsaurus-landing-search-card {
+html:has(#ytsaurus-docs-landing) {
+    --yt-brand: #ffb23e;
+    --yt-brand-hover: #e19420;
+    --yt-green: #f5fff0;
+    --yt-ink: #262626;
+    --yt-muted: #666;
+    --yt-paper: #fff;
+    --yt-line: #e5e5e5;
+    scroll-behavior: smooth;
+    scroll-padding-top: 100px;
+}
+
+html:has(#ytsaurus-docs-landing) .g-root,
+html:has(#ytsaurus-docs-landing) .yfm {
+    --g-font-family-sans: 'Manrope', 'Helvetica Neue', Arial, Helvetica, sans-serif;
+    --yfm-font-family-sans: var(--g-font-family-sans);
+    --g-color-base-brand: var(--yt-brand);
+    --g-color-base-brand-hover: var(--yt-brand-hover);
+    --g-color-text-brand-contrast: #000;
+    font-family: var(--g-font-family-sans);
+}
+
+html:has(#ytsaurus-docs-landing) .dc-doc-layout__left,
+html:has(#ytsaurus-docs-landing) .dc-doc-layout__right,
+html:has(#ytsaurus-docs-landing) .dc-doc-page__content-mini-toc {
+    display: none;
+}
+html:has(#ytsaurus-docs-landing) .dc-doc-layout__center {
+    width: 100%;
+    max-width: none;
+    flex: 1 1 auto;
+}
+html:has(#ytsaurus-docs-landing) .dc-doc-page__content {
+    box-sizing: border-box;
+    width: min(calc(100% - 64px), 1180px);
+    max-width: none;
+    margin-inline: auto;
+    padding-block: 64px 80px;
+    color: var(--yt-ink);
+    font-size: 17px;
+    line-height: 24px;
+}
+html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h1 {
+    max-width: 760px;
+    margin: 16px auto 24px;
+    font-size: 48px;
+    line-height: 52px;
+    font-weight: 600;
+    letter-spacing: normal;
+}
+html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 {
+    margin: 76px 0 20px;
+    font-size: 32px;
+    line-height: 40px;
+    font-weight: 600;
+    border: 0;
+}
+html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 + p {
+    max-width: 640px;
+    color: var(--yt-muted);
+}
+.yt-landing-eyebrow {
+    max-width: 760px;
+    margin: 0 auto !important;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--yt-muted);
+}
+.yt-landing-lead {
+    max-width: 760px;
+    margin: 0 auto !important;
+    color: var(--yt-muted);
+    font-size: 17px;
+    line-height: 24px;
+}
+.yt-landing-search {
+    max-width: 760px;
+    margin: 32px auto 64px;
+}
+.yt-landing-search label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 15px;
+    font-weight: 600;
+}
+.yt-landing-search input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 56px;
+    padding: 16px 20px;
+    border: 1px solid var(--yt-line);
+    border-radius: 16px;
+    background: var(--yt-paper);
+    color: var(--yt-muted);
+    font: inherit;
+    opacity: 1;
+    cursor: not-allowed;
+}
+.yt-landing-search input::placeholder { color: var(--yt-muted); opacity: 1; }
+.yt-landing-search p { margin: 8px 0 0 !important; color: var(--yt-muted); font-size: 13px; }
+.yt-landing-anchor { scroll-margin-top: 100px; }
+
+/* Remove article/constructor gutters only inside this landing. */
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor { margin: 0; padding: 0; }
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .container-fluid {
+    width: 100%;
+    max-width: none;
+    padding: 0;
+}
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-block-base {
+    margin: 0;
+    padding: 0;
+}
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-card-layout-block__item {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    flex-basis: auto;
+}
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-card-layout-block__content > .row {
+    margin: 0;
+}
+html:has(#ytsaurus-docs-landing) :where(.yfm-page-constructor .pc-card-base-block) {
     position: relative;
-    min-height: 120px;
-    cursor: default;
-    border-radius: 20px;
-    background: var(--g-color-base-generic-ultralight, #f4f4f5);
+    box-sizing: border-box;
+    display: block;
+    height: 100%;
+    min-height: 0;
+    min-width: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
     box-shadow: none;
+    color: inherit;
+    text-decoration: none;
+}
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-card-base-block__body {
+    padding: 0;
+}
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-title-item,
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-content__title,
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-content__text,
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-content__notice {
+    margin: 0;
+}
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .yfm p { margin: 0; }
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-title-item {
+    color: inherit;
+    font-weight: 600;
+    letter-spacing: normal;
+}
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-title-item .yfm {
+    font-size: inherit;
+    line-height: inherit;
+    color: inherit;
 }
 
-.ytsaurus-landing-search-card::after {
+.yt-landing-system { border-radius: 24px; overflow: hidden; }
+.yt-landing-system .pc-card-layout-block__content > .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, .7fr);
+    grid-template-rows: repeat(3, minmax(104px, auto));
+}
+.yt-landing-system .pc-card-layout-block__item:first-child { grid-row: 1 / 4; }
+html:has(#ytsaurus-docs-landing) .yt-landing-overview {
+    padding: 44px;
+    background: #262626;
+    color: #fff;
+}
+.yt-landing-overview .pc-content::before {
+    display: block;
+    margin-bottom: 16px;
+    content: 'Обзор системы';
+    font-size: 13px;
+    text-transform: uppercase;
+    color: #fff;
+}
+html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-title-item { font-size: 32px; line-height: 40px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-content__text { margin-top: 20px; }
+.yt-landing-overview .pc-content__text .yfm { color: #fff; font-size: 17px; line-height: 24px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-content__notice {
+    margin-top: 36px;
+    padding: 12px 16px;
+    border-radius: 24px;
+    background: var(--yt-brand);
+    width: fit-content;
+}
+.yt-landing-overview .pc-content__notice .yfm { color: #000; font-size: 15px; font-weight: 600; }
+html:has(#ytsaurus-docs-landing) .yt-landing-overview:hover .pc-content__notice { background: var(--yt-brand-hover); }
+html:has(#ytsaurus-docs-landing) .yt-landing-system-link {
+    display: flex;
+    align-items: center;
+    padding: 26px 54px 26px 28px;
+    background: var(--yt-green);
+    border-bottom: 1px solid var(--yt-line);
+    color: var(--yt-ink);
+}
+.yt-landing-system-link::after,
+.yt-landing-task::after,
+.yt-landing-service::after {
     position: absolute;
     top: 50%;
-    right: 32px;
-    width: 22px;
-    height: 22px;
-    border: 2px solid currentColor;
-    border-radius: 50%;
-    color: var(--g-color-text-secondary, #6f6f76);
-    content: '';
-    transform: translateY(-62%);
+    right: 24px;
+    content: '→';
+    font-size: 24px;
+    transform: translateY(-50%);
+    transition: transform 160ms ease;
+}
+.yt-landing-system-link::after, .yt-landing-service::after { content: '↗'; }
+html:has(#ytsaurus-docs-landing) .yt-landing-system-link .pc-title-item { font-size: 20px; line-height: 28px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-start { margin-top: 24px; font-size: 15px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-start a { color: var(--yt-ink); text-decoration: underline; text-underline-offset: 4px; }
+.yt-landing-task-index { display: flex; flex-wrap: wrap; gap: 8px; margin: 28px 0 48px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-task-index a {
+    padding: 10px 16px;
+    border: 1px solid var(--yt-line);
+    border-radius: 24px;
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 600;
+    color: var(--yt-ink);
+    text-decoration: none;
+}
+html:has(#ytsaurus-docs-landing) .yt-landing-task-index a:hover { border-color: var(--yt-brand-hover); }
+.yt-landing-domain {
+    display: grid;
+    grid-template-columns: minmax(0, 35fr) minmax(0, 65fr);
+    border-top: 1px solid var(--yt-line);
+    color: var(--yt-ink);
+}
+.yt-landing-domain .pc-card-layout-block__title {
+    min-width: 0;
+    margin: 0;
+    padding: 36px 32px 36px 0;
+}
+.yt-landing-domain .pc-card-layout-block__title > .col { max-width: 100%; flex-basis: 100%; }
+html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-card-layout-block__title .pc-title-item { font-size: 28px; line-height: 36px; }
+.yt-landing-domain .pc-title__description { margin-top: 16px; }
+.yt-landing-domain .pc-title__description .yfm { color: var(--yt-muted); font-size: 15px; line-height: 22px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-title__description p + p { margin-top: 12px; }
+.yt-landing-domain .pc-title__description strong { display: block; margin-top: 24px; font-size: 11px; text-transform: uppercase; }
+.yt-landing-domain .pc-title__description a { color: var(--yt-ink); text-decoration: underline; text-underline-offset: 4px; }
+.yt-landing-domain .pc-card-layout-block__content { min-width: 0; border-left: 1px solid var(--yt-line); }
+.yt-landing-domain .pc-card-layout-block__content > .row { display: flex; flex-direction: column; }
+html:has(#ytsaurus-docs-landing) .yt-landing-task {
+    display: flex;
+    align-items: center;
+    min-height: 108px;
+    padding: 24px 56px 24px 32px;
+    border-bottom: 1px solid var(--yt-line);
+}
+.yt-landing-domain .pc-card-layout-block__item:last-child .yt-landing-task { border-bottom: 0; }
+.yt-landing-task .pc-content { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); align-items: center; gap: 24px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-task .pc-title-item { font-size: 17px; line-height: 24px; }
+.yt-landing-task .pc-content__text .yfm { color: var(--yt-muted); font-size: 15px; line-height: 22px; }
+html:has(#ytsaurus-docs-landing) .yt-landing-task:hover { background: var(--yt-green); }
+.yt-landing-task:hover::after, .yt-landing-service:hover::after { transform: translate(4px, -50%); }
+.yt-landing-domain-ml { border-bottom: 1px solid var(--yt-line); }
+
+.yt-landing-services { margin-top: 28px; background: var(--yt-green); border-radius: 24px; overflow: hidden; }
+.yt-landing-services .pc-card-layout-block__content > .row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+html:has(#ytsaurus-docs-landing) .yt-landing-service {
+    display: flex;
+    align-items: center;
+    padding: 24px 52px 24px 24px;
+    min-height: 88px;
+    border-right: 1px solid var(--yt-line);
+    color: var(--yt-ink);
+}
+html:has(#ytsaurus-docs-landing) .yt-landing-service .pc-title-item { font-size: 20px; line-height: 28px; }
+.yt-landing-services .pc-card-layout-block__item:last-child .yt-landing-service { border-right: 0; }
+html:has(#ytsaurus-docs-landing) .dc-doc-page__content a:focus-visible { outline: 3px solid var(--yt-brand-hover); outline-offset: -3px; }
+
+html:has(#ytsaurus-docs-landing) .g-root_theme_dark {
+    --yt-ink: #fff;
+    --yt-muted: #c7c7c7;
+    --yt-paper: #262626;
+    --yt-green: #263124;
+    --yt-line: #484848;
+}
+@media (max-width: 900px) {
+    html:has(#ytsaurus-docs-landing) .dc-doc-page__content { width: calc(100% - 40px); padding-block: 40px 64px; }
+    .yt-landing-system .pc-card-layout-block__content > .row { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto auto; }
+    .yt-landing-system .pc-card-layout-block__item:first-child { grid-column: 1 / -1; grid-row: auto; }
+    html:has(#ytsaurus-docs-landing) .yt-landing-system-link { padding: 24px 44px 24px 20px; }
+    html:has(#ytsaurus-docs-landing) .yt-landing-system-link .pc-title-item { font-size: 17px; line-height: 24px; }
+    .yt-landing-domain { grid-template-columns: 1fr; }
+    .yt-landing-domain .pc-card-layout-block__title { padding: 32px 0; }
+    .yt-landing-domain .pc-card-layout-block__content { border-left: 0; }
+    html:has(#ytsaurus-docs-landing) .yt-landing-task { padding-left: 0; }
+}
+@media (max-width: 620px) {
+    html:has(#ytsaurus-docs-landing) .dc-doc-page__content { width: calc(100% - 32px); padding-top: 32px; }
+    html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h1 { font-size: 32px; line-height: 40px; }
+    html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 { font-size: 28px; line-height: 36px; margin-top: 48px; }
+    .yt-landing-search { margin-bottom: 40px; }
+    .yt-landing-search input { font-size: 13px; padding-inline: 12px; }
+    .yt-landing-system .pc-card-layout-block__content > .row { display: flex; flex-direction: column; }
+    html:has(#ytsaurus-docs-landing) .yt-landing-overview { padding: 28px 24px; }
+    html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-title-item { font-size: 28px; line-height: 36px; }
+    html:has(#ytsaurus-docs-landing) .yt-landing-system-link { min-height: 76px; }
+    .yt-landing-task-index { margin-bottom: 32px; }
+    .yt-landing-task .pc-content { grid-template-columns: 1fr; gap: 8px; }
+    .yt-landing-services .pc-card-layout-block__content > .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    html:has(#ytsaurus-docs-landing) .yt-landing-service { min-height: 76px; border-bottom: 1px solid var(--yt-line); }
+}
+@media (prefers-reduced-motion: reduce) {
+    html:has(#ytsaurus-docs-landing) { scroll-behavior: auto; }
+    .yt-landing-task::after, .yt-landing-service::after { transition: none; }
 }
 
-.ytsaurus-landing-search-card::before {
+html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h1,
+html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 {
+    padding-top: 0;
+}
+html:has(#ytsaurus-docs-landing) .dc-doc-page__body {
+    color: var(--yt-ink);
+    font-size: 17px;
+    line-height: 24px;
+}
+html:has(#ytsaurus-docs-landing) .pc-card-layout-block > span:first-child {
     position: absolute;
-    z-index: 1;
-    top: calc(50% + 9px);
-    right: 27px;
-    width: 10px;
-    height: 2px;
-    background: var(--g-color-text-secondary, #6f6f76);
-    content: '';
-    transform: rotate(45deg);
+}
+html:has(#ytsaurus-docs-landing) .pc-page-constructor .container {
+    max-width: none;
+    width: 100%;
+    padding: 0;
+}
+html:has(#ytsaurus-docs-landing) .pc-page-constructor > .row,
+html:has(#ytsaurus-docs-landing) .pc-page-constructor .container > .row {
+    margin: 0;
+}
+html:has(#ytsaurus-docs-landing) .pc-page-constructor .container > .row > .col {
+    padding: 0;
 }
 
-.ytsaurus-landing-section-heading {
-    padding-bottom: 0;
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .pc-Grid { padding-inline: 0; }
+html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-content__text p { color: #fff; }
+html:has(#ytsaurus-docs-landing) .yt-landing-system-link .pc-content { justify-content: center; }
+html:has(#ytsaurus-docs-landing) .dc-doc-page__main { padding-inline: 0; }
+
+/* Embedded constructors create a light theme root; inherit the document palette. */
+html:has(#ytsaurus-docs-landing) .yfm-page-constructor .g-root {
+    --g-color-text-primary: var(--yt-ink);
+    --g-color-text-secondary: var(--yt-muted);
+    --g-color-base-background: var(--yt-paper);
+    background: transparent;
+    color: var(--yt-ink);
+}
+html:has(#ytsaurus-docs-landing) .yt-landing-task .pc-content__text p,
+html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-title__description p {
+    color: var(--yt-muted);
 }
 
-.ytsaurus-landing-architecture-interfaces,
-.ytsaurus-landing-architecture-layers {
-    max-width: 900px;
-    margin-right: auto;
-    margin-left: auto;
-}
+.yt-landing-task-index > p { display: contents; }
 
-.ytsaurus-landing-interface-card,
-.ytsaurus-landing-layer-card,
-.ytsaurus-landing-service-card {
-    transition: border-color 160ms ease, transform 160ms ease;
-}
-
-.ytsaurus-landing-interface-card:hover,
-.ytsaurus-landing-layer-card:hover,
-.ytsaurus-landing-service-card:hover {
-    transform: translateY(-2px);
-}
-
-.ytsaurus-landing-architecture-layers {
-    position: relative;
-    padding-top: 0;
-}
-
-.ytsaurus-landing-architecture-layers::before {
-    display: block;
-    width: 2px;
-    height: 28px;
-    margin: -14px auto 16px;
-    background: var(--g-color-line-generic-accent, #d9d9de);
-    content: '';
-}
-
-.ytsaurus-landing-layer-card {
-    min-height: 92px;
-    text-align: center;
-}
-
-.ytsaurus-landing-layer-processing {
-    background: color-mix(in srgb, var(--g-color-base-info-light, #e7f2ff) 72%, transparent);
-}
-
-.ytsaurus-landing-layer-storage {
-    background: color-mix(in srgb, var(--g-color-base-positive-light, #e7f7ed) 72%, transparent);
-}
-
-.ytsaurus-landing-layer-infrastructure {
-    background: color-mix(in srgb, var(--g-color-base-warning-light, #fff3d6) 72%, transparent);
-}
-
-.ytsaurus-landing-card-row-secondary {
-    padding-top: 0;
-}
-
-.ytsaurus-landing-services {
-    padding-bottom: 80px;
-}
-
-@media (max-width: 767px) {
-    .ytsaurus-landing-search-card {
-        min-height: 96px;
-        border-radius: 16px;
-    }
-
-    .ytsaurus-landing-search-card::after {
-        right: 24px;
-    }
-
-    .ytsaurus-landing-search-card::before {
-        right: 19px;
-    }
-
-    .ytsaurus-landing-architecture-layers::before {
-        height: 20px;
-        margin-top: -10px;
-        margin-bottom: 12px;
-    }
-
-    .ytsaurus-landing-layer-card {
-        min-height: auto;
-        text-align: left;
-    }
-}
+html:has(#ytsaurus-docs-landing) .yt-landing-overview .pc-content__notice p { color: #000; }

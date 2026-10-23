@@ -42,6 +42,8 @@ concurrency:
 
 env:
   DIPLODOC_CLI_VERSION: "5.56.0"
+  DIPLODOC_PAGE_CONSTRUCTOR_EXTENSION_VERSION: "0.13.15"
+  REACT_VERSION: "18.3.1"
   DOCS_SOURCE_ROOT: ./yt/docs
   DOCS_INPUT_ROOT: ./_docs-input
   BUILD_OUTPUT_HTML: ./build-output-html
@@ -119,8 +121,13 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install pinned Diplodoc CLI
-        run: npm install --global "@diplodoc/cli@${DIPLODOC_CLI_VERSION}"
+      - name: Install pinned Diplodoc and landing extensions
+        run: |
+          npm install --global \
+            "@diplodoc/cli@${DIPLODOC_CLI_VERSION}" \
+            "@diplodoc/page-constructor-extension@${DIPLODOC_PAGE_CONSTRUCTOR_EXTENSION_VERSION}" \
+            "react@${REACT_VERSION}" \
+            "react-dom@${REACT_VERSION}"
         shell: bash
 
       - name: Assemble isolated YFM projects
@@ -229,6 +236,16 @@ jobs:
           while IFS= read -r target; do
             query=$(route_query "${target}")
             expected_query=''
+            if [[ "${PREVIEW_MODE}" == 'revision-preview' ]] && \
+                [[ "$(jq 'length' <<<"${SELECTED_MODULES}")" == 1 ]]; then
+              selected_module=$(jq -r '.[0]' <<<"${SELECTED_MODULES}")
+              published_revision=$(jq -r --arg selected "${selected_module}" --arg target "${target}" \
+                '.modules[] | select(.name == $selected) | .preview_link_revisions[$target] // empty' \
+                .github/docs-modules.json)
+              if [[ -n "${published_revision}" ]]; then
+                expected_query="?revision=${published_revision}"
+              fi
+            fi
             if module_selected "${target}"; then
               if [[ "${PREVIEW_MODE}" == 'revision-preview' ]]; then
                 expected_query="${DOCS_REVISION_QUERY}"
@@ -296,15 +313,43 @@ jobs:
             exit 1
           fi
 
+          if module_selected landing; then
+            for weight in Regular Medium SemiBold Bold; do
+              jq -e --arg path "ru/_assets/fonts/Manrope-${weight}.ttf" \
+                '.contentHashes[$path].size > 0' \
+                "${BUILD_OUTPUT_MD}/landing/yfm-build-content.json" >/dev/null
+            done
+            test -f "${BUILD_OUTPUT_MD}/landing/ru/index.md"
+            test ! -f "${BUILD_OUTPUT_MD}/landing/ru/index.yaml"
+            for output_root in "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; do
+              test -s "${output_root}/landing/ru/_assets/style/landing.css"
+              test -s "${output_root}/landing/ru/_assets/fonts/OFL.txt"
+              for weight in Regular Medium SemiBold Bold; do
+                cmp "${DOCS_SOURCE_ROOT}/public/landing/ru/_assets/fonts/Manrope-${weight}.ttf" \
+                  "${output_root}/landing/ru/_assets/fonts/Manrope-${weight}.ttf"
+              done
+              test -s "${output_root}/landing/_bundle/page-constructor-extension.js"
+              test -s "${output_root}/landing/_bundle/page-constructor-extension.css"
+            done
+          fi
+
           for language in ru en; do
             if module_selected landing; then
               landing_page="${BUILD_OUTPUT_HTML}/landing/${language}/index.html"
               expected_url="${core_url}/${language}/tutorials/quick-start${core_query}"
-              grep -Fq "${expected_url}" "${landing_page}"
               expected_flow_url="${flow_url}/${language}/tutorials/quick-start${flow_query}"
-              grep -Fq "${expected_flow_url}" "${landing_page}"
               expected_flyt_url="${flyt_url}/${language}/${flyt_query}"
-              grep -Fq "${expected_flyt_url}" "${landing_page}"
+              # Markdown directives serialize PC data as URI-encoded JSON.
+              python3 - "${landing_page}" "${expected_url}" "${expected_flow_url}" "${expected_flyt_url}" <<'PYLANDING'
+          import html
+          import sys
+          from pathlib import Path
+          from urllib.parse import unquote
+          content = unquote(html.unescape(Path(sys.argv[1]).read_text()))
+          for expected in sys.argv[2:]:
+              if expected not in content:
+                  raise SystemExit(f"Missing landing route: {expected}")
+          PYLANDING
             fi
 
             if module_selected core; then
@@ -779,8 +824,13 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install pinned Diplodoc CLI
-        run: npm install --global "@diplodoc/cli@${DIPLODOC_CLI_VERSION}"
+      - name: Install pinned Diplodoc and landing extensions
+        run: |
+          npm install --global \
+            "@diplodoc/cli@${DIPLODOC_CLI_VERSION}" \
+            "@diplodoc/page-constructor-extension@${DIPLODOC_PAGE_CONSTRUCTOR_EXTENSION_VERSION}" \
+            "react@${REACT_VERSION}" \
+            "react-dom@${REACT_VERSION}"
         shell: bash
 
       - name: Build and verify isolated component version

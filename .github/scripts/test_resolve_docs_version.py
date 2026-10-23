@@ -276,6 +276,38 @@ class ResolveDocsVersionTest(unittest.TestCase):
             {"landing": "", "spyt": "?revision=spyt-revision"},
         )
 
+    def test_standalone_preview_can_link_to_published_target_revisions(self) -> None:
+        published = "a" * 40
+        self.modules[0]["preview_link_revisions"] = {"spyt": published}
+        landing = resolver.resolve_plan(
+            mode=resolver.MODE_REVISION, component_name="landing", version_label="",
+            revision="abc123", modules=self.modules, components=self.load(),
+        )
+        self.assertEqual(landing["route_queries"]["spyt"], f"?revision={published}")
+        self.assertEqual(landing["route_queries"]["core"], "")
+        self.assertNotEqual(landing["route_queries"]["landing"], f"?revision={published}")
+        full = resolver.resolve_plan(
+            mode=resolver.MODE_REVISION, component_name="all", version_label="",
+            revision="abc123", modules=self.modules, components=self.load(),
+        )
+        self.assertTrue(all(query == "?revision=abc123" for query in full["route_queries"].values()))
+        version = resolver.resolve_plan(
+            mode=resolver.MODE_VERSION, component_name="core", version_label="25.4",
+            revision="abc123", modules=self.modules, components=self.load(),
+        )
+        self.assertEqual(version["route_queries"]["spyt"], "")
+
+    def test_preview_link_revisions_reject_invalid_targets_and_revisions(self) -> None:
+        for links in ({"missing": "a" * 40}, {"landing": "a" * 40},
+                      {"spyt": "bad&version=2.11"}, ["spyt"]):
+            with self.subTest(links=links):
+                self.modules[0]["preview_link_revisions"] = links
+                with self.assertRaises(resolver.VersionPlanError):
+                    resolver.resolve_plan(
+                        mode=resolver.MODE_REVISION, component_name="landing", version_label="",
+                        revision="abc123", modules=self.modules, components=self.load(),
+                    )
+
     def test_same_source_partial_plans_use_distinct_upload_namespaces(self) -> None:
         components = self.load()
         landing_plan = resolver.resolve_plan(

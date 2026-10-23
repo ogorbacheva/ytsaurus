@@ -565,6 +565,28 @@ class AssembleModularDocsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unselected module other", result.stderr)
 
+    def test_partial_preview_accepts_only_configured_published_revision(self) -> None:
+        self.add_other_module_fixture()
+        registry = json.loads(self.registry.read_text())
+        published = "a" * 40
+        registry["modules"][0]["preview_link_revisions"] = {"other": published}
+        self.registry.write_text(json.dumps(registry))
+        result = self.run_script(
+            "--module", "demo", "--docs-revision-query", "?revision=abc123",
+            "--route-queries", json.dumps({"demo": "?revision=abc123", "other": f"?revision={published}"}),
+            "--public-revision-preview",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        guide = (self.output / "demo" / "ru" / "guide.md").read_text()
+        self.assertIn(f"guide?revision={published}", guide)
+        result = self.run_script(
+            "--module", "demo", "--docs-revision-query", "?revision=abc123",
+            "--route-queries", json.dumps({"demo": "?revision=abc123", "other": "?revision=abc123"}),
+            "--public-revision-preview", "--clean",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unselected module other", result.stderr)
+
     def test_version_preview_rejects_empty_selected_route_query(self) -> None:
         result = self.run_script(
             "--docs-revision",

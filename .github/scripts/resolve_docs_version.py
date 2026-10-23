@@ -348,6 +348,18 @@ def resolve_plan(
         list(module_map), selected_names, selected_route_query
     )
 
+    # A standalone preview may link to already published snapshots of projects
+    # that do not have a default/head. Full builds keep their shared revision.
+    if mode == MODE_REVISION and len(selected_names) == 1:
+        fallback_revisions = module_map[selected_names[0]].get("preview_link_revisions", {})
+        if not isinstance(fallback_revisions, dict):
+            raise VersionPlanError("preview_link_revisions must be an object")
+        for target, fallback in fallback_revisions.items():
+            if target not in module_map or target in selected_names:
+                raise VersionPlanError(f"Invalid preview link target: {target!r}")
+            require_string(fallback, f"{target} preview link revision", re.compile(r"^[0-9a-f]{40}$"))
+            route_queries[target] = f"?revision={fallback}"
+
     upload_matrix = {
         "include": [
             {
