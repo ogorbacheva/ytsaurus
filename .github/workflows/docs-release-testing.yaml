@@ -327,6 +327,11 @@ jobs:
             fi
             for output_root in "${BUILD_OUTPUT_HTML}" "${BUILD_OUTPUT_MD}"; do
               test -s "${output_root}/landing/ru/_assets/style/landing.css"
+              grep -Fq 'data:font/ttf;base64,' "${output_root}/landing/ru/_assets/style/landing.css"
+              if grep -Fq "url('../fonts/" "${output_root}/landing/ru/_assets/style/landing.css"; then
+                echo 'Landing fonts must be embedded for the Viewer asset proxy.' >&2
+                exit 1
+              fi
               test -s "${output_root}/landing/ru/_assets/fonts/OFL.txt"
               for weight in Regular Medium SemiBold Bold; do
                 cmp "${DOCS_SOURCE_ROOT}/public/landing/ru/_assets/fonts/Manrope-${weight}.ttf" \

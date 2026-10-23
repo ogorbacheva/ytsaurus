@@ -22,6 +22,19 @@ class Extension {
                     path.join(run.input, 'ru/_assets/fonts'),
                     path.join(run.output, 'ru/_assets/fonts'),
                 );
+                // Viewer rejects standalone font assets. Keep editable font
+                // files in the source and embed them in the emitted stylesheet.
+                const stylePath = path.join(run.output, 'ru/_assets/style/landing.css');
+                let style = await run.read(stylePath);
+                for (const weight of ['Regular', 'Medium', 'SemiBold', 'Bold']) {
+                    const filename = `Manrope-${weight}.ttf`;
+                    const font = fs.readFileSync(path.join(run.input, 'ru/_assets/fonts', filename));
+                    style = style.replaceAll(
+                        `url('../fonts/${filename}')`,
+                        `url('data:font/ttf;base64,${font.toString('base64')}')`,
+                    );
+                }
+                await run.write(stylePath, style, true);
                 if (run.config.outputFormat === 'md') {
                     // Publishing consumes built resources and must not try to
                     // load this source-only build extension from the artifact.
