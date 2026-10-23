@@ -8,9 +8,8 @@
   <label class="yt-landing-search-label" for="yt-landing-search">Поиск по документации</label>
   <div class="yt-landing-search-field">
     <span class="yt-landing-search-icon" aria-hidden="true"></span>
-    <input id="yt-landing-search" type="search" placeholder="Поиск по документации" disabled aria-describedby="yt-landing-search-status">
+    <input id="yt-landing-search" type="search" placeholder="Поиск по документации" disabled>
   </div>
-  <p id="yt-landing-search-status">Поиск пока недоступен</p>
 </div>
 
 <div id="system" class="yt-landing-anchor"></div>

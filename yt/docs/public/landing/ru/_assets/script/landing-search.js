@@ -9,16 +9,6 @@
         const input = document.getElementById('yt-landing-search');
         if (!input || input.dataset.searchReady === 'true') return;
 
-        const status = document.getElementById('yt-landing-search-status');
-        function updateHint() {
-            if (!status) return;
-            const hint = input.value.trim()
-                ? 'Нажмите Enter для поиска'
-                : 'Введите запрос и нажмите Enter';
-            if (status.textContent !== hint) status.textContent = hint;
-        }
-
-        input.addEventListener('input', updateHint);
         input.addEventListener('keydown', (event) => {
             if (event.key !== 'Enter' || event.isComposing || event.repeat) return;
             event.preventDefault();
@@ -43,7 +33,6 @@
         input.disabled = false;
         input.enterKeyHint = 'search';
         input.dataset.searchReady = 'true';
-        updateHint();
     }
 
     // The Viewer can replace article content during client-side navigation.

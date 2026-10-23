@@ -165,7 +165,6 @@ html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h2 + p {
 .yt-landing-search input:disabled { cursor: not-allowed; }
 .yt-landing-search input:focus-visible { outline: 2px solid var(--yt-brand-hover); outline-offset: 3px; }
 .yt-landing-search input::placeholder { color: var(--yt-muted); opacity: 1; }
-.yt-landing-search p { margin: 12px 0 0 !important; color: var(--yt-muted); font-size: 13px; }
 .yt-landing-anchor { scroll-margin-top: 100px; }
 
 /* Remove article/constructor gutters only inside this landing. */
@@ -305,6 +304,42 @@ html:has(#ytsaurus-docs-landing) .yt-landing-task-index a:hover { border-color: 
 }
 .yt-landing-domain .pc-card-layout-block__title > .col { max-width: 100%; flex-basis: 100%; }
 html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-card-layout-block__title .pc-title-item { font-size: 28px; line-height: 36px; }
+
+/* Three staggered strokes mark the section under the pointer or keyboard focus. */
+.yt-landing-domain .pc-card-layout-block__title .pc-title-item { position: relative; }
+.yt-landing-domain .pc-card-layout-block__title .pc-title-item::before,
+.yt-landing-domain .pc-card-layout-block__title .pc-title-item::after,
+.yt-landing-domain .pc-card-layout-block__title .pc-title-item__text::before {
+    position: absolute;
+    top: 9px;
+    left: -34px;
+    width: 24px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--yt-brand);
+    content: '';
+    opacity: 0;
+    transform: translateX(-6px) scaleX(.3);
+    transform-origin: left;
+    transition: transform 240ms cubic-bezier(.2, .7, .2, 1), opacity 160ms ease;
+    transition-delay: var(--yt-accent-delay, 0ms);
+    pointer-events: none;
+}
+.yt-landing-domain .pc-card-layout-block__title .pc-title-item::after {
+    top: 17px;
+    width: 18px;
+    --yt-accent-delay: 45ms;
+}
+.yt-landing-domain .pc-card-layout-block__title .pc-title-item__text::before {
+    top: 25px;
+    --yt-accent-delay: 90ms;
+}
+.yt-landing-domain:is(:hover, :focus-within) .pc-card-layout-block__title .pc-title-item::before,
+.yt-landing-domain:is(:hover, :focus-within) .pc-card-layout-block__title .pc-title-item::after,
+.yt-landing-domain:is(:hover, :focus-within) .pc-card-layout-block__title .pc-title-item__text::before {
+    opacity: 1;
+    transform: translateX(0) scaleX(1);
+}
 .yt-landing-domain .pc-title__description { margin-top: 16px; }
 .yt-landing-domain .pc-title__description .yfm { color: var(--yt-muted); font-size: 15px; line-height: 22px; }
 html:has(#ytsaurus-docs-landing) .yt-landing-domain .pc-title__description p + p { margin-top: 12px; }
@@ -348,6 +383,11 @@ html:has(#ytsaurus-docs-landing) .g-root_theme_dark {
     --yt-green: #263124;
     --yt-line: #484848;
 }
+@media (max-width: 1280px) {
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item::before { top: -16px; left: 0; width: 18px; }
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item::after { top: -16px; left: 24px; width: 14px; }
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item__text::before { top: -16px; left: 44px; width: 18px; }
+}
 @media (max-width: 900px) {
     html:has(#ytsaurus-docs-landing) .dc-doc-page__content { width: calc(100% - 40px); padding-block: 40px 64px; }
     .yt-landing-system .pc-card-layout-block__content > .row { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto auto; }
@@ -376,9 +416,23 @@ html:has(#ytsaurus-docs-landing) .g-root_theme_dark {
     .yt-landing-services .pc-card-layout-block__content > .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     html:has(#ytsaurus-docs-landing) .yt-landing-service { min-height: 76px; border-bottom: 1px solid var(--yt-line); }
 }
+@media (hover: none) {
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item::before,
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item::after,
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item__text::before {
+        opacity: .7;
+        transform: none;
+        transition: none;
+    }
+}
 @media (prefers-reduced-motion: reduce) {
     html:has(#ytsaurus-docs-landing) { scroll-behavior: auto; }
     .yt-landing-task::after, .yt-landing-service::after { transition: none; }
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item::before,
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item::after,
+    .yt-landing-domain .pc-card-layout-block__title .pc-title-item__text::before {
+        transition: none;
+    }
 }
 
 html:has(#ytsaurus-docs-landing) .dc-doc-page__body > h1,
