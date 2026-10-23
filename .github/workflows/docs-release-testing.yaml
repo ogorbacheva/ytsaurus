@@ -319,8 +319,10 @@ jobs:
                 '.contentHashes[$path].size > 0' \
                 "${BUILD_OUTPUT_MD}/landing/yfm-build-content.json" >/dev/null
             done
-            test -f "${BUILD_OUTPUT_MD}/landing/ru/index.md"
-            test ! -f "${BUILD_OUTPUT_MD}/landing/ru/index.yaml"
+            for language in ru en; do
+              test -f "${BUILD_OUTPUT_MD}/landing/${language}/index.md"
+              test ! -f "${BUILD_OUTPUT_MD}/landing/${language}/index.yaml"
+            done
             if grep -Fq 'landing-runtime.cjs' "${BUILD_OUTPUT_MD}/landing/.yfm"; then
               echo 'Build-only landing extension leaked into the publish config.' >&2
               exit 1

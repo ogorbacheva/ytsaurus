@@ -1,6 +1,6 @@
 /* Brand typography and colors: https://ytsaurus.tech/ru.
  * Layout: landing-practical-prototype/index.html in the task workspace.
- * Scope all overrides to the Russian Markdown landing, including PC roots. */
+ * Share overrides between the Russian and English Markdown landings, including PC roots. */
 @font-face {
     font-family: Manrope;
     src: url('../fonts/Manrope-Regular.ttf') format('truetype');
@@ -31,6 +31,7 @@
 }
 
 html:has(#ytsaurus-docs-landing) {
+    --yt-overview-label: 'Обзор системы';
     --yt-brand: #ffb23e;
     --yt-brand-hover: #e19420;
     --yt-green: #f5fff0;
@@ -41,6 +42,8 @@ html:has(#ytsaurus-docs-landing) {
     scroll-behavior: smooth;
     scroll-padding-top: 100px;
 }
+
+html:lang(en):has(#ytsaurus-docs-landing) { --yt-overview-label: 'System overview'; }
 
 html:has(#ytsaurus-docs-landing) .g-root,
 html:has(#ytsaurus-docs-landing) .yfm {
@@ -239,7 +242,7 @@ html:has(#ytsaurus-docs-landing) .yt-landing-overview {
 .yt-landing-overview .pc-content::before {
     display: block;
     margin-bottom: 16px;
-    content: 'Обзор системы';
+    content: var(--yt-overview-label);
     font-size: 13px;
     text-transform: uppercase;
     color: #fff;
