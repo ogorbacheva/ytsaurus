@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      cli-version: ${{ steps.install-diplodoc.outputs.cli-version }}
     permissions: write-all
     env:
       src-root: "./yt/docs"
@@ -33,9 +35,27 @@ jobs:
           node-version: 24
 
       - name: Install diplodoc
+        id: install-diplodoc
         run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node -e 'const {execFileSync} = require("node:child_process"); const [major, minor, patch] = execFileSync("npm", ["--version"], {encoding: "utf8"}).trim().split(".").map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) throw new Error("Diplodoc requires npm >=11.5.1");'
           npm install -g @diplodoc/cli@stable
           npm install -g @diplodoc/algolia-extension
+          export PATH="$(npm prefix -g)/bin:$PATH"
+          echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"
+          export DIPLODOC_GLOBAL_ROOT="$(npm root -g)"
+          cli_version=$(node -p 'require(process.env.DIPLODOC_GLOBAL_ROOT + "/@diplodoc/cli/package.json").version')
+          cli_binary=$(node -p 'require("node:fs").realpathSync(process.env.DIPLODOC_GLOBAL_ROOT + "/@diplodoc/cli/build/index.js")')
+          yfm_binary=$(realpath "$(command -v yfm)")
+          echo "Diplodoc package version: ${cli_version}"
+          echo "yfm binary: ${yfm_binary}"
+          test "$yfm_binary" = "$cli_binary"
+          yfm_version=$(yfm --version)
+          echo "yfm version: ${yfm_version}"
+          [[ "$yfm_version" == *"$cli_version"* ]]
+          echo "cli-version=${cli_version}" >> "$GITHUB_OUTPUT"
         shell: bash
 
       - name: Check docs sources
@@ -63,7 +83,7 @@ jobs:
         run: |
           set -o pipefail
           exitcode=0
-          yfm -i ${{ env.src-root }} -o ${{ env.build-root }} --arcadia-root "$GITHUB_WORKSPACE" --output-format md --add-map-file --allow-custom-resources 2>&1 | tee './build-md.log' || exitcode=$?
+          yfm -i ${{ env.src-root }} -o ${{ env.build-root }} --arcadia-root "$GITHUB_WORKSPACE" --output-format md --build-manifest --allow-custom-resources 2>&1 | tee './build-md.log' || exitcode=$?
           rm -rf "${{ env.build-root }}/.ya-make-input"
 
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
@@ -127,6 +147,7 @@ jobs:
       - name: Upload
         uses: diplodoc-platform/docs-upload-action@v1
         with:
+          cli-version: ${{ needs.build.outputs.cli-version }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
           storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
