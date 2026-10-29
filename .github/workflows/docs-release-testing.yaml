@@ -2,13 +2,24 @@ name: Docs manual Upload [to testing only]
 
 on:
   workflow_dispatch:
+    inputs:
+      storage_profile:
+        description: Storage profile for the revision upload
+        required: true
+        type: choice
+        default: legacy-ytsaurus
+        options:
+          - legacy-ytsaurus
+          - configured
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       cli-version: ${{ steps.install-diplodoc.outputs.cli-version }}
-    permissions: write-all
+    permissions:
+      contents: read
     env:
       src-root: "./yt/docs"
       build-root: "./_docs-build"
@@ -35,7 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           npm install -g @diplodoc/cli@stable
-          npm install -g @diplodoc/algolia-extension
+          npm install -g @diplodoc/algolia-extension@0.7.3
+          npm list -g @diplodoc/cli @diplodoc/algolia-extension --depth=0
           echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"
           # Build and upload documentation with the same Diplodoc version.
           cli_version=$(node -p "require('$(npm root -g)/@diplodoc/cli/package.json').version")
@@ -46,15 +58,13 @@ jobs:
         run: bash .github/scripts/check_docs_sources.sh "$GITHUB_WORKSPACE"
         shell: bash
 
-      - name: Delete search index
-        run: bash .github/scripts/delete_search_index.sh ${{ secrets.ALGOLIA_APP_ID }} ${{ secrets.ALGOLIA_API_KEY }}
-
       - name: Build doc md2html
         id: build-md2html
+        timeout-minutes: 10
         env:
           index-name: "ytsaurus-docs"
         run: |
-          set -o pipefail
+          set -euo pipefail
           exitcode=0
           yfm -i ${{ env.src-root }} -o ${{ env.lint-root }} --arcadia-root "$GITHUB_WORKSPACE" --extensions "$(npm root -g)/@diplodoc/algolia-extension" --index-name ${{ env.index-name }}-${{ env.revision }} --api-key ${{ secrets.ALGOLIA_API_KEY }} --app-id ${{ secrets.ALGOLIA_APP_ID }}  2>&1 | tee './build-html.log' || exitcode=$?
 
@@ -65,7 +75,7 @@ jobs:
       - name: Build md2md
         id: build-md2md
         run: |
-          set -o pipefail
+          set -euo pipefail
           exitcode=0
           yfm -i ${{ env.src-root }} -o ${{ env.build-root }} --arcadia-root "$GITHUB_WORKSPACE" --output-format md --build-manifest --allow-custom-resources 2>&1 | tee './build-md.log' || exitcode=$?
           rm -rf "${{ env.build-root }}/.ya-make-input"
@@ -126,18 +136,57 @@ jobs:
   upload:
     needs: build
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      actions: read
+      contents: read
+    env:
+      STORAGE_BUCKET_BASE: ${{ inputs.storage_profile == 'legacy-ytsaurus' && vars.DIPLODOC_YTSAURUS_STORAGE_BUCKET || vars.DIPLODOC_STORAGE_BUCKET }}
+      STORAGE_ENDPOINT: ${{ inputs.storage_profile == 'legacy-ytsaurus' && vars.DIPLODOC_YTSAURUS_STORAGE_ENDPOINT || vars.DIPLODOC_STORAGE_ENDPOINT }}
+      STORAGE_REGION: ${{ inputs.storage_profile == 'legacy-ytsaurus' && vars.DIPLODOC_YTSAURUS_STORAGE_REGION || vars.DIPLODOC_STORAGE_REGION }}
+      STORAGE_ACCESS_KEY_ID: ${{ inputs.storage_profile == 'legacy-ytsaurus' && secrets.DIPLODOC_YTSAURUS_ACCESS_KEY_ID || secrets.DIPLODOC_ACCESS_KEY_ID }}
+      STORAGE_SECRET_ACCESS_KEY: ${{ inputs.storage_profile == 'legacy-ytsaurus' && secrets.DIPLODOC_YTSAURUS_SECRET_ACCESS_KEY || secrets.DIPLODOC_SECRET_ACCESS_KEY }}
     steps:
+      - name: Validate storage profile
+        run: |
+          if [[ -z "${STORAGE_BUCKET_BASE}" || -z "${STORAGE_ENDPOINT}" || -z "${STORAGE_REGION}" ]]; then
+            echo "::error::Variables are not configured for storage profile '${{ inputs.storage_profile }}'."
+            exit 1
+          fi
+          if [[ -z "${STORAGE_ACCESS_KEY_ID}" || -z "${STORAGE_SECRET_ACCESS_KEY}" ]]; then
+            echo "::error::Secrets are not configured for storage profile '${{ inputs.storage_profile }}'."
+            exit 1
+          fi
+        shell: bash
       - name: Show docs revision
         run: |
           echo "Revision: "${{ github.sha }}
+          echo "Storage profile: "${{ inputs.storage_profile }}
+          echo "Storage bucket: "${STORAGE_BUCKET_BASE}
       - name: Upload to testing
         uses: diplodoc-platform/docs-upload-action@v1
         with:
           cli-version: ${{ needs.build.outputs.cli-version }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
-          storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
-          storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
-          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
-          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          storage-endpoint: ${{ env.STORAGE_ENDPOINT }}
+          storage-region: ${{ env.STORAGE_REGION }}
+          storage-bucket: ${{ env.STORAGE_BUCKET_BASE }}
+          storage-access-key-id: ${{ env.STORAGE_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ env.STORAGE_SECRET_ACCESS_KEY }}
+      - name: Verify uploaded revision and assets
+        env:
+          AWS_ACCESS_KEY_ID: ${{ env.STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.STORAGE_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.STORAGE_REGION }}
+        run: |
+          for object in \
+            .yfm \
+            yfm-build-manifest.json \
+            _assets/style/feedback-position.css
+          do
+            echo "Verify ${object}"
+            aws s3api head-object \
+              --region "${STORAGE_REGION}" \
+              --bucket "${STORAGE_BUCKET_BASE}-stable" \
+              --key "rev/${GITHUB_SHA}/${object}"
+          done
+        shell: bash
