@@ -10,6 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       cli-version: ${{ steps.install-diplodoc.outputs.cli-version }}
     permissions: write-all
@@ -50,9 +51,6 @@ jobs:
         run: bash .github/scripts/check_docs_sources.sh "$GITHUB_WORKSPACE"
         shell: bash
 
-      - name: Delete search index
-        run: bash .github/scripts/delete_search_index.sh ${{ secrets.ALGOLIA_APP_ID }} ${{ secrets.ALGOLIA_API_KEY }}
-
       - name: Build doc md2html
         id: build-md2html
         env:
@@ -71,10 +69,17 @@ jobs:
         run: |
           set -o pipefail
           exitcode=0
-          yfm -i ${{ env.src-root }} -o ${{ env.build-root }} --arcadia-root "$GITHUB_WORKSPACE" --output-format md --build-manifest --allow-custom-resources 2>&1 | tee './build-md.log' || exitcode=$?
+          yfm -i ${{ env.src-root }} -o ${{ env.build-root }} --arcadia-root "$GITHUB_WORKSPACE" --output-format md --add-map-file --build-manifest --allow-custom-resources 2>&1 | tee './build-md.log' || exitcode=$?
           rm -rf "${{ env.build-root }}/.ya-make-input"
 
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Verify both metadata formats
+        run: |
+          test -s "${{ env.build-root }}/files.json"
+          test -s "${{ env.build-root }}/yfm-build-manifest.json"
+          echo "Legacy files.json and build manifest are present."
         shell: bash
 
       - name: Save inputs
@@ -137,11 +142,11 @@ jobs:
         with:
           cli-version: ${{ needs.build.outputs.cli-version }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
-          storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
-          storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
-          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
-          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          storage-endpoint: ${{ vars.DIPLODOC_YTSAURUS_STORAGE_ENDPOINT }}
+          storage-region: ${{ vars.DIPLODOC_YTSAURUS_STORAGE_REGION }}
+          storage-bucket: ${{ vars.DIPLODOC_YTSAURUS_STORAGE_BUCKET }}
+          storage-access-key-id: ${{ secrets.DIPLODOC_YTSAURUS_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ secrets.DIPLODOC_YTSAURUS_SECRET_ACCESS_KEY }}
 
   release:
     needs: upload
@@ -151,8 +156,8 @@ jobs:
         uses: diplodoc-platform/docs-release-action@v2
         with:
           revision: "${{ github.sha }}"
-          storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}"
-          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
-          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          storage-bucket: "${{ vars.DIPLODOC_YTSAURUS_STORAGE_BUCKET }}"
+          storage-access-key-id: ${{ secrets.DIPLODOC_YTSAURUS_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ secrets.DIPLODOC_YTSAURUS_SECRET_ACCESS_KEY }}
           server: "https://viewer.ydocs.io"
           project-link: https://ytsaurus.viewer.ydocs.io
