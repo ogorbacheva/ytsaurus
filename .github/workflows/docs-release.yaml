@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           npm install -g @diplodoc/cli@stable
-          npm install -g @diplodoc/algolia-extension@0.7.3
+          # npm install -g @diplodoc/algolia-extension@0.7.3
           echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"
           # Build and upload documentation with the same Diplodoc version.
           cli_version=$(node -p "require('$(npm root -g)/@diplodoc/cli/package.json').version")
@@ -50,8 +50,9 @@ jobs:
         run: bash .github/scripts/check_docs_sources.sh "$GITHUB_WORKSPACE"
         shell: bash
 
-      - name: Delete search index
-        run: bash .github/scripts/delete_search_index.sh ${{ secrets.ALGOLIA_APP_ID }} ${{ secrets.ALGOLIA_API_KEY }}
+      # Preserve existing Algolia indices so the previous revision remains usable for rollback.
+      # - name: Delete search index
+      #   run: bash .github/scripts/delete_search_index.sh ${{ secrets.ALGOLIA_APP_ID }} ${{ secrets.ALGOLIA_API_KEY }}
 
       - name: Build doc md2html
         id: build-md2html
@@ -60,7 +61,8 @@ jobs:
         run: |
           set -o pipefail
           exitcode=0
-          yfm -i ${{ env.src-root }} -o ${{ env.lint-root }} --arcadia-root "$GITHUB_WORKSPACE" --extensions "$(npm root -g)/@diplodoc/algolia-extension" --index-name ${{ env.index-name }}-${{ env.revision }} --api-key ${{ secrets.ALGOLIA_API_KEY }} --app-id ${{ secrets.ALGOLIA_APP_ID }}  2>&1 | tee './build-html.log' || exitcode=$?
+          # yfm -i ${{ env.src-root }} -o ${{ env.lint-root }} --arcadia-root "$GITHUB_WORKSPACE" --extensions "$(npm root -g)/@diplodoc/algolia-extension" --index-name ${{ env.index-name }}-${{ env.revision }} --api-key ${{ secrets.ALGOLIA_API_KEY }} --app-id ${{ secrets.ALGOLIA_APP_ID }}  2>&1 | tee './build-html.log' || exitcode=$?
+          yfm -i ${{ env.src-root }} -o ${{ env.lint-root }} --arcadia-root "$GITHUB_WORKSPACE" 2>&1 | tee './build-html.log' || exitcode=$?
 
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
         shell: bash
@@ -137,11 +139,11 @@ jobs:
         with:
           cli-version: ${{ needs.build.outputs.cli-version }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          storage-endpoint: ${{ vars.DIPLODOC_STORAGE_ENDPOINT }}
-          storage-region: ${{ vars.DIPLODOC_STORAGE_REGION }}
-          storage-bucket: ${{ vars.DIPLODOC_STORAGE_BUCKET }}
-          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
-          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          storage-endpoint: ${{ vars.DIPLODOC_YTSAURUS_STORAGE_ENDPOINT }}
+          storage-region: ${{ vars.DIPLODOC_YTSAURUS_STORAGE_REGION }}
+          storage-bucket: ${{ vars.DIPLODOC_YTSAURUS_STORAGE_BUCKET }}
+          storage-access-key-id: ${{ secrets.DIPLODOC_YTSAURUS_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ secrets.DIPLODOC_YTSAURUS_SECRET_ACCESS_KEY }}
 
   release:
     needs: upload
@@ -151,8 +153,8 @@ jobs:
         uses: diplodoc-platform/docs-release-action@v2
         with:
           revision: "${{ github.sha }}"
-          storage-bucket: "${{ vars.DIPLODOC_STORAGE_BUCKET }}"
-          storage-access-key-id: ${{ secrets.DIPLODOC_ACCESS_KEY_ID }}
-          storage-secret-access-key: ${{ secrets.DIPLODOC_SECRET_ACCESS_KEY }}
+          storage-bucket: "${{ vars.DIPLODOC_YTSAURUS_STORAGE_BUCKET }}"
+          storage-access-key-id: ${{ secrets.DIPLODOC_YTSAURUS_ACCESS_KEY_ID }}
+          storage-secret-access-key: ${{ secrets.DIPLODOC_YTSAURUS_SECRET_ACCESS_KEY }}
           server: "https://viewer.ydocs.io"
           project-link: https://ytsaurus.viewer.ydocs.io

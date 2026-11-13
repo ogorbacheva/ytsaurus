@@ -64,7 +64,7 @@ vcs:
   enabled: true
 
 search:
-  provider: algolia
+  # provider: algolia
   appId: WW7EWG7Y6T
   indexName: ytsaurus-docs
   index: true
