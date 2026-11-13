@@ -25,7 +25,7 @@
 
 #include <yt/yt/library/re2/re2.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <util/generic/hash_multi_map.h>
 
@@ -240,7 +240,7 @@ public:
                     auto deadSnapshot = std::move(snapshot);
                     snapshot = std::move(newSnapshot);
                     guard.Release();
-                    // This is where deadSnapshot dies. It's also nice to have logging moved outside
+                    // This is where deadSnapshot might die. It's also nice to have logging moved outside
                     // of a critical section.
                     YT_TLOG_DEBUG("Tablet snapshot updated")
                         .With("TabletId", tablet->GetId())
@@ -375,7 +375,7 @@ private:
     const TTabletNodeConfigPtr Config_;
     IBootstrap* const Bootstrap_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, TabletSnapshotsSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, TabletSnapshotsSpinLock_);
     THashMultiMap<TTabletId, TTabletSnapshotPtr> TabletIdToSnapshot_;
     THashMap<TTabletId, int> TabletIdToSnapshotCount_;
 

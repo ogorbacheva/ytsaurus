@@ -1,11 +1,12 @@
 #include "data_node_tracker.h"
 
-#include "data_node_tracker_internal.h"
-#include "domestic_medium.h"
-#include "chunk_manager.h"
 #include "chunk_location.h"
 #include "chunk_location_type_handler.h"
+#include "chunk_manager.h"
 #include "config.h"
+#include "data_node_tracker_internal.h"
+#include "domestic_medium.h"
+#include "helpers.h"
 #include "private.h"
 
 #include <yt/yt/server/master/cell_master/alert_manager.h>
@@ -14,28 +15,27 @@
 #include <yt/yt/server/master/cell_master/config.h>
 #include <yt/yt/server/master/cell_master/config_manager.h>
 #include <yt/yt/server/master/cell_master/hydra_facade.h>
-
-#include <yt/yt/server/master/chunk_server/chunk_manager.h>
-#include <yt/yt/server/master/chunk_server/helpers.h>
-#include <yt/yt/server/master/chunk_server/chunk_replica_fetcher.h>
+#include <yt/yt/server/master/cell_master/multicell_manager.h>
 
 #include <yt/yt/server/master/chunk_server/proto/chunk_manager.pb.h>
 #include <yt/yt/server/master/chunk_server/proto/data_node_tracker.pb.h>
 
+#include <yt/yt/server/master/object_server/object_manager.h>
 #include <yt/yt/server/master/object_server/object_service.h>
 
 #include <yt/yt/server/master/sequoia_server/config.h>
 
+#include <yt/yt/server/master/node_tracker_server/helpers.h>
 #include <yt/yt/server/master/node_tracker_server/node.h>
 #include <yt/yt/server/master/node_tracker_server/node_disposal_manager.h>
 #include <yt/yt/server/master/node_tracker_server/node_tracker.h>
-#include <yt/yt/server/master/node_tracker_server/helpers.h>
 
 #include <yt/yt/ytlib/data_node_tracker_client/location_directory.h>
+
 #include <yt/yt/ytlib/data_node_tracker_client/proto/data_node_tracker_service.pb.h>
 
-#include <yt/yt/ytlib/node_tracker_client/public.h>
 #include <yt/yt/ytlib/node_tracker_client/helpers.h>
+#include <yt/yt/ytlib/node_tracker_client/public.h>
 
 #include <yt/yt/ytlib/node_tracker_client/proto/node_tracker_service.pb.h>
 
@@ -47,10 +47,11 @@
 
 #include <yt/yt/core/ytree/helpers.h>
 
-#include <yt/yt/core/misc/id_generator.h>
 #include <yt/yt/core/misc/finally.h>
+#include <yt/yt/core/misc/id_generator.h>
 
 #include <yt/yt/core/concurrency/delayed_executor.h>
+#include <yt/yt/core/concurrency/periodic_executor.h>
 
 #include <yt/yt/core/actions/new_with_offloaded_dtor.h>
 
@@ -266,6 +267,10 @@ public:
                     auto replaceLocationRequest = std::make_unique<TReqReplaceLocationReplicas>();
                     replaceLocationRequest->set_node_id(ToProto(node->GetId()));
                     replaceLocationRequest->set_location_index(ToProto(location->GetIndex()));
+                    if (preparedRequest->SequoiaRequest->has_registration_revision()) {
+                        replaceLocationRequest->set_registration_revision(
+                            preparedRequest->SequoiaRequest->registration_revision());
+                    }
                     *replaceLocationRequest->mutable_chunks() = std::move(*preparedRequest->SequoiaRequest->mutable_added_chunks());
 
                     if (preparedRequest->NonSequoiaRequest.is_validation()) {
@@ -364,6 +369,9 @@ public:
             THROW_ERROR_EXCEPTION("Full data node heartbeats are not supported for restarted nodes, the node will be disposed for standard registration");
         }
 
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(context->Request().registration_revision()));
         ValidateHeartbeatRequest(node, context->Request());
         auto locationDirectory = ParseLocationDirectory(node, context->Request());
         DoProcessFullHeartbeat(node, context, locationDirectory);
@@ -375,6 +383,9 @@ public:
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(context->Request().registration_revision()));
         ValidateHeartbeatRequest(node, context->Request());
 
         auto locationUuid = FromProto<TChunkLocationUuid>(context->Request().location_uuid());
@@ -408,6 +419,10 @@ public:
         const TNode* node,
         const TCtxFinalizeFullHeartbeatSessionPtr& context) override
     {
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(context->Request().registration_revision()));
+
         auto reportedLocationUuids = GetLocationsReportedInStatistics(context->Request().statistics());
 
         std::vector<TFuture<void>> sequoiaReplaceLocationReplicasFutures;
@@ -432,6 +447,10 @@ public:
                         auto replaceLocationRequest = std::make_unique<TReqReplaceLocationReplicas>();
                         replaceLocationRequest->set_node_id(ToProto(node->GetId()));
                         replaceLocationRequest->set_location_index(ToProto(location->GetIndex()));
+                        if (context->Request().has_registration_revision()) {
+                            replaceLocationRequest->set_registration_revision(
+                                context->Request().registration_revision());
+                        }
 
                         auto chunkManager = Bootstrap_->GetChunkManager();
                         sequoiaReplaceLocationReplicasFutures.push_back(chunkManager->ReplaceSequoiaLocationReplicas(
@@ -511,6 +530,9 @@ public:
         auto nodeId = FromProto<TNodeId>(originalRequest.node_id());
         auto* node = nodeTracker->GetNodeOrThrow(nodeId);
 
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(originalRequest.registration_revision()));
         ValidateHeartbeatRequest(node, originalRequest);
 
         if (!NodesWithOngoingIncrementalHeartbeat_.insert(nodeId).second) {
@@ -1175,12 +1197,10 @@ private:
 
         auto* location = FindChunkLocationByUuid(uuid);
         if (!IsObjectAlive(location)) {
-            YT_LOG_ALERT(
-                "Data node reported %v heartbeat with invalid location directory: "
-                "location does not exist (NodeAddress: %v, LocationUuid: %v)",
-                FullHeartbeat ? "full" : "incremental",
-                node->GetDefaultAddress(),
-                uuid);
+            YT_TLOG_ALERT("Data node reported heartbeat with invalid location directory: location does not exist")
+                .With("FullHeartbeat", FullHeartbeat)
+                .With("NodeAddress", node->GetDefaultAddress())
+                .With("LocationUuid", uuid);
             THROW_ERROR_EXCEPTION(
                 "Heartbeats with unknown location in location directory are invalid")
                 .With("location_uuid", uuid);
@@ -1188,27 +1208,21 @@ private:
 
         auto locationNode = location->GetNode();
         if (!locationNode) {
-            YT_LOG_ALERT(
-                "Data node reported %v heartbeat with invalid location directory: "
-                "location does not have owning node "
-                "(NodeAddress: %v, LocationUuid: %v)",
-                FullHeartbeat ? "full" : "incremental",
-                node->GetDefaultAddress(),
-                uuid);
+            YT_TLOG_ALERT("Data node reported heartbeat with invalid location directory: location does not have owning node")
+                .With("FullHeartbeat", FullHeartbeat)
+                .With("NodeAddress", node->GetDefaultAddress())
+                .With("LocationUuid", uuid);
             THROW_ERROR_EXCEPTION(
                 "Heartbeats with dangling locations in location directory are invalid")
                 .With("location_uuid", uuid);
         }
 
         if (locationNode != node) {
-            YT_LOG_ALERT(
-                "Data node reported %v heartbeat with invalid location directory: "
-                "location belongs to another node "
-                "(NodeAddress: %v, LocationUuid: %v, AnotherNodeAddress: %v)",
-                FullHeartbeat ? "full" : "incremental",
-                node->GetDefaultAddress(),
-                uuid,
-                locationNode->GetDefaultAddress());
+            YT_TLOG_ALERT("Data node reported heartbeat with invalid location directory: location belongs to another node")
+                .With("FullHeartbeat", FullHeartbeat)
+                .With("NodeAddress", node->GetDefaultAddress())
+                .With("LocationUuid", uuid)
+                .With("AnotherNodeAddress", locationNode->GetDefaultAddress());
             THROW_ERROR_EXCEPTION(
                 "Heartbeat's location directory cannot contain location which belongs to other node")
                 .With("location_uuid", uuid)
@@ -1381,6 +1395,10 @@ private:
             auto& sequoiaRequest = preparedRequest->SequoiaRequest;
             preparedRequest->NonSequoiaRequest.CopyFrom(originalRequest);
             sequoiaRequest->set_node_id(originalRequest.node_id());
+            if (originalRequest.has_registration_revision()) {
+                sequoiaRequest->set_registration_revision(
+                    originalRequest.registration_revision());
+            }
 
             if constexpr (std::is_same_v<THeartbeatContextPtr, TCtxIncrementalHeartbeatPtr>) {
                 sequoiaRequest->set_is_incremental_heartbeat(true);
@@ -1488,6 +1506,9 @@ private:
         auto* node = nodeTracker->GetNodeOrThrow(nodeId);
 
         node->ValidateRegistered();
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(request->registration_revision()));
 
         if (!node->ReportedDataNodeHeartbeat()) {
             THROW_ERROR_EXCEPTION(
@@ -1528,12 +1549,11 @@ private:
 
             node->SetNextValidationFullHeartbeatTime(mutationContext->GetTimestamp() + timeBeforeNextValidationHeartbeat);
 
-            YT_LOG_DEBUG(
-                "%v validation full heartbeat session for node (NodeId: %v, Address: %v, Time: %v)",
-                time.has_value() ? "Rescheduling" : "Scheduling initial",
-                nodeId,
-                node->GetDefaultAddress(),
-                node->GetNextValidationFullHeartbeatTime());
+            YT_TLOG_DEBUG("Scheduling validation full heartbeat session for node")
+                .With("Rescheduling", time.has_value())
+                .With("NodeId", nodeId)
+                .With("Address", node->GetDefaultAddress())
+                .With("Time", node->GetNextValidationFullHeartbeatTime());
 
             response->set_schedule_validation_full_heartbeat_session(time.has_value());
         }
@@ -1551,6 +1571,9 @@ private:
         auto* node = nodeTracker->GetNodeOrThrow(nodeId);
 
         node->ValidateRegistered();
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(request->registration_revision()));
 
         if (node->ReportedDataNodeHeartbeat()) {
             THROW_ERROR_EXCEPTION(
@@ -1598,6 +1621,9 @@ private:
         auto* node = nodeTracker->GetNodeOrThrow(nodeId);
 
         node->ValidateRegistered();
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(request->registration_revision()));
 
         if (!validation && node->ReportedDataNodeHeartbeat()) {
             THROW_ERROR_EXCEPTION(
@@ -1642,6 +1668,9 @@ private:
         auto* node = nodeTracker->GetNodeOrThrow(nodeId);
 
         node->ValidateRegistered();
+        Bootstrap_->GetChunkManager()->ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(request->registration_revision()));
 
         if (node->ReportedDataNodeHeartbeat()) {
             THROW_ERROR_EXCEPTION(
@@ -1764,11 +1793,11 @@ private:
         const auto& diskFamilyWhitelist = medium->AsDomestic()->DiskFamilyWhitelist();
         auto diskFamily = FromProto<std::string>(location->Statistics().disk_family());
         if (diskFamilyWhitelist && !std::ranges::binary_search(*diskFamilyWhitelist, diskFamily)) {
-            YT_LOG_ALERT("Inconsistent medium (LocationUuid: %v, Medium: %v, DiskFamily: %v, DiskFamilyWhitelist: %v)",
-                locationUuid,
-                medium->GetName(),
-                diskFamilyWhitelist,
-                diskFamily);
+            YT_TLOG_ALERT("Inconsistent medium")
+                .With("LocationUuid", locationUuid)
+                .With("Medium", medium->GetName())
+                .With("DiskFamily", diskFamily)
+                .With("DiskFamilyWhitelist", diskFamilyWhitelist);
             LocationAlerts_[locationUuid] = TError("Inconsistent medium")
                 .With("location_uuid", locationUuid)
                 .With("medium_name", medium->GetName())

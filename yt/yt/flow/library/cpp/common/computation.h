@@ -7,6 +7,8 @@
 #include "distributing_tracker.h"
 #include "external_metrics_reporter.h"
 #include "flow_view.h"
+#include "job_lineage_tracker.h"
+#include "key.h"
 #include "partition_buffer_state.h"
 #include "spec_validation.h"
 #include "stream_inflight_limits.h"
@@ -35,9 +37,19 @@ namespace NYT::NFlow {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! The worker's catalogue of timer pages as the context carries it; the implementation lives
+//! in the computation library and is shared by every job of the worker.
+struct ITimerPageCatalogue
+    : public TRefCounted
+{ };
+
+DEFINE_REFCOUNTED_TYPE(ITimerPageCatalogue);
+
 struct TComputationContextBase
 {
     TComputationSpecPtr ComputationSpec;
+    bool FailureHandlerEnabled = false;
+    TFlowCoreTarget FlowCoreTarget;
     NClient::NCache::IClientsCachePtr ClientsCache;
     NYPath::TRichYPath PipelinePath;
     TPartitionPtr Partition;
@@ -52,6 +64,8 @@ struct TComputationContextBase
     NQueryClient::IColumnEvaluatorCachePtr EvaluatorCache;
     IPayloadConverterCachePtr ConverterCache;
     TLoadThroughputThrottlerPtr LoadThroughputThrottler;
+    //! The worker's timer page catalogue; null outside a worker job.
+    ITimerPageCataloguePtr TimerPageCatalogue;
     //! Per-job view of the worker's buffer manager; null outside a worker job.
     IPartitionBufferStatePtr PartitionBufferState;
     TComputationStreamSpecStoragePtr StreamSpecStorage;
@@ -61,6 +75,8 @@ struct TComputationContextBase
     NYT::NHttp::IClientPtr HttpClient;
     NYT::NHttp::IClientPtr HttpsClient;
     NYT::NConcurrency::IPollerPtr Poller;
+
+    IJobLineageTrackerPtr JobLineageTracker;
 
     //! Raw channel provider to the controller's distributed-throttler service.
     //! TComputationBase uses it to build its IDistributedThrottlerFactory.
@@ -84,7 +100,7 @@ DEFINE_REFCOUNTED_TYPE(TComputationContext);
 
 struct TDynamicComputationContextBase
 {
-    i64 SpecGeneration;
+    i64 SpecGeneration = 0;
     TDynamicComputationSpecPtr DynamicComputationSpec;
     TDynamicPartitionSpecPtr DynamicPartitionSpec;
     THashMap<TThrottlerId, TDynamicThrottlerSpecPtr> Throttlers;
@@ -107,6 +123,11 @@ struct IComputationRunContext
     virtual TFuture<std::vector<TInputMessageConstPtr>> GetNextBatch(const THashSet<TStreamId>& allowedStreams = {}) = 0;
     // Includes all acknowledgements submitted through this context before the call.
     virtual TFuture<THashMap<TStreamId, TInflightMetricsPtr>> GetInputInflightMetrics() = 0;
+
+    // Counts messages a source computation read from its source; messages of input streams are
+    // counted by GetNextBatch. Wrappers that do not forward it only lose the count.
+    virtual void RegisterSourceMessages(i64 /*count*/)
+    { }
 
     // Acknowledge messages newly persisted by this computation.
     virtual void MarkPersisted(std::span<const TMessageId> messageIds) = 0;
@@ -136,24 +157,15 @@ DEFINE_REFCOUNTED_TYPE(IComputationRunContext);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-//! Base class for computation orchid state.
-struct TComputationOrchidState
-    : public NYTree::TYsonStruct
-{
-    REGISTER_YSON_STRUCT(TComputationOrchidState);
-
-    static void Register(TRegistrar registrar);
-};
-
-DEFINE_REFCOUNTED_TYPE(TComputationOrchidState);
-
-////////////////////////////////////////////////////////////////////////////////
-
 struct TComputationStatus
     : public NYTree::TYsonStruct
 {
+    std::optional<THashMap<TKey, TInstant>> ObservedKeys;
     TNodeTraverseDataPtr NodeTraverse;
+    TProcessingObservationPtr ProcessingObservation;
     NYTree::IMapNodePtr PartitionStatus;
+    //! Run iterations that had input to process; idle ones (no messages, timers or visits) do not count.
+    i64 NonEmptyIterationCount{};
     THashMap<std::string, double> EpochPartTimes;
     THashMap<std::string, THashMap<TStreamId, TJobEntityLimitStatus>> InputLimits;
     THashMap<std::string, THashMap<TStreamId, TJobEntityLimitStatus>> OutputLimits;
@@ -164,6 +176,21 @@ struct TComputationStatus
 };
 
 DEFINE_REFCOUNTED_TYPE(TComputationStatus);
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Worker-to-controller status of the computation-owned part of a partition.
+struct TComputationPartitionStatus
+    : public NYTree::TYsonStruct
+{
+    std::optional<NYTree::IMapNodePtr> ActiveSourceStatus;
+
+    REGISTER_YSON_STRUCT(TComputationPartitionStatus);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TComputationPartitionStatus);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -201,6 +228,12 @@ private:
     struct TDynamicPartitionSpecBase
         : public virtual NYTree::TYsonStruct
     {
+        NYTree::IMapNodePtr ActiveSource;
+        THashSet<TStreamId> BlockedOutputStreams;
+        //! Every partition of this partition's availability group is unavailable, as decided by the last
+        //! traverse. Passed to the source so it can stop publishing errors, never to be acted upon otherwise.
+        bool AvailabilityGroupUnavailable{};
+
         REGISTER_YSON_STRUCT(TDynamicPartitionSpecBase);
 
         static void Register(TRegistrar registrar);
@@ -251,8 +284,6 @@ public:
         THashMap<TStreamId, TStreamTraverseDataPtr> inputStreams) = 0;
 
     virtual TComputationStatusPtr GetStatus() = 0;
-
-    virtual TComputationOrchidStatePtr GetOrchidState() = 0;
 };
 
 DEFINE_REFCOUNTED_TYPE(IComputation);

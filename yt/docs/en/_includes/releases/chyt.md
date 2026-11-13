@@ -192,7 +192,7 @@ If you are using the `enable_read_range_inferring` flag since version 2.18, we s
 - Add optimization for better performance with min/max queries using columnar statistics from nodes, [d83cd46](https://github.com/ytsaurus/ytsaurus/commit/d83cd46c0b5830fbbcdd23c00106b387b439542b).
 - Add optimization for better performance with rle and dictionary encoding (using only distinct values without materialization), [c777591](https://github.com/ytsaurus/ytsaurus/commit/c77759151d82bbfc8720cc269a3c295555974bdf).
 - Add revision check to AttributeCache for more stable performance, [3f3be85](https://github.com/ytsaurus/ytsaurus/commit/3f3be8596e05dd30054e7ddc7bfb15421ffd9afc).
-- Add EnableComlexOptionalConversion to prevent conversion of arrays (can't be nullable in Clickhouse, will change default to false in future), [57a298a](https://github.com/ytsaurus/ytsaurus/commit/57a298ac4c98659fe014d43cea872925d9750424).
+- Add EnableComplexOptionalConversion to prevent conversion of arrays (can't be nullable in Clickhouse, will change default to false in future), [57a298a](https://github.com/ytsaurus/ytsaurus/commit/57a298ac4c98659fe014d43cea872925d9750424).
 - Add parallel insert-select support in storage\_distributor, [4632de8](https://github.com/ytsaurus/ytsaurus/commit/4632de8546d04ef8f3dedb9b9a26007a5384288b).
 
 #### Fixes:
@@ -255,7 +255,7 @@ No description
 - Read in order optimization (PR #757)
 - New PREWHERE algorithm on a data conversion level, turned on by default
 - Convert `bool` data type to `Bool` instread of `YtBoolean`. `YtBoolean` type is deprecated
-- Convert `dict` data type to `Map` instead of `Array(Typle(Key, Value))`
+- Convert `dict` data type to `Map` instead of `Array(Tuple(Key, Value))`
 - Convert `timestamp` data type to `DateTime64` instead of `UInt64`
 - Support reading and writing `date32`, `datetime64`, `timestamp64`, `interval64` data types
 - Support reading `json` data type as `String`

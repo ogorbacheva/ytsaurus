@@ -3,10 +3,8 @@
 #include <yt/yt/server/master/cell_master/bootstrap.h>
 #include <yt/yt/server/master/cell_master/serialize.h>
 
-#include <yt/yt/server/master/chunk_server/chunk_manager.h>
-
-#include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/convert.h>
+#include <yt/yt/core/ytree/fluent.h>
 
 namespace NYT::NChunkServer {
 
@@ -249,6 +247,28 @@ void Serialize(const THunkChunkTreeStatistics& statistics, NYson::IYsonConsumer*
             .Item("regular_disk_space").Value(statistics.RegularDiskSpace)
             .Item("erasure_disk_space").Value(statistics.ErasureDiskSpace)
             .Item("chunk_count").Value(statistics.ChunkCount)
+        .EndMap();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void FormatValue(TStringBuilderBase* builder, const TChunkReplicationStatistics& statistics, TStringBuf spec)
+{
+    FormatValue(builder, ConvertToYsonString(statistics, EYsonFormat::Text), spec);
+}
+
+void Serialize(const TChunkReplicationStatistics& statistics, NYson::IYsonConsumer* consumer)
+{
+    NYTree::BuildYsonFluently(consumer)
+        .BeginMap()
+            .Item("total").Value(statistics.Total)
+            .Item("available").Value(statistics.Available)
+            .Item("lost").Value(statistics.Lost)
+            .Item("data_missing").Value(statistics.DataMissing)
+            .Item("parity_missing").Value(statistics.ParityMissing)
+            .Item("quorum_missing").Value(statistics.QuorumMissing)
+            .Item("medium_wise_lost").Value(statistics.MediumWiseLost)
+            .Item("dead").Value(statistics.Dead)
         .EndMap();
 }
 

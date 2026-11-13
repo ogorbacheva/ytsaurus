@@ -71,13 +71,14 @@
 #include <yt/yt/core/actions/cancelable_context.h>
 #include <yt/yt/core/actions/signal.h>
 
+#include <yt/yt/core/concurrency/periodic_executor.h>
 #include <yt/yt/core/concurrency/quantized_executor.h>
 #include <yt/yt/core/concurrency/thread_pool.h>
 #include <yt/yt/core/concurrency/throughput_throttler.h>
 
-#include <library/cpp/yt/threading/recursive_spin_lock.h>
-#include <library/cpp/yt/threading/spin_lock.h>
-#include <library/cpp/yt/threading/traceless_guard.h>
+#include <library/cpp/yt/system/recursive_spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
+#include <library/cpp/yt/system/traceless_guard.h>
 
 #include <library/cpp/yt/compact_containers/compact_vector.h>
 
@@ -165,7 +166,7 @@ public:
 private:
     const TCpuDuration ExpireTime_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, Lock_);
     //! Maps user name to (error, deadline) pairs.
     THashMap<std::string, std::pair<TError, TCpuInstant>> Map_;
 };
@@ -236,6 +237,7 @@ public:
         DeclareServerFeature(EMasterFeature::OverlayedJournals);
         DeclareServerFeature(EMasterFeature::Portals);
         DeclareServerFeature(EMasterFeature::PortalExitSynchronization);
+        DeclareServerFeature(EMasterFeature::AlterTable2PC);
 
         const auto& securityManager = Bootstrap_->GetSecurityManager();
         securityManager->SubscribeUserCharged(BIND_NO_PROPAGATE(&TObjectService::OnUserCharged, MakeStrong(this)));
@@ -350,9 +352,9 @@ private:
             }
         }
 
-        NThreading::TThreadId GetThreadId() const final
+        TThreadId GetThreadId() const final
         {
-            return NThreading::InvalidThreadId;
+            return InvalidThreadId;
         }
 
         bool CheckAffinity(const IInvokerPtr& /*invoker*/) const final
@@ -387,6 +389,7 @@ private:
     std::atomic<bool> EnablePerUserThrottling_ = false;
     std::atomic<bool> EnableTwoLevelCache_ = false;
     std::atomic<bool> EnableCypressTransactionsInSequoia_ = false;
+    std::atomic<bool> ReplicateCypressTransactionsViaSeparateSequoiaTransactionPerCoordinator_ = false;
     static constexpr auto DefaultScheduleReplyRetryBackoff = TDuration::MilliSeconds(100);
     std::atomic<TDuration> ScheduleReplyRetryBackoff_ = DefaultScheduleReplyRetryBackoff;
     std::atomic<bool> MinimizeExecuteLatency_ = false;
@@ -541,16 +544,17 @@ public:
         } else if constexpr (WorkloadType == EUserWorkloadType::Read) {
             return EnqueuedToLocalRead_;
         } else {
-            static_assert("Unexpected workload type for enqueuing/dequeuing execute session");
+            static_assert(false, "Unexpected workload type for enqueuing/dequeuing execute session");
         }
     }
 
-    bool RunAutomatonFast(EUserWorkloadType workloadType)
+    template <EUserWorkloadType WorkloadType>
+    bool RunAutomatonFast()
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
         try {
-            return GuardedRunAutomatonFast(workloadType);
+            return GuardedRunAutomatonFast<WorkloadType>();
         } catch (const std::exception& ex) {
             Reply(ex);
             return false;
@@ -742,15 +746,13 @@ private:
 
         auto originalRequestId = FromProto<TRequestId>(request.original_request_id());
 
-        RpcContext_->SetRequestInfo("SubrequestCount: %v, SuppressUpstreamSync: %v, "
-            "SuppressTransactionCoordinatorSync: %v, SuppressStronglyOrderedTransactionBarrier: %v, "
-            "OriginalRequestId: %v, AllowResolveFromSequoiaObject: %v",
-            TotalSubrequestCount_,
-            GetSuppressUpstreamSync(RpcContext_),
-            GetSuppressTransactionCoordinatorSync(RpcContext_),
-            GetSuppressStronglyOrderedTransactionBarrier(RpcContext_->GetRequestHeader()),
-            originalRequestId,
-            GetAllowResolveFromSequoiaObject(RpcContext_->GetRequestHeader()));
+        RpcContext_->AnnotateRequest()
+            .With("SubrequestCount", TotalSubrequestCount_)
+            .With("SuppressUpstreamSync", GetSuppressUpstreamSync(RpcContext_))
+            .With("SuppressTransactionCoordinatorSync", GetSuppressTransactionCoordinatorSync(RpcContext_))
+            .With("SuppressStronglyOrderedTransactionBarrier", GetSuppressStronglyOrderedTransactionBarrier(RpcContext_->GetRequestHeader()))
+            .With("OriginalRequestId", originalRequestId)
+            .With("AllowResolveFromSequoiaObject", GetAllowResolveFromSequoiaObject(RpcContext_->GetRequestHeader()));
 
         if (TotalSubrequestCount_ == 0) {
             Reply();
@@ -1443,7 +1445,8 @@ private:
                             .RequestId = RequestId_,
                             .SubrequestIndex = subrequestIndex,
                         },
-                        Owner_->EnableCypressTransactionsInSequoia_.load(std::memory_order::acquire));
+                        Owner_->EnableCypressTransactionsInSequoia_.load(std::memory_order::acquire),
+                        Owner_->ReplicateCypressTransactionsViaSeparateSequoiaTransactionPerCoordinator_.load(std::memory_order::acquire));
                 }
                 if (subrequest.Mutation) {
                     // Pre-phase-two.
@@ -1467,7 +1470,8 @@ private:
                     .Identity = Identity_,
                     .RequestId = RequestId_,
                 },
-                Owner_->EnableCypressTransactionsInSequoia_.load(std::memory_order::acquire));
+                Owner_->EnableCypressTransactionsInSequoia_.load(std::memory_order::acquire),
+                Owner_->ReplicateCypressTransactionsViaSeparateSequoiaTransactionPerCoordinator_.load(std::memory_order::acquire));
         } else {
             // Pre-phase-two.
             RemoteTransactionReplicationSession_->Reset(std::move(transactionsToReplicateWithoutBoomerangs));
@@ -1593,7 +1597,7 @@ private:
         } else if constexpr (WorkloadType == EUserWorkloadType::Read) {
             subrequestType = EExecutionSessionSubrequestType::LocalRead;
         } else {
-            static_assert("Unexpected workload type for detecting local subrequests");
+            static_assert(false, "Unexpected workload type for detecting local subrequests");
         }
 
         for (int index = 0; index < TotalSubrequestCount_; ++index) {
@@ -1689,38 +1693,25 @@ private:
             batch.BatchReq->AddRequestMessage(subrequest.RemoteRequestMessage);
             batch.Indexes.push_back(subrequestIndex);
 
-            YT_LOG_DEBUG("Forwarding object request (ForwardedRequestId: %v, Method: %v.%v, "
-                "%v%v%v%v, Mutating: %v%v, Retry: %v, CellTag: %v, PeerKind: %v)",
-                batch.BatchReq->GetRequestId(),
-                requestHeader.service(),
-                requestHeader.method(),
-                MakeFormatterWrapper([&] (auto* builder) {
-                    if (subrequest.TargetPathRewrite) {
-                        builder->AppendFormat("TargetPath: %v, ", subrequest.TargetPathRewrite);
-                    }
-                }),
-                MakeFormatterWrapper([&] (auto* builder) {
-                    if (subrequest.AdditionalPathRewrites && !subrequest.AdditionalPathRewrites->empty()) {
-                        builder->AppendFormat("AdditionalPaths: %v, ", *subrequest.AdditionalPathRewrites);
-                    }
-                }),
-                MakeFormatterWrapper([&] (auto* builder) {
-                    if (subrequest.PrerequisiteRevisionPathRewrites && !subrequest.PrerequisiteRevisionPathRewrites->empty()) {
-                        builder->AppendFormat("PrerequisiteRevisionPaths: %v, ", *subrequest.PrerequisiteRevisionPathRewrites);
-                    }
-                }),
-                RpcContext_->GetAuthenticationIdentity(),
-                ypathExt.mutating(),
-                MakeFormatterWrapper([&] (auto* builder) {
-                    if (!ypathExt.mutating()) {
-                        return;
-                    }
-                    builder->AppendFormat(", OriginMutationId: %v",
-                        NRpc::GetMutationId(subrequest.RequestHeader));
-                }),
-                subrequest.RequestHeader.retry(),
-                subrequest.ForwardedCellTag,
-                peerKind);
+            YT_TLOG_DEBUG("Forwarding object request")
+                .With("ForwardedRequestId", batch.BatchReq->GetRequestId())
+                .With("Service", requestHeader.service())
+                .With("Method", requestHeader.method())
+                .WithIf(static_cast<bool>(subrequest.TargetPathRewrite), "TargetPath", subrequest.TargetPathRewrite)
+                .WithIf(
+                    subrequest.AdditionalPathRewrites && !subrequest.AdditionalPathRewrites->empty(),
+                    "AdditionalPaths",
+                    subrequest.AdditionalPathRewrites)
+                .WithIf(
+                    subrequest.PrerequisiteRevisionPathRewrites && !subrequest.PrerequisiteRevisionPathRewrites->empty(),
+                    "PrerequisiteRevisionPaths",
+                    subrequest.PrerequisiteRevisionPathRewrites)
+                .With("AuthenticationIdentity", RpcContext_->GetAuthenticationIdentity())
+                .With("Mutating", ypathExt.mutating())
+                .WithIf(ypathExt.mutating(), "OriginMutationId", NRpc::GetMutationId(subrequest.RequestHeader))
+                .With("Retry", subrequest.RequestHeader.retry())
+                .With("CellTag", subrequest.ForwardedCellTag)
+                .With("PeerKind", peerKind);
         }
 
         for (auto& [cellTag, batchReqOrError] : batchMap) {
@@ -1832,7 +1823,8 @@ private:
         }
     }
 
-    bool GuardedRunAutomatonFast(EUserWorkloadType workloadType)
+    template <EUserWorkloadType WorkloadType>
+    bool GuardedRunAutomatonFast()
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
@@ -1910,7 +1902,7 @@ private:
             RequestQueueSizeIncremented_ = true;
         }
 
-        if (!ThrottleRequests(workloadType)) {
+        if (!ThrottleRequests<WorkloadType>()) {
             return false;
         }
 
@@ -1955,19 +1947,19 @@ private:
         return true;
     }
 
-    bool ThrottleRequests(EUserWorkloadType workloadType)
+    template <EUserWorkloadType WorkloadType>
+    bool ThrottleRequests()
     {
-        switch (workloadType) {
-            case EUserWorkloadType::Write:
-                return DoThrottleRequest<EExecutionSessionSubrequestType::LocalWrite, EUserWorkloadType::Write>(
-                    &CurrentAutomatonSubrequestIndex_,
-                    &ThrottledAutomatonSubrequestIndex_);
-            case EUserWorkloadType::Read:
-                return DoThrottleRequest<EExecutionSessionSubrequestType::LocalRead, EUserWorkloadType::Read>(
-                    &CurrentLocalReadSubrequestIndex_,
-                    &ThrottledLocalReadSubrequestIndex_);
-            default:
-                static_assert("Unexpected workload type for throttling requests");
+        if constexpr (WorkloadType == EUserWorkloadType::Write) {
+            return DoThrottleRequest<EExecutionSessionSubrequestType::LocalWrite, EUserWorkloadType::Write>(
+                &CurrentAutomatonSubrequestIndex_,
+                &ThrottledAutomatonSubrequestIndex_);
+        } else if constexpr (WorkloadType == EUserWorkloadType::Read) {
+            return DoThrottleRequest<EExecutionSessionSubrequestType::LocalRead, EUserWorkloadType::Read>(
+                &CurrentLocalReadSubrequestIndex_,
+                &ThrottledLocalReadSubrequestIndex_);
+        } else {
+            static_assert(false, "Unexpected workload type for throttling requests");
         }
     }
 
@@ -1975,17 +1967,18 @@ private:
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
-        GuardedProcessSubrequests(EUserWorkloadType::Write);
+        GuardedProcessSubrequests<EUserWorkloadType::Write>();
     }
 
     void GuardedRunRead()
     {
         VerifyPersistentStateRead();
 
-        GuardedProcessSubrequests(EUserWorkloadType::Read);
+        GuardedProcessSubrequests<EUserWorkloadType::Read>();
     }
 
-    void GuardedProcessSubrequests(EUserWorkloadType workloadType)
+    template <EUserWorkloadType WorkloadType>
+    void GuardedProcessSubrequests()
     {
         VerifyPersistentStateRead();
 
@@ -1994,25 +1987,15 @@ private:
 
         Owner_->ValidateClusterInitialized();
 
-        auto* currentSubrequestIndex = workloadType == EUserWorkloadType::Write
+        auto* currentSubrequestIndex = WorkloadType == EUserWorkloadType::Write
             ? &CurrentAutomatonSubrequestIndex_
             : &CurrentLocalReadSubrequestIndex_;
 
-        auto filter = workloadType == EUserWorkloadType::Write
-            ? [] (TSubrequest* subrequest) {
-                return subrequest->Type == EExecutionSessionSubrequestType::LocalWrite;
-            }
-            : [] (TSubrequest* subrequest) {
-                return subrequest->Type == EExecutionSessionSubrequestType::LocalRead;
-            };
-
-        auto doReschedule = workloadType == EUserWorkloadType::Write
-            ? [] (TExecuteSession* session) {
-                session->Reschedule<EUserWorkloadType::Write>();
-            }
-            : [] (TExecuteSession* session) {
-                session->Reschedule<EUserWorkloadType::Read>();
-            };
+        auto filter = [] (TSubrequest* subrequest) {
+            return WorkloadType == EUserWorkloadType::Write
+                ? subrequest->Type == EExecutionSessionSubrequestType::LocalWrite
+                : subrequest->Type == EExecutionSessionSubrequestType::LocalRead;
+        };
 
         while (*currentSubrequestIndex < TotalSubrequestCount_) {
             // NB: PrematureBackoffAlarmProbability_ is usually std::nullopt.
@@ -2029,13 +2012,13 @@ private:
                 break;
             }
 
-            if (!ThrottleRequests(workloadType)) {
+            if (!ThrottleRequests<WorkloadType>()) {
                 break;
             }
 
             if (GetCpuInstant() > batchDeadlineTime) {
                 YT_TLOG_DEBUG("Yielding thread");
-                doReschedule(this);
+                Reschedule<WorkloadType>();
                 break;
             }
 
@@ -2102,19 +2085,17 @@ private:
                 if (sequenceNumber) {
                     // We should have patched it before.
                     if (!response.GroundUpdateQueueSequenceNumber) {
-                        YT_LOG_ALERT("Mutation response is missing GroundUpdateQueueSequenceNumber "
-                            "(MutationId: %v: GroundUpdateQueueSequenceNumber: %v, Origin: %v)",
-                            mutationId,
-                            sequenceNumber,
-                            response.Origin);
+                        YT_TLOG_ALERT("Mutation response is missing GroundUpdateQueueSequenceNumber")
+                            .With("MutationId", mutationId)
+                            .With("GroundUpdateQueueSequenceNumber", sequenceNumber)
+                            .With("Origin", response.Origin);
                         subrequest->GroundUpdateQueueSequenceNumber = *sequenceNumber;
                     }
                     if (response.GroundUpdateQueueSequenceNumber && response.GroundUpdateQueueSequenceNumber != sequenceNumber) {
-                        YT_LOG_ALERT("GroundUpdateQueueSequenceNumber is different in response keeper and mutation response"
-                            "(MutationId: %v: ResponserGroundUpdateQueueSequenceNumber: %v, ResponseKeeperGroundUpdateQueueSequenceNumber: %v)",
-                            mutationId,
-                            response.GroundUpdateQueueSequenceNumber,
-                            sequenceNumber);
+                        YT_TLOG_ALERT("GroundUpdateQueueSequenceNumber differs between response keeper and mutation response")
+                            .With("MutationId", mutationId)
+                            .With("ResponseGroundUpdateQueueSequenceNumber", response.GroundUpdateQueueSequenceNumber)
+                            .With("ResponseKeeperGroundUpdateQueueSequenceNumber", sequenceNumber);
                         subrequest->GroundUpdateQueueSequenceNumber = std::max(*response.GroundUpdateQueueSequenceNumber, *sequenceNumber);
                     }
                 }
@@ -2122,8 +2103,9 @@ private:
 
             YT_VERIFY(!context->IsReplied());
             // Either we're answering with a kept response or this is a boomerang mutation.
-            context->SetRequestInfo();
-            context->SetResponseInfo("KeptResponse: %v", true);
+            context->AnnotateRequest();
+            context->AnnotateResponse()
+                .With("KeptResponse", true);
             context->Reply(response.Data);
         }  else if (response.GroundUpdateQueueSequenceNumber) {
             subrequest->GroundUpdateQueueSequenceNumber = *response.GroundUpdateQueueSequenceNumber;
@@ -2212,9 +2194,24 @@ private:
             } else {
                 subrequest->RemoteTransactionReplicationFuture
                     .WithTimeout(timeLeft)
-                    .Subscribe(
+                    .Apply(
                         BIND(onRemoteTransactionReplicated)
-                            .Via(LocalReadInvoker_));
+                            .Via(LocalReadInvoker_))
+                    .Subscribe(BIND([Logger = Logger, weakThis = MakeWeak(this), requestId = GetRequestId()] (const TError& error) {
+                        if (error.IsOK()) {
+                            return;
+                        }
+
+                        YT_TLOG_ALERT(
+                            "Unexpected error while handling remote transaction replication")
+                            .With("RequestId", requestId)
+                            .With(error);
+
+                        auto this_ = weakThis.Lock();
+                        if (this_ && !this_->RpcContext_->IsReplied()) {
+                            this_->Reply(error);
+                        }
+                    }));
             }
         } else {
             YT_VERIFY(subrequest->MutationResponseFuture);
@@ -2325,11 +2322,19 @@ private:
         NRpc::NProto::TResponseHeader header;
         YT_VERIFY(TryParseResponseHeader(subresponseMessage, &header));
 
-        if (header.has_error() &&
-            FromProto<TError>(header.error()).FindMatching(EErrorCode::LeaderFallbackRequired))
-        {
-            ForwardSubrequestToLeader(subrequest);
-            return;
+        if (header.has_error()) {
+            auto error = FromProto<TError>(header.error());
+
+            if (error.FindMatching(EErrorCode::LeaderFallbackRequired)) {
+                ForwardSubrequestToLeader(subrequest);
+                return;
+            }
+
+            if (error.FindMatching(NSecurityClient::EErrorCode::RequestQueueSizeLimitExceeded)) {
+                // Fail the whole batch so that the client's retrying channel can retry it.
+                Reply(error);
+                return;
+            }
         }
 
         if (subrequest->TraceContext) {
@@ -2474,9 +2479,9 @@ private:
             return;
         }
 
-        RpcContext_->SetResponseInfo("SubresponseCount: %v, UncertainSubrequestIndexes: %v",
-            response.subresponses_size(),
-            response.uncertain_subrequest_indexes());
+        RpcContext_->AnnotateResponse()
+            .With("SubresponseCount", response.subresponses_size())
+            .With("UncertainSubrequestIndexes", response.uncertain_subrequest_indexes());
 
         if (groundUpdateQueueSequenceNumber != -1) {
             YT_TLOG_DEBUG("Synchronizing with ground update queue before replying")
@@ -2666,6 +2671,9 @@ void TObjectService::OnDynamicConfigChanged(TDynamicClusterConfigPtr /*oldConfig
     EnableCypressTransactionsInSequoia_.store(
         sequoiaConfig->Enable && sequoiaConfig->EnableCypressTransactionsInSequoia,
         std::memory_order::release);
+    ReplicateCypressTransactionsViaSeparateSequoiaTransactionPerCoordinator_.store(
+        sequoiaConfig->ReplicateCypressTransactionsViaSeparateSequoiaTransactionPerCoordinator,
+        std::memory_order::release);
     WrapRequestsIntoSequoiaTransactions_.store(
         sequoiaConfig->WrapObjectServiceExecuteIntoSequoiaTransaction,
         std::memory_order::release);
@@ -2687,7 +2695,7 @@ void TObjectService::EnqueueReadySession(TExecuteSessionPtr session)
     } else if constexpr (WorkloadType == EUserWorkloadType::Read) {
         LocalReadReadySessions_.Enqueue(std::move(session));
     } else {
-        static_assert("Unexpected workload type for enqueuing execute session");
+        static_assert(false, "Unexpected workload type for enqueuing execute session");
     }
 
     if (MinimizeExecuteLatency_.load(std::memory_order::relaxed)) {
@@ -2720,7 +2728,7 @@ void TObjectService::ProcessSessions()
 
         session->OnDequeued<EUserWorkloadType::Write>();
 
-        if (!session->RunAutomatonFast(EUserWorkloadType::Write)) {
+        if (!session->RunAutomatonFast<EUserWorkloadType::Write>()) {
             return;
         }
 
@@ -2733,7 +2741,7 @@ void TObjectService::ProcessSessions()
         session->OnDequeued<EUserWorkloadType::Read>();
 
         // TODO(shakurov): consider introducing RunLocalReadFast.
-        if (!session->RunAutomatonFast(EUserWorkloadType::Read)) {
+        if (!session->RunAutomatonFast<EUserWorkloadType::Read>()) {
             return;
         }
 
@@ -2866,7 +2874,7 @@ DEFINE_RPC_SERVICE_METHOD(TObjectService, GCCollect)
     Y_UNUSED(request);
     Y_UNUSED(response);
 
-    context->SetRequestInfo();
+    context->AnnotateRequest();
 
     ValidateClusterInitialized();
     ValidatePeer(EPeerKind::Leader);

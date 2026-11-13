@@ -1,7 +1,6 @@
 #include "interconnect_handshake.h"
 #include "handshake_broker.h"
 #include "interconnect_tcp_proxy.h"
-#include "uring_context.h" // TUringContext::IsAvailable() gates v2 (io_uring data plane)
 
 #include "rdma/link_manager.h"
 #include "rdma/events.h"
@@ -372,15 +371,17 @@ namespace NActors {
         TActorId HandshakeBroker;
         std::optional<TBrokerLeaseHolder> BrokerLeaseHolder;
         std::optional<TString> HandshakeId; // for XDC
+        THolder<TEvReportConnection::THandle> PendingXdcConnection;
         bool SubscribedForConnection = false;
 
         struct {
             NInterconnect::NRdma::ICq::TPtr Cq;
             NInterconnect::NRdma::TQueuePair::TPtr Qp;
             NInterconnect::NRdma::TMemRegionPtr HandShakeMemRegion;
+            TActorId SyncActor;
             void Clear() noexcept {
-                Cq.reset();
                 Qp.reset();
+                Cq.reset();
             }
             operator bool() const noexcept {
                 return Cq && Qp;
@@ -446,8 +447,15 @@ namespace NActors {
             } catch (...) {
                 Y_ABORT("unhandled exception");
             }
+            StopRdmaSyncActor();
             if (SubscribedForConnection) {
                 SendToProxy(MakeHolder<TEvSubscribeForConnection>(*HandshakeId, false));
+            }
+        }
+
+        void StopRdmaSyncActor() {
+            if (const TActorId actorId = std::exchange(Rdma.SyncActor, TActorId())) {
+                Send(actorId, new TEvents::TEvPoisonPill);
             }
         }
 
@@ -492,7 +500,9 @@ namespace NActors {
                     if (Params.UseExternalDataChannel) {
                         if (incoming) {
                             Y_ABORT_UNLESS(SubscribedForConnection);
-                            auto ev = WaitForSpecificEvent<TEvReportConnection>("WaitInboundXdcStream");
+                            auto ev = PendingXdcConnection
+                                ? std::move(PendingXdcConnection)
+                                : WaitForSpecificEvent<TEvReportConnection>("WaitInboundXdcStream");
                             SubscribedForConnection = false;
                             if (ev->Get()->HandshakeId != *HandshakeId) {
                                 Y_DEBUG_ABORT_UNLESS(false);
@@ -504,7 +514,7 @@ namespace NActors {
                                 auto ack = TryRdmaRead(rdmaIncomingRead.value());
                                 SendExBlock(MainChannel, ack, "TRdmaHandshakeReadAck");
                                 if (ack.HasDigest()) {
-                                    Params.UseRdma = true;
+                                    Params.UseRdmaRead = true;
                                 } else {
                                     Rdma.Clear();
                                 }
@@ -523,7 +533,7 @@ namespace NActors {
                                     // session with rdma in a future
                                     RunDelayedRdmaHandshake = true;
                                 } else {
-                                    Params.UseRdma = true;
+                                    Params.UseRdmaRead = true;
                                 }
                             }
                         }
@@ -614,6 +624,15 @@ namespace NActors {
 
                 case TEvPollerReady::EventType:
                    break;
+
+                case TEvReportConnection::EventType:
+                    PendingXdcConnection.Reset(static_cast<TEvReportConnection::THandle*>(ev.Release()));
+                    break;
+
+                case NInterconnect::NRdma::TEvQpCacheReady::EventType:
+                case NInterconnect::NRdma::TEvQpCacheNoResources::EventType:
+                case NInterconnect::NRdma::TEvQpCacheError::EventType:
+                    break; // stale notification after the local QP cache wait timed out
 
                 case TEvents::TSystem::Poison:
                    throw TExPoison();
@@ -883,10 +902,11 @@ namespace NActors {
 
         TRdmaPreinitedSessionPtr RunRdmaIncomingHandshakePart() {
             MainChannel.ResetPollerToken();
-            Register(NInterconnect::NRdma::CreateRdmaIncommingSyncActor(
+            Rdma.SyncActor = Register(NInterconnect::NRdma::CreateRdmaIncommingSyncActor(
                 Common, SelfVirtualId, PeerVirtualId, PeerNodeId, MainChannel.GetSocketRef(), Rdma.Qp, Rdma.Cq));
 
             auto ev = WaitForSpecificEvent<TEvRdmaSyncResult>("TEvRdmaSyncResult");
+            Rdma.SyncActor = TActorId();
             MainChannel.RegisterInPoller();
 
             if (auto err = ev->Get()->Error()) {
@@ -933,10 +953,11 @@ namespace NActors {
                     // 2. perform barrier to make sure sessions are ready to handle receive
                     MainChannel.ResetPollerToken();
 
-                    Register(NInterconnect::NRdma::CreateRdmaOutgoingSyncActor(
+                    Rdma.SyncActor = Register(NInterconnect::NRdma::CreateRdmaOutgoingSyncActor(
                         Common, SelfVirtualId, PeerVirtualId, PeerNodeId, MainChannel.GetSocketRef(), Rdma.Qp, Rdma.Cq));
 
                     auto ev = WaitForSpecificEvent<TEvRdmaSyncResult>("TEvRdmaSyncResult");
+                    Rdma.SyncActor = TActorId();
                     MainChannel.RegisterInPoller();
                     if (auto err = ev->Get()->Error()) {
                         YDB_LOG_ERROR_CTX(this->GetActorContext(), "RDMA send/receive handshake",
@@ -1045,11 +1066,13 @@ namespace NActors {
                 request.SetRequestXdcShuffle(true);
                 request.SetRequestAllowDisablingPayloadChecksums(true);
                 // v2 session is incompatible with encryption and needs the io_uring data plane; only
-                // request it when encryption is disabled locally and io_uring is available (buffer rings
-                // are used when present, with a fallback to ordinary buffers on older kernels)
-                request.SetRequestSessionV2(Common->Settings.V2.Enable &&
+                // request it when encryption is disabled locally and the v2 engine is running here. The
+                // engine is absent when Settings.V2.Threads is zero or io_uring is unavailable, so testing
+                // it covers both; Enable is re-read on every handshake and may have changed since startup.
+                const bool requestSessionV2 = Common->Settings.V2.Enable &&
                     Common->Settings.EncryptionMode == EEncryptionMode::DISABLED &&
-                    TUringContext::IsAvailable());
+                    Common->UringEngineV2;
+                request.SetRequestSessionV2(requestSessionV2);
                 request.SetHandshakeId(*HandshakeId);
 
                 ui32 pending = 0;
@@ -1163,6 +1186,7 @@ namespace NActors {
                             {"marker", "ICRDMA"});
                         Rdma.HandShakeMemRegion.Reset();
                         Rdma.Clear();
+                        RunDelayedRdmaHandshake = success.GetRdmaRetryable();
                     }
                 }
 
@@ -1432,10 +1456,10 @@ namespace NActors {
                 Params.UseKernelLiveness = MainChannel.IsKernelLivenessReady();
                 Params.AllowDisablingPayloadChecksums = request.GetRequestAllowDisablingPayloadChecksums();
                 // v2 session is used only when both peers enabled it, encryption is not in effect, and
-                // this side has the io_uring data plane available
+                // this side has the v2 engine running (see the outgoing side above)
                 Params.UseSessionV2 = request.GetRequestSessionV2() &&
                     Common->Settings.V2.Enable && !Params.Encryption &&
-                    TUringContext::IsAvailable();
+                    Common->UringEngineV2;
 
                 if (Params.UseExternalDataChannel) {
                     if (request.HasHandshakeId()) {
@@ -1460,8 +1484,9 @@ namespace NActors {
                     params.emplace(item.GetKey(), item.GetValue());
                 }
 
+                const bool peerRequestedRdma = request.HasRdmaHandshake();
                 std::optional<NActorsInterconnect::TRdmaHandshake> rdmaIncomingHandshake;
-                if (Rdma && request.HasRdmaHandshake()) {
+                if (Rdma && peerRequestedRdma) {
                     rdmaIncomingHandshake = request.GetRdmaHandshake();
                 } else {
                     Rdma.Clear();
@@ -1507,6 +1532,9 @@ namespace NActors {
                         }
                     } else {
                         success.SetRdmaErr("Rdma is not ready on the incoming side");
+                    }
+                    if (peerRequestedRdma && RunDelayedRdmaHandshake) {
+                        success.SetRdmaRetryable(true);
                     }
 
                     success.SetUseModernFrame(true);
@@ -1601,6 +1629,67 @@ namespace NActors {
             }
         }
 
+        NInterconnect::NRdma::TRdmaCtx* GetRdmaCtx() {
+            using namespace NInterconnect::NRdma;
+            TRdmaCtx* rdmaCtx = nullptr;
+
+            if (Common->Settings.RdmaAddress) {
+                const NInterconnect::TAddress address(Common->Settings.RdmaAddress, 0);
+                rdmaCtx = NLinkMgr::GetCtx(address);
+                if (rdmaCtx) {
+                    YDB_LOG_TRACE_COMP(::NActorsServices::INTERCONNECT, "Found verbs context for specified RDMA address",
+                        {"marker", "ICRDMA"},
+                        {"address", Common->Settings.RdmaAddress});
+                } else {
+                    const TString fallbackTarget = Common->Settings.RdmaInterface
+                        ? "the specified RDMA interface"
+                        : "the local TCP socket address";
+                    YDB_LOG_WARN_COMP(::NActorsServices::INTERCONNECT, "Unable to find verbs context for specified RDMA address. Falling back to " + fallbackTarget,
+                        {"marker", "ICRDMA"},
+                        {"address", Common->Settings.RdmaAddress});
+                }
+            }
+
+            if (!rdmaCtx && Common->Settings.RdmaInterface) {
+                rdmaCtx = NLinkMgr::GetCtxByInterface(Common->Settings.RdmaInterface);
+                if (rdmaCtx) {
+                    YDB_LOG_TRACE_COMP(::NActorsServices::INTERCONNECT, "Found verbs context for specified RDMA interface",
+                        {"marker", "ICRDMA"},
+                        {"interface", Common->Settings.RdmaInterface});
+                } else {
+                    YDB_LOG_WARN_COMP(::NActorsServices::INTERCONNECT, "Unable to find verbs context for specified RDMA interface. Falling back to the local TCP socket address",
+                        {"marker", "ICRDMA"},
+                        {"interface", Common->Settings.RdmaInterface});
+                }
+            }
+
+            if (!rdmaCtx) {
+                auto sockname = MainChannel.GetSocketRef()->GetSockName();
+                if (const NInterconnect::TAddress* addr = std::get_if<NInterconnect::TAddress>(&sockname)) {
+                    rdmaCtx = NLinkMgr::GetCtx(*addr);
+                    if (rdmaCtx) {
+                        YDB_LOG_TRACE_COMP(::NActorsServices::INTERCONNECT, "Found verbs context for local TCP address",
+                            {"marker", "ICRDMA"},
+                            {"address", std::get<0>(sockname)});
+                    } else {
+                        YDB_LOG_WARN_COMP(::NActorsServices::INTERCONNECT, "Unable to find verbs context using local TCP address",
+                            {"marker", "ICRDMA"},
+                            {"address", std::get<0>(sockname)});
+                    }
+                } else if (int* err = get_if<int>(&sockname)) {
+                    YDB_LOG_ERROR_COMP(::NActorsServices::INTERCONNECT, "Unable to get local address of the TCP socket. RDMA will not be used",
+                        {"marker", "ICRDMA"},
+                        {"socket", (int)(*MainChannel.GetSocketRef())},
+                        {"err", *err});
+                } else {
+                    YDB_LOG_CRIT_COMP(::NActorsServices::INTERCONNECT, "Unknown GetSockName return type. It is a BUG. RDMA will not be used",
+                        {"marker", "ICRDMA"},
+                        {"socket", (int)(*MainChannel.GetSocketRef())});
+                }
+            }
+            return rdmaCtx;
+        }
+
         void CreateRdmaPrimitives() {
             using namespace NInterconnect::NRdma;
             // Rdma disabled
@@ -1608,46 +1697,62 @@ namespace NActors {
                 return;
             }
 
-            auto sockname = MainChannel.GetSocketRef()->GetSockName();
-
-            TRdmaCtx* rdmaCtx = nullptr;
-
-            if (const NInterconnect::TAddress* addr = std::get_if<NInterconnect::TAddress>(&sockname)) {
-                rdmaCtx = NLinkMgr::GetCtx(*addr);
-                if (rdmaCtx) {
-                    YDB_LOG_TRACE_COMP(::NActorsServices::INTERCONNECT, "Found verbs fontext for address",
-                        {"marker", "ICRDMA"},
-                        {"address", std::get<0>(sockname)});
-                } else {
-                    YDB_LOG_WARN_COMP(::NActorsServices::INTERCONNECT, "Unable to find verbs context using address",
-                        {"marker", "ICRDMA"},
-                        {"address", std::get<0>(sockname)});
-                }
-            } else if (int* err = get_if<int>(&sockname)) {
-                YDB_LOG_ERROR_COMP(::NActorsServices::INTERCONNECT, "Unable to get local address for Rdma will not be used",
-                    {"marker", "ICRDMA"},
-                    {"socket", (int)(*MainChannel.GetSocketRef())},
-                    {"err", *err});
-            } else {
-                YDB_LOG_CRIT_COMP(::NActorsServices::INTERCONNECT, "Unknown getsockname return type for Rdma will not be used",
-                    {"marker", "ICRDMA"},
-                    {"socket", (int)(*MainChannel.GetSocketRef())});
-            }
+            TRdmaCtx* rdmaCtx = GetRdmaCtx();
 
             if (rdmaCtx) {
                 if (ICq::TPtr cqPtr = CreateRdmaCq(rdmaCtx)) {
                     YDB_LOG_TRACE_COMP(::NActorsServices::INTERCONNECT, "Got CQ handle",
                         {"marker", "ICRDMA"},
                         {"cqPtr", static_cast<void*>(cqPtr.get())});
-                    Rdma.Qp.reset(new NInterconnect::NRdma::TQueuePair);
-                    int err = Rdma.Qp->Init(rdmaCtx, cqPtr.get(), 1024); //TODO: move in to settings
-                    if (err) {
-                        YDB_LOG_ERROR_COMP(::NActorsServices::INTERCONNECT, "Unable to initialize QP, no more attempt to use RDMA on this session",
-                            {"marker", "ICRDMA"});
-                        Rdma.Qp.reset();
+
+                    const TMonotonic now = TActivationContext::Monotonic();
+                    const TMonotonic qpCacheDeadline = now + (Deadline - now) / 2;
+                    for (;;) {
+                        ICq::TGetQpResult result = cqPtr->GetQp(GetActorContext());
+                        if (auto* qp = std::get_if<TQueuePair::TPtr>(&result)) {
+                            Rdma.Qp = std::move(*qp);
+                            Rdma.Cq = std::move(cqPtr);
+                            break;
+                        }
+
+                        if (std::holds_alternative<ICq::TQpCacheEmpty>(result)) {
+                            auto ev = WaitForSpecificEvent<TEvQpCacheReady, TEvQpCacheNoResources, TEvQpCacheError>(
+                                "WaitRdmaQpCache", qpCacheDeadline);
+                            if (!ev) {
+                                YDB_LOG_WARN_COMP(::NActorsServices::INTERCONNECT,
+                                    "Timed out waiting for RDMA QP cache, continue handshake without RDMA",
+                                    {"marker", "ICRDMA"});
+                                RunDelayedRdmaHandshake = true;
+                                break;
+                            }
+                            if (ev->GetTypeRewrite() == TEvQpCacheReady::EventType) {
+                                // The notification does not reserve a QP for this handshake.
+                                // Retry because another consumer may have taken it already.
+                                continue;
+                            }
+                            if (ev->GetTypeRewrite() == TEvQpCacheNoResources::EventType) {
+                                YDB_LOG_WARN_COMP(::NActorsServices::INTERCONNECT,
+                                    "Unable to fill RDMA QP cache due to temporary resource exhaustion",
+                                    {"marker", "ICRDMA"});
+                            } else {
+                                Y_ABORT_UNLESS(ev->GetTypeRewrite() == TEvQpCacheError::EventType);
+                                YDB_LOG_ERROR_COMP(::NActorsServices::INTERCONNECT,
+                                    "Unable to get QP due to RDMA QP cache error",
+                                    {"marker", "ICRDMA"});
+                            }
+                        } else if (std::holds_alternative<ICq::TQpNoResources>(result)) {
+                            YDB_LOG_WARN_COMP(::NActorsServices::INTERCONNECT,
+                                "Unable to get QP due to temporary RDMA resource exhaustion",
+                                {"marker", "ICRDMA"});
+                        } else {
+                            Y_ABORT_UNLESS(std::holds_alternative<ICq::TQpCacheError>(result));
+                            YDB_LOG_ERROR_COMP(::NActorsServices::INTERCONNECT,
+                                "Unable to get QP due to RDMA QP cache error",
+                                {"marker", "ICRDMA"});
+                        }
+
                         RunDelayedRdmaHandshake = true;
-                    } else {
-                        Rdma.Cq = cqPtr;
+                        break;
                     }
                 } else {
                     YDB_LOG_ERROR_COMP(::NActorsServices::INTERCONNECT, "Unable to get CQ handle, no more attempt to use RDMA on this session",

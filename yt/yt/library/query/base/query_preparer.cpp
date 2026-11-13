@@ -13,6 +13,7 @@
 #include "expr_builder_base.h"
 
 #include <yt/yt/core/misc/collection_helpers.h>
+#include <yt/yt/core/misc/finally.h>
 
 #include <library/cpp/yt/misc/variant.h>
 
@@ -27,7 +28,6 @@ using namespace NYson;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-constexpr i64 MaxQueryLimit = std::numeric_limits<i64>::max() - 2;
 constexpr int MaxJoinNumber = 200;
 constexpr int MaxMultiJoinGroupNumber = 15;
 
@@ -167,6 +167,15 @@ std::vector<std::string> ExtractFunctionNames(
         },
         [&] (const NAst::TExpressionList& expressions) {
             ExtractFunctionNames(expressions, &functions);
+        },
+        [&] (const NAst::TUnionAllClause& unionAll) {
+            for (const auto* subquery : unionAll.Subqueries) {
+                auto extracted = ExtractFunctionNames(subquery->Ast, subquery->AliasMap);
+                functions.insert(
+                    functions.end(),
+                    std::make_move_iterator(extracted.begin()),
+                    std::make_move_iterator(extracted.end()));
+            }
         });
 
 
@@ -220,7 +229,8 @@ TGroupClausePtr BuildGroupClause(
 
     builder->SetGroupData(
         &groupClause->GroupItems,
-        &groupClause->AggregateItems);
+        &groupClause->AggregateItems,
+        totalsMode);
 
     return groupClause;
 }
@@ -231,17 +241,20 @@ void DropLimitClauseWhenGroupByOne(const TQueryPtr& query)
         query->GroupClause &&
         std::ssize(query->GroupClause->GroupItems) == 1 &&
         query->GroupClause->GroupItems[0].Expression->As<TLiteralExpression>() &&
-        query->Limit != UnorderedReadHint &&
-        query->Limit != 0)
+        query->Limit &&
+        query->Offset == 0 &&
+        *query->Limit != 0)
     {
-        query->Limit = UnorderedReadHint;
+        query->Limit = std::nullopt;
+        query->ScanOrder = EScanOrder::Unordered;
     }
 }
 
 void PrepareQuery(
     const TQueryPtr& query,
     const NAst::TQuery& ast,
-    TExpressionBuilder* builder)
+    TExpressionBuilder* builder,
+    bool mergeVersionedRows = true)
 {
     if (ast.WherePredicate) {
         auto wherePredicate = BuildPredicate(*ast.WherePredicate, builder, "WHERE-clause");
@@ -295,6 +308,10 @@ void PrepareQuery(
             }
         }
 
+        if (!mergeVersionedRows) {
+            keyPrefix = 0;
+        }
+
         touchedKeyColumns.resize(keyPrefix);
         for (int index : touchedKeyColumns) {
             if (index >= 0) {
@@ -344,6 +361,7 @@ void PrepareQuery(
         bool canOmitOrderBy = CanOmitOrderBy(0, orderClause->OrderItems, query->GetKeyColumns());
         if (!canOmitOrderBy) {
             query->OrderClause = std::move(orderClause);
+            query->ScanOrder = EScanOrder::Unordered;
         }
 
         bool canReverseScanForOrderBy = false;
@@ -358,8 +376,13 @@ void PrepareQuery(
         }
 
         if (canReverseScanForOrderBy) {
-            query->IsReverseScan = true;
+            query->ScanOrder = EScanOrder::Reversed;
         }
+    } else if (!ast.Limit) {
+        // COMPAT(sabdenovch): For queries with LIMIT the scan order is resolved
+        // in PreparePlanFragmentImpl, after the group clause (including aggregate
+        // items), the limit clause and the group-by push-down are final.
+        query->ScanOrder = EScanOrder::Unordered;
     }
 
     if (ast.SelectExprs) {
@@ -375,8 +398,6 @@ void PrepareQuery(
         // Select all columns.
         builder->PopulateAllColumns();
     }
-
-    DropLimitClauseWhenGroupByOne(query);
 
     builder->Finish();
 }
@@ -725,7 +746,7 @@ TJoinClausePtr BuildJoinClause(
     joinClause->ForeignObjectId = foreignDataSplit.ObjectId;
     joinClause->IsLeft = tableJoin.IsLeft;
 
-    if (!tableJoin.Table.Hint->RequireSyncReplica && options.AllowJoinWithAsyncLastCommittedTimestampIfRequireSyncReplicaIsFalse) {
+    if (!tableJoin.Table.Hint.RequireSyncReplica && options.AllowJoinWithAsyncLastCommittedTimestampIfRequireSyncReplicaIsFalse) {
         joinClause->RequireSyncReplica = false;
     }
 
@@ -1042,6 +1063,16 @@ std::optional<i64> TryGetIntegerValue(NAst::TExpressionPtr expr)
     return std::nullopt;
 }
 
+std::optional<i64> TryGetProjectionIndex(NAst::TExpressionPtr expr)
+{
+    auto index = TryGetIntegerValue(expr);
+    if (!index || *index == 0) {
+        return std::nullopt;
+    }
+
+    return index;
+}
+
 class TCardinalityIntoHyperLogLogWithPrecisionRewriter
     : public NAst::TRewriter<TCardinalityIntoHyperLogLogWithPrecisionRewriter>
 {
@@ -1103,6 +1134,16 @@ void RewriteCardinalityIntoHyperLogLogWithPrecision(
             hyperLogLogPrecision);
     }
 
+    if (auto* unionAll = std::get_if<NAst::TUnionAllClause>(&ast->FromClause); unionAll) {
+        for (auto* subquery : unionAll->Subqueries) {
+            RewriteCardinalityIntoHyperLogLogWithPrecision(
+                &subquery->Ast,
+                &subquery->AliasMap,
+                holder,
+                hyperLogLogPrecision);
+        }
+    }
+
     if (auto* expressions = std::get_if<NAst::TExpressionList>(&ast->FromClause); expressions) {
         for (auto& item : *expressions) {
             item = rewriter.Visit(item);
@@ -1134,28 +1175,29 @@ void RewriteCardinalityIntoHyperLogLogWithPrecision(
     }
 }
 
-void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
-    NAst::TQuery& ast,
-    NAst::TAliasMap& aliasMap,
-    NAst::TAstHead& head)
+namespace {
+
+void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeededImpl(
+    NAst::TQuery* ast,
+    NAst::TAliasMap* aliasMap,
+    NAst::TAstHead* head,
+    const THashSet<std::string>& reservedNames)
 {
-    if (!ast.GroupExprs && ast.OrderExpressions.empty()) {
+    if (!ast->GroupExprs && ast->OrderExpressions.empty()) {
         return;
     }
 
     bool hasIndexReference = false;
 
-    auto& orderExpressionList = ast.OrderExpressions;
-    auto& projections = ast.SelectExprs;
+    auto& orderExpressionList = ast->OrderExpressions;
+    auto& projections = ast->SelectExprs;
     int projectionCount = projections ? std::ssize(*projections) : 0;
 
     auto isIndexReference = [&] (NAst::TExpressionPtr expr) {
-        auto integerValue = TryGetIntegerValue(expr);
-
-        if (integerValue.has_value() && *integerValue != 0) {
-            if (*integerValue < 0 || *integerValue > projectionCount) {
+        if (auto projectionIndex = TryGetProjectionIndex(expr)) {
+            if (*projectionIndex < 0 || *projectionIndex > projectionCount) {
                 THROW_ERROR_EXCEPTION("Reference expression index is out of bounds")
-                    .With("index", *integerValue);
+                    .With("index", *projectionIndex);
             }
 
             return true;
@@ -1164,9 +1206,9 @@ void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
         return false;
     };
 
-    if (ast.GroupExprs) {
-        for (auto* expr : ast.GroupExprs.value()) {
-            hasIndexReference = isIndexReference(expr);
+    if (ast->GroupExprs) {
+        for (auto* expr : ast->GroupExprs.value()) {
+            hasIndexReference |= isIndexReference(expr);
         }
     }
 
@@ -1176,7 +1218,7 @@ void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
 
     for (auto& orderExpr : orderExpressionList) {
         for (auto* expr : orderExpr.Expressions) {
-            hasIndexReference = isIndexReference(expr);
+            hasIndexReference |= isIndexReference(expr);
         }
     }
 
@@ -1188,7 +1230,7 @@ void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
         return;
     }
 
-    THashMap<i64, std::string> indexToAlias;
+    THashMap<i64, NAst::TReference> indexToReference;
 
     for (i64 projectionIndex = 0; projectionIndex < std::ssize(*projections); ++projectionIndex) {
         auto& expr = (*projections)[projectionIndex];
@@ -1198,36 +1240,45 @@ void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
         i64 adjustedProjectionIndex = projectionIndex + 1;
 
         if (aliasExpressionAst) {
-            indexToAlias[adjustedProjectionIndex] = aliasExpressionAst->Name;
+            indexToReference.emplace(adjustedProjectionIndex, NAst::TReference(aliasExpressionAst->Name));
             continue;
         }
 
         auto referenceExpressionAst = expr->As<NAst::TReferenceExpression>();
         if (referenceExpressionAst) {
-            indexToAlias[adjustedProjectionIndex] = referenceExpressionAst->Reference.ColumnName;
+            indexToReference.emplace(adjustedProjectionIndex, referenceExpressionAst->Reference);
             continue;
         }
 
-        auto newAlias = MakeColumnNameByIndex(projectionIndex + 1);
-        indexToAlias[adjustedProjectionIndex] = newAlias;
-        aliasMap[newAlias] = expr;
+        std::string newAlias;
+        for (int index = projectionIndex + 1; ; ++index) {
+            newAlias = MakeColumnNameByIndex(index);
+            if (!reservedNames.contains(newAlias) && !aliasMap->contains(newAlias)) {
+                break;
+            }
+        }
+        indexToReference.emplace(adjustedProjectionIndex, NAst::TReference(newAlias));
+        aliasMap->emplace(newAlias, expr);
 
-        auto* newExpr = head.New<NAst::TAliasExpression>(expr->SourceLocation, expr, newAlias);
+        auto* newExpr = head->New<NAst::TAliasExpression>(expr->SourceLocation, expr, newAlias);
         (*projections)[projectionIndex] = newExpr;
     }
 
-    if (ast.GroupExprs) {
-        NAst::TExpressionList& groupExpressionList = *ast.GroupExprs;
+    if (ast->GroupExprs) {
+        NAst::TExpressionList& groupExpressionList = *ast->GroupExprs;
 
         for (i64 index = 0; index < std::ssize(groupExpressionList); ++index) {
             auto& expr = groupExpressionList[index];
-            auto integerValue = TryGetIntegerValue(expr);
+            if (auto projectionIndex = TryGetProjectionIndex(expr)) {
+                auto referenceIt = indexToReference.find(*projectionIndex);
+                if (referenceIt == indexToReference.end()) {
+                    THROW_ERROR_EXCEPTION("Reference expression index is out of bounds")
+                        .With("index", *projectionIndex);
+                }
 
-            if (integerValue.has_value()) {
-                auto& aliasName = indexToAlias[*integerValue];
-                auto* newExpr = head.New<NAst::TReferenceExpression>(
+                auto* newExpr = head->New<NAst::TReferenceExpression>(
                     expr->SourceLocation,
-                    aliasName);
+                    referenceIt->second);
                 groupExpressionList[index] = newExpr;
             }
         }
@@ -1236,13 +1287,16 @@ void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
     for (auto& orderExpr : orderExpressionList) {
         for (i64 index = 0; index < std::ssize(orderExpr.Expressions); ++index) {
             auto& expr = orderExpr.Expressions[index];
-            auto integerValue = TryGetIntegerValue(expr);
+            if (auto projectionIndex = TryGetProjectionIndex(expr)) {
+                auto referenceIt = indexToReference.find(*projectionIndex);
+                if (referenceIt == indexToReference.end()) {
+                    THROW_ERROR_EXCEPTION("Reference expression index is out of bounds")
+                        .With("index", *projectionIndex);
+                }
 
-            if (integerValue.has_value()) {
-                auto& aliasName = indexToAlias[*integerValue];
-                auto* newExpr = head.New<NAst::TReferenceExpression>(
+                auto* newExpr = head->New<NAst::TReferenceExpression>(
                     expr->SourceLocation,
-                    aliasName);
+                    referenceIt->second);
                 orderExpr.Expressions[index] = newExpr;
             }
         }
@@ -1251,7 +1305,124 @@ void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
     return;
 }
 
-namespace {
+using TReservedNamesByQuery = THashMap<const NAst::TQuery*, THashSet<std::string>>;
+
+class TProjectionIndicesRewriter
+    : public NAst::TAstVisitor<TProjectionIndicesRewriter>
+{
+public:
+    TProjectionIndicesRewriter(
+        NAst::TAstHead* head,
+        TReservedNamesByQuery* reservedNamesByQuery)
+        : Head_(head)
+        , ReservedNamesByQuery_(reservedNamesByQuery)
+    { }
+
+    void Rewrite(NAst::TQuery* query, NAst::TAliasMap* aliasMap)
+    {
+        CheckStackDepth();
+
+        if (ReservedNamesByQuery_->contains(query)) {
+            return;
+        }
+
+        THashSet<std::string> reservedNames;
+        auto* previousReservedNames = std::exchange(ReservedNames_, &reservedNames);
+        auto guard = Finally([&] {
+            ReservedNames_ = previousReservedNames;
+        });
+
+        NYT::Visit(
+            query->FromClause,
+            [] (const NAst::TTableDescriptor& /*table*/) { },
+            [&] (const NAst::TQueryAstHeadPtr& subquery) {
+                Rewrite(&subquery->Ast, &subquery->AliasMap);
+            },
+            [&] (const NAst::TExpressionList& expressions) {
+                Visit(expressions);
+            },
+            [&] (const NAst::TUnionAllClause& unionAllClause) {
+                for (const auto& subquery : unionAllClause.Subqueries) {
+                    Rewrite(&subquery->Ast, &subquery->AliasMap);
+                }
+            });
+
+        for (const auto& [name, expression] : *aliasMap) {
+            reservedNames.insert(name);
+            Visit(expression);
+        }
+
+        for (const auto& join : query->Joins) {
+            NYT::Visit(
+                join,
+                [&] (const NAst::TJoin& tableJoin) {
+                    Visit(tableJoin.Lhs);
+                    Visit(tableJoin.Rhs);
+                    Visit(tableJoin.Predicate);
+                },
+                [&] (const NAst::TArrayJoin& arrayJoin) {
+                    Visit(arrayJoin.Columns);
+                    Visit(arrayJoin.Predicate);
+                });
+        }
+
+        Visit(query->SelectExprs);
+        Visit(query->WherePredicate);
+        Visit(query->GroupExprs);
+        Visit(query->HavingPredicate);
+        for (const auto& orderExpression : query->OrderExpressions) {
+            Visit(orderExpression.Expressions);
+        }
+
+        RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeededImpl(query, aliasMap, Head_, reservedNames);
+
+        ReservedNamesByQuery_->emplace(query, std::move(reservedNames));
+    }
+
+    void OnQuery(NAst::TQueryExpressionPtr queryExpr)
+    {
+        Rewrite(&queryExpr->Query, &queryExpr->AliasMap);
+        auto it = ReservedNamesByQuery_->find(&queryExpr->Query);
+        if (it == ReservedNamesByQuery_->end()) {
+            THROW_ERROR_EXCEPTION("Reserved names are missing for subquery");
+        }
+
+        // A generated alias must not capture a correlated reference in a nested scalar query.
+        ReservedNames_->insert(it->second.begin(), it->second.end());
+    }
+
+    void OnAlias(NAst::TAliasExpressionPtr aliasExpr)
+    {
+        ReservedNames_->insert(aliasExpr->Name);
+        Visit(aliasExpr->Expression);
+    }
+
+    void OnReference(NAst::TReferenceExpressionPtr referenceExpr)
+    {
+        const auto& reference = referenceExpr->Reference;
+        ReservedNames_->insert(reference.ColumnName);
+        if (reference.TableName) {
+            ReservedNames_->insert(*reference.TableName);
+        }
+        Visit(reference.CompositeTypeAccessor.DictOrListItemAccessor);
+    }
+
+private:
+    NAst::TAstHead* const Head_;
+    TReservedNamesByQuery* const ReservedNamesByQuery_;
+
+    THashSet<std::string>* ReservedNames_ = nullptr;
+};
+
+void RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(
+    NAst::TQuery* query,
+    NAst::TAliasMap* aliasMap,
+    NAst::TAstHead* head)
+{
+    TReservedNamesByQuery reservedNamesByQuery;
+    auto rewriter = TProjectionIndicesRewriter(head, &reservedNamesByQuery);
+    rewriter.Rewrite(query, aliasMap);
+}
 
 // NB: This visitor does NOT traverse into subqueries in the FROM clause (e.g., `SELECT FROM (SELECT ...)`).
 // Such subqueries are handled separately via recursive calls to PreparePlanFragmentImpl.
@@ -1330,7 +1501,10 @@ THashMap<NYPath::TYPath, TDataSplit> GetDataSplits(
     THashMap<NYPath::TYPath, TFuture<TDataSplit>> asyncDataSplits;
 
     auto pathCollector = TPathCollector([&] (const NYPath::TYPath& path) -> void {
-        asyncDataSplits.try_emplace(path, callbacks->GetInitialSplit(path));
+        auto [it, inserted] = asyncDataSplits.try_emplace(path);
+        if (inserted) {
+            it->second = callbacks->GetInitialSplit(path);
+        }
     });
     auto query = NAst::TQueryExpression({}, queryAst, aliasMap);
     pathCollector.Visit(&query);
@@ -1358,6 +1532,55 @@ THashMap<NYPath::TYPath, TDataSplit> GetDataSplits(
 
 } // namespace
 
+void ValidateOrderByOffsetAndLimit(const NAst::TQuery& queryAst)
+{
+    if (!queryAst.OrderExpressions.empty() && !queryAst.Limit) {
+        THROW_ERROR_EXCEPTION("ORDER BY used without LIMIT");
+    }
+
+    if (queryAst.Offset && !queryAst.Limit) {
+        THROW_ERROR_EXCEPTION("OFFSET used without LIMIT");
+    }
+
+    if (queryAst.Limit && *queryAst.Limit > MaxQueryLimit) {
+        THROW_ERROR_EXCEPTION("Maximum LIMIT exceeded")
+            .With("limit", *queryAst.Limit)
+            .With("max_limit", MaxQueryLimit);
+    }
+
+    i64 offset = queryAst.Offset.value_or(0);
+    if (offset < 0) {
+        THROW_ERROR_EXCEPTION("Negative OFFSET is forbidden")
+            .With("offset", offset);
+    }
+
+    if (queryAst.Limit && *queryAst.Limit < 0) {
+        THROW_ERROR_EXCEPTION("Negative LIMIT is forbidden")
+            .With("limit", *queryAst.Limit);
+    }
+
+    THROW_ERROR_EXCEPTION_IF(
+        queryAst.Limit && offset > std::numeric_limits<i64>::max() - *queryAst.Limit,
+        "Sum of offset %v and limit %v overflows i64",
+        offset,
+        *queryAst.Limit);
+}
+
+void ValidateHaving(const NAst::TQuery& queryAst, bool hasOrderBy)
+{
+    if (!queryAst.HavingPredicate || hasOrderBy) {
+        return;
+    }
+
+    if (queryAst.Limit) {
+        THROW_ERROR_EXCEPTION("HAVING with LIMIT is not allowed");
+    }
+
+    if (queryAst.Offset) {
+        THROW_ERROR_EXCEPTION("HAVING with OFFSET is not allowed");
+    }
+}
+
 TPlanFragmentPtr PreparePlanFragmentImpl(
     IPrepareCallbacks* callbacks,
     TStringBuf source,
@@ -1370,6 +1593,15 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
     if (depth > MaxSubqueryDepth) {
         THROW_ERROR_EXCEPTION("Maximum subquery depth exceeded")
             .With("max_subquery_depth", MaxSubqueryDepth);
+    }
+
+    if (queryAst.SelectExprs &&
+        options.MaxProjectionCount &&
+        std::ssize(*queryAst.SelectExprs) > *options.MaxProjectionCount)
+    {
+        THROW_ERROR_EXCEPTION("Maximum projection count exceeded")
+            .With("projection_count", std::ssize(*queryAst.SelectExprs))
+            .With("max_projection_count", *options.MaxProjectionCount);
     }
 
     auto query = New<TQuery>(TGuid::Create());
@@ -1392,6 +1624,57 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
         [&] (const NAst::TTableDescriptor&) { },
         [&] (const NAst::TExpressionList&) {
             THROW_ERROR_EXCEPTION("Unexpected expression in from clause");
+        },
+        [&] (const NAst::TUnionAllClause& unionAll) {
+            auto unionAllQuery = New<TUnionAllQuery>();
+            // TODO(sabdenovch): Consider type extension to largest accommodating type per column.
+            TTableSchemaPtr commonSchema;
+
+            for (const auto* subqueryHead : unionAll.Subqueries) {
+                auto subFragment = PreparePlanFragmentImpl(
+                    callbacks,
+                    source,
+                    subqueryHead->Ast,
+                    subqueryHead->AliasMap,
+                    options,
+                    memoryTracker,
+                    depth + 1);
+
+                auto subSchema = subFragment->Query->GetTableSchema();
+
+                if (!commonSchema) {
+                    commonSchema = subSchema;
+                } else {
+                    if (subSchema->GetColumnCount() != commonSchema->GetColumnCount()) {
+                        THROW_ERROR_EXCEPTION(
+                            "UNION ALL subqueries have different column counts %v and %v",
+                            commonSchema->GetColumnCount(),
+                            subSchema->GetColumnCount());
+                    }
+                    for (int i = 0; i < subSchema->GetColumnCount(); ++i) {
+                        const auto& expected = commonSchema->Columns()[i];
+                        const auto& actual = subSchema->Columns()[i];
+                        if (actual.Name() != expected.Name()) {
+                            THROW_ERROR_EXCEPTION(
+                                "UNION ALL subqueries name column %v differently: %Qv and %Qv",
+                                i,
+                                expected.Name(),
+                                actual.Name());
+                        }
+                        if (*actual.LogicalType() != *expected.LogicalType()) {
+                            THROW_ERROR_EXCEPTION(
+                                "UNION ALL subqueries have incompatible types for column %Qv, %v and %v",
+                                expected.Name(),
+                                *expected.LogicalType(),
+                                *actual.LogicalType());
+                        }
+                    }
+                }
+                unionAllQuery->SubqueryFragments.push_back(std::move(subFragment));
+            }
+
+            unionAllQuery->Schema = std::move(commonSchema);
+            fragment->UnionAllQuery = std::move(unionAllQuery);
         });
 
     auto functions = New<TTypeInferrerMap>();
@@ -1405,6 +1688,8 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
         const auto& dataSplit = GetDataSplitOrThrow(dataSplits, table->Path);
         fragment->DataSource.ObjectId = dataSplit.ObjectId;
         query->Schema.Original = dataSplit.TableSchema;
+    } else if (fragment->UnionAllQuery) {
+        query->Schema.Original = fragment->UnionAllQuery->Schema;
     } else {
         query->Schema.Original = fragment->SubqueryFragment->Query->GetTableSchema();
     }
@@ -1418,6 +1703,9 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
         },
         [&] (const NAst::TExpressionList&) -> std::optional<std::string> {
             return std::nullopt;
+        },
+        [&] (const NAst::TUnionAllClause& unionAll) {
+            return unionAll.Alias;
         });
 
     TPreparePlanFragmentContext context{Logger, dataSplits, options};
@@ -1436,7 +1724,9 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
     });
 
     std::vector<TJoinClausePtr> joinClauses;
-    size_t commonKeyPrefix = std::numeric_limits<size_t>::max();
+    size_t commonKeyPrefix = options.MergeVersionedRows
+        ? std::numeric_limits<size_t>::max()
+        : 0;
     for (const auto& join : queryAst.Joins) {
         Visit(join,
             [&] (const NAst::TJoin& tableJoin) {
@@ -1448,7 +1738,7 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
                     functions,
                     &commonKeyPrefix,
                     query->Schema.Original,
-                    table->Alias,
+                    table ? table->Alias : std::nullopt,
                     builder.get(),
                     context));
             },
@@ -1463,7 +1753,7 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
             });
     }
 
-    PrepareQuery(query, queryAst, builder.get());
+    PrepareQuery(query, queryAst, builder.get(), options.MergeVersionedRows);
 
     // Why after PrepareQuery? GetTableSchema is called inside PrepareQuery?
     query->JoinClauses.assign(joinClauses.begin(), joinClauses.end());
@@ -1481,40 +1771,42 @@ TPlanFragmentPtr PreparePlanFragmentImpl(
             .With("max_multi_join_group_number", MaxMultiJoinGroupNumber);
     }
 
+    ValidateOrderByOffsetAndLimit(queryAst);
+    ValidateHaving(queryAst, /*hasOrderBy*/ query->OrderClause != nullptr);
+
     if (queryAst.Limit) {
-        if (*queryAst.Limit > MaxQueryLimit) {
-            THROW_ERROR_EXCEPTION("Maximum LIMIT exceeded")
-                .With("limit", *queryAst.Limit)
-                .With("max_limit", MaxQueryLimit);
-        }
-
-        query->Limit = *queryAst.Limit;
-
-        if (!query->OrderClause && query->HavingClause) {
-            THROW_ERROR_EXCEPTION("HAVING with LIMIT is not allowed");
-        }
-    } else if (!queryAst.OrderExpressions.empty()) {
-        THROW_ERROR_EXCEPTION("ORDER BY used without LIMIT");
+        query->Limit = queryAst.Limit;
     }
 
     if (queryAst.Offset) {
-        if (!query->OrderClause && query->HavingClause) {
-            THROW_ERROR_EXCEPTION("HAVING with OFFSET is not allowed");
-        }
-
         query->Offset = *queryAst.Offset;
-
-        if (!queryAst.Limit) {
-            THROW_ERROR_EXCEPTION("OFFSET used without LIMIT");
-        }
     }
 
+    DropLimitClauseWhenGroupByOne(query);
+
     TryPushDownGroupBy(query, queryAst, Logger);
+
+    // COMPAT(sabdenovch): Group by with limit may be processed in unordered fashion
+    // only if the group clause cannot be processed in order. Resolve it here, where
+    // the group clause (including aggregate items), the limit clause and the
+    // group-by push-down are final.
+    if (!query->OrderClause && query->Limit &&
+        options.AllowUnorderedGroupByWithLimit &&
+        query->GroupClause &&
+        !query->GroupClause->AllAggregatesAreFirst() &&
+        query->GroupClause->CommonPrefixWithPrimaryKey == 0)
+    {
+        query->ScanOrder = EScanOrder::Unordered;
+    }
 
     auto readSchema = query->GetReadSchema();
 
     if (fragment->SubqueryFragment) {
         EliminateRedundantProjections(fragment->SubqueryFragment->Query, *readSchema);
+    } else if (fragment->UnionAllQuery) {
+        for (const auto& subqueryFragment : fragment->UnionAllQuery->SubqueryFragments) {
+            EliminateRedundantProjections(subqueryFragment->Query, *readSchema);
+        }
     }
 
     auto queryFingerprint = InferName(query, {.OmitValues = true});
@@ -1560,7 +1852,7 @@ void ApplyAstRewriters(
     const TPreparePlanFragmentOptions& options)
 {
     if (options.SyntaxVersion >= 3) {
-        RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(queryAst, aliasMap, astHead);
+        RewriteIntegerIndicesToReferencesInGroupByAndOrderByIfNeeded(&queryAst, &aliasMap, &astHead);
     }
 
     if (options.ShouldRewriteCardinalityIntoHyperLogLog) {

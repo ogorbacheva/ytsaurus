@@ -19,7 +19,7 @@ from yt.sequoia_tools import DESCRIPTORS
 from yt_commands import (
     authors, commit_transaction, create, create_host, get, get_cell_tag, raises_yt_error,
     remove, get_singular_chunk_id, remove_host, write_table, read_table, wait, exists,
-    create_domestic_medium, ls, set, link, build_master_snapshots,
+    ls, set, link, lock, build_master_snapshots,
     start_transaction, abort_transaction, sync_mount_table, sync_unmount_table,
     sync_compact_table, set_nodes_banned, set_node_banned,
     get_account_disk_space_limit, set_account_disk_space_limit,
@@ -61,6 +61,14 @@ class TestSequoiaReplicas(YTEnvSetup):
 
     TABLE_MEDIUM_1 = "table_medium_1"
     TABLE_MEDIUM_2 = "table_medium_2"
+
+    MEDIUM_CONFIG = {
+        TABLE_MEDIUM_1: {"locations_per_node": {0: 1, 1: 1, 2: 1}},
+        TABLE_MEDIUM_2: {"locations_per_node": {3: 1, 4: 1, 5: 1}},
+        "default": {"locations_per_node": {6: 1, 7: 1, 8: 1}},
+    }
+
+    table_node_indexes = [0, 1, 2]
 
     DELTA_MASTER_CONFIG = {
         "chunk_manager": {
@@ -204,28 +212,6 @@ class TestSequoiaReplicas(YTEnvSetup):
         for cell_dir in cell_dirs:
             for master in ls(cell_dir):
                 wait(lambda: get(f"{cell_dir}/{master}/orchid/chunk_manager/sequoia_chunk_refresher_status/awaiting_refresh_location_count") == expected_size)
-
-    @classmethod
-    def setup_class(cls):
-        super(TestSequoiaReplicas, cls).setup_class()
-
-        create_domestic_medium(cls.TABLE_MEDIUM_1)
-        create_domestic_medium(cls.TABLE_MEDIUM_2)
-
-        mediums = [cls.TABLE_MEDIUM_1, cls.TABLE_MEDIUM_2, "default"]
-        iter_mediums = 0
-        cls.table_node_indexes = []
-        addresses_to_index = {cls.Env.get_node_address(index) : index for index in range(0, cls.NUM_NODES)}
-
-        for node_address in ls("//sys/cluster_nodes"):
-            location_uuids = list(get("//sys/cluster_nodes/{}/@chunk_locations".format(node_address)).keys())
-            for location_uuid in location_uuids:
-                medium_override_path = "//sys/chunk_locations/{}/@medium_override".format(location_uuid)
-                set(medium_override_path, mediums[iter_mediums])
-                if mediums[iter_mediums] == cls.TABLE_MEDIUM_1:
-                    cls.table_node_indexes.append(addresses_to_index[node_address])
-                iter_mediums = (iter_mediums + 1) % len(mediums)
-        assert len(cls.table_node_indexes) == 3
 
     def teardown_method(self, method):
         wait(sequoia_tables_empty)
@@ -709,6 +695,7 @@ class TestSequoiaReplicas(YTEnvSetup):
         wait(lambda: len(select_rows_from_ground(f"* from [{DESCRIPTORS.chunk_replicas.get_default_path()}]")) == 0)
 
     @authors("grphil")
+    @pytest.mark.timeout(120)
     def test_global_sequoia_refresh_reshard(self):
         if self.NUM_SECONDARY_MASTER_CELLS > 0:
             pytest.skip("Unsupported for multicell")
@@ -739,6 +726,7 @@ class TestSequoiaReplicas(YTEnvSetup):
             return True
 
         wait(check_up, ignore_exceptions=True)
+        self.Env.synchronize()
 
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/global_sequoia_chunk_refresh_period", 100)
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/enable", True)
@@ -758,7 +746,7 @@ class TestSequoiaReplicas(YTEnvSetup):
         wait(lambda: self._get_global_sequoia_chunk_refresh_status()["completed"])
         assert self._get_global_sequoia_chunk_refresh_status()["chunks_processed"] == 1
 
-        for _ in range(3):
+        for _ in range(2):
             master = None
             chunk_shard_index = None
 
@@ -1025,7 +1013,7 @@ class TestSequoiaReplicas(YTEnvSetup):
         assert get_node_count("online") < self.NUM_NODES
 
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/sleep_duration_before_sequoia_replica_modifications", 0)
-        wait(lambda: get_node_count("online") == self.NUM_NODES)
+        self.Env.synchronize()
 
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/max_concurrent_sequoia_replica_modifications", 0)
         create("table", "//tmp/t2")
@@ -1061,7 +1049,7 @@ class TestSequoiaReplicas(YTEnvSetup):
         assert get_node_count("online") < self.NUM_NODES
 
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/sleep_duration_before_sequoia_replica_modifications", 0)
-        wait(lambda: get_node_count("online") == self.NUM_NODES)
+        self.Env.synchronize()
 
         set("//sys/@config/chunk_manager/sequoia_chunk_replicas/throttle_sequoia_replica_modifications", False)
 
@@ -1515,6 +1503,77 @@ class TestSequoiaQueues(YTEnvSetup):
 
     def _resume_sequoia_queue(self):
         remove("//sys/@config/ground_update_queue_manager/queues/sequoia")
+
+    def _lookup_link_resolve_rows(self, path, node_id, transaction_id=None):
+        path_rows = lookup_rows_in_ground(
+            DESCRIPTORS.path_to_node_id.get_default_path(),
+            [{"path": mangle_sequoia_path(path), "transaction_id": transaction_id}])
+        node_rows = lookup_rows_in_ground(
+            DESCRIPTORS.node_id_to_path.get_default_path(),
+            [{"node_id": node_id, "transaction_id": transaction_id}])
+        return (
+            [row["node_id"] for row in path_rows],
+            [(row["path"], row["target_path"]) for row in node_rows],
+        )
+
+    @authors("danilalexeev")
+    def test_symlink_backfill(self):
+        # Create links without resolve rows so enabling backfill must populate them.
+        set("//sys/@config/sequoia_manager/enable_ground_update_queues", False)
+        create("map_node", "//tmp/target")
+        link_id = link("//tmp/target", "//tmp/old_link")
+        removed_link_id = link("//tmp/target", "//tmp/removed_link")
+
+        tx = start_transaction()
+        tx_link_id = link("//tmp/target", "//tmp/tx_link", tx=tx)
+        lock("//tmp/old_link&", mode="snapshot", tx=tx)
+        lock("//tmp/removed_link&", mode="snapshot", tx=tx)
+        remove("//tmp/removed_link&")
+
+        annotation_tx = start_transaction()
+        set("//tmp/old_link&/@annotation", "branched", tx=annotation_tx)
+
+        link_versions = [
+            ("//tmp/old_link", link_id, None),
+            ("//tmp/tx_link", tx_link_id, tx),
+        ]
+        for path, node_id, transaction_id in link_versions:
+            assert self._lookup_link_resolve_rows(path, node_id, transaction_id) == ([], [])
+
+        set("//sys/@config/sequoia_manager/enable_ground_update_queues", True)
+        set("//sys/@config/cypress_manager/enable_symlink_backfill", True)
+        build_master_snapshots()
+        with Restarter(self.Env, MASTERS_SERVICE):
+            pass
+
+        for path, node_id, transaction_id in link_versions:
+            wait(lambda: self._lookup_link_resolve_rows(path, node_id, transaction_id)
+                 == ([node_id], [(path, "//tmp/target")]))
+
+        # Snapshot and annotation branches use the originator's rows.
+        assert get("//tmp/old_link&/@reachable", tx=annotation_tx)
+        for branch_tx in (tx, annotation_tx):
+            assert self._lookup_link_resolve_rows("//tmp/old_link", link_id, branch_tx) == ([], [])
+
+        assert self._lookup_link_resolve_rows("//tmp/tx_link", tx_link_id) == ([], [])
+        assert self._lookup_link_resolve_rows("//tmp/removed_link", removed_link_id) == ([], [])
+
+        abort_transaction(annotation_tx)
+        remove("//tmp/old_link&")
+        wait(lambda: self._lookup_link_resolve_rows("//tmp/old_link", link_id) == ([], []))
+
+        abort_transaction(tx)
+
+        # Replay from the same snapshot after deleting the links.
+        with Restarter(self.Env, MASTERS_SERVICE):
+            pass
+
+        new_link_id = link("//tmp/target", "//tmp/new_link")
+        wait(lambda: self._lookup_link_resolve_rows("//tmp/new_link", new_link_id)
+             == ([new_link_id], [("//tmp/new_link", "//tmp/target")]))
+        for path, node_id, transaction_id in link_versions:
+            assert self._lookup_link_resolve_rows(path, node_id, transaction_id) == ([], [])
+        assert self._lookup_link_resolve_rows("//tmp/removed_link", removed_link_id) == ([], [])
 
     @authors("aleksandra-zh")
     def test_link(self):

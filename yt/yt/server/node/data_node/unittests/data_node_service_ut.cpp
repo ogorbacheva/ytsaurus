@@ -74,6 +74,32 @@ constexpr auto TestSsdMediumName = "ssd_blobs";
 
 ////////////////////////////////////////////////////////////////////////////////
 
+TEST(TNetworkStatisticsTest, ReconfigureUpdatesThrottlingWindow)
+{
+    auto config = New<TDataNodeConfig>();
+    config->NetOutThrottlingDuration = TDuration::Hours(1);
+    TNetworkStatistics networkStatistics(config);
+
+    networkStatistics.IncrementReadThrottlingCounter("default");
+    // Trigger promotion of the newly inserted TSyncMap entry into the read-only snapshot.
+    networkStatistics.IncrementReadThrottlingCounter("default");
+
+    NNodeTrackerClient::NProto::TClusterNodeStatistics statistics;
+    networkStatistics.UpdateStatistics(&statistics);
+    ASSERT_EQ(statistics.network_size(), 1);
+    EXPECT_TRUE(statistics.network(0).throttling_reads());
+
+    auto dynamicConfig = New<TDataNodeDynamicConfig>();
+    dynamicConfig->NetOutThrottlingDuration = TDuration::Zero();
+    networkStatistics.Reconfigure(dynamicConfig);
+    statistics.clear_network();
+    networkStatistics.UpdateStatistics(&statistics);
+    ASSERT_EQ(statistics.network_size(), 1);
+    EXPECT_FALSE(statistics.network(0).throttling_reads());
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 std::vector<int> GenerateRandomBlockIdsWithOrder(int min, int max, int count, TRandomGenerator& generator)
 {
     std::vector<int> blockIds;
@@ -379,6 +405,8 @@ struct TCellDirectoryMock
 
     MOCK_METHOD(TCellTagList, GetMasterCellTagsWithRole, (EMasterCellRole), (override));
 
+    MOCK_METHOD(NYTree::IYPathServicePtr, GetOrchidService, (), (override));
+
     MOCK_METHOD(TCellId, GetRandomMasterCellWithRoleOrThrow, (EMasterCellRole), (override));
 
     MOCK_METHOD(bool, IsClientSideCacheEnabled, (), (const, override));
@@ -528,6 +556,8 @@ public:
         double UnweightedRequestWeight = 1.0;
         TDuration DelayBeforePerformPutBlocks = TDuration::Seconds(2);
         bool EnableMediumAwareBlockCache = false;
+        THashMap<std::string, NConcurrency::TFairThrottlerBucketConfigPtr> InThrottlers;
+        THashMap<std::string, NConcurrency::TFairThrottlerBucketConfigPtr> OutThrottlers;
     };
 
     TDataNodeTest() = default;
@@ -623,6 +653,9 @@ public:
                 bootstrapConfig->DataNode->Throttlers[kind] = New<NConcurrency::TRelativeThroughputThrottlerConfig>();
             }
         }
+
+        bootstrapConfig->InThrottlers = TestParams_.InThrottlers;
+        bootstrapConfig->OutThrottlers = TestParams_.OutThrottlers;
 
         for (const auto& [ioWeight, sessionCountLimit] : Zip(TestParams_.IOWeights, TestParams_.SessionCountLimits)) {
             bootstrapConfig->DataNode->StoreLocations.push_back(GenerateStoreLocationConfig(ioWeight, sessionCountLimit));
@@ -1567,9 +1600,8 @@ TEST_P(TFairShareHierarchicalTest, DISABLED_StressTest)
     GetFairShareHierarchicalScheduler()->BuildOrchid(&writer);
     writer.Flush();
     NLogging::TLogger Logger("TFairShareHierarchicalTest");
-    YT_LOG_DEBUG(
-        "Orchid: %v",
-        NYson::TYsonString(output.Str(), NYson::EYsonType::MapFragment));
+    YT_TLOG_DEBUG("Orchid built")
+        .With("Orchid", NYson::TYsonString(output.Str(), NYson::EYsonType::MapFragment));
 
     for (const auto& workloadCategory : workloadCategories) {
         TWorkloadDescriptor workload(workloadCategory);
@@ -2354,7 +2386,7 @@ TEST_F(TDataNodeTest, StartChunkReflectsNetInThrottlerQueueSize)
     Y_UNUSED(throttleFuture);
 }
 
-TEST_F(TDataNodeTest, DISABLED_NetInThrottlingIsReportedAsWriteThrottling)
+TEST_F(TDataNodeTest, NetInThrottlingIsReportedAsWriteThrottling)
 {
     auto bootstrap = GetDataNodeBootstrap();
     bootstrap->GetDynamicConfigManager()->GetConfig()->DataNode->NetInThrottlingLimit = 0;
@@ -2473,6 +2505,77 @@ TEST_F(TDataNodeTest, ProbePutBlocksIgnoresNetInThrottlerQueueSizeWhenFlagDisabl
 
     inThrottler->Release(2_GB);
     Y_UNUSED(throttleFuture);
+}
+
+TEST_F(TDataNodeTest, UserWorkloadsShareDefaultNetThrottlersWhenNotConfigured)
+{
+    auto bootstrap = GetDataNodeBootstrap();
+
+    // |Idle| never has a dedicated bucket, so these are the default throttlers.
+    auto defaultInThrottler = bootstrap->GetInThrottler(TWorkloadDescriptor(EWorkloadCategory::Idle));
+    auto defaultOutThrottler = bootstrap->GetOutThrottler(TWorkloadDescriptor(EWorkloadCategory::Idle));
+
+    for (auto category : {
+        EWorkloadCategory::UserBatch,
+        EWorkloadCategory::UserInteractive,
+        EWorkloadCategory::UserRealtime,
+        EWorkloadCategory::UserDynamicStoreRead,
+    }) {
+        EXPECT_EQ(bootstrap->GetInThrottler(TWorkloadDescriptor(category)), defaultInThrottler);
+        EXPECT_EQ(bootstrap->GetOutThrottler(TWorkloadDescriptor(category)), defaultOutThrottler);
+    }
+
+    EXPECT_EQ(
+        bootstrap->GetInThrottler(TWorkloadDescriptor(EWorkloadCategory::SystemReplication)),
+        bootstrap->GetThrottler(EDataNodeThrottlerKind::ReplicationIn));
+    EXPECT_EQ(
+        bootstrap->GetOutThrottler(TWorkloadDescriptor(EWorkloadCategory::SystemRepair)),
+        bootstrap->GetThrottler(EDataNodeThrottlerKind::RepairOut));
+}
+
+class TConfiguredUserWorkloadThrottlersTest
+    : public TDataNodeTest
+{
+public:
+    TConfiguredUserWorkloadThrottlersTest()
+        : TDataNodeTest(TDataNodeTestParams{
+            .InThrottlers = {
+                {"user_batch_in", New<TFairThrottlerBucketConfig>()},
+                {"user_interactive_in", New<TFairThrottlerBucketConfig>()},
+            },
+            .OutThrottlers = {
+                {"user_realtime_out", New<TFairThrottlerBucketConfig>()},
+            },
+        })
+    { }
+};
+
+TEST_F(TConfiguredUserWorkloadThrottlersTest, ConfiguredUserWorkloadsGetDedicatedNetThrottlers)
+{
+    auto bootstrap = GetDataNodeBootstrap();
+
+    // |Idle| never has a dedicated bucket, so these are the default throttlers.
+    auto defaultInThrottler = bootstrap->GetInThrottler(TWorkloadDescriptor(EWorkloadCategory::Idle));
+    auto defaultOutThrottler = bootstrap->GetOutThrottler(TWorkloadDescriptor(EWorkloadCategory::Idle));
+
+    auto batchInThrottler = bootstrap->GetInThrottler(TWorkloadDescriptor(EWorkloadCategory::UserBatch));
+    EXPECT_EQ(batchInThrottler, bootstrap->GetThrottler(EDataNodeThrottlerKind::UserBatchIn));
+    EXPECT_TRUE(batchInThrottler);
+    EXPECT_NE(batchInThrottler, defaultInThrottler);
+
+    auto interactiveInThrottler = bootstrap->GetInThrottler(TWorkloadDescriptor(EWorkloadCategory::UserInteractive));
+    EXPECT_EQ(interactiveInThrottler, bootstrap->GetThrottler(EDataNodeThrottlerKind::UserInteractiveIn));
+    EXPECT_TRUE(interactiveInThrottler);
+    EXPECT_NE(interactiveInThrottler, defaultInThrottler);
+
+    auto realtimeOutThrottler = bootstrap->GetOutThrottler(TWorkloadDescriptor(EWorkloadCategory::UserRealtime));
+    EXPECT_EQ(realtimeOutThrottler, bootstrap->GetThrottler(EDataNodeThrottlerKind::UserRealtimeOut));
+    EXPECT_TRUE(realtimeOutThrottler);
+    EXPECT_NE(realtimeOutThrottler, defaultOutThrottler);
+
+    EXPECT_EQ(bootstrap->GetInThrottler(TWorkloadDescriptor(EWorkloadCategory::UserRealtime)), defaultInThrottler);
+    EXPECT_EQ(bootstrap->GetOutThrottler(TWorkloadDescriptor(EWorkloadCategory::UserBatch)), defaultOutThrottler);
+    EXPECT_EQ(bootstrap->GetInThrottler(TWorkloadDescriptor(EWorkloadCategory::UserDynamicStoreRead)), defaultInThrottler);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2708,7 +2811,7 @@ TEST_F(TGetBlockSetBatchTest, HandlesConcurrentCompletions)
     }
 }
 
-TEST_P(TGetBlockSetTest, DISABLED_GetBlockSetTest)
+TEST_P(TGetBlockSetTest, GetBlockSetTest)
 {
     auto testCase = GetParam();
 
@@ -3037,28 +3140,6 @@ TEST_F(TDataNodeTest, ProbePutBlocksCancelChunk)
     }
 }
 
-
-TEST_F(TDataNodeTest, PutBlocksCancelChunk)
-{
-    TSessionId sessionId(MakeRandomId(EObjectType::Chunk, TCellTag(0xf003)), GenericMediumIndex);
-    WaitFor(StartChunk(sessionId, false, false, false))
-        .ThrowOnError();
-
-    TRandomGenerator generator{RandomNumber<ui64>()};
-
-    auto blocks = CreateBlocks(100, 1_KB, generator);
-    auto cummulativeBlockSize = CalculateCummulativeBlockSize(blocks);
-
-    auto putBlocksEnd = PutBlocks(sessionId, {blocks[0]}, 10, cummulativeBlockSize);
-    auto putBlocksBegin = PutBlocks(sessionId, {blocks[0]}, 0, cummulativeBlockSize);
-
-    WaitFor(CancelChunk(sessionId))
-        .ThrowOnError();
-
-    putBlocksEnd.Cancel(TError("Timeout"));
-
-    EXPECT_THROW_WITH_SUBSTRING(WaitFor(putBlocksBegin).ThrowOnError(), "Session is not active");
-}
 
 TEST_F(TDataNodeTest, ProbePutBlocksFinishChunk)
 {

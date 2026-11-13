@@ -120,7 +120,7 @@ public:
             AbsorbMetas();
         } catch (const std::exception& ex) {
             YT_TLOG_INFO("Error absorbing metas")
-                .With(TError(ex));
+                .With(ex);
             THROW_ERROR_EXCEPTION(NJobProxy::EErrorCode::ShallowMergeFailed, "Shallow merge failed").With(ex);
         }
 
@@ -223,8 +223,8 @@ private:
 
     std::vector<TChunkId> FailedChunkIds_;
 
-    NThreading::TAtomicObject<TDataStatistics> InputDataStatistics_;
-    NThreading::TAtomicObject<TDataStatistics> OutputDataStatistics_;
+    TAtomicObject<TDataStatistics> InputDataStatistics_;
+    TAtomicObject<TDataStatistics> OutputDataStatistics_;
 
     std::vector<TTraceContextPtr> InputTraceContexts_;
     std::vector<TTraceContextFinishGuard> InputFinishGuards_;

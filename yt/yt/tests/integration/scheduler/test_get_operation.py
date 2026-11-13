@@ -1,13 +1,11 @@
 from yt_env_setup import (
     YTEnvSetup,
-    Restarter,
-    CONTROLLER_AGENTS_SERVICE,
     is_asan_build,
 )
 
 from yt_commands import (
     authors, wait, wait_breakpoint, release_breakpoint, with_breakpoint, create, ls, get,
-    set, remove,
+    set, remove, patch_op_spec,
     exists, start_transaction, lock, insert_rows, lookup_rows, write_table, map, vanilla, abort_op,
     complete_op, suspend_op, resume_op, get_operation, list_operations, run_test_vanilla, run_sleeping_vanilla,
     clean_operations, get_operation_cypress_path, sync_create_cells, create_pool,
@@ -54,9 +52,8 @@ def get_running_job_count(op_id):
     return result["brief_progress"]["jobs"]["running"]
 
 
-class TestGetOperation(YTEnvSetup):
-    ENABLE_MULTIDAEMON = False  # test_get_operation_no_archive restarts the controller agent.
-    NUM_TEST_PARTITIONS = 4
+class _TestGetOperationBase(YTEnvSetup):
+    ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
     NUM_NODES = 3
     NUM_SCHEDULERS = 1
@@ -82,6 +79,14 @@ class TestGetOperation(YTEnvSetup):
         },
     }
 
+    def clean_build_time(self, operation_result):
+        del operation_result["brief_progress"]["build_time"]
+        del operation_result["progress"]["build_time"]
+
+
+class TestGetOperation(_TestGetOperationBase):
+    NUM_TEST_PARTITIONS = 4
+
     def setup_method(self, method):
         super(TestGetOperation, self).setup_method(method)
         sync_create_cells(1)
@@ -92,10 +97,6 @@ class TestGetOperation(YTEnvSetup):
     def teardown_method(self, method):
         remove("//sys/operations_archive", force=True)
         super(TestGetOperation, self).teardown_method(method)
-
-    def clean_build_time(self, operation_result):
-        del operation_result["brief_progress"]["build_time"]
-        del operation_result["progress"]["build_time"]
 
     @authors("bystrovserg")
     def test_get_operation(self):
@@ -111,7 +112,7 @@ class TestGetOperation(YTEnvSetup):
             command=with_breakpoint("cat ; BREAKPOINT"),
             spec={"mapper": {"input_format": "json", "output_format": "json"}},
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: exists(op.get_path()))
 
@@ -199,7 +200,7 @@ class TestGetOperation(YTEnvSetup):
             out="//tmp/t2",
             command=with_breakpoint("cat ; BREAKPOINT"),
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: _get_operation_from_archive(op.id))
 
@@ -228,7 +229,7 @@ class TestGetOperation(YTEnvSetup):
             command=with_breakpoint("cat ; BREAKPOINT"),
             spec={"mapper": {"input_format": "json", "output_format": "json"}},
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         id_hi, id_lo = uuid_to_parts(op.id)
         archive_table_path = "//sys/operations_archive/ordered_by_id"
@@ -270,12 +271,6 @@ class TestGetOperation(YTEnvSetup):
         self.clean_build_time(res_get_operation_new)
         assert res_get_operation_new["brief_progress"] != {"ivan": "ivanov"}
 
-        # NB(bystrovserg): We do not write Cypress progress to archive anymore.
-        # assert res_get_operation_new["progress"] != {
-        #     "semen": "semenych",
-        #     "semenych": "gorbunkov",
-        # }
-
     @authors("ignat")
     @pytest.mark.parametrize("annotations", [{}, {"foo": "abc"}])
     def test_attributes(self, annotations):
@@ -291,7 +286,7 @@ class TestGetOperation(YTEnvSetup):
             command=with_breakpoint("cat ; BREAKPOINT"),
             spec={"mapper": {"input_format": "json", "output_format": "json"}, "annotations": annotations},
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: _get_operation_from_archive(op.id))
         assert list(get_operation(op.id, attributes=["state"])) == ["state"]
@@ -422,7 +417,7 @@ class TestGetOperation(YTEnvSetup):
             command=with_breakpoint("cat ; BREAKPOINT"),
             spec={"mapper": {"input_format": "json", "output_format": "json"}},
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: _get_operation_from_archive(op.id))
 
@@ -451,7 +446,7 @@ class TestGetOperation(YTEnvSetup):
             spec={"mapper": {"input_format": "json", "output_format": "json"}},
         )
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         # Progress is still served from the orchid (include_runtime) even though the archive is down.
         wait(lambda: get_operation(op.id, include_runtime=True).get("brief_progress", {}).get("jobs", {}).get("running") == 1)
@@ -481,28 +476,6 @@ class TestGetOperation(YTEnvSetup):
         op.track()
 
         sync_mount_table("//sys/operations_archive/ordered_by_id")
-
-    @authors("bystrovserg")
-    def test_get_operation_no_archive(self):
-        remove("//sys/operations_archive", force=True)
-
-        # The controller agent memoizes archive existence for its whole lifetime.
-        # Restart it so it observes that the archive is gone.
-        with Restarter(self.Env, CONTROLLER_AGENTS_SERVICE):
-            pass
-
-        op = run_test_vanilla(command=with_breakpoint("BREAKPOINT"), track=False)
-
-        wait_breakpoint()
-        wait(lambda: _get_operation_from_cypress(op.id).get("brief_progress", {}).get("jobs", {}).get("running") == 1)
-
-        res_api = get_operation(op.id)
-        self.clean_build_time(res_api)
-        res_cypress = _get_operation_from_cypress(op.id)
-        self.clean_build_time(res_cypress)
-
-        assert res_api["brief_progress"] == res_cypress["brief_progress"]
-        assert res_api["progress"] == res_cypress["progress"]
 
     @authors("ignat")
     def test_get_operation_profiler(self):
@@ -544,7 +517,7 @@ class TestGetOperation(YTEnvSetup):
             command=with_breakpoint("cat ; BREAKPOINT"),
             spec={"mapper": {"input_format": "json", "output_format": "json"}},
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: _get_operation_from_archive(op.id))
         assert get_operation(op.id)["scheduling_attributes_per_pool_tree"]["default"]["slot_index"] == 0
@@ -586,6 +559,36 @@ class TestGetOperation(YTEnvSetup):
 
         clean_operations()
 
+    @authors("coteeq")
+    def test_cumulative_spec_patch(self):
+        op = run_sleeping_vanilla(track=False)
+        wait(lambda: op.get_job_count("running") == 1)
+
+        assert "cumulative_spec_patch" not in get_operation(op.id)
+
+        patch_op_spec(
+            op.id,
+            patches=[
+                {"path": "/tasks/task/job_count", "value": 2},
+            ]
+        )
+        wait(lambda: op.get_job_count("running") == 2)
+
+        expected = {
+            "tasks": {
+                "task": {
+                    "job_count": 2,
+                },
+            },
+        }
+        assert expected == get_operation(op.id, attributes=["cumulative_spec_patch"])["cumulative_spec_patch"]
+
+        op.abort(wait_until_finished=True)
+        clean_operations()
+
+        assert expected == get_operation(op.id, attributes=["cumulative_spec_patch"])["cumulative_spec_patch"]
+
+
 ##################################################################
 
 
@@ -622,6 +625,31 @@ class TestGetOperationHeavyRuntimeParameters(TestGetOperation):
             "enable_heavy_runtime_parameters": True,
         },
     }
+
+
+##################################################################
+
+
+class TestGetOperationNoArchive(_TestGetOperationBase):
+    NUM_NODES = 1
+    USE_DYNAMIC_TABLES = False
+
+    @authors("bystrovserg")
+    def test_get_operation_no_archive(self):
+        assert not exists("//sys/operations_archive")
+
+        op = run_test_vanilla(command=with_breakpoint("BREAKPOINT"), track=False)
+
+        wait_breakpoint(op)
+        wait(lambda: _get_operation_from_cypress(op.id).get("brief_progress", {}).get("jobs", {}).get("running") == 1)
+
+        res_api = get_operation(op.id)
+        self.clean_build_time(res_api)
+        res_cypress = _get_operation_from_cypress(op.id)
+        self.clean_build_time(res_cypress)
+
+        assert res_api["brief_progress"] == res_cypress["brief_progress"]
+        assert res_api["progress"] == res_cypress["progress"]
 
 
 ##################################################################

@@ -7,6 +7,7 @@ import (
 	"go.ytsaurus.tech/yt/go/flow"
 )
 
+// [BEGIN reference_loader]
 type referenceState struct {
 	NormalizedName *string `yson:"normalized_name"`
 }
@@ -38,3 +39,5 @@ func (*referenceLoader) OnMessage(
 func normalize(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
+
+// [END reference_loader]

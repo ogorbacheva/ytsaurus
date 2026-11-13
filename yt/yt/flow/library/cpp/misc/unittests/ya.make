@@ -3,14 +3,19 @@ GTEST()
 INCLUDE(${ARCADIA_ROOT}/yt/yt/flow/flow.make.inc)
 
 SRCS(
+    counter_ut.cpp
+    decayed_sum_ut.cpp
     identifier_ut.cpp
     compact_unversioned_owning_row_ut.cpp
     cow_tree_ut.cpp
+    cpu_accounting_ut.cpp
     debug_build_warning_ut.cpp
+    destruction_context_ut.cpp
     linear_system_ut.cpp
     crash_recorder_ut.cpp
     bipartite_map_ut.cpp
     ema_ut.cpp
+    exponential_history_ut.cpp
     error_backtrace_enricher_ut.cpp
     indexed_yson_string_ut.cpp
     keyed_heap_ut.cpp
@@ -21,13 +26,16 @@ SRCS(
     prefetch_ut.cpp
     retryable_client_ut.cpp
     retryable_transaction_ut.cpp
+    self_signed_certificate_ut.cpp
     status_profiler_ut.cpp
+    two_level_cache_ut.cpp
     weighted_random_ut.cpp
     remedian_splitter_ut.cpp
     versioned_value_ut.cpp
 )
 
 PEERDIR(
+    library/cpp/testing/common
     yt/yt/client/unittests/mock
     yt/yt/flow/library/cpp/common/unittests/mock
     yt/yt/flow/library/cpp/misc

@@ -140,6 +140,7 @@ struct TQueryTrackerProxyConfig
     i64 MaxQueryFileCount;
     i64 MaxQueryFileNameSizeBytes;
     i64 MaxQueryFileContentSizeBytes;
+    TDuration QueriesByMutationIdTtl;
 
     REGISTER_YSON_STRUCT(TQueryTrackerProxyConfig);
 
@@ -187,6 +188,9 @@ struct TQueryTrackerBootstrapConfig
     int ProxyThreadPoolSize;
 
     std::string User;
+
+    // Members have superuser capabilities within Query Tracker only.
+    std::optional<std::string> AdminsGroup;
 
     NYTree::IMapNodePtr CypressAnnotations;
 

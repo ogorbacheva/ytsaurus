@@ -90,6 +90,7 @@ private:
             .SetPresent(!tablet->ReplicationProgress().Segments.empty()));
         descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::MountHint)
             .SetOpaque(true));
+        descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ProlongedChunkCount));
     }
 
     bool GetBuiltinAttribute(TInternedAttributeKey key, IYsonConsumer* consumer) override
@@ -186,6 +187,11 @@ private:
                     .EndMap();
                 return true;
 
+            case EInternedAttributeKey::ProlongedChunkCount:
+                BuildYsonFluently(consumer)
+                    .Value(tablet->ProlongedChunks().size());
+                return true;
+
             default:
                 break;
         }
@@ -204,7 +210,7 @@ private:
 
         ValidateNoTransaction();
 
-        context->SetRequestInfo();
+        context->AnnotateRequest();
 
         const auto& tabletManager = Bootstrap_->GetTabletManager();
         tabletManager->CancelTabletTransition(GetThisImpl<TTablet>());

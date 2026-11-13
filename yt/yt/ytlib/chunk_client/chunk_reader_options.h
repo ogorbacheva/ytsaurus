@@ -18,6 +18,15 @@ namespace NYT::NChunkClient {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! A snapshot received from an upstream reader, including absent fields.
+struct TForwardedIoFairShareState
+{
+    std::optional<i64> IoConsumed;
+    std::optional<double> IoFairShareWeight;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TClientChunkReadOptions
 {
     TWorkloadDescriptor WorkloadDescriptor;
@@ -29,6 +38,9 @@ struct TClientChunkReadOptions
     TChunkReaderStatisticsPtr ChunkReaderStatistics = New<TChunkReaderStatistics>();
     NTableClient::TKeyFilterStatisticsPtr KeyFilterStatistics;
     TJobIoMeterPtr JobIoMeter;
+
+    //! When present, overrides locally computed I/O fair-share fields in read RPCs.
+    std::optional<TForwardedIoFairShareState> ForwardedIoFairShareState;
 
     // NB: If |HunkChunkReaderStatistics| is null and hunk chunk reading is
     // performed, relevant statistics will be updated within
@@ -46,6 +58,9 @@ struct TClientChunkReadOptions
 
     //! Additional request data, e.g. NBD request id.
     std::optional<ui64> Cookie;
+
+    //! Reuse the session invoker for decompression in wrapped unversioned readers.
+    bool ReuseSessionInvokerForDecompression = false;
 
     void ResetStatistics();
     void AddStatisticsFrom(const TClientChunkReadOptions& from) const;

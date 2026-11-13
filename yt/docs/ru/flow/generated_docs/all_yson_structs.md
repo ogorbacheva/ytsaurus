@@ -1,6 +1,6 @@
 # Справочник конфигураций
 
-Данный файл содержит описание всех спек и конфигов, используемых для конфигурации {{product-name}} Flow. Алгоритм генерации этого файла рекурсивно ищет все подконфиги. Он несовершенен.{% if audience == "internal" %} Если чего-то нет, вы можете обратиться в чат [YT Flow Public](https://nda.ya.ru/t/hcJkQdBD7LNa9V), и мы постараемся это добавить.{% endif %}
+Данный файл содержит описание всех спек и конфигов, используемых для конфигурации {{product-name}} Flow. Алгоритм генерации этого файла рекурсивно ищет все подконфиги. Он несовершенен.
 
 {% include [_](./NYT_NApi_EConnectionType.md) %}
 
@@ -9,8 +9,6 @@
 {% include [_](./NYT_NApi_NRpcProxy_TConnectionConfig.md) %}
 
 {% include [_](./NYT_NApi_TTableMountCacheConfig.md) %}
-
-{% include [_](./NYT_NAuth_TTvmServiceConfig.md) %}
 
 {% include [_](./NYT_NBus_EEncryptionMode.md) %}
 
@@ -26,7 +24,11 @@
 
 {% include [_](./NYT_NBus_NTcp_TMultiplexingBandConfig.md) %}
 
+{% include [_](./NYT_NChaosClient_TChaosLeaseCacheConfig.md) %}
+
 {% include [_](./NYT_NChaosClient_TReplicationCardCacheConfig.md) %}
+
+{% include [_](./NYT_NChaosClient_TWatchedReplicationCardCacheConfig.md) %}
 
 {% include [_](./NYT_NClient_NCache_TClientsCacheConfig.md) %}
 
@@ -48,6 +50,14 @@
 
 {% include [_](./NYT_NFlow_EBacktraceEnricherLevel.md) %}
 
+{% include [_](./NYT_NFlow_EBalanceResource.md) %}
+
+{% include [_](./NYT_NFlow_EBalancerMetricsSource.md) %}
+
+{% include [_](./NYT_NFlow_EClickHouseCodec.md) %}
+
+{% include [_](./NYT_NFlow_EClickHouseHostSelectionPolicy.md) %}
+
 {% include [_](./NYT_NFlow_EDistributionOrdering.md) %}
 
 {% include [_](./NYT_NFlow_EFetchType.md) %}
@@ -55,6 +65,10 @@
 {% include [_](./NYT_NFlow_EFlowStateTarget.md) %}
 
 {% include [_](./NYT_NFlow_EJobBalancerType.md) %}
+
+{% include [_](./NYT_NFlow_EKafkaDeliveryGuarantee.md) %}
+
+{% include [_](./NYT_NFlow_EMalformedKafkaMessagePolicy.md) %}
 
 {% include [_](./NYT_NFlow_EPipelineState.md) %}
 
@@ -64,17 +78,19 @@
 
 {% include [_](./NYT_NFlow_ETimeType.md) %}
 
+{% include [_](./NYT_NFlow_ETimerStoreBackend.md) %}
+
 {% include [_](./NYT_NFlow_ETimestampFormat.md) %}
 
 {% include [_](./NYT_NFlow_EUnavailableSourcePolicy.md) %}
+
+{% include [_](./NYT_NFlow_EWorkerCoefMode.md) %}
 
 {% include [_](./NYT_NFlow_NCompanion_TCompanionConfig.md) %}
 
 {% include [_](./NYT_NFlow_NController_TControllerConfig.md) %}
 
 {% include [_](./NYT_NFlow_NController_TControllerServiceConfig.md) %}
-
-{% include [_](./NYT_NFlow_NController_TElectionManagerConfig.md) %}
 
 {% include [_](./NYT_NFlow_NController_TLeaseManagerConfig.md) %}
 
@@ -98,11 +114,15 @@
 
 {% include [_](./NYT_NFlow_TBacktraceEnricherSpec.md) %}
 
+{% include [_](./NYT_NFlow_TComputationId.md) %}
+
 {% include [_](./NYT_NFlow_TComputationSpec.md) %}
 
 {% include [_](./NYT_NFlow_TDeleteStatesArg.md) %}
 
 {% include [_](./NYT_NFlow_TDeleteStatesResponse.md) %}
+
+{% include [_](./NYT_NFlow_TDirectControllerCommandsConfig.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicBufferStateManagerSpec.md) %}
 
@@ -118,6 +138,8 @@
 
 {% include [_](./NYT_NFlow_TDynamicExternalStateManagerSpec.md) %}
 
+{% include [_](./NYT_NFlow_TDynamicFileProviderSpec.md) %}
+
 {% include [_](./NYT_NFlow_TDynamicInputStoreSpec.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicJobManagerGroupSpec.md) %}
@@ -126,6 +148,8 @@
 
 {% include [_](./NYT_NFlow_TDynamicJobTrackerSpec.md) %}
 
+{% include [_](./NYT_NFlow_TDynamicKeyCountPartitioningSpec.md) %}
+
 {% include [_](./NYT_NFlow_TDynamicKeyVisitorStreamSpec.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicMessageDistributorSpec.md) %}
@@ -133,6 +157,8 @@
 {% include [_](./NYT_NFlow_TDynamicOutputStoreSpec.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicPartitionTracerSpec.md) %}
+
+{% include [_](./NYT_NFlow_TDynamicPartitioningCoordinatorSpec.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicPipelineSpec.md) %}
 
@@ -174,15 +200,31 @@
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation.md) %}
 
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NSortedDynamicTable_TAsyncSink.md) %}
+
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource.md) %}
 
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_NStaticTableConnectorV2_TSource.md) %}
+
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncHttpSink.md) %}
+
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAsyncQueueSink.md) %}
+
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAtLeastOnceClickHouseSink.md) %}
+
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TAtLeastOnceKafkaSink.md) %}
+
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TClickHouseBatchingSink.md) %}
+
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TKafkaSink.md) %}
+
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TKafkaSource.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TPassthroughComputation.md) %}
 
@@ -192,11 +234,15 @@
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TServiceLogSource.md) %}
 
+{% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TShardedClickHouseBatchingSink.md) %}
+
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSwiftPassthroughOrderedSourceComputation.md) %}
 
 {% include [_](./NYT_NFlow_TDynamicUnitedParameters_NYT_NFlow_TSyncQueueSink.md) %}
+
+{% include [_](./NYT_NFlow_TEvenLoadThresholds.md) %}
 
 {% include [_](./NYT_NFlow_TEventTimestampAssignerSpec.md) %}
 
@@ -204,13 +250,13 @@
 
 {% include [_](./NYT_NFlow_TExternalStateManagerSpec.md) %}
 
+{% include [_](./NYT_NFlow_TFailureHandlerSpec.md) %}
+
 {% include [_](./NYT_NFlow_TFetcherInJoinerSpec.md) %}
 
-{% include [_](./NYT_NFlow_TFileResourceDynamicParameters.md) %}
+{% include [_](./NYT_NFlow_TFileProviderId.md) %}
 
-{% include [_](./NYT_NFlow_TFileResourceParameters.md) %}
-
-{% include [_](./NYT_NFlow_TFileSourceSpec.md) %}
+{% include [_](./NYT_NFlow_TFileProviderSpec.md) %}
 
 {% include [_](./NYT_NFlow_TFlowNodeConfig.md) %}
 
@@ -219,6 +265,12 @@
 {% include [_](./NYT_NFlow_TIdlePartitionsSpec.md) %}
 
 {% include [_](./NYT_NFlow_TInputOrderingSpec.md) %}
+
+{% include [_](./NYT_NFlow_TKafkaClientConfig.md) %}
+
+{% include [_](./NYT_NFlow_TKey.md) %}
+
+{% include [_](./NYT_NFlow_TKeyCountPartitioningSpec.md) %}
 
 {% include [_](./NYT_NFlow_TKeyStateRow.md) %}
 
@@ -232,19 +284,33 @@
 
 {% include [_](./NYT_NFlow_TMatchedStatesBucket.md) %}
 
+{% include [_](./NYT_NFlow_TMessageId.md) %}
+
 {% include [_](./NYT_NFlow_TMessageSerializer.md) %}
 
+{% include [_](./NYT_NFlow_TPartitionId.md) %}
+
 {% include [_](./NYT_NFlow_TPartitionStateRow.md) %}
+
+{% include [_](./NYT_NFlow_TPayload.md) %}
 
 {% include [_](./NYT_NFlow_TPipelineSpec.md) %}
 
 {% include [_](./NYT_NFlow_TPivotFinderSpec.md) %}
+
+{% include [_](./NYT_NFlow_TProcessFunctionGraphNodeSpec.md) %}
+
+{% include [_](./NYT_NFlow_TProcessFunctionGraphSpec.md) %}
+
+{% include [_](./NYT_NFlow_TQuotaClassId.md) %}
 
 {% include [_](./NYT_NFlow_TReadStatesArg.md) %}
 
 {% include [_](./NYT_NFlow_TReadStatesResponse.md) %}
 
 {% include [_](./NYT_NFlow_TResourceDescription.md) %}
+
+{% include [_](./NYT_NFlow_TResourceId.md) %}
 
 {% include [_](./NYT_NFlow_TResourceSpec.md) %}
 
@@ -254,7 +320,11 @@
 
 {% include [_](./NYT_NFlow_TSimpleRunnerConfig.md) %}
 
+{% include [_](./NYT_NFlow_TSinkId.md) %}
+
 {% include [_](./NYT_NFlow_TSinkSpec.md) %}
+
+{% include [_](./NYT_NFlow_TSourceReadDelayEstimatorSpec.md) %}
 
 {% include [_](./NYT_NFlow_TSourceSpec.md) %}
 
@@ -264,11 +334,19 @@
 
 {% include [_](./NYT_NFlow_TStaticTableKeyVisitorJoinerSpec.md) %}
 
+{% include [_](./NYT_NFlow_TStreamId.md) %}
+
 {% include [_](./NYT_NFlow_TStreamSpec.md) %}
+
+{% include [_](./NYT_NFlow_TSystemTimestamp.md) %}
 
 {% include [_](./NYT_NFlow_TTableFetcherSpec.md) %}
 
 {% include [_](./NYT_NFlow_TTableJoinerSpec.md) %}
+
+{% include [_](./NYT_NFlow_TThrottlerId.md) %}
+
+{% include [_](./NYT_NFlow_TThroughputSpec.md) %}
 
 {% include [_](./NYT_NFlow_TTimerSerializer.md) %}
 
@@ -284,15 +362,31 @@
 
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_NCompanion_TTransformOrderedSourceCompanionComputation.md) %}
 
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_NSortedDynamicTable_TAsyncSink.md) %}
+
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_NSortedDynamicTable_TSyncSink.md) %}
 
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TArrivalOrderTableSink.md) %}
 
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnector_TSource.md) %}
 
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_NStaticTableConnectorV2_TSource.md) %}
+
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncHttpSink.md) %}
+
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncMultiClusterQueueSink.md) %}
 
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TAsyncQueueSink.md) %}
+
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TAtLeastOnceClickHouseSink.md) %}
+
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TAtLeastOnceKafkaSink.md) %}
+
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TClickHouseBatchingSink.md) %}
+
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TKafkaSink.md) %}
+
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TKafkaSource.md) %}
 
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TPassthroughComputation.md) %}
 
@@ -301,6 +395,8 @@
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TRandomSource.md) %}
 
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TServiceLogSource.md) %}
+
+{% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TShardedClickHouseBatchingSink.md) %}
 
 {% include [_](./NYT_NFlow_TUnitedParameters_NYT_NFlow_TSwiftPassthroughComputation.md) %}
 
@@ -312,13 +408,19 @@
 
 {% include [_](./NYT_NFlow_TVanillaTaskConfig.md) %}
 
+{% include [_](./NYT_NFlow_TWatermarkAlignmentGroup.md) %}
+
 {% include [_](./NYT_NFlow_TWatermarkAlignmentSpec.md) %}
 
 {% include [_](./NYT_NFlow_TWatermarkGeneratorSpec.md) %}
 
+{% include [_](./NYT_NFlow_TWatermarkPercentile.md) %}
+
 {% include [_](./NYT_NFlow_TWatermarkPercentileSpec.md) %}
 
 {% include [_](./NYT_NFlow_TWatermarkStrategySpec.md) %}
+
+{% include [_](./NYT_NFlow_TWorkerGroupId.md) %}
 
 {% include [_](./NYT_NHttp_TClientConfig.md) %}
 
@@ -403,6 +505,8 @@
 {% include [_](./NYT_NTCMalloc_TDynamicTCMallocConfig.md) %}
 
 {% include [_](./NYT_NTCMalloc_THeapSizeLimitConfig.md) %}
+
+{% include [_](./NYT_NTCMalloc_TMemoryProfileRetentionConfig.md) %}
 
 {% include [_](./NYT_NTCMalloc_TTCMallocConfig.md) %}
 

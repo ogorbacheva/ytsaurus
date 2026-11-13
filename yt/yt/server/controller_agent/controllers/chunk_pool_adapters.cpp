@@ -2,8 +2,8 @@
 
 #include "task.h"
 
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk.h>
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
 
 namespace NYT::NControllerAgent::NControllers {
 
@@ -132,6 +132,11 @@ void TChunkPoolOutputAdapterBase::Aborted(TCookie cookie, EAbortReason reason)
 void TChunkPoolOutputAdapterBase::Lost(TCookie cookie)
 {
     UnderlyingOutput_->Lost(cookie);
+}
+
+void TChunkPoolOutputAdapterBase::AttachJobSizeAdjuster(const IJobSizeAdjusterPtr& jobSizeAdjuster)
+{
+    UnderlyingOutput_->AttachJobSizeAdjuster(jobSizeAdjuster);
 }
 
 bool TChunkPoolOutputAdapterBase::IsSplittable(NChunkPools::TOutputCookie cookie) const

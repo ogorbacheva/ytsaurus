@@ -32,7 +32,7 @@
 
 #include <library/cpp/yt/containers/ring_queue.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 #include <library/cpp/yt/memory/ref.h>
@@ -112,7 +112,7 @@ struct TEpochContext
 
     int LeaderId = InvalidPeerId;
     TEpochId EpochId;
-    NThreading::TAtomicObject<NElection::TPeerIdSet> AlivePeerIds;
+    TAtomicObject<NElection::TPeerIdSet> AlivePeerIds;
 
     TCancelableContextPtr CancelableContext;
 };
@@ -243,6 +243,7 @@ public:
         ui64 stateHash,
         TInstant timestamp,
         TLogicalTime logicalTime,
+        TCausalTime causalTime,
         NConcurrency::IAsyncZeroCopyInputStreamPtr reader,
         bool prepareState = true);
 
@@ -266,6 +267,8 @@ public:
     bool GetLastSuccessfulSnapshotReadOnly() const;
     bool GetReadOnly() const;
     TLogicalTime GetLogicalTime() const;
+
+    TCausalState GetCausalStateOrThrow(std::optional<TCausalTime> causalTime) const;
 
 private:
     friend class TUserLockGuard;
@@ -301,7 +304,7 @@ private:
     std::atomic<EPeerState> State_ = EPeerState::Stopped;
 
     // Last applied mutation.
-    NThreading::TAtomicObject<TAutomatonVersion> AutomatonVersion_;
+    TAtomicObject<TAutomatonVersion> AutomatonVersion_;
     std::atomic<ui64> RandomSeed_;
     std::atomic<i64> SequenceNumber_;
     std::atomic<ui64> StateHash_;
@@ -345,6 +348,8 @@ private:
         std::atomic<TLogicalTime> Time_;
     };
     TLogicalClock LogicalClock_;
+    TCausalTime CausalTime_ = TCausalTime(0);
+    const TCausalStateRegistryPtr CausalStateRegistry_;
 
     NProfiling::TTimeGauge SnapshotLoadTimeGauge_;
     NProfiling::TGauge CompressedSnapshotSizeGauge_;
@@ -352,9 +357,11 @@ private:
 
     NServer::TForkCountersPtr ForkCounters_;
 
-    TSharedRef SanitizedLocalHostName_;
+    TStringBuf SanitizedLocalHostName_;
 
-    TSharedRef SanitizeLocalHostName() const;
+    TStringBuf SanitizeLocalHostName() const;
+
+    TCausalTime AdvanceCausalTime(TCausalTime dependency);
 
     TMutationApplicationResult ApplyMutationDuringRecovery(const TSharedRef& recordData);
     TMutationApplicationResult ApplyMutation(const TPendingMutationPtr& mutation);

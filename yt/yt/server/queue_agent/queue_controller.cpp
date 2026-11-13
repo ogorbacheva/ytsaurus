@@ -10,17 +10,22 @@
 #include "snapshot.h"
 #include "snapshot_representation.h"
 
-#include <yt/yt/ytlib/hive/cluster_directory.h>
-#include <yt/yt/ytlib/hive/cell_directory.h>
-
 #include <yt/yt/ytlib/api/native/client.h>
+
+#include <yt/yt/ytlib/hive/cell_directory.h>
+#include <yt/yt/ytlib/hive/cluster_directory.h>
 
 #include <yt/yt/ytlib/object_client/object_service_proxy.h>
 
 #include <yt/yt/client/api/internal_client.h>
-#include "yt/yt/client/api/table_client.h"
+#include <yt/yt/client/api/table_client.h>
+
+#include <yt/yt/client/chaos_client/replication_card.h>
 
 #include <yt/yt/client/object_client/helpers.h>
+
+#include <yt/yt/client/queue_client/config.h>
+#include <yt/yt/client/queue_client/helpers.h>
 
 #include <yt/yt/client/table_client/helpers.h>
 
@@ -29,18 +34,13 @@
 #include <yt/yt/client/transaction_client/helpers.h>
 #include <yt/yt/client/transaction_client/timestamp_provider.h>
 
-#include <yt/yt/client/queue_client/config.h>
-#include <yt/yt/client/queue_client/helpers.h>
-
-#include <yt/yt/client/chaos_client/replication_card.h>
-
 #include <yt/yt/core/concurrency/periodic_executor.h>
 
 #include <yt/yt/core/ytree/fluent.h>
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <library/cpp/iterator/functools.h>
 
@@ -485,8 +485,8 @@ public:
 
 private:
     bool Leading_;
-    NThreading::TAtomicObject<TQueueTableRow> QueueRow_;
-    NThreading::TAtomicObject<std::optional<TReplicatedTableMappingTableRow>> ReplicatedTableMappingRow_;
+    TAtomicObject<TQueueTableRow> QueueRow_;
+    TAtomicObject<std::optional<TReplicatedTableMappingTableRow>> ReplicatedTableMappingRow_;
     const TTablePath QueuePath_;
     const IObjectStore* ObjectStore_;
 

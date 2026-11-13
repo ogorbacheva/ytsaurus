@@ -1,9 +1,12 @@
 #include "flow_view.h"
 
+#include "computation_statistics.h"
+
 #include "private.h"
 
 #include "checksum.h"
 #include "resource.h"
+#include "watermark_history.h"
 
 #include <yt/yt/core/ytree/convert.h>
 #include <yt/yt/core/ytree/ephemeral_node_factory.h>
@@ -42,6 +45,7 @@ using namespace NYson;
 
 static const TPersistedStateName FlowViewLayoutPartitionsStateName = "layout_partitions";
 static const TPersistedStateName FlowViewLayoutJobsStateName = "layout_jobs";
+static const TPersistedStateName FlowViewLayoutResourceInstancesStateName = "layout_resource_instances";
 static const TPersistedStateName FlowViewLayoutWorkerSpecsStateName = "layout_worker_specs";
 constinit const auto& Logger = FlowStateLogger;
 
@@ -219,6 +223,8 @@ bool TPartition::IsWorking() const
 void TJob::Register(TRegistrar registrar)
 {
     registrar.Parameter("job_id", &TThis::JobId);
+    registrar.Parameter("generation", &TThis::Generation)
+        .Default();
 
     registrar.Parameter("worker_address", &TThis::WorkerAddress);
     registrar.Parameter("worker_incarnation_id", &TThis::WorkerIncarnationId)
@@ -227,6 +233,29 @@ void TJob::Register(TRegistrar registrar)
     registrar.Parameter("partition_id", &TThis::PartitionId);
 
     registrar.Parameter("lease_id", &TThis::LeaseId);
+
+    registrar.Parameter("dyntable_lease", &TThis::DyntableLease)
+        .Default(false);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TResourceInstance::Register(TRegistrar registrar)
+{
+    registrar.Parameter("resource_instance_id", &TThis::ResourceInstanceId);
+    registrar.Parameter("resource_id", &TThis::ResourceId);
+    registrar.Parameter("worker_address", &TThis::WorkerAddress);
+    registrar.Parameter("worker_incarnation_id", &TThis::WorkerIncarnationId);
+}
+
+void TResourceInstanceDynamicSpec::Register(TRegistrar registrar)
+{
+    registrar.Parameter("dynamic_resource_spec", &TThis::DynamicResourceSpec)
+        .DefaultNew();
+    registrar.Parameter("target_revision", &TThis::TargetRevision)
+        .Default();
+    registrar.Parameter("preload", &TThis::Preload)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -244,6 +273,18 @@ void TNodePerformanceMetrics::Register(TRegistrar registrar)
     registrar.Parameter("memory_usage_30s", &TThis::MemoryUsage30s)
         .Default();
     registrar.Parameter("memory_usage_10m", &TThis::MemoryUsage10m)
+        .Default();
+    registrar.Parameter("messages_per_second_30s", &TThis::MessagesPerSecond30s)
+        .Default();
+    registrar.Parameter("messages_per_second_10m", &TThis::MessagesPerSecond10m)
+        .Default();
+    registrar.Parameter("metrics_start_time", &TThis::MetricsStartTime)
+        .Default();
+    registrar.Parameter("metrics_steady_pending", &TThis::MetricsSteadyPending)
+        .Default();
+    registrar.Parameter("flow_core_version", &TThis::FlowCoreVersion)
+        .Default();
+    registrar.Parameter("pipeline_spec_version", &TThis::PipelineSpecVersion)
         .Default();
 }
 
@@ -268,9 +309,17 @@ static void NodePerformanceMetricsApply(
     result->CpuUsageCurrent = aggregator(result->CpuUsageCurrent.value_or(0), metrics->CpuUsageCurrent.value_or(0));
     result->CpuUsage30s = aggregator(result->CpuUsage30s.value_or(0), metrics->CpuUsage30s.value_or(0));
     result->CpuUsage10m = aggregator(result->CpuUsage10m.value_or(0), metrics->CpuUsage10m.value_or(0));
-    result->MemoryUsage10m = aggregator(result->MemoryUsage10m, metrics->MemoryUsage10m);
-    result->MemoryUsage30s = aggregator(result->MemoryUsage30s, metrics->MemoryUsage30s);
-    result->MemoryUsageCurrent = aggregator(result->MemoryUsageCurrent, metrics->MemoryUsageCurrent);
+    result->MemoryUsageCurrent = aggregator(result->MemoryUsageCurrent.value_or(0), metrics->MemoryUsageCurrent.value_or(0));
+    result->MemoryUsage30s = aggregator(result->MemoryUsage30s.value_or(0), metrics->MemoryUsage30s.value_or(0));
+    result->MemoryUsage10m = aggregator(result->MemoryUsage10m.value_or(0), metrics->MemoryUsage10m.value_or(0));
+    // The message rates stay unset unless some job reports them (older workers do not).
+    if (metrics->MessagesPerSecond30s) {
+        result->MessagesPerSecond30s = aggregator(result->MessagesPerSecond30s.value_or(0), *metrics->MessagesPerSecond30s);
+    }
+    if (metrics->MessagesPerSecond10m) {
+        result->MessagesPerSecond10m = aggregator(result->MessagesPerSecond10m.value_or(0), *metrics->MessagesPerSecond10m);
+    }
+    // MetricsStartTime and the version fields describe a single job and have no aggregate.
 }
 
 template <typename TAggregator>
@@ -302,9 +351,15 @@ TAggregatedNodePerformanceMetricsPtr AggregateNodePerformanceMetrics(const std::
         result->Avg->CpuUsageCurrent = result->Total->CpuUsageCurrent.value_or(0) / count;
         result->Avg->CpuUsage30s = result->Total->CpuUsage30s.value_or(0) / count;
         result->Avg->CpuUsage10m = result->Total->CpuUsage10m.value_or(0) / count;
-        result->Avg->MemoryUsage10m = result->Total->MemoryUsage10m / count;
-        result->Avg->MemoryUsage30s = result->Total->MemoryUsage30s / count;
-        result->Avg->MemoryUsageCurrent = result->Total->MemoryUsageCurrent / count;
+        result->Avg->MemoryUsageCurrent = result->Total->MemoryUsageCurrent.value_or(0) / count;
+        result->Avg->MemoryUsage30s = result->Total->MemoryUsage30s.value_or(0) / count;
+        result->Avg->MemoryUsage10m = result->Total->MemoryUsage10m.value_or(0) / count;
+        if (result->Total->MessagesPerSecond30s) {
+            result->Avg->MessagesPerSecond30s = *result->Total->MessagesPerSecond30s / count;
+        }
+        if (result->Total->MessagesPerSecond10m) {
+            result->Avg->MessagesPerSecond10m = *result->Total->MessagesPerSecond10m / count;
+        }
     }
 
     return result;
@@ -430,6 +485,8 @@ void TJobEntityLimitStatus::Register(TRegistrar registrar)
         .Default(0);
     registrar.Parameter("pending", &TThis::Pending)
         .Default();
+    registrar.Parameter("demand", &TThis::Demand)
+        .Default();
     registrar.Parameter("blocked_time_share", &TThis::BlockedTimeShare)
         .DontSerializeDefault()
         .Default(0.0);
@@ -467,6 +524,12 @@ void TJobStatus::Register(TRegistrar registrar)
 
     registrar.Parameter("from_partition_traverse_data", &TThis::FromPartitionTraverseData)
         .Default();
+    registrar.Parameter("observed_keys", &TThis::ObservedKeys)
+        .Optional()
+        .DontSerializeDefault();
+    registrar.Parameter("processing_observation", &TThis::ProcessingObservation)
+        .DontSerializeDefault()
+        .Default();
 
     registrar.Parameter("performance_metrics", &TThis::PerformanceMetrics)
         .DefaultNew();
@@ -500,8 +563,28 @@ void TMessageDistributorStatus::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TFileSnapshotStatus::Register(TRegistrar registrar)
+{
+    registrar.Parameter("snapshot_id", &TThis::SnapshotId);
+    registrar.Parameter("state", &TThis::State);
+    registrar.Parameter("preparation_stage", &TThis::PreparationStage)
+        .Default();
+    registrar.Parameter("error", &TThis::Error)
+        .Default();
+    registrar.Parameter("next_retry_at", &TThis::NextRetryAt)
+        .Default();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TWorkerResourceStatus::Register(TRegistrar registrar)
 {
+    registrar.Parameter("resource_id", &TThis::ResourceId)
+        .Default();
+    registrar.Parameter("load_state", &TThis::LoadState)
+        .Default(EResourceLoadState::NotLoaded);
+    registrar.Parameter("load_error", &TThis::LoadError)
+        .Default();
     registrar.Parameter("queue_size_30s", &TThis::QueueSize30s)
         .Default();
     registrar.Parameter("queue_size_10m", &TThis::QueueSize10m)
@@ -522,7 +605,23 @@ void TWorkerResourceStatus::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("target_revision_id", &TThis::TargetRevisionId)
         .Default();
-    registrar.Parameter("update_state", &TThis::UpdateState)
+    registrar.Parameter("resource_instance_id", &TThis::ResourceInstanceId)
+        .Default();
+    registrar.Parameter("resource_incarnation_generation", &TThis::ResourceIncarnationGeneration)
+        .Default();
+    registrar.Parameter("active_file_snapshot_id", &TThis::ActiveFileSnapshotId)
+        .Default();
+    registrar.Parameter("preparing_file_snapshot", &TThis::PreparingFileSnapshot)
+        .Default();
+    registrar.Parameter("live_accessor_counts", &TThis::LiveAccessorCounts)
+        .Default();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TWorkerStatistics::Register(TRegistrar registrar)
+{
+    registrar.Parameter("lineage_ratios", &TThis::LineageRatios)
         .Default();
 }
 
@@ -530,6 +629,10 @@ void TWorkerResourceStatus::Register(TRegistrar registrar)
 
 void TWorkerStatus::Register(TRegistrar registrar)
 {
+    registrar.Parameter("resource_instance_statuses", &TThis::ResourceInstanceStatuses)
+        .Default();
+    registrar.Parameter("worker_incarnation_id", &TThis::WorkerIncarnationId)
+        .Default();
     registrar.Parameter("previous_crash_error", &TThis::PreviousCrashError)
         .Default();
     registrar.Parameter("errors", &TThis::Errors)
@@ -540,6 +643,8 @@ void TWorkerStatus::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("preloaded_resource_states", &TThis::PreloadedResourceStates)
         .Default();
+    registrar.Parameter("statistics", &TThis::Statistics)
+        .Default();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -547,6 +652,10 @@ void TWorkerStatus::Register(TRegistrar registrar)
 void TWorkerSpec::Register(TRegistrar registrar)
 {
     registrar.Parameter("preload_resources", &TThis::PreloadResources)
+        .Default();
+    registrar.Parameter("preload_request_times", &TThis::PreloadRequestTimes)
+        .Default();
+    registrar.Parameter("worker_incarnation_id", &TThis::WorkerIncarnationId)
         .Default();
 }
 
@@ -561,8 +670,7 @@ void TFlowLayout::Register(TRegistrar registrar)
 
 TVersion TFlowLayout::GetVersion() const
 {
-    // Any state can be used.
-    return TVersion{CommittedPartitions_->GetControlSequenceId().Underlying()};
+    return TVersion{(SnapshotSequenceId_ ? *SnapshotSequenceId_ : CommittedPartitions_->GetControlSequenceId()).Underlying()};
 };
 
 template <class TKey, class TValue>
@@ -576,9 +684,11 @@ void TFlowLayout::AttachToControl(TPersistedStateControlPtr<std::string> control
     PersistedStateControl_ = std::move(control);
     CreateStateCommon(CommittedPartitions_, PersistedStateControl_, FlowViewLayoutPartitionsStateName);
     CreateStateCommon(CommittedJobs_, PersistedStateControl_, FlowViewLayoutJobsStateName);
+    CreateStateCommon(CommittedResourceInstances_, PersistedStateControl_, FlowViewLayoutResourceInstancesStateName);
     CreateStateCommon(CommittedWorkerSpecs_, PersistedStateControl_, FlowViewLayoutWorkerSpecsStateName);
     Partitions.SetState(CommittedPartitions_);
     Jobs.SetState(CommittedJobs_);
+    ResourceInstances.SetState(CommittedResourceInstances_);
     WorkerSpecs.SetState(CommittedWorkerSpecs_);
 }
 
@@ -593,9 +703,11 @@ TFlowLayoutPtr TFlowLayout::Clone() const
     result->PersistedStateControl_ = PersistedStateControl_;
     result->CommittedPartitions_ = CommittedPartitions_;
     result->CommittedJobs_ = CommittedJobs_;
+    result->CommittedResourceInstances_ = CommittedResourceInstances_;
     result->CommittedWorkerSpecs_ = CommittedWorkerSpecs_;
     result->Partitions.SetState(result->CommittedPartitions_);
     result->Jobs.SetState(result->CommittedJobs_);
+    result->ResourceInstances.SetState(result->CommittedResourceInstances_);
     result->WorkerSpecs.SetState(result->CommittedWorkerSpecs_);
     // Remember the source's live (write) transaction so a later CreateSnapshot(/*committed*/ false)
     // can seed the snapshot with its still-uncommitted changes. Null when cloned outside a mutation.
@@ -611,6 +723,13 @@ void TFlowLayout::SerializeAsYson(NYson::IYsonConsumer* consumer)
     consumer->OnKeyedItem("partitions");
     consumer->OnBeginMap();
     for (const auto& [key, value] : Partitions) {
+        consumer->OnKeyedItem(ToString(key));
+        Serialize(value, consumer);
+    }
+    consumer->OnEndMap();
+    consumer->OnKeyedItem("resource_instances");
+    consumer->OnBeginMap();
+    for (const auto& [key, value] : ResourceInstances) {
         consumer->OnKeyedItem(ToString(key));
         Serialize(value, consumer);
     }
@@ -632,15 +751,17 @@ void TFlowLayout::Apply(const std::vector<TPersistedStateStorageRow<std::string>
 
 std::vector<TPersistedStateStorageRow<std::string>> TFlowLayout::Follow(TSequenceId from) const
 {
-    return PersistedStateControl_->Follow(from);
+    return PersistedStateControl_->Follow(from, std::numeric_limits<ssize_t>::max(), SnapshotSequenceId_);
 }
 
 void TFlowLayout::StartMutation(TFlowStateMutationNotifierPtr notifier)
 {
     YT_ASSERT(MutationNotifier_ == nullptr);
     MutationNotifier_ = std::move(notifier);
+    SnapshotSequenceId_.reset();
     Txn_ = PersistedStateControl_->StartTransaction();
     Jobs.SetTransaction(Txn_);
+    ResourceInstances.SetTransaction(Txn_);
     Partitions.SetTransaction(Txn_);
     WorkerSpecs.SetTransaction(Txn_);
     Updated_ = 0;
@@ -657,7 +778,9 @@ void TFlowLayout::CreateSnapshot(bool committed)
         Txn_ = PersistedStateControl_->StartTransaction(/*readOnly*/ true);
     }
     SourceWriteTransaction_ = nullptr;
+    SnapshotSequenceId_ = Txn_->GetReadSequenceId();
     Jobs.SetTransaction(Txn_);
+    ResourceInstances.SetTransaction(Txn_);
     Partitions.SetTransaction(Txn_);
     WorkerSpecs.SetTransaction(Txn_);
     Updated_ = 0;
@@ -668,6 +791,7 @@ void TFlowLayout::CommitMutation(TPersistedStateCommitContext* context)
     Txn_->Commit(context);
     Txn_ = nullptr;
     Jobs.SetTransaction(Txn_);
+    ResourceInstances.SetTransaction(Txn_);
     Partitions.SetTransaction(Txn_);
     WorkerSpecs.SetTransaction(Txn_);
     MutationNotifier_ = nullptr;
@@ -1069,6 +1193,9 @@ void TExecutionSpecVersions::Register(TRegistrar registrar)
     registrar.Parameter("layout_version", &TThis::LayoutVersion)
         .Default();
 
+    registrar.Parameter("flow_core_target_version", &TThis::FlowCoreTargetVersion)
+        .Default();
+
     registrar.Parameter("stream_spec_storage_state_version", &TThis::StreamSpecStorageStateVersion)
         .Default();
 
@@ -1090,6 +1217,7 @@ TExecutionSpecVersionsPtr BuildExecutionSpecVersions(const TExecutionSpecPtr& ex
     versions->ExtendedPipelineSpecVersion = executionSpec->ExtendedPipelineSpec->GetVersion();
     versions->DynamicPipelineSpecVersion = executionSpec->DynamicPipelineSpec->GetVersion();
     versions->LayoutVersion = executionSpec->Layout->GetVersion();
+    versions->FlowCoreTargetVersion = executionSpec->FlowCoreTarget->GetVersion();
     versions->StreamSpecStorageStateVersion = executionSpec->StreamSpecStorageState->GetVersion();
     versions->InputStreamsTraverseVersion = executionSpec->InputStreamsTraverse->GetVersion();
     versions->WatermarkStateVersion = executionSpec->WatermarkState->GetVersion();
@@ -1110,6 +1238,7 @@ std::pair<TExecutionSpecPtr, std::vector<TPersistedStateStorageRow<std::string>>
     FLOW_VIEW_PREPARE_UPDATE(PipelineSpec);
     FLOW_VIEW_PREPARE_UPDATE(ExtendedPipelineSpec);
     FLOW_VIEW_PREPARE_UPDATE(DynamicPipelineSpec);
+    FLOW_VIEW_PREPARE_UPDATE(FlowCoreTarget);
     FLOW_VIEW_PREPARE_UPDATE(StreamSpecStorageState);
     FLOW_VIEW_PREPARE_UPDATE(InputStreamsTraverse);
     FLOW_VIEW_PREPARE_UPDATE(WatermarkState);
@@ -1140,6 +1269,7 @@ TExecutionSpecPtr ApplyExecutionSpecUpdate(const TExecutionSpecPtr& current, con
     FLOW_VIEW_APPLY_UPDATE(PipelineSpec);
     FLOW_VIEW_APPLY_UPDATE(ExtendedPipelineSpec);
     FLOW_VIEW_APPLY_UPDATE(DynamicPipelineSpec);
+    FLOW_VIEW_APPLY_UPDATE(FlowCoreTarget);
     FLOW_VIEW_APPLY_UPDATE(StreamSpecStorageState);
     FLOW_VIEW_APPLY_UPDATE(InputStreamsTraverse);
     FLOW_VIEW_APPLY_UPDATE(WatermarkState);
@@ -1151,6 +1281,47 @@ TExecutionSpecPtr ApplyExecutionSpecUpdate(const TExecutionSpecPtr& current, con
 #undef FLOW_VIEW_APPLY_UPDATE
 
     return newExecutionSpec;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TPartitionMetricsHistory::Register(TRegistrar registrar)
+{
+    registrar.Parameter("worker_address", &TThis::WorkerAddress);
+    registrar.Parameter("cpu_usage", &TThis::CpuUsage);
+    registrar.Parameter("messages_per_second", &TThis::MessagesPerSecond)
+        .Default();
+    registrar.Parameter("flow_core_version", &TThis::FlowCoreVersion)
+        .Default();
+    registrar.Parameter("pipeline_spec_version", &TThis::PipelineSpecVersion)
+        .Default();
+}
+
+void TWorkerCoefEdge::Register(TRegistrar registrar)
+{
+    registrar.Parameter("from", &TThis::From);
+    registrar.Parameter("to", &TThis::To);
+    registrar.Parameter("obs", &TThis::Obs);
+    registrar.Parameter("weight", &TThis::Weight);
+    registrar.Parameter("updated_at", &TThis::UpdatedAt);
+}
+
+void TBalancerGroupState::Register(TRegistrar registrar)
+{
+    registrar.Parameter("worker_coef_edges", &TThis::WorkerCoefEdges)
+        .Default();
+    registrar.Parameter("worker_log_coefs", &TThis::WorkerLogCoefs)
+        .Default();
+    registrar.Parameter("worker_last_seen", &TThis::WorkerLastSeen)
+        .Default();
+}
+
+void TBalancerState::Register(TRegistrar registrar)
+{
+    registrar.Parameter("groups", &TThis::Groups)
+        .Default();
+    registrar.Parameter("partition_histories", &TThis::PartitionHistories)
+        .Default();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1281,16 +1452,6 @@ void TStreamTraverseDataMetrics::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TStreamSpeedStatistics::Register(TRegistrar registrar)
-{
-    registrar.Parameter("processed_messages_per_second", &TThis::ProcessedMessagesPerSecond)
-        .Default(0.0);
-    registrar.Parameter("processed_bytes_per_second", &TThis::ProcessedBytesPerSecond)
-        .Default(0.0);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 void TPipelineSpeedStatistics::Register(TRegistrar registrar)
 {
     registrar.Parameter("last_updated", &TThis::LastUpdated)
@@ -1334,7 +1495,13 @@ void TFlowEphemeralState::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("pipeline_path", &TThis::PipelinePath)
         .Default();
+    registrar.Parameter("key_count_partitioning_blocked_computations", &TThis::KeyCountPartitioningBlockedComputations)
+        .Default();
+    registrar.Parameter("key_count_partitioning", &TThis::KeyCountPartitioning)
+        .Default();
     registrar.Parameter("traverse_uncovered_computations", &TThis::TraverseUncoveredComputations)
+        .Default();
+    registrar.Parameter("lineage_ratios", &TThis::LineageRatios)
         .Default();
     registrar.Parameter("resource_controller_views", &TThis::ResourceControllerViews)
         .Default();
@@ -1404,8 +1571,14 @@ void TFlowState::Register(TRegistrar registrar)
     registrar.Parameter("job_manager_state", &TThis::JobManagerState)
         .DefaultNew();
 
+    registrar.Parameter("balancer_state", &TThis::BalancerState)
+        .DefaultNew();
+
     registrar.Parameter("speed_statistics", &TThis::SpeedStatistics)
         .Default();
+
+    registrar.Parameter("watermark_history", &TThis::WatermarkHistory)
+        .DefaultNew();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1442,7 +1615,8 @@ TFlowViewPtr TFlowView::LoadFromNode(const NYTree::INodePtr& node, TPersistedSta
     auto layoutMap = layoutNode->AsMap();
     auto partitionsNode = layoutMap->FindChild("partitions");
     auto jobsNode = layoutMap->FindChild("jobs");
-    if (!partitionsNode && !jobsNode) {
+    auto resourcesNode = layoutMap->FindChild("resource_instances");
+    if (!partitionsNode && !jobsNode && !resourcesNode) {
         return flowView;
     }
 
@@ -1460,6 +1634,11 @@ TFlowViewPtr TFlowView::LoadFromNode(const NYTree::INodePtr& node, TPersistedSta
             // CreatePartition() forbids a pre-linked job; CreateJob() below restores the link.
             partition->CurrentJobId.reset();
             layout->CreatePartition(std::move(partition));
+        }
+    }
+    if (resourcesNode) {
+        for (auto& [instanceId, instance] : ConvertTo<THashMap<TResourceInstanceId, TResourceInstancePtr>>(resourcesNode)) {
+            layout->ResourceInstances.emplace(instanceId, std::move(instance));
         }
     }
     if (jobsNode) {
@@ -1502,9 +1681,25 @@ void TFlowView::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static TSharedRef CompressFlowViewYson(const TYsonString& ysonString, NCompression::ECodec codec)
+TYsonString SerializeFlowViewByPath(
+    const TFlowViewPtr& flowView,
+    const TYPath& path)
 {
-    return NCompression::GetCodec(codec)->Compress(TSharedRef::FromString(ysonString.ToString()));
+    auto result = TryGetAny(flowView->SerializeAsYsonString().AsStringBuf(), path);
+    if (!result) {
+        THROW_ERROR_EXCEPTION("Flow view has no node at %v", path);
+    }
+    return TYsonString(std::move(*result));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TCompressedFlowView CompressFlowViewYson(const TYsonString& ysonString, NCompression::ECodec codec)
+{
+    return {
+        .Data = NCompression::GetCodec(codec)->Compress(TSharedRef::FromString(ysonString.ToString())),
+        .Codec = codec,
+    };
 }
 
 static NCompression::ECodec GetFlowViewCacheCodec(const TFlowViewPtr& flowView)
@@ -1533,7 +1728,7 @@ void TFlowViewKeeper::Init(TFlowStatePtr state, TFlowEphemeralStatePtr ephemeral
     CachedYsonString_ = FlowView_->SerializeAsYsonString();
     CachedYsonIndex_ = TIndexedYsonString::Build(CachedYsonString_, FlowViewHybridLeafSizeThreshold);
     CachedCompressionCodec_ = GetFlowViewCacheCodec(FlowView_);
-    CachedCompressedFlowView_ = CompressFlowViewYson(CachedYsonString_, CachedCompressionCodec_);
+    CachedCompressedFlowView_ = CompressFlowViewYson(CachedYsonString_, CachedCompressionCodec_).Data;
 }
 
 void TFlowViewKeeper::Reset()
@@ -1612,6 +1807,16 @@ void TFlowViewKeeper::SetSpecs(
     std::swap(copy, FlowView_);
 }
 
+TFlowViewPtr TFlowViewKeeper::TryGetFlowView() const
+{
+    auto guard = Guard(Lock_);
+    if (!FlowView_ || !CachedYsonString_ || !CachedYsonIndex_ || !CachedCompressedFlowView_) {
+        return nullptr;
+    }
+
+    return FlowView_;
+}
+
 TFlowViewPtr TFlowViewKeeper::GetFlowView() const
 {
     auto guard = Guard(Lock_);
@@ -1631,11 +1836,7 @@ TYsonString TFlowViewKeeper::GetYsonStringByPath(const NYPath::TYPath& path, boo
         return index->GetByPath(path);
     }
     // Fresh (uncached) view: extract the sub-path by streaming, without an index.
-    auto result = NYTree::TryGetAny(GetYsonString(cache).AsStringBuf(), path);
-    if (!result) {
-        THROW_ERROR_EXCEPTION("Flow view has no node at %v", path);
-    }
-    return TYsonString(std::move(*result));
+    return SerializeFlowViewByPath(GetFlowView(), path);
 }
 
 TYsonString TFlowViewKeeper::GetYsonString(bool cache) const
@@ -1661,10 +1862,7 @@ TCompressedFlowView TFlowViewKeeper::GetCompressedYsonString() const
 TCompressedFlowView TFlowViewKeeper::CompressYson(const TYsonString& yson) const
 {
     auto codec = GetFlowViewCacheCodec(GetFlowView());
-    return TCompressedFlowView{
-        .Data = CompressFlowViewYson(yson, codec),
-        .Codec = codec,
-    };
+    return CompressFlowViewYson(yson, codec);
 }
 
 void TFlowViewKeeper::RebuildNodeCache(const IInvokerPtr& invoker)
@@ -1676,7 +1874,7 @@ void TFlowViewKeeper::RebuildNodeCache(const IInvokerPtr& invoker)
     auto indexFuture = BIND(&TIndexedYsonString::Build, ysonString, FlowViewHybridLeafSizeThreshold)
         .AsyncVia(invoker)
         .Run();
-    auto compressed = CompressFlowViewYson(ysonString, codec);
+    auto compressed = CompressFlowViewYson(ysonString, codec).Data;
     auto ysonIndex = WaitForFast(indexFuture).ValueOrThrow();
     {
         auto guard = Guard(Lock_);
@@ -1689,7 +1887,7 @@ void TFlowViewKeeper::RebuildNodeCache(const IInvokerPtr& invoker)
     }
 }
 
-void TFlowViewKeeper::EnsureInit(TGuard<NThreading::TSpinLock>& /*guard*/) const
+void TFlowViewKeeper::EnsureInit(TGuard<TSpinLock>& /*guard*/) const
 {
     if (!FlowView_ || !CachedYsonString_ || !CachedYsonIndex_ || !CachedCompressedFlowView_) {
         THROW_ERROR_EXCEPTION(EErrorCode::FlowViewKeeperIsNotInitialized, "FlowViewKeeper is not initialized");

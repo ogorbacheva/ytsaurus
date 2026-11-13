@@ -9,7 +9,8 @@
 #include <util/generic/bitops.h>
 
 #include <yt/yt/core/profiling/timing.h>
-#include <library/cpp/yt/system/tscp.h>
+
+#include <library/cpp/yt/system/access_spreader.h>
 
 #include <library/cpp/histogram/hdr/histogram.h>
 
@@ -220,7 +221,7 @@ public:
     }
 
 private:
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ModelLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ModelLock_);
     TRequestSizes RequestSizes_;
     TRequestLatencies RequestLatencies_;
 };
@@ -230,13 +231,13 @@ class TPerCpuWorkloadModel
 public:
     void RegisterRead(i64 requestSize, EWorkloadCategory category, TDuration requestTime)
     {
-        auto& shard = Shards_[TTscp::Get().ProcessorId].Holder;
+        auto& shard = Shards_[GetCurrentAccessStripe(ShardCount)].Holder;
         shard.RegisterRead(requestSize, category, requestTime);
     }
 
     void RegisterWrite(i64 requestSize, EWorkloadCategory category, TDuration requestTime)
     {
-        auto& shard = Shards_[TTscp::Get().ProcessorId].Holder;
+        auto& shard = Shards_[GetCurrentAccessStripe(ShardCount)].Holder;
         shard.RegisterWrite(requestSize, category, requestTime);
     }
 
@@ -265,12 +266,14 @@ public:
     }
 
 private:
+    static constexpr int ShardCount = 64;
+
     struct alignas(2 * CacheLineSize) TShard
     {
         TThreadSafeWorkloadModel Holder;
     };
 
-    std::array<TShard, TTscp::MaxProcessorId> Shards_;
+    std::array<TShard, ShardCount> Shards_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -582,7 +585,7 @@ private:
     const NLogging::TLogger Logger;
     const TWorkloadModelManagerPtr ModelManager_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, StatsLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, StatsLock_);
     std::optional<TRequestSizes> RequestSizeStats_;
     std::optional<TRequestLatencies> RequestLatencyStats_;
 

@@ -7,7 +7,7 @@ from yt_commands import (
     start_transaction, abort_transaction, remount_table,
     lock, insert_rows, select_rows, delete_rows, trim_rows, alter_table, read_table, write_table,
     mount_table, reshard_table, generate_timestamp, wait_for_cells,
-    get_tablet_leader_address, sync_create_cells, sync_mount_table, sync_unmount_table, sync_freeze_table,
+    get_tablet_infos, get_tablet_leader_address, sync_create_cells, sync_mount_table, sync_unmount_table, sync_freeze_table,
     sync_unfreeze_table, sync_reshard_table, sync_flush_table,
     get_singular_chunk_id, create_dynamic_table, build_snapshot, generate_uuid,
     raises_yt_error, remove)
@@ -393,6 +393,33 @@ class TestOrderedDynamicTables(TestOrderedDynamicTablesBase):
         trim_rows("//tmp/t", 0, -10)
         wait(lambda: get("//tmp/t/@tablets/0/trimmed_row_count") == 0)
 
+    @authors("ifsmirnov")
+    @pytest.mark.parametrize("freeze_method", ["mount", "freeze"])
+    def test_total_row_count_after_fully_trimmed(self, freeze_method):
+        sync_create_cells(1)
+        self._create_simple_table("//tmp/t")
+        sync_mount_table("//tmp/t")
+
+        insert_rows("//tmp/t", [{"a": 1}])
+        sync_flush_table("//tmp/t")
+        trim_rows("//tmp/t", 0, 1)
+        wait(lambda: get("//tmp/t/@chunk_ids") == [])
+
+        tablet_id = get("//tmp/t/@tablets/0/tablet_id")
+        if freeze_method == "mount":
+            sync_unmount_table("//tmp/t")
+            sync_mount_table("//tmp/t", freeze=True)
+        else:
+            sync_freeze_table("//tmp/t")
+        assert get(f"#{tablet_id}/orchid/total_row_count") == 1
+
+        sync_unfreeze_table("//tmp/t")
+        assert get(f"#{tablet_id}/orchid/total_row_count") == 1
+
+        insert_rows("//tmp/t", [{"a": 2}])
+        assert select_rows("[$row_index], a from [//tmp/t]") == [{"$row_index": 1, "a": 2}]
+        assert get(f"#{tablet_id}/orchid/total_row_count") == 2
+
     @authors("babenko")
     def test_trim_drops_chunks(self):
         sync_create_cells(1)
@@ -481,6 +508,42 @@ class TestOrderedDynamicTables(TestOrderedDynamicTablesBase):
         assert select_rows("a from [//tmp/t] where [$tablet_index] = 0 and [$row_index] between 110 and 120") == [
             {"a": j} for j in range(110, 121)
         ]
+
+    @authors("apachee")
+    def test_get_tablet_infos_flushed_row_count(self):
+        sync_create_cells(1)
+        self._create_simple_table("//tmp/t", tablet_count=2, dynamic_store_auto_flush_period=yson.YsonEntity())
+        sync_mount_table("//tmp/t")
+
+        def get_tablets():
+            return get_tablet_infos("//tmp/t", [0, 1])["tablets"]
+
+        insert_rows("//tmp/t", [{"$tablet_index": 0, "a": i} for i in range(10)])
+        assert [tablet["flushed_row_count"] for tablet in get_tablets()] == [0, 0]
+
+        sync_flush_table("//tmp/t")
+        wait(lambda: get_tablets()[0]["flushed_row_count"] == 10)
+        assert get("//tmp/t/@tablets/0/flushed_row_count") == 10
+
+        insert_rows("//tmp/t", [{"$tablet_index": 0, "a": i} for i in range(10, 15)])
+        tablet = get_tablets()[0]
+        assert tablet["total_row_count"] == 15
+        assert tablet["flushed_row_count"] == 10
+
+        # Trimming drops the only chunk store, flushed row count must stay intact.
+        trim_rows("//tmp/t", 0, 12)
+        wait(lambda: get("//tmp/t/@chunk_ids") == [])
+        assert get_tablets()[0]["flushed_row_count"] == 10
+
+        sync_freeze_table("//tmp/t")
+        wait(lambda: get_tablets()[0]["flushed_row_count"] == 15)
+        assert get("//tmp/t/@tablets/0/flushed_row_count") == 15
+        assert get_tablets()[1]["flushed_row_count"] == 0
+
+        # Stores are restored from master on mount, check that starting row indexes are preserved.
+        sync_unmount_table("//tmp/t")
+        sync_mount_table("//tmp/t")
+        assert [tablet["flushed_row_count"] for tablet in get_tablets()] == [15, 0]
 
     @authors("babenko")
     def test_trim_optimizes_chunk_list(self):
@@ -1456,9 +1519,6 @@ class TestOrderedDynamicTables(TestOrderedDynamicTablesBase):
 
     @authors("akozhikhov")
     def test_reshard_with_cumulative_data_weight(self):
-        if self.DRIVER_BACKEND == "rpc":
-            pytest.skip("No cumulative_data_weights in rpc proxy")
-
         sync_create_cells(1)
         self._create_simple_table("//tmp/t", schema=self.CUMULATIVE_DATA_WEIGHT_SCHEMA)
         sync_mount_table("//tmp/t")
@@ -1472,7 +1532,16 @@ class TestOrderedDynamicTables(TestOrderedDynamicTablesBase):
         with raises_yt_error("must be nonnegative"):
             sync_reshard_table("//tmp/t", 3, cumulative_data_weights=[-1, 5])
 
-        sync_reshard_table("//tmp/t", 3, cumulative_data_weights=[1000, 2000])
+        create_dynamic_table(
+            "//tmp/sorted",
+            schema=[
+                {"name": "key", "type": "int64", "sort_order": "ascending"},
+                {"name": "value", "type": "string"},
+            ])
+        with raises_yt_error("Cannot reshard sorted table"):
+            sync_reshard_table("//tmp/sorted", [[], [1]], cumulative_data_weights=[1000])
+
+        sync_reshard_table("//tmp/t", 3, cumulative_data_weights=[1000, 1 << 40])
         self._verify_chunk_tree_statistics("//tmp/t")
 
         sync_mount_table("//tmp/t")
@@ -1480,10 +1549,22 @@ class TestOrderedDynamicTables(TestOrderedDynamicTablesBase):
             insert_rows("//tmp/t", [{"$tablet_index": tablet_index, "test": "aaa"}])
 
         # The zeroth tablet is preserved by the reshard and already holds a row of weight 12.
-        assert self._get_tablet_cumulative_data_weights("//tmp/t", 3) == [24, 1012, 2012]
+        assert self._get_tablet_cumulative_data_weights("//tmp/t", 3) == [24, 1012, (1 << 40) + 12]
 
         sync_unmount_table("//tmp/t")
         self._verify_chunk_tree_statistics("//tmp/t")
+
+    @authors("akozhikhov")
+    def test_reshard_cannot_reduce_tablet_count_with_cumulative_data_weight(self):
+        self._create_simple_table("//tmp/t", schema=self.CUMULATIVE_DATA_WEIGHT_SCHEMA, tablet_count=3)
+
+        sync_reshard_table("//tmp/t", 2, first_tablet_index=1, last_tablet_index=1)
+        assert get("//tmp/t/@tablet_count") == 4
+        sync_reshard_table("//tmp/t", 2, first_tablet_index=1, last_tablet_index=2)
+        assert get("//tmp/t/@tablet_count") == 4
+
+        with raises_yt_error("Cannot reduce tablet count"):
+            reshard_table("//tmp/t", 1, first_tablet_index=1, last_tablet_index=2)
 
     @authors("ifsmirnov")
     def test_stress_reshard_with_trimmed_row_count(self):

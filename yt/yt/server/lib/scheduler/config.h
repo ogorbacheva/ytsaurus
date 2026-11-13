@@ -268,6 +268,9 @@ struct TGpuSchedulingPolicyConfig
 
     TDuration PlanUpdatePeriod;
 
+    bool EnableOverreservedModuleRepair;
+    TDuration OverreservedModuleRepairTimeout;
+
     TDuration ModuleReconsiderationTimeout;
 
     // TODO(eshcherbin): Rework how modules are configured.
@@ -517,6 +520,9 @@ struct TStrategyTreeConfig
     int MaxEventLogPoolBatchSize;
     int MaxEventLogOperationBatchSize;
 
+    int MaxAccumulatedUsageLogPoolBatchSize;
+    int MaxAccumulatedUsageLogOperationBatchSize;
+
     TDuration AccumulatedResourceDistributionUpdatePeriod;
 
     bool AllowAggressivePreemptionForGangOperations;
@@ -547,6 +553,8 @@ struct TStrategyTreeConfig
     bool EnableGuaranteePriorityScheduling;
 
     bool EnableStepFunctionForGangOperations;
+    //! Hard gate: turns FIFO children reordering off tree-wide no matter what the pools ask for.
+    bool EnableFifoChildrenReorderingForGuaranteeUtilization;
     bool EnableImprovedFairShareByFitFactorComputation;
     bool EnableImprovedFairShareByFitFactorComputationDistributionGap;
     bool EnableFastFifoFairShareByFitFactorComputation;
@@ -554,7 +562,8 @@ struct TStrategyTreeConfig
     TJobResourcesConfigPtr MinJobResourceLimits;
     TJobResourcesConfigPtr MaxJobResourceLimits;
     TJobResourcesWithDiskConfigPtr GuaranteedJobResources;
-    TJobResourcesConfigPtr MinNodeResourceLimits;
+    //! Disk space is checked against the largest disk location's limit, regardless of medium.
+    TJobResourcesWithDiskConfigPtr MinNodeResourceLimits;
 
     TDuration MinNodeResourceLimitsCheckPeriod;
     TDuration MinNodeResourceLimitsViolationTimeout;
@@ -569,6 +578,9 @@ struct TStrategyTreeConfig
     bool EnableDetailedLogsForStarvingOperations;
 
     bool EnableDetailedLogsForSingleAllocationVanillaOperations;
+
+    //! Log operation_scheduling_started/finished events to the scheduler structured log.
+    bool EnableSchedulingStatusLogging;
 
     bool ConsiderSingleAllocationVanillaOperationsAsGang;
 
@@ -730,6 +742,9 @@ struct TTestingOptions
     // Testing option that enables sleeping after node state checking.
     TDelayConfigPtr NodeHeartbeatProcessingDelay;
 
+    // Testing option that delays completion of operation scheduling suspension on a node shard.
+    TDelayConfigPtr OperationSchedulingSuspensionDelay;
+
     // Testing option that enables sleeping before handle nodes attributes.
     TDelayConfigPtr HandleNodesAttributesDelay;
 
@@ -738,6 +753,8 @@ struct TTestingOptions
 
     // Testing option that enables sleeping after creation of operation node, but before creation of secure vault node.
     TDelayConfigPtr SecureVaultCreationDelay;
+
+    TDelayConfigPtr OperationsCleanerFetchDelay;
 
     REGISTER_YSON_STRUCT(TTestingOptions);
 

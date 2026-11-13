@@ -96,7 +96,7 @@ private:
     const NLogging::TLogger Logger;
     const TPeriodicExecutorPtr SyncExecutor_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, SpinLock_);
     bool Started_ = false;
     bool Stopped_ = false;
     TPromise<void> SyncPromise_ = NewPromise<void>();
@@ -318,6 +318,30 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+class TDummyChaosCellDirectorySynchronizer
+    : public IChaosCellDirectorySynchronizer
+{
+public:
+    void AddCellIds(const std::vector<TCellId>& /*cellIds*/) override
+    { }
+
+    void AddCellTag(TCellTag /*cellTag*/) override
+    { }
+
+    TFuture<void> Sync() override
+    {
+        return OKFuture;
+    }
+
+    void Start() override
+    { }
+
+    void Stop() override
+    { }
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 IChaosCellDirectorySynchronizerPtr CreateChaosCellDirectorySynchronizer(
     TChaosCellDirectorySynchronizerConfigPtr config,
     ICellDirectoryPtr cellDirectory,
@@ -331,6 +355,11 @@ IChaosCellDirectorySynchronizerPtr CreateChaosCellDirectorySynchronizer(
         std::move(connection),
         std::move(sourceOfTruthCellIds),
         std::move(logger));
+}
+
+IChaosCellDirectorySynchronizerPtr CreateDummyChaosCellDirectorySynchronizer()
+{
+    return New<TDummyChaosCellDirectorySynchronizer>();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

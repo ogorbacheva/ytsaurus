@@ -175,6 +175,13 @@ public:
     {
         YT_UNIMPLEMENTED();
     }
+    NRpc::IChannelPtr WrapAsCypressChannelOrThrow(
+        const NRpc::IChannelPtr& /*localChannel*/,
+        NApi::EMasterChannelKind /*kind*/,
+        NObjectClient::TCellTag /*cellTag*/) override
+    {
+        YT_UNIMPLEMENTED();
+    }
     const NRpc::IChannelPtr& GetCypressProxyChannel() override
     {
         YT_UNIMPLEMENTED();
@@ -237,6 +244,10 @@ public:
         YT_UNIMPLEMENTED();
     }
     const NChaosClient::IReplicationCardCachePtr& GetReplicationCardCache() override
+    {
+        YT_UNIMPLEMENTED();
+    }
+    const NChaosClient::IChaosLeaseCachePtr& GetChaosLeaseCache() override
     {
         YT_UNIMPLEMENTED();
     }

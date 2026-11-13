@@ -110,6 +110,7 @@ public:
             .UseFork = true,
             .ResponseKeeper = ResponseKeeper_,
             .Testing = Bootstrap_->GetConfig()->ExposeTestingFacilities,
+            .EnableCausalStateTracking = true,
         };
         if (Config_->DryRun->EnableDryRun) {
             hydraManagerOptions.UseFork = false;
@@ -273,7 +274,7 @@ public:
 #ifdef YT_ENABLE_THREAD_AFFINITY_CHECK
         if (IsAutomatonLocked()) {
             auto automatonThreadId = AutomatonThread_Slot.GetBoundThreadId();
-            YT_VERIFY(automatonThreadId != NThreading::InvalidThreadId);
+            YT_VERIFY(automatonThreadId != InvalidThreadId);
             YT_VERIFY(GetSystemThreadId() != automatonThreadId);
         } else {
             YT_ASSERT_THREAD_AFFINITY(AutomatonThread);

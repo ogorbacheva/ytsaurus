@@ -17,11 +17,7 @@ using namespace NYT::NLogSlice;
 int main(int argc, char** argv)
 {
     try {
-        // NLastGetopt's default permutation mode looks past free arguments for
-        // options. In a command such as "logslice FILE -- -F pattern" this
-        // makes it skip over both FILE and "--", then consume -F as a logslice
-        // option. Split at the delimiter first so the right-hand side never
-        // reaches the logslice option parser.
+        // Split off the delimiter before NLastGetopt permutes free arguments.
         int optionArgc = argc;
         std::vector<std::string> trailingGrepArgs;
         for (int index = 1; index < argc; ++index) {
@@ -60,9 +56,8 @@ int main(int argc, char** argv)
         opts.AddLongOption('g', "grep", "grep arguments as a single string, split into tokens (quotes group multi-word patterns)")
             .RequiredArgument("ARGS")
             .StoreResult(&grepLine);
-        // The first free argument is the log file. Preserve the existing local
-        // shorthand that treats further non-option arguments as grep arguments;
-        // option-looking grep arguments belong after "--".
+        // The first free argument is the log file. Further non-option arguments
+        // are grep arguments; option-looking grep arguments belong after "--".
         opts.SetFreeArgsMin(1);
         opts.SetFreeArgTitle(0, "log_file", "log file (.zst, .gz or plain .log) [-- GREP_ARGS...]");
         opts.AddHelpOption();
@@ -121,7 +116,7 @@ int main(int argc, char** argv)
         }
 
         if (grepArgs.empty()) {
-            engine->Slice(file, from, to, Cout);
+            engine->Slice(file, from, to, /*seekMargin*/ TDuration::Zero(), Cout);
         } else {
             // Stream the slice straight through grep instead of buffering it: a
             // multi-gigabyte log would otherwise exhaust memory and be killed
@@ -129,7 +124,7 @@ int main(int argc, char** argv)
             FilterWithGrep(
                 grepArgs,
                 [&] (IOutputStream& sink) {
-                    engine->Slice(file, from, to, sink);
+                    engine->Slice(file, from, to, /*seekMargin*/ TDuration::Zero(), sink);
                 },
                 Cout);
         }

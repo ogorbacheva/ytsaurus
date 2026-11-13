@@ -13,8 +13,9 @@
 #include <yt/yt/flow/library/cpp/misc/lexicographically_serialize.h>
 #include <yt/yt/flow/library/cpp/misc/ordered_memory.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
+#include <functional>
 #include <list>
 #include <map>
 
@@ -75,6 +76,8 @@ struct TOrderedSourcePartitionState
     void EnsureInvariants() const;
 
     void SyncObsoleteOffsets();
+
+    void NormalizeOffsets(const std::function<TOffset(const TOffset&)>& normalizeOffset);
 
     REGISTER_YSON_STRUCT(TOrderedSourcePartitionState);
 
@@ -163,11 +166,15 @@ protected:
         std::optional<TOffset> CommittedOffsetExclusive = {};
         std::optional<TOffset> MaxOffsetExclusive = {};
         std::optional<TInstant> UpdateInstant = {};
+        //! The committed offset is an external position the connector chose to honor (a consumer
+        //! offset), so reading past unread data is a deliberate skip, not evidence of trimming.
+        bool Repositioned = false;
     };
 
     // To implement.
 
     virtual TOffset GetNextOffset(const TOffset& offset) const = 0;
+    virtual TOffset NormalizeOffset(const TOffset& offset) const;
     virtual std::string ConvertOffsetToLexicographicallyComparableString(const TOffset& offset) const = 0;
     virtual bool AreOffsetsConsecutive() const = 0;
     virtual bool CanCommittedOffsetExceedNextReadOffset() const = 0;
@@ -188,6 +195,8 @@ protected:
     // By default it looks at GetParameters()->Finite, but it can be overriden for cases when partitions is limited by their nature.
     virtual bool IsFinite();
 
+    virtual void AdjustInflight(const TInflightStreamTraverseDataPtr& inflight);
+
     // To call from heirs.
 
     // Provide partition info from queue broker. Thread-safe.
@@ -202,7 +211,7 @@ protected:
 
     double GetSourceTotalCount() const;
     double GetSourceTotalBytes() const;
-    double GetOfferedCount() const;
+    std::optional<TSystemTimestamp> GetLastPersistedWriteTimestamp() const;
 
 public:
     enum class EMessageState
@@ -251,17 +260,16 @@ private:
 
     TOffsetInfos InflightOffsets_;
 
+    bool SourceMaxOffsetObserved_ = false;
     TSimpleEmaCounter SourceTotalCount_;
     TSimpleEmaCounter SourceTotalBytes_;
-    TSimpleEmaCounter OfferedCount_;
-    TSimpleEmaCounter OfferedBytes_;
     TSimpleEmaCounter PersistedCount_;
     TSimpleEmaCounter PersistedBytes_;
     const NProfiling::TProfiler Profiler_;
     NProfiling::TCounter PersistedCountCounter_;
     NProfiling::TCounter PersistedBytesCounter_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, DelayedPartitionInfoUpdatesLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, DelayedPartitionInfoUpdatesLock_);
     std::vector<TPartitionInfoUpdate> DelayedPartitionInfoUpdates_;
 
 private:
@@ -270,7 +278,8 @@ private:
     void FlushDelayedPartitionInfoUpdates();
     void TryCollapseOffsetInfo(TOffsetInfos::iterator offsetInfoIt);
     void CleanUpInflightOffsets();
-    void MarkMissingMessagesPersisted();
+    //! |trimmed| is false for a deliberate skip, which is not worth the trimming error.
+    void MarkMissingMessagesPersisted(bool trimmed = true);
     void UpdateUnavailability();
     void UpdateStatusProfilerMute();
 };

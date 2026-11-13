@@ -128,7 +128,7 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
         auto generateReportTimeFuture = GetTimeProvider()->GetTimestamp(/*barrier*/ true);
         DoInit(StateManager_->CreateContext());
         const auto now = WaitFor(generateReportTimeFuture).ValueOrThrow();
-        isFinished = UpdateStatus(/*reportTime*/ now, GetInputSystemWatermark(), BuildInflights(context));
+        isFinished = UpdateStatus(/*reportTime*/ now, GetInputSystemWatermark(), BuildInflights(context, now));
         FinishRunIteration();
     }
 
@@ -139,6 +139,7 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
         auto iterGuard = StartRunIteration(context);
         auto dynamicSpec = GetDynamicSpec();
         const auto allowBatchingWithRelaxedGuarantees = GetParameters()->AllowBatchingWithRelaxedGuarantees;
+        const i64 epochIndex = ++EpochIndex_;
         // Generated timestamp can be less than timestamps of input messages of this epoch. This is OK.
         auto generateReportTimeFuture = GetTimeProvider()->GenerateGlobalUniqueSeqNo();
 
@@ -151,7 +152,10 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
             TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.Fetch"));
             auto inputsFuture = context->GetNextBatch(outputLimitsCheckResult.AllowedInputStreams);
             inputTimers = TimerStore_->GetNextBatch(outputLimitsCheckResult.AllowedInputStreams, dynamicSpec->MaxRowsPerBatch, dynamicSpec->MaxBytesPerBatch);
-            inputs = WaitFor(inputsFuture).ValueOrThrow();
+            {
+                TTraceContextGuard waitGuard(Tracer_->CreateEpochPartTraceContext("Input.WaitForBatch", EEpochPartKind::WaitingForInput));
+                inputs = WaitFor(inputsFuture).ValueOrThrow();
+            }
 
             std::vector<TKeyVisitorPtr> allowedVisitors;
             for (const auto& [streamId, visitor] : KeyVisitors_) {
@@ -174,9 +178,13 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
             .With("Timers", inputTimers.size())
             .With("Visits", inputVisits.size());
 
+        ObserveKeyCountInput(inputs, inputTimers, inputVisits);
+        auto emptyInput = inputs.empty() && inputTimers.empty() && inputVisits.empty();
+        auto filteredInputs = FilterInputBatch(context, std::move(inputs));
+
         auto unprocessedInputs = [&] () {
             TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.Deduplicate"));
-            auto [processedInput, unprocessedInputs] = InputStore_->Filter(inputs, /*checkState*/ false);
+            auto [processedInput, unprocessedInputs] = InputStore_->Filter(filteredInputs.Messages, /*checkState*/ false);
             YT_TLOG_INFO("Filtered already processed")
                 .With("Inputs", processedInput.size());
             context->MarkDeduplicated(processedInput);
@@ -188,6 +196,7 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
         // For batching we need uniqueSeqNo before Process to seed the merge meta setter; wait outside the
         // Process trace guard so the wait isn't billed to "Process". Non-batching keeps the original overlap.
         if (allowBatchingWithRelaxedGuarantees) {
+            TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.Timestamp"));
             WaitUntilSet(generateReportTimeFuture.AsVoid());
         }
 
@@ -207,7 +216,9 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
             PreloadKeyStates(inputContext);
             DoProcess(inputContext, outputCollector->SetParents(inputContext->GetMessages(), inputContext->GetTimers(), inputContext->GetVisits()));
             auto result = outputCollector->CollectResult();
+            RegisterResults(inputContext, std::move(result.LineageDelta), std::move(filteredInputs.SkippedStatistics));
             TimerStore_->Unregister(inputTimers);
+            EpochRegistersTimers_ = !result.OutputTimers.empty();
             TimerStore_->Register(std::move(result.OutputTimers));
             const auto& streamSpecStorage = GetContext()->StreamSpecStorage;
             outputMessages.reserve(result.OutputMessages.size());
@@ -238,10 +249,10 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
             auto getParentTracker = [&] (const auto& parent) -> TDistributingTracker& {
                 auto [it, inserted] = parentTrackers.try_emplace(parent.Get());
                 if (inserted) {
-                    it->second = TDistributingTracker([this, messageId = parent->MessageId] {
+                    it->second = TDistributingTracker([this, messageId = parent->MessageId, epochIndex] {
                         YT_VERIFY(GetCurrentInvoker() == GetContext()->SerializedInvoker,
                             "Callback must be called only from ProcessDistributedMessages() or in Activate() synchronously");
-                        PersistedInputMessageIds_.push_back(messageId);
+                        PersistInput(messageId, epochIndex);
                     });
                 }
                 return it->second;
@@ -290,7 +301,7 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
                     it->second.Activate();
                     ++activatedCount;
                 } else {
-                    PersistedInputMessageIds_.push_back(input->MessageId);
+                    PersistInput(input->MessageId, epochIndex);
                 }
             }
             // Every tracker must belong to an unprocessed input, or it would never activate.
@@ -299,7 +310,7 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
             // Register all output messages in one batch.
             std::vector<TOutputMessageConstPtr> outputMessagesBase(outputMessages.begin(), outputMessages.end());
             OutputStore_->TryRegisterBatch(outputMessagesBase, /*persist=*/false);
-            RegisterOutputMessages(context, outputMessagesBase, std::nullopt, dynamicSpec);
+            RegisterOutputMessages(context, outputMessagesBase, std::nullopt);
 
             YT_TLOG_INFO("Process completed")
                 .With("OutputMessages", outputMessages.size());
@@ -310,19 +321,25 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
         // May be empty to enforce lease check.
         auto tx = PrepareTransaction(context);
         Commit(context, tx);
+        EpochRegistersTimers_ = false;
+        if (!UncommittedInputMessageIds_.empty()) {
+            context->MarkPersisted(std::exchange(UncommittedInputMessageIds_, {}));
+        }
 
         const auto now = WaitForFast(generateReportTimeFuture).ValueOrThrow().Timestamp;
-        isFinished = UpdateStatus(/*reportTime*/ now, GetInputSystemWatermark(), BuildInflights(context));
+        isFinished = UpdateStatus(/*reportTime*/ now, GetInputSystemWatermark(), BuildInflights(context, now));
+        if (!emptyInput) {
+            NoteNonEmptyRunIteration();
+        }
         FinishRunIteration();
 
-        WaitForBackoff(dynamicSpec, outputLimitsCheckResult,
-            /*emptyInput*/ inputs.empty() && inputTimers.empty() && inputVisits.empty());
+        WaitForBackoff(dynamicSpec, outputLimitsCheckResult, emptyInput);
 
         ClearAsynchronously(
-            std::move(inputs),
             std::move(inputTimers),
             std::move(inputVisits),
             std::move(unprocessedInputs),
+            std::move(filteredInputs),
             std::move(outputMessages),
             std::move(outputParents));
     }
@@ -331,6 +348,15 @@ void TSwiftMapComputation::DoExecute(const IComputationRunContextPtr& context, T
 TSystemTimestamp TSwiftMapComputation::GetInputSystemWatermark()
 {
     return InputStore_->GetSystemWatermark();
+}
+
+void TSwiftMapComputation::PersistInput(const TMessageId& messageId, i64 epochIndex)
+{
+    if (EpochRegistersTimers_ && epochIndex == EpochIndex_) {
+        UncommittedInputMessageIds_.push_back(messageId);
+    } else {
+        PersistedInputMessageIds_.push_back(messageId);
+    }
 }
 
 void TSwiftMapComputation::ProcessDistributedMessages(const IComputationRunContextPtr& context, std::deque<TOutputMessageConstPtr>&& messages)

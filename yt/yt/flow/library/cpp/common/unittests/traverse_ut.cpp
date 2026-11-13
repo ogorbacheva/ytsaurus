@@ -1,3 +1,4 @@
+#include <yt/yt/flow/library/cpp/common/spec.h>
 #include <yt/yt/flow/library/cpp/common/traverse.h>
 
 #include <yt/yt/core/test_framework/framework.h>
@@ -78,11 +79,97 @@ TEST(TTraverseTest, MergeInflightLifecycleMetrics)
     second->InflightMetrics->OfferedCountPerSec = 7;
     second->InflightMetrics->OfferedBytesPerSec = 70;
 
-    const auto merged = MergeInflightTraverseData({first, second});
-    EXPECT_EQ(merged->InflightMetrics->ReadyCount, 7);
-    EXPECT_EQ(merged->InflightMetrics->ReadyByteSize, 70);
-    EXPECT_EQ(merged->InflightMetrics->OfferedCountPerSec, 10);
-    EXPECT_EQ(merged->InflightMetrics->OfferedBytesPerSec, 100);
+    for (bool allowPartial : {false, true}) {
+        const auto merged = MergeInflightTraverseData({first, second}, allowPartial);
+        EXPECT_EQ(merged->InflightMetrics->ReadyCount, 7);
+        EXPECT_EQ(merged->InflightMetrics->ReadyByteSize, 70);
+        EXPECT_EQ(merged->InflightMetrics->OfferedCountPerSec, 10);
+        EXPECT_EQ(merged->InflightMetrics->OfferedBytesPerSec, 100);
+        EXPECT_FALSE(merged->InflightMetrics->NewCountPerSec);
+        EXPECT_FALSE(merged->InflightMetrics->NewBytesPerSec);
+        EXPECT_FALSE(merged->InflightMetrics->ProcessedCountPerSec);
+        EXPECT_FALSE(merged->InflightMetrics->ProcessedBytesPerSec);
+    }
+}
+
+TEST(TTraverseTest, PartialInflightMergePreservesRatesWithSinkSnapshot)
+{
+    const auto rateFields = {
+        &TInflightMetrics::NewCountPerSec,
+        &TInflightMetrics::NewBytesPerSec,
+        &TInflightMetrics::OfferedCountPerSec,
+        &TInflightMetrics::OfferedBytesPerSec,
+        &TInflightMetrics::ProcessedCountPerSec,
+        &TInflightMetrics::ProcessedBytesPerSec,
+    };
+    for (int sinkCount : {0, 2}) {
+        auto output = New<TInflightStreamTraverseData>();
+        output->Empty = false;
+        output->Suspended = true;
+        output->MinSystemTimestamp = TSystemTimestamp(80);
+        output->MinEventTimestamp = TSystemTimestamp(100);
+        output->InflightMetrics->Count = 3;
+        output->InflightMetrics->ByteSize = 30;
+        output->InflightMetrics->ReadyCount = 1;
+        output->InflightMetrics->ReadyByteSize = 10;
+        for (auto field : rateFields) {
+            output->InflightMetrics.Get()->*field = 100;
+        }
+
+        auto sink = New<TInflightStreamTraverseData>();
+        sink->Empty = sinkCount == 0;
+        sink->Suspended = false;
+        sink->InflightMetrics->Count = sinkCount;
+        sink->InflightMetrics->ByteSize = 10 * sinkCount;
+        sink->InflightMetrics->ReadyCount = 0;
+        sink->InflightMetrics->ReadyByteSize = 0;
+        if (sinkCount > 0) {
+            sink->MinSystemTimestamp = TSystemTimestamp(60);
+            sink->MinEventTimestamp = TSystemTimestamp(120);
+        }
+
+        for (const auto& inflights : {std::vector{output, sink}, std::vector{sink, output}}) {
+            const auto merged = MergeInflightTraverseData(inflights, /*allowPartial*/ true);
+            const auto strict = MergeInflightTraverseData(inflights);
+            for (auto field : rateFields) {
+                EXPECT_EQ(merged->InflightMetrics.Get()->*field, 100);
+                EXPECT_FALSE(strict->InflightMetrics.Get()->*field);
+                EXPECT_EQ(output->InflightMetrics.Get()->*field, 100);
+                EXPECT_FALSE(sink->InflightMetrics.Get()->*field);
+            }
+            EXPECT_EQ(merged->InflightMetrics->Count, 3 + sinkCount);
+            EXPECT_EQ(merged->InflightMetrics->ByteSize, 30 + 10 * sinkCount);
+            EXPECT_EQ(merged->InflightMetrics->ReadyCount, 1);
+            EXPECT_EQ(merged->InflightMetrics->ReadyByteSize, 10);
+            EXPECT_EQ(merged->MinSystemTimestamp, TSystemTimestamp(sinkCount ? 60 : 80));
+            EXPECT_EQ(merged->MinEventTimestamp, TSystemTimestamp(100));
+            EXPECT_FALSE(merged->Empty);
+            EXPECT_FALSE(merged->Suspended);
+            EXPECT_EQ(output->InflightMetrics->Count, 3);
+            EXPECT_EQ(sink->InflightMetrics->Count, sinkCount);
+            EXPECT_EQ(output->MinSystemTimestamp, TSystemTimestamp(80));
+        }
+    }
+}
+
+TEST(TTraverseTest, MergeInflightFlagsAreOrderIndependent)
+{
+    auto emptySuspended = New<TInflightStreamTraverseData>();
+    emptySuspended->Empty = true;
+    emptySuspended->Suspended = true;
+
+    auto active = New<TInflightStreamTraverseData>();
+    active->Empty = false;
+    active->Suspended = false;
+
+    for (const auto& inflights : {
+            std::vector{emptySuspended, active},
+            std::vector{active, emptySuspended},
+         }) {
+        const auto merged = MergeInflightTraverseData(inflights);
+        EXPECT_FALSE(merged->Empty);
+        EXPECT_FALSE(merged->Suspended);
+    }
 }
 
 TEST(TTraverseTest, NoneMergeClearsLocalLifecycleMetrics)
@@ -161,21 +248,104 @@ TEST(TTraverseTest, ApplyInflightPreservesProducerSystemWatermark)
     EXPECT_EQ(applied->SystemWatermark, TSystemTimestamp(80));
 }
 
-TEST(TTraverseTest, MergeNodeKeepsMatureRatesWhenAnotherPartitionIsYoung)
+TEST(TTraverseTest, MinTriggerTimestampIsReportedPerPartition)
+{
+    auto stream = New<TStreamTraverseData>();
+    stream->MinTriggerTimestamp = TSystemTimestamp(10);
+
+    auto inflight = New<TInflightStreamTraverseData>();
+    inflight->MinTriggerTimestamp = TSystemTimestamp(30);
+    EXPECT_EQ(ApplyInflightTraverseData(stream, inflight)->MinTriggerTimestamp, TSystemTimestamp(30));
+    EXPECT_FALSE(ApplyInflightTraverseData(stream, New<TInflightStreamTraverseData>())->MinTriggerTimestamp);
+
+    auto later = New<TStreamTraverseData>();
+    later->MinTriggerTimestamp = TSystemTimestamp(40);
+    auto withoutTimers = New<TStreamTraverseData>();
+    EXPECT_EQ(MergeStreamTraverseData({withoutTimers, later, stream}, EInflightMerge::Sum)->MinTriggerTimestamp, TSystemTimestamp(10));
+
+    stream->Epoch = 1;
+    later->Epoch = 2;
+    EXPECT_EQ(AdvanceStreamTraverseData(stream, later)->MinTriggerTimestamp, TSystemTimestamp(40));
+}
+
+TEST(TTraverseTest, ReadyWatermarkMergeRules)
+{
+    auto makeStream = [] (ui64 systemWatermark, std::optional<ui64> readyWatermark, bool unknown = false) {
+        auto stream = New<TStreamTraverseData>();
+        stream->SystemWatermark = TSystemTimestamp(systemWatermark);
+        if (readyWatermark) {
+            stream->ReadyWatermark = TSystemTimestamp(*readyWatermark);
+        }
+
+        stream->ReadyWatermarkUnknown = unknown;
+        return stream;
+    };
+
+    auto resolved = makeStream(/*systemWatermark*/ 40, /*readyWatermark*/ 50);
+    auto applied = ApplyInflightTraverseData(resolved, New<TInflightStreamTraverseData>());
+    EXPECT_FALSE(applied->ReadyWatermark);
+    EXPECT_FALSE(applied->ReadyWatermarkUnknown);
+    applied = ApplyInflightTraverseData(makeStream(/*systemWatermark*/ 40, /*readyWatermark*/ std::nullopt, /*unknown*/ true), New<TInflightStreamTraverseData>());
+    EXPECT_FALSE(applied->ReadyWatermarkUnknown);
+
+    // Partition merges never carry a ready watermark.
+    auto merged = MergeStreamTraverseData({makeStream(/*systemWatermark*/ 30, /*readyWatermark*/ std::nullopt), makeStream(/*systemWatermark*/ 70, /*readyWatermark*/ std::nullopt)}, EInflightMerge::Sum);
+    EXPECT_FALSE(merged->ReadyWatermark);
+    EXPECT_FALSE(merged->ReadyWatermarkUnknown);
+
+    // United streams: unresolved inputs contribute their system watermark.
+    merged = MergeStreamTraverseData({makeStream(/*systemWatermark*/ 70, /*readyWatermark*/ std::nullopt), resolved}, EInflightMerge::Sum);
+    EXPECT_EQ(merged->ReadyWatermark, TSystemTimestamp(50));
+    merged = MergeStreamTraverseData({resolved, makeStream(/*systemWatermark*/ 30, /*readyWatermark*/ std::nullopt)}, EInflightMerge::Sum);
+    EXPECT_EQ(merged->ReadyWatermark, TSystemTimestamp(30));
+
+    merged = MergeStreamTraverseData({resolved, makeStream(/*systemWatermark*/ 70, /*readyWatermark*/ std::nullopt, /*unknown*/ true)}, EInflightMerge::Sum);
+    EXPECT_FALSE(merged->ReadyWatermark);
+    EXPECT_TRUE(merged->ReadyWatermarkUnknown);
+
+    // Not max-advanced: a newer smaller value replaces a larger current one.
+    auto current = makeStream(/*systemWatermark*/ 40, /*readyWatermark*/ 100);
+    current->Epoch = 1;
+    auto next = makeStream(/*systemWatermark*/ 40, /*readyWatermark*/ 60);
+    next->Epoch = 2;
+    EXPECT_EQ(AdvanceStreamTraverseData(current, next)->ReadyWatermark, TSystemTimestamp(60));
+    auto nextUnknown = makeStream(/*systemWatermark*/ 40, /*readyWatermark*/ std::nullopt, /*unknown*/ true);
+    nextUnknown->Epoch = 2;
+    auto advanced = AdvanceStreamTraverseData(current, nextUnknown);
+    EXPECT_FALSE(advanced->ReadyWatermark);
+    EXPECT_TRUE(advanced->ReadyWatermarkUnknown);
+}
+
+TEST(TTraverseTest, MergeNodeDoesNotCombineLocalIterationCycles)
 {
     const TStreamId streamId("stream");
-    auto mature = New<TNodeTraverseData>();
-    mature->IterationCycle = 10;
-    mature->Streams[streamId] = New<TStreamTraverseData>();
-    mature->Streams[streamId]->InflightMetrics->ProcessedCountPerSec = 100;
+    auto first = New<TNodeTraverseData>();
+    first->IterationCycle = 10;
+    first->Streams[streamId] = New<TStreamTraverseData>();
+    first->Streams[streamId]->InflightMetrics->ProcessedCountPerSec = 100;
+    auto second = New<TNodeTraverseData>();
+    second->IterationCycle = 1;
+    second->Streams[streamId] = New<TStreamTraverseData>();
 
-    auto young = New<TNodeTraverseData>();
-    young->IterationCycle = 1;
-    young->Streams[streamId] = New<TStreamTraverseData>();
-
-    const auto merged = MergeNodeTraverseData({mature, young});
+    const auto merged = MergeNodeTraverseData({first, second});
     EXPECT_EQ(merged->Streams.at(streamId)->InflightMetrics->ProcessedCountPerSec, 100);
     EXPECT_FALSE(merged->IterationCycle);
+}
+
+TEST(TTraverseTest, CompletedPartitionHasNoLocalIteration)
+{
+    auto spec = New<TExtendedComputationSpec>();
+    const TStreamId streamId("source");
+    spec->AllStreamIds.insert(streamId);
+    auto completed = MakeCompletedPartitionTraverseData(7, TSystemTimestamp(300), spec)->Node;
+    EXPECT_EQ(completed->ReportTime, TSystemTimestamp(300));
+    EXPECT_FALSE(completed->IterationCycle);
+    const auto& stream = completed->Streams.at(streamId);
+    EXPECT_EQ(stream->State, EStreamState::Completed);
+    EXPECT_EQ(stream->Epoch, 7);
+    EXPECT_EQ(stream->SystemWatermark, TSystemTimestamp(300));
+    EXPECT_EQ(stream->EventWatermark, TSystemTimestamp(300));
+    EXPECT_EQ(stream->InflightMetrics->Count, 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

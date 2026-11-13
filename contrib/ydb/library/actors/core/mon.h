@@ -5,6 +5,10 @@
 #include <library/cpp/monlib/service/monservice.h>
 #include <library/cpp/monlib/service/pages/mon_page.h>
 
+#include <functional>
+#include <memory>
+#include <optional>
+
 namespace NActorsProto {
     class TRemoteHttpInfo;
 } // NActorsProto
@@ -38,8 +42,18 @@ namespace NActors {
             {
             }
 
+            TEvHttpInfo(const NMonitoring::IMonHttpRequest& request, const TString& userToken, const TString& database)
+                : Request(request)
+                , UserToken(userToken)
+                , Database(database)
+                , SubRequestId(0)
+            {
+            }
+
             const NMonitoring::IMonHttpRequest& Request;
             TString UserToken; // built and serialized
+            TString Database; // raw extracted from request; empty if not specified
+            std::optional<std::shared_ptr<const std::function<TString(TStringBuf)>>> PathNormalizer;
             // SubRequestId != 0 means that we assemble reply from multiple parts and SubRequestId contains this part id
             int SubRequestId;
         };

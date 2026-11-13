@@ -1,6 +1,10 @@
-#include "private.h"
+#include "helpers.h"
+
 #include "distributed_hydra_manager.h"
 #include "hydra_service_proxy.h"
+#include "mutation_context.h"
+#include "private.h"
+#include "snapshot_load_context.h"
 
 #include <yt/yt/ytlib/election/cell_manager.h>
 #include <yt/yt/ytlib/election/config.h>
@@ -8,6 +12,8 @@
 #include <yt/yt/core/concurrency/scheduler.h>
 
 #include <yt/yt/core/actions/future.h>
+
+#include <library/cpp/yt/system/local_host.h>
 
 #include <algorithm>
 
@@ -28,7 +34,18 @@ bool IsPersistenceEnabled(
     return voting || options.EnableObserverPersistence;
 }
 
-std::optional<TSharedRef> SanitizeLocalHostName(
+TCausalTime GetCurrentCausalTime()
+{
+    if (auto* mutationContext = TryGetCurrentMutationContext()) {
+        return mutationContext->GetCausalTime();
+    }
+    if (auto* snapshotContext = TryGetCurrentSnapshotLoadContext()) {
+        return snapshotContext->CausalTime;
+    }
+    return TCausalTime(0);
+}
+
+std::optional<TStringBuf> SanitizeLocalHostName(
     const THashSet<std::string>& clusterPeersAddresses,
     const std::string& host)
 {
@@ -37,7 +54,7 @@ std::optional<TSharedRef> SanitizeLocalHostName(
     }
 
     if (std::ssize(clusterPeersAddresses) == 1) {
-        return TSharedRef::FromString(TString(host));
+        return InternHostName(host);
     }
 
     auto getChar = [] (TStringBuf str, i64 position, bool reverse) -> std::optional<char> {
@@ -78,7 +95,7 @@ std::optional<TSharedRef> SanitizeLocalHostName(
         "%v*%v",
         host.substr(0, commonPrefixSize),
         host.substr(std::ssize(host) - commonSuffixSize));
-    return TSharedRef::FromString(unifiedHost);
+    return InternHostName(unifiedHost);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -96,7 +113,7 @@ std::vector<i64> SampleMutationsSequenceNumbers(
         return result;
     }
 
-    result.reserve((endSequenceNumber - startSequenceNumber) / rate);
+    result.reserve((endSequenceNumber - startSequenceNumber) / rate + 1);
     for (auto sequenceNumber = startSequenceNumber; sequenceNumber <= endSequenceNumber; sequenceNumber += rate) {
         result.push_back(sequenceNumber);
     }
@@ -116,7 +133,7 @@ TFuture<void> ReportMutationStateHashesToLeader(
     const auto& Logger = logger;
 
     if (sequenceNumbersToStateHashes.empty()) {
-        return MakeFuture(TError());
+        return OKFuture;
     }
 
     auto sortedSequenceNumbersToStateHashes = sequenceNumbersToStateHashes;
@@ -141,17 +158,17 @@ TFuture<void> ReportMutationStateHashesToLeader(
     request->SetTimeout(timeout);
     return request->Invoke()
         .Apply(BIND([=] (const TInternalHydraServiceProxy::TErrorOrRspReportMutationsStateHashesPtr& rspOrError) {
-        if (rspOrError.IsOK()) {
-            YT_TLOG_DEBUG("Mutations state hashes reported")
-                .With("StartSequenceNumber", startSequenceNumber)
-                .With("EndSequenceNumber", endSequenceNumber);
-        } else {
-            YT_TLOG_DEBUG("Error reporting mutations state hashes")
-                .With("StartSequenceNumber", startSequenceNumber)
-                .With("EndSequenceNumber", endSequenceNumber)
-                .With(rspOrError);
-        }
-    }));
+            if (rspOrError.IsOK()) {
+                YT_TLOG_DEBUG("Mutations state hashes reported")
+                    .With("StartSequenceNumber", startSequenceNumber)
+                    .With("EndSequenceNumber", endSequenceNumber);
+            } else {
+                YT_TLOG_DEBUG("Error reporting mutations state hashes")
+                    .With("StartSequenceNumber", startSequenceNumber)
+                    .With("EndSequenceNumber", endSequenceNumber)
+                    .With(rspOrError);
+            }
+        }));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

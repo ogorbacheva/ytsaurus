@@ -371,15 +371,8 @@ bool TStoreManagerBase::TryPreloadStoreFromInterceptedData(
         return false;
     }
 
-    if (chunkData->StartBlockIndex != 0 ||
-        std::ssize(chunkData->Blocks) != chunkData->ChunkMeta->DataBlockMeta()->data_blocks_size())
-    {
-        YT_LOG_DEBUG(
-            "Intercepted chunk data does not contain all chunk blocks (StoreId: %v, ChunkId: %v)",
-            store->GetId(),
-            store->GetChunkId());
-        return false;
-    }
+    YT_VERIFY(chunkData->StartBlockIndex == 0);
+    YT_VERIFY(ssize(chunkData->Blocks) >= chunkData->ChunkMeta->DataBlockMeta()->data_blocks_size());
 
     store->Preload(chunkData);
     store->SetPreloadState(EStorePreloadState::Complete);
@@ -875,10 +868,9 @@ TDynamicStoreId TStoreManagerBase::GenerateDynamicStoreId()
             }
 
             auto storeId = doGenerateId();
-            YT_LOG_ALERT("Dynamic store id pool is empty, falling back to local "
-                "dynamic store id generation. Reads from map-reduce may not see "
-                "some recent data (NewStoreId: %v)",
-                storeId);
+            YT_TLOG_ALERT("Dynamic store id pool is empty, falling back to local dynamic store id generation; "
+                "reads from map-reduce may not see some recent data")
+                .With("NewStoreId", storeId);
 
             return storeId;
         }

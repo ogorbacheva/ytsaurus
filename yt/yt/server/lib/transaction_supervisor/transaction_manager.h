@@ -25,6 +25,7 @@ struct TTransactionPrepareOptions
 
     std::vector<TTransactionId> PrerequisiteTransactionIds;
     NTransactionClient::TTransactionSignature ExpectedPrepareSignature = NTransactionClient::FinalTransactionSignature;
+    int TargetCommitApprovalCount = 0;
 };
 
 struct TTransactionCommitOptions
@@ -72,6 +73,8 @@ struct ITransactionManager
     virtual TFuture<void> GetReadyToPrepareTransactionCommit(
         const std::vector<TTransactionId>& prerequisiteTransactionIds,
         const std::vector<TCellId>& cellIdsToSyncWith) = 0;
+
+    virtual THashSet<std::string> GenerateStrongOrderingTags(TTransactionId transactionId) = 0;
 
     virtual void PrepareTransactionCommit(
         TTransactionId transactionId,

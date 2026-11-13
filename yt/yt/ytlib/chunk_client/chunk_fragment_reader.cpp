@@ -89,7 +89,7 @@ struct TChunkInfo final
 {
     NErasure::ECodec ErasureCodecId;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock);
     TInstant LastAccessTime;
     TReplicasWithRevision ReplicasWithRevision;
 };
@@ -121,17 +121,18 @@ bool IsChunkLost(const TReplicasWithRevision& replicasWithRevision, NErasure::EC
         return true;
     }
 
-    auto* codec = NErasure::GetCodec(codecId);
+    auto* codec = NErasure::GetCodecOrThrow(codecId);
+    const auto& codecParams = codec->GetParams();
 
     NErasure::TPartIndexSet erasedPartIndexes;
-    for (int index = 0; index < codec->GetTotalPartCount(); ++index) {
+    for (int index = 0; index < codecParams.TotalPartCount; ++index) {
         erasedPartIndexes.set(index);
     }
     for (const auto& replica : replicasWithRevision.Replicas) {
         erasedPartIndexes.reset(replica.ReplicaIndex);
     }
 
-    if (static_cast<int>(erasedPartIndexes.count()) <= codec->GetGuaranteedRepairablePartCount()) {
+    if (static_cast<int>(erasedPartIndexes.count()) <= codecParams.GuaranteedRepairablePartCount) {
         return false;
     }
 
@@ -206,7 +207,7 @@ private:
     NProfiling::TCounter FailedProbingRequestCounter_;
 
     // TODO(babenko): maybe implement sharding
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ChunkIdToChunkInfoLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ChunkIdToChunkInfoLock_);
     THashMap<TChunkId, TChunkInfoPtr> ChunkIdToChunkInfo_;
 
 
@@ -1096,7 +1097,7 @@ private:
 
     using TPerPeerPlanPtr = TIntrusivePtr<TPerPeerPlan>;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, CancelationSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, CancelationSpinLock_);
     std::optional<TError> CancelationError_;
     std::vector<TFuture<void>> PendingFutures_;
 
@@ -1435,8 +1436,8 @@ private:
             if (codecId == NErasure::ECodec::None) {
                 ++price;
             } else {
-                auto* codec = NErasure::GetCodec(codecId);
-                price += codec->GetDataPartCount();
+                auto* codec = NErasure::GetCodecOrThrow(codecId);
+                price += codec->GetParams().DataPartCount;
             }
         }
 
@@ -1907,7 +1908,7 @@ private:
 
     std::vector<TError> Errors_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, CancelationSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, CancelationSpinLock_);
     std::optional<TError> CancelationError_;
     TFuture<void> SessionFuture_ = OKFuture;
 

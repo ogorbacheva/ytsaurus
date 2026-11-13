@@ -25,6 +25,7 @@
 #include <yt/yt/core/misc/fs.h>
 #include <yt/yt/core/misc/random.h>
 
+#include <yt/yt/core/concurrency/prioritized_invoker.h>
 #include <yt/yt/core/concurrency/thread_affinity.h>
 
 #include <yt/yt/core/misc/memory_usage_tracker.h>
@@ -108,8 +109,13 @@ TFuture<TRefCountedChunkMetaPtr> TBlobChunkBase::ReadMeta(
         return MakeFuture<TRefCountedChunkMetaPtr>(ex);
     }
 
+    // TODO(depression): Promote a coalesced metadata read when a higher-priority waiter joins it;
+    // otherwise the waiter is blocked on work scheduled at the first request's priority.
     auto cookie = Context_->ChunkMetaManager->BeginInsertCachedMeta(Id_);
     auto asyncMeta = cookie.GetValue();
+    auto invoker = CreateFixedPriorityInvoker(
+        Context_->StorageHeavyInvoker,
+        options.WorkloadDescriptor.GetPriority());
 
     if (cookie.IsActive()) {
         auto callback = BIND(
@@ -118,7 +124,7 @@ TFuture<TRefCountedChunkMetaPtr> TBlobChunkBase::ReadMeta(
             session,
             Passed(std::move(cookie)));
 
-        Context_->StorageHeavyInvoker->Invoke(std::move(callback), options.WorkloadDescriptor.GetPriority());
+        invoker->Invoke(std::move(callback));
     }
 
     return
@@ -126,7 +132,7 @@ TFuture<TRefCountedChunkMetaPtr> TBlobChunkBase::ReadMeta(
             ProfileReadMetaLatency(session);
             return FilterMeta(cachedMeta->GetMeta(), extensionTags);
         })
-        .AsyncVia(Context_->StorageHeavyInvoker));
+        .AsyncVia(invoker));
 }
 
 NIO::TBlocksExtPtr TBlobChunkBase::FindCachedBlocksExt()
@@ -417,6 +423,9 @@ void TBlobChunkBase::OnBlocksExtLoaded(
     bool diskFetchNeeded = false;
 
     const auto& config = Context_->DataNodeConfig;
+    const auto dynamicConfig = Context_->DynamicConfigManager->GetConfig()->DataNode;
+    const auto maxBytesPerRead = dynamicConfig->MaxBytesPerRead.value_or(config->MaxBytesPerRead);
+    const auto maxBlocksPerRead = dynamicConfig->MaxBlocksPerRead.value_or(config->MaxBlocksPerRead);
 
     session->BlocksExt = blocksExt;
 
@@ -474,8 +483,8 @@ void TBlobChunkBase::OnBlocksExtLoaded(
         pendingDataSize += blockInfo.Size;
         pendingBlockCount += 1;
 
-        if (pendingDataSize >= config->MaxBytesPerRead ||
-            pendingBlockCount >= config->MaxBlocksPerRead)
+        if (pendingDataSize >= maxBytesPerRead ||
+            pendingBlockCount >= maxBlocksPerRead)
         {
             session->EntryCount = entryIndex + 1;
             YT_TLOG_DEBUG("Read session trimmed due to read constraints")
@@ -566,7 +575,7 @@ void TBlobChunkBase::DoReadSession(
     auto memoryGuardOrError = TMemoryUsageTrackerGuard::TryAcquire(memoryTracker, alignedPendingDataSize);
     if (!memoryGuardOrError.IsOK()) {
         YT_TLOG_DEBUG("Read session aborted due to memory pressure");
-        Location_->ReportThrottledRead();
+        Location_->ReportThrottledRead(ELocationReadThrottlingReason::ReadMemoryTrackerLimitExceeded);
 
         auto error = TError("Read session aborted due to memory pressure");
         for (auto i = 0; i < session->EntryCount; ++i) {
@@ -626,14 +635,14 @@ TBlobChunkBase::FindLastEntryWithinReadGap(
 
         if (readGapSize > Location_->GetCoalescedReadMaxGapSize()) {
             YT_TLOG_DEBUG("Stopping run due to large gap")
-                .With("GapBlocks", FormatBlocks(previousEntry->BlockIndex + 1, entry.BlockIndex + 1))
+                .With("GapBlocks", FormatBlockIndexRange(previousEntry->BlockIndex + 1, entry.BlockIndex + 1))
                 .WithFormat("GapBlockOffsets", "[%v,%v)", previousEntry->EndOffset, entry.BeginOffset)
                 .With("GapBlockCount", entry.BlockIndex - previousEntry->BlockIndex - 1)
                 .With("GapSize", readGapSize);
             break;
         } else if (readGapSize > 0) {
             YT_TLOG_DEBUG("Coalesced read gap")
-                .With("GapBlocks", FormatBlocks(previousEntry->BlockIndex + 1, entry.BlockIndex))
+                .With("GapBlocks", FormatBlockIndexRange(previousEntry->BlockIndex + 1, entry.BlockIndex))
                 .WithFormat("GapBlockOffsets", "[%v,%v)", previousEntry->EndOffset, entry.BeginOffset)
                 .With("GapBlockCount", entry.BlockIndex - previousEntry->BlockIndex - 1)
                 .With("GapSize", readGapSize);
@@ -689,7 +698,7 @@ TFuture<void> TBlobChunkBase::ReadBlocks(
 {
     YT_TLOG_DEBUG("Started reading blob chunk blocks")
         .With("ChunkId", Id_)
-        .With("Blocks", FormatBlocks(
+        .With("Blocks", FormatBlockIndexRange(
             readBlocksRequest.FirstBlockIndex,
             readBlocksRequest.FirstBlockIndex + readBlocksRequest.BlocksToRead - 1))
         .With("LocationId", Location_->GetId())
@@ -1115,7 +1124,7 @@ void TBlobChunkBase::OnBlocksRead(
 
     YT_TLOG_DEBUG("Finished reading blob chunk blocks")
         .With("ChunkId", Id_)
-        .With("Blocks", FormatBlocks(firstBlockIndex, firstBlockIndex + blocksToRead - 1))
+        .With("Blocks", FormatBlockIndexRange(firstBlockIndex, firstBlockIndex + blocksToRead - 1))
         .With("LocationId", Location_->GetId())
         .With("LocationUuid", Location_->GetUuid())
         .With("LocationIndex", Location_->GetIndex())
@@ -1326,22 +1335,19 @@ TFuture<void> TBlobChunkBase::PrepareToReadChunkFragments(
     const TClientChunkReadOptions& options,
     bool useDirectIO)
 {
-    auto readerGuard = ReaderGuard(LifetimeLock_);
+    TChunkFileReaderPtr reader;
+    {
+        auto readerGuard = ReaderGuard(LifetimeLock_);
 
-    YT_VERIFY(ReadLockCounter_.load() > 0);
+        YT_VERIFY(ReadLockCounter_.load() > 0);
 
-    if (PreparedReader_) {
-        YT_UNUSED_FUTURE(PreparedReader_->PrepareToReadChunkFragments(options, useDirectIO));
-        return {};
+        if (PreparedReader_) {
+            YT_UNUSED_FUTURE(PreparedReader_->PrepareToReadChunkFragments(options, useDirectIO));
+            return {};
+        }
+
+        reader = CachedWeakReader_.Lock();
     }
-
-    auto reader = CachedWeakReader_.Lock();
-    if (reader && !reader->PrepareToReadChunkFragments(options, useDirectIO)) {
-        PreparedReader_ = std::move(reader);
-        return {};
-    }
-
-    readerGuard.Release();
 
     if (!reader) {
         reader = Context_->BlobReaderCache->GetReader(this);
@@ -1349,22 +1355,22 @@ TFuture<void> TBlobChunkBase::PrepareToReadChunkFragments(
 
     auto prepareFuture = reader->PrepareToReadChunkFragments(options, useDirectIO);
 
-    auto writerGuard = WriterGuard(LifetimeLock_);
+    {
+        auto writerGuard = WriterGuard(LifetimeLock_);
 
-    YT_VERIFY(ReadLockCounter_.load() > 0);
+        YT_VERIFY(ReadLockCounter_.load() > 0);
 
-    CachedWeakReader_ = reader;
+        if (PreparedReader_) {
+            return {};
+        }
 
-    if (!prepareFuture) {
-        PreparedReader_ = std::move(reader);
-        return {};
+        CachedWeakReader_ = reader;
+
+        if (!prepareFuture) {
+            PreparedReader_ = std::move(reader);
+            return {};
+        }
     }
-
-    if (PreparedReader_) {
-        return {};
-    }
-
-    writerGuard.Release();
 
     return prepareFuture
         .Apply(BIND([=, this, this_ = MakeStrong(this)] {

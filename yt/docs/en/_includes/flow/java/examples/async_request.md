@@ -60,19 +60,19 @@ You register the `state` and `processor` computations with the `@FlowComputation
 
 {% endlist %}
 
-### NodeCompanionMain
+### PipelineMain
 
-This is the entry point for the Spring Boot–based companion:
+This single entry point starts the pipeline or serves as its companion, depending on `YT_FLOW_MODE`.
 
 {% list tabs group=lang %}
 
 - Java
 
-  {% code '/yt/yt/flow/examples/java/async_request/async_request/src/main/java/tech/ytsaurus/flow/examples/asyncrequest/NodeCompanionMain.java' lang='java' lines='[BEGIN main]-[END main]' keep-indents %}
+  {% code '/yt/yt/flow/examples/java/async_request/async_request/src/main/java/tech/ytsaurus/flow/examples/asyncrequest/PipelineMain.java' lang='java' lines='[BEGIN main]-[END main]' keep-indents %}
 
 - Kotlin
 
-  {% code '/yt/yt/flow/examples/kotlin/async_request/async_request/src/main/kotlin/tech/ytsaurus/flow/examples/asyncrequest/NodeCompanionMain.kt' lang='kotlin' lines='[BEGIN main]-[END main]' keep-indents %}
+  {% code '/yt/yt/flow/examples/kotlin/async_request/async_request/src/main/kotlin/tech/ytsaurus/flow/examples/asyncrequest/PipelineMain.kt' lang='kotlin' lines='[BEGIN main]-[END main]' keep-indents %}
 
 {% endlist %}
 
@@ -82,4 +82,3 @@ This is the entry point for the Spring Boot–based companion:
 - **Routing by `streamId`**: one function handles multiple input streams. You determine the message type using `message.getStreamId()`.
 - **ExternalStateAccessor with PayloadBuilder**: you update the `total_length` field selectively: `current.toBuilder()` → make changes → `stateAccessor.set(updated.finish())`.
 - **Configuration via Spring Boot**: you register computations with the `@FlowComputation` annotation; `flow-spring-boot-starter` manages the gRPC server lifecycle.
-

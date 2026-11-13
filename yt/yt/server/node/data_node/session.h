@@ -5,8 +5,6 @@
 #include <yt/yt/server/lib/io/public.h>
 #include <yt/yt/server/lib/io/io_tracker.h>
 
-#include <yt/yt/server/lib/nbd/config.h>
-
 #include <yt/yt/server/node/data_node/location.h>
 
 #include <yt/yt/server/node/cluster_node/public.h>
@@ -22,10 +20,16 @@
 
 #include <yt/yt/client/node_tracker_client/node_directory.h>
 
+#include <yt/yt/library/nbd/config.h>
+
 #include <yt/yt/core/actions/signal.h>
 
 #include <yt/yt/core/misc/error.h>
 #include <yt/yt/core/concurrency/lease_manager.h>
+
+#include <yt/yt/library/profiling/sensor.h>
+
+#include <yt/yt/library/syncmap/map.h>
 
 #include <optional>
 
@@ -71,7 +75,7 @@ public:
 private:
     const TSessionId SessionId_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     std::set<TRequest> Requests_;
 
     bool Canceled_ = false;
@@ -84,6 +88,28 @@ private:
 };
 
 DEFINE_REFCOUNTED_TYPE(TProbePutBlocksRequestSupplier)
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TWriteSessionStartCounters
+    : public TRefCounted
+{
+public:
+    explicit TWriteSessionStartCounters(NProfiling::TProfiler profiler);
+
+    void Update(const TError& error);
+
+private:
+    const NProfiling::TCounter StartCount_;
+    const NProfiling::TProfiler Profiler_;
+
+    NConcurrency::TSyncMap<TErrorCode, NProfiling::TCounter> FailureCounters_;
+
+    void IncrementStart();
+    void IncrementFailure(const TError& error);
+};
+
+DEFINE_REFCOUNTED_TYPE(TWriteSessionStartCounters)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -122,6 +148,7 @@ struct ISession
     {
         NIO::TIOCounters IOCounters;
         NChunkClient::TChunkWriterStatisticsPtr ChunkWriterStatistics;
+        std::optional<i64> CumulativeIOConsumed;
     };
 
     struct TSendBlocksResult

@@ -67,6 +67,31 @@ DEFAULT_ADMIN_PASSWORD = "password"
 DEFAULT_ADMIN_TOKEN = "password"
 
 
+def _add_ytrecipe_tools_root_fs_bind(cluster_configuration, tools_path):
+    if os.environ.get("YT_OUTPUT") is None or tools_path is None or not os.path.islink(tools_path):
+        return
+
+    # The job shell mounts the tools directory at /yt_runtime. Make the
+    # ytserver-tools symlink target available inside the job rootfs.
+    link_target = os.readlink(tools_path)
+    if not os.path.isabs(link_target):
+        raise YtError("ytrecipe ytserver-tools must be an absolute symlink: " + tools_path)
+
+    source_path = os.path.realpath(tools_path)
+    if not os.path.isfile(source_path):
+        raise YtError("ytserver-tools does not resolve to a regular file: " + tools_path)
+
+    bind = {
+        "external_path": source_path,
+        "internal_path": link_target,
+        "read_only": True,
+    }
+    for node_config in cluster_configuration["node"]:
+        binds = node_config.setdefault("exec_node", {}).setdefault("root_fs_binds", [])
+        if bind not in binds:
+            binds.append(bind)
+
+
 def set_environment_driver_logging_config(config):
     global _environment_driver_logging_config
     _environment_driver_logging_config = config
@@ -492,6 +517,19 @@ class YTInstance(object):
                 subj=f"/O={self.id}/OU=YT Public RPC Server",
             )
 
+        if self.yt_config.kafka_cert is None and self.yt_config.kafka_proxy_count > 0:
+            self.yt_config.kafka_cert = os.path.join(self.path, "kafka.crt")
+            self.yt_config.kafka_cert_key = os.path.join(self.path, "kafka.key")
+            create_certificate(
+                ca_cert=self.yt_config.public_ca_cert,
+                ca_cert_key=self.yt_config.public_ca_cert_key,
+                cert=self.yt_config.kafka_cert,
+                cert_key=self.yt_config.kafka_cert_key,
+                names=names,
+                extended_key_usage="serverAuth",
+                subj=f"/O={self.id}/OU=YT Kafka Server",
+            )
+
     def _prepare_builtin_environment(self, ports_generator, modify_configs_func, modify_driver_logging_config_func):
         service_infos = [
             ("ytserver-clock", "clocks", self.yt_config.clock_count),
@@ -540,6 +578,9 @@ class YTInstance(object):
 
         if modify_configs_func:
             modify_configs_func(cluster_configuration, self.abi_version)
+
+        tools_path = _get_yt_binary_path("ytserver-tools", custom_paths=self.custom_paths)
+        _add_ytrecipe_tools_root_fs_bind(cluster_configuration, tools_path)
 
         self._cluster_configuration = cluster_configuration
 
@@ -1206,13 +1247,22 @@ class YTInstance(object):
                     raise YtError("Memory limits are not supported for non-porto environment")
                 process.set_memory_limit(memory_limit)
 
-    def check_liveness(self, callback_func):
+    def check_liveness(self, callback_func, ignored_components=None):
         with self._lock:
-            for info in self._pid_to_process.values():
-                proc, args = info
-                proc.poll()
-                if proc.returncode is not None:
-                    callback_func(self, proc, args)
+            ignored_processes = {
+                process
+                for component in ignored_components or ()
+                for process in self._service_processes.get(component, ())
+                if process is not None
+            }
+
+            for process, args in self._pid_to_process.values():
+                if process in ignored_processes:
+                    continue
+
+                process.poll()
+                if process.returncode is not None:
+                    callback_func(self, process, args)
                     break
 
     def get_component_version(self, component):
@@ -1886,6 +1936,8 @@ class YTInstance(object):
 
         self._run_builtin_yt_component("node", indexes=indexes)
 
+        client = self._create_cluster_client()
+
         def nodes_ready():
             self._validate_processes_are_running("node")
 
@@ -1911,6 +1963,17 @@ class YTInstance(object):
                     not_ready_nodes[str(node)] = description
             if not_ready_nodes:
                 return False, f"Nodes are not ready: {not_ready_nodes}"
+
+            # Nodes may become online before their RPC servers start listening.
+            for node in nodes:
+                if node.attributes["banned"]:
+                    continue
+                try:
+                    client.get(f"//sys/cluster_nodes/{node}/orchid/service")
+                except YtResponseError as err:
+                    if not err.is_rpc_unavailable() and not err.is_transport_error():
+                        raise
+                    return False, err
             return True
 
         self._wait_for_component(
@@ -2528,6 +2591,7 @@ class YTInstance(object):
         self._run_builtin_yt_component("proxy", name="rpc_proxy")
 
         client = self._create_cluster_client()
+        client.config["proxy"]["retries"]["enable"] = False
 
         expected_endpoints = set()
         proxies_ports = []

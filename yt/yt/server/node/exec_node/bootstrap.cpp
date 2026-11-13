@@ -1,5 +1,7 @@
 #include "bootstrap.h"
 
+#include "job_environment.h"
+
 #include "artifact_cache.h"
 #include "controller_agent_connector.h"
 #include "exec_node_admin_service.h"
@@ -29,7 +31,6 @@
 
 #include <yt/yt/server/lib/misc/job_reporter.h>
 
-#include <yt/yt/server/lib/nbd/config.h>
 #include <yt/yt/server/lib/nbd/server.h>
 
 #include <yt/yt/ytlib/auth/native_authentication_manager.h>
@@ -48,6 +49,8 @@
 
 #include <yt/yt/client/signature/generator.h>
 #include <yt/yt/client/signature/validator.h>
+
+#include <yt/yt/library/nbd/config.h>
 
 #include <yt/yt/library/dns_over_rpc/server/dns_over_rpc_service.h>
 
@@ -335,9 +338,9 @@ public:
         return ArtifactCache_;
     }
 
-    bool IsSimpleEnvironment() const override
+    TJobEnvironmentCapabilities GetJobEnvironmentCapabilities() const override
     {
-        return GetJobEnvironmentType() == EJobEnvironmentType::Simple;
+        return SlotManager_->GetJobEnvironmentCapabilities();
     }
 
     const IJobControllerPtr& GetJobController() const override
@@ -542,7 +545,6 @@ private:
 
         newJobProxyConfigTemplate->StderrPath = GetConfig()->ExecNode->JobProxy->JobProxyLogging->JobProxyStderrPath;
         newJobProxyConfigTemplate->ExecutorStderrPath = GetConfig()->ExecNode->JobProxy->JobProxyLogging->ExecutorStderrPath;
-        newJobProxyConfigTemplate->TestRootFS = GetConfig()->ExecNode->JobProxy->TestRootFS;
         newJobProxyConfigTemplate->AlwaysAbortOnMemoryReserveOverdraft = GetConfig()->ExecNode->JobProxy->AlwaysAbortOnMemoryReserveOverdraft;
 
         newJobProxyConfigTemplate->CoreWatcher = GetConfig()->ExecNode->JobProxy->CoreWatcher;
@@ -624,11 +626,12 @@ private:
         GpuManager_->OnDynamicConfigChanged(
             oldConfig->ExecNode->GpuManager,
             newConfig->ExecNode->GpuManager);
-        JobReporter_->OnDynamicConfigChanged(
-            oldConfig->ExecNode->JobReporter,
-            newConfig->ExecNode->JobReporter);
-        if (newConfig->ExecNode->SignatureComponents) {
-            YT_UNUSED_FUTURE(SignatureComponents_->Reconfigure(newConfig->ExecNode->SignatureComponents));
+        JobReporter_->Reconfigure(newConfig->ExecNode->JobReporter);
+        if (newConfig->ExecNode->SignatureComponents || oldConfig->ExecNode->SignatureComponents) {
+            YT_UNUSED_FUTURE(SignatureComponents_->Reconfigure(
+                newConfig->ExecNode->SignatureComponents
+                    ? newConfig->ExecNode->SignatureComponents
+                    : GetConfig()->ExecNode->SignatureComponents));
         }
 
         DynamicConfig_.Store(newConfig);

@@ -2,10 +2,6 @@
 
 #include "private.h"
 
-#include <yt/yt/ytlib/hive/public.h>
-
-#include <yt/yt/client/api/options.h>
-
 #include <yt/yt/client/table_client/public.h>
 
 #include <yt/yt/core/ytree/yson_struct.h>
@@ -13,6 +9,10 @@
 #include <library/cpp/yt/memory/ref.h>
 
 namespace NYT::NYqlAgent {
+
+////////////////////////////////////////////////////////////////////////////////
+
+std::optional<NYson::TYsonString> SanitizeQuerySettingsForLogging(const NYson::TYsonString& settings);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -58,8 +58,10 @@ struct TWireYqlRowset
 };
 
 std::vector<TWireYqlRowset> BuildRowsets(
+    const ITokenManagerPtr& tokenManager,
     const std::vector<std::pair<TString, TString>>& clusters,
-    const NApi::TClientOptions& clientOptions,
+    const TString& user,
+    TExecutionId tokenExecutionId,
     const TString& yqlYsonResults,
     i64 rowCountLimit);
 

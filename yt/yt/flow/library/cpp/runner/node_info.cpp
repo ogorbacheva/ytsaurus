@@ -2,6 +2,7 @@
 
 #include <yt/yt/flow/library/cpp/common/flow_core_version.h>
 #include <yt/yt/flow/library/cpp/common/flow_view.h>
+#include <yt/yt/flow/library/cpp/common/job_proxy_client.h>
 
 #include <yt/yt/flow/library/cpp/misc/debug_build_warning.h>
 #include <yt/yt/flow/library/cpp/misc/node_address_provider.h>
@@ -15,17 +16,26 @@
 
 #include <yt/yt/client/scheduler/operation_id_or_alias.h>
 
+#include <yt/yt/core/bus/tcp/config.h>
+
 #include <yt/yt/core/concurrency/scheduler_api.h>
+
+#include <yt/yt/core/crypto/config.h>
 
 #include <yt/yt/core/net/address.h>
 #include <yt/yt/core/net/config.h>
 #include <yt/yt/core/net/local_address.h>
 
 #include <yt/yt/core/ytree/convert.h>
+#include <yt/yt/core/ytree/yson_struct.h>
 
 #include <util/generic/algorithm.h>
 
 #include <util/string/split.h>
+
+#include <util/system/env.h>
+
+#include <cmath>
 
 namespace NYT::NFlow {
 
@@ -59,7 +69,7 @@ public:
         nodeInfo->RemoteShellCommand = GetRemoteShellCommand();
         nodeInfo->IncarnationId = GetIncarnationId();
         nodeInfo->VcpuFactor = TryGetVCpuFactor();
-        nodeInfo->VcpuLimit = TryGetVCpuLimit();
+        nodeInfo->VcpuLimit = TryGetVCpuLimit(nodeInfo->VcpuFactor);
         nodeInfo->BuildVersion = GetVersion();
         nodeInfo->FlowCoreVersion = ResolveFlowCoreVersion();
         nodeInfo->BuildType = CurrentBuildTypeDisplayName();
@@ -88,7 +98,7 @@ protected:
         return std::nullopt;
     }
 
-    virtual std::optional<double> TryGetVCpuLimit()
+    virtual std::optional<double> TryGetVCpuLimit(std::optional<double>)
     {
         return std::nullopt;
     }
@@ -281,7 +291,7 @@ protected:
         return std::nullopt;
     }
 
-    std::optional<double> TryGetVCpuLimit() override
+    std::optional<double> TryGetVCpuLimit(std::optional<double>) override
     {
         try {
             if (VcpuLimit_) {
@@ -376,13 +386,21 @@ protected:
         return TryFetchVCpuFactorFromExecNode();
     }
 
-    std::optional<double> TryGetVCpuLimit() override
+    std::optional<double> TryGetVCpuLimit(std::optional<double> vcpuFactor) override
     {
         try {
             if (VcpuLimit_) {
                 double value = FromString(VcpuLimit_);
                 YT_TLOG_DEBUG("Extracted vcpu limit from YT environment")
                     .With("VCpuLimit", value);
+                return value;
+            }
+            if (CpuLimit_) {
+                // The launcher knows physical CPU; node info reports milli-vCPU.
+                const double value = FromString<double>(CpuLimit_) * vcpuFactor.value_or(1.0) * 1'000;
+                THROW_ERROR_EXCEPTION_UNLESS(value > 0 && std::isfinite(value),
+                    "Invalid vanilla CPU limit %v",
+                    value);
                 return value;
             }
         } catch (const std::exception& ex) {
@@ -402,7 +420,11 @@ private:
         try {
             auto connection = NApi::NRpcProxy::CreateConnection(
                 NApi::NRpcProxy::TConnectionConfig::CreateFromClusterUrl(ClusterName_));
-            auto client = connection->CreateClient(NApi::GetClientOptionsFromEnvStatic());
+            auto client = GetJobProxyClient(
+                connection->CreateClient(NApi::GetClientOptionsFromEnvStatic()),
+                ClusterName_,
+                GetEnv("YT_FLOW_JOB_PROXY_CLUSTER"),
+                GetEnv("YT_JOB_PROXY_SOCKET_PATH"));
 
             NApi::TGetJobOptions options;
             options.Attributes = THashSet<std::string>{"address"};
@@ -435,6 +457,7 @@ private:
     const char* JobId_ = std::getenv("YT_JOB_ID");
     const char* VcpuFactor_ = std::getenv("YT_CPU_TO_VCPU_FACTOR");
     const char* VcpuLimit_ = std::getenv("YT_VCPU_LIMIT");
+    const char* CpuLimit_ = std::getenv("YT_FLOW_CPU_LIMIT");
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -476,6 +499,64 @@ std::optional<std::string> TryExtractDeploySnapshotId(const std::vector<TProcess
         }
     }
     return std::nullopt;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TSelfSignedCertificate GenerateIncarnationCertificate(const TNodeInfoBase& nodeInfo)
+{
+    // RPC addresses are formatted as "[<ip>]:<port>", see #NNet::FormatNetworkAddress().
+    auto host = NNet::GetServiceHostName(nodeInfo.RpcAddress);
+    host.SkipPrefix("[");
+    host.ChopSuffix("]");
+
+    TSelfSignedCertificateOptions options{
+        .CommonName = Format("yt-flow-%v", nodeInfo.IncarnationId),
+        .IPAddresses = {std::string(host)},
+    };
+    if (!nodeInfo.Name.empty() && !NNet::TNetworkAddress::TryParse(nodeInfo.Name).IsOK()) {
+        options.DnsNames.push_back(nodeInfo.Name);
+    }
+    return GenerateSelfSignedCertificate(options);
+}
+
+NBus::NTcp::TBusServerConfigPtr CreateBusServerConfigWithIncarnationCertificate(
+    TNodeInfo* nodeInfo,
+    const NBus::NTcp::TBusServerConfigPtr& busServerConfig,
+    const TLogger& logger)
+{
+    const TLogger& Logger = logger;
+
+    THROW_ERROR_EXCEPTION_IF(
+        busServerConfig->EncryptionMode != NBus::EEncryptionMode::Disabled &&
+            static_cast<bool>(busServerConfig->CertificateChain) != static_cast<bool>(busServerConfig->PrivateKey),
+        "Bus server TLS requires both \"cert_chain\" and \"private_key\" to be configured together");
+
+    bool hasConfiguredTlsMaterial = busServerConfig->CertificateChain && busServerConfig->PrivateKey;
+    if (hasConfiguredTlsMaterial || busServerConfig->EncryptionMode == NBus::EEncryptionMode::Disabled) {
+        YT_TLOG_INFO("Incarnation certificate is not generated: the bus server TLS is configured explicitly")
+            .With("EncryptionMode", busServerConfig->EncryptionMode)
+            .With("HasConfiguredTlsMaterial", hasConfiguredTlsMaterial);
+        return busServerConfig;
+    }
+
+    auto certificate = GenerateIncarnationCertificate(*nodeInfo);
+    auto makePemBlob = [] (std::string value) {
+        auto blob = New<NCrypto::TPemBlobConfig>();
+        blob->Value = std::move(value);
+        return blob;
+    };
+    // The key lands in a copy: the node config is served through Orchid, so it must never hold it.
+    auto servingConfig = CloneYsonStruct(busServerConfig);
+    servingConfig->CertificateChain = makePemBlob(certificate.CertificatePem);
+    servingConfig->PrivateKey = makePemBlob(std::move(certificate.PrivateKeyPem));
+
+    nodeInfo->CertificatePem = std::move(certificate.CertificatePem);
+    nodeInfo->CertificateSha256 = std::move(certificate.CertificateSha256);
+    YT_TLOG_INFO("Bus server serves TLS with the incarnation certificate")
+        .With("CertificateSha256", *nodeInfo->CertificateSha256);
+
+    return servingConfig;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -3,13 +3,13 @@
 #include "config.h"
 #include "helpers.h"
 #include "job_size_adjuster.h"
-#include "new_job_manager.h"
+#include "job_manager.h"
 
 #include <yt/yt/server/lib/controller_agent/job_size_constraints.h>
 #include <yt/yt/server/lib/controller_agent/structs.h>
 
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk.h>
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
 
 #include <yt/yt/library/random/bernoulli_sampler.h>
 
@@ -39,16 +39,16 @@ void TOrderedChunkPoolOptions::RegisterMetadata(auto&& registrar)
     PHOENIX_REGISTER_FIELD(1, MaxTotalSliceCount);
     PHOENIX_REGISTER_FIELD(2, MinTeleportChunkSize);
     PHOENIX_REGISTER_FIELD(3, JobSizeConstraints);
-    registrar.template VirtualField<4>("SupportLocality", [] (TThis* /*this_*/, auto& context) {
-        Load<bool>(context);
-    })
-        .BeforeVersion(ESnapshotVersion::DropSupportLocality)();
+    PHOENIX_REGISTER_DELETED_FIELD(4, bool, SupportLocality, ESnapshotVersion::DropSupportLocality);
     PHOENIX_REGISTER_FIELD(5, EnablePeriodicYielder);
     PHOENIX_REGISTER_FIELD(6, ShouldSliceByRowIndices);
     PHOENIX_REGISTER_FIELD(7, Logger);
 
     PHOENIX_REGISTER_FIELD(8, JobSizeAdjusterConfig,
         .SinceVersion(ESnapshotVersion::OrderedAndSortedJobSizeAdjuster));
+
+    PHOENIX_REGISTER_FIELD(9, AllowMultipleRangesInJob,
+        .SinceVersion(ESnapshotVersion::RemoteCopyRangeSeparation));
 }
 
 PHOENIX_DEFINE_TYPE(TOrderedChunkPoolOptions);
@@ -57,7 +57,7 @@ PHOENIX_DEFINE_TYPE(TOrderedChunkPoolOptions);
 
 class TOrderedChunkPool
     : public TChunkPoolInputBase
-    , public TChunkPoolOutputWithNewJobManagerBase
+    , public TChunkPoolOutputWithJobManagerBase
     , public IOrderedChunkPool
     , public TJobSplittingBase
     , public virtual NLogging::TLoggerOwner
@@ -69,13 +69,14 @@ public:
     TOrderedChunkPool(
         const TOrderedChunkPoolOptions& options,
         TInputStreamDirectory inputStreamDirectory)
-        : TChunkPoolOutputWithNewJobManagerBase(options.Logger)
+        : TChunkPoolOutputWithJobManagerBase(options.Logger)
         , InputStreamDirectory_(std::move(inputStreamDirectory))
         , MinTeleportChunkSize_(options.MinTeleportChunkSize)
         , JobSizeConstraints_(options.JobSizeConstraints)
         , Sampler_(JobSizeConstraints_->GetSamplingRate(), JobSizeConstraints_->GetSamplingSeed())
         , MaxTotalSliceCount_(options.MaxTotalSliceCount)
         , ShouldSliceByRowIndices_(options.ShouldSliceByRowIndices)
+        , AllowMultipleRangesInJob_(options.AllowMultipleRangesInJob)
         , EnablePeriodicYielder_(options.EnablePeriodicYielder)
     {
         Logger = options.Logger;
@@ -85,9 +86,13 @@ public:
         }
 
         if (options.JobSizeAdjusterConfig && JobSizeConstraints_->CanAdjustDataWeightPerJob()) {
-            JobSizeAdjuster_ = CreateDiscreteJobSizeAdjuster(
+            auto jobSizeAdjuster = CreateJobSizeAdjuster(
                 JobSizeConstraints_->GetDataWeightPerJob(),
                 options.JobSizeAdjusterConfig);
+            JobSizeAdjuster_ = CreateDiscreteJobSizeAdjuster(
+                std::move(jobSizeAdjuster),
+                JobSizeConstraints_->GetDataWeightPerJob(),
+                options.JobSizeAdjusterConfig->DataWeightFactor);
         }
 
         if (JobSizeConstraints_->GetBatchRowCount()) {
@@ -108,7 +113,9 @@ public:
             .With("BatchRowCount", JobSizeConstraints_->GetBatchRowCount())
             .With("SamplingRate", JobSizeConstraints_->GetSamplingRate())
             .With("SingleJob", SingleJob_)
-            .With("HasJobSizeAdjuster", static_cast<bool>(JobSizeAdjuster_));
+            .With("HasJobSizeAdjuster", static_cast<bool>(JobSizeAdjuster_))
+            .With("ShouldSliceByRowIndices", ShouldSliceByRowIndices_)
+            .With("AllowMultipleRangesInJob", AllowMultipleRangesInJob_);
     }
 
     // IPersistentChunkPoolInput implementation.
@@ -119,10 +126,6 @@ public:
 
         if (stripe->DataSlices().empty()) {
             return IChunkPoolInput::NullCookie;
-        }
-
-        for (const auto& dataSlice : stripe->DataSlices()) {
-            YT_VERIFY(!dataSlice->IsLegacy);
         }
 
         auto cookie = std::ssize(Stripes_);
@@ -143,6 +146,7 @@ public:
         SetupSuspendedStripes();
 
         BuildJobsAndFindTeleportChunks();
+        ConsiderAdjustingJobSize();
         CheckCompleted();
     }
 
@@ -160,6 +164,7 @@ public:
         Stripes_[cookie].Resume();
         if (Finished) {
             JobManager_->Resume(cookie);
+            ConsiderAdjustingJobSize();
         }
     }
 
@@ -189,20 +194,8 @@ public:
         JobManager_->Completed(cookie, jobSummary.InterruptionReason);
 
         if (JobSizeAdjuster_) {
-            // No point in enlarging jobs if we cannot at least double them.
-            auto action = EJobAdjustmentAction::None;
-            if (JobManager_->JobCounter()->GetPending() > JobManager_->JobCounter()->GetRunning()) {
-                action = JobSizeAdjuster_->UpdateStatistics(jobSummary);
-            }
-
-            if (action == EJobAdjustmentAction::RebuildJobs) {
-                YT_TLOG_INFO("Job completion triggered enlargement")
-                    .With("JobCookie", cookie);
-                JobManager_->Enlarge(
-                    JobSizeAdjuster_->GetDataWeightPerJob(),
-                    JobSizeAdjuster_->GetDataWeightPerJob(),
-                    JobSizeConstraints_);
-            }
+            JobSizeAdjuster_->UpdateStatistics(jobSummary);
+            ConsiderAdjustingJobSize();
         }
 
         CheckCompleted();
@@ -277,6 +270,8 @@ private:
     i64 MaxTotalSliceCount_ = 0;
 
     bool ShouldSliceByRowIndices_ = false;
+    bool AllowMultipleRangesInJob_ = true;
+    std::optional<int> LastInputStreamIndex_;
 
     bool EnablePeriodicYielder_;
 
@@ -284,7 +279,7 @@ private:
     // cannot be currently estimated. In this scenario, a new slice may be
     // added without requiring a split.
     std::optional<i64> RowCountUntilJobSplit_;
-    std::unique_ptr<TNewJobStub> CurrentJob_;
+    std::unique_ptr<TJobStub> CurrentJob_;
 
     int JobIndex_ = 0;
     int BuiltJobCount_ = 0;
@@ -292,6 +287,23 @@ private:
     bool SingleJob_ = false;
 
     bool IsCompleted_ = false;
+
+    void ConsiderAdjustingJobSize()
+    {
+        // Avoid expensive enlargement when few adjacent pending jobs are likely to remain.
+        if (!Finished || !JobSizeAdjuster_ ||
+            JobManager_->JobCounter()->GetPending() <= JobManager_->JobCounter()->GetRunning())
+        {
+            return;
+        }
+
+        if (auto dataWeightPerJob = JobSizeAdjuster_->TryGetNewDataWeightPerJob()) {
+            JobManager_->Enlarge(
+                *dataWeightPerJob,
+                *dataWeightPerJob,
+                JobSizeConstraints_);
+        }
+    }
 
     void SetupSuspendedStripes()
     {
@@ -303,7 +315,7 @@ private:
         }
     }
 
-    bool IsTeleportable(const TLegacyDataSlicePtr& dataSlice) const
+    bool IsTeleportable(const TDataSlicePtr& dataSlice) const
     {
         if (dataSlice->Type != EDataSourceType::UnversionedTable) {
             return false;
@@ -379,7 +391,14 @@ private:
                     continue;
                 }
 
-                YT_VERIFY(!dataSlice->IsLegacy);
+                if (!AllowMultipleRangesInJob_ &&
+                    dataSlice->GetInputStreamIndex() != LastInputStreamIndex_ &&
+                    CurrentJob()->GetSliceCount() > 0)
+                {
+                    EndJob();
+                }
+                LastInputStreamIndex_ = dataSlice->GetInputStreamIndex();
+
                 if (IsDataSliceSplittable(dataSlice)) {
                     AddSplittablePrimaryDataSlice(dataSlice, inputCookie);
                 } else {
@@ -401,12 +420,16 @@ private:
                 JobSizeConstraints_);
         }
 
+        if (JobSizeAdjuster_) {
+            JobSizeAdjuster_->Reset(JobSizeConstraints_->GetDataWeightPerJob());
+        }
+
         // TODO(apollo1321): Why do we need to update input data weight here?
         JobSizeConstraints_->UpdateInputDataWeight(JobManager_->DataWeightCounter()->GetTotal());
     }
 
     std::vector<IChunkPoolOutput::TCookie> SplitJob(
-        std::vector<TLegacyDataSlicePtr> unreadInputDataSlices,
+        std::vector<TDataSlicePtr> unreadInputDataSlices,
         int splitJobCount,
         IChunkPoolOutput::TCookie cookie)
     {
@@ -477,13 +500,11 @@ private:
     }
 
     IChunkPoolOutput::TCookie AddUnsplittablePrimaryDataSlice(
-        const TLegacyDataSlicePtr& dataSlice,
+        const TDataSlicePtr& dataSlice,
         IChunkPoolInput::TCookie cookie,
         i64 dataWeightPerJob,
         i64 compressedDataSizePerJob)
     {
-        YT_VERIFY(!dataSlice->IsLegacy);
-
         RowCountUntilJobSplit_ = std::nullopt;
 
         auto dataSliceCopy = CreateInputDataSlice(dataSlice);
@@ -501,7 +522,7 @@ private:
         return IChunkPoolOutput::NullCookie;
     }
 
-    bool IsDataSliceSplittable(const TLegacyDataSlicePtr& dataSlice) const
+    bool IsDataSliceSplittable(const TDataSlicePtr& dataSlice) const
     {
         if (dataSlice->Type != EDataSourceType::UnversionedTable) {
             return false;
@@ -518,7 +539,7 @@ private:
     }
 
     void AddSplittablePrimaryDataSlice(
-        const TLegacyDataSlicePtr& dataSlice,
+        const TDataSlicePtr& dataSlice,
         IChunkPoolInput::TCookie cookie)
     {
         YT_VERIFY(IsDataSliceSplittable(dataSlice));
@@ -685,10 +706,10 @@ private:
         return IChunkPoolOutput::NullCookie;
     }
 
-    std::unique_ptr<TNewJobStub>& CurrentJob()
+    std::unique_ptr<TJobStub>& CurrentJob()
     {
         if (!CurrentJob_) {
-            CurrentJob_ = std::make_unique<TNewJobStub>();
+            CurrentJob_ = std::make_unique<TJobStub>();
         }
         return CurrentJob_;
     }
@@ -725,10 +746,7 @@ void TOrderedChunkPool::RegisterMetadata(auto&& registrar)
     PHOENIX_REGISTER_FIELD(3, Stripes_);
     PHOENIX_REGISTER_FIELD(4, JobSizeConstraints_);
     PHOENIX_REGISTER_FIELD(5, Sampler_);
-    registrar.template VirtualField<6>("SupportLocality_", [] (TThis* /*this_*/, auto& context) {
-        Load<bool>(context);
-    })
-        .BeforeVersion(ESnapshotVersion::DropSupportLocality)();
+    PHOENIX_REGISTER_DELETED_FIELD(6, bool, SupportLocality_, ESnapshotVersion::DropSupportLocality);
     PHOENIX_REGISTER_FIELD(7, MaxTotalSliceCount_);
     PHOENIX_REGISTER_FIELD(8, ShouldSliceByRowIndices_);
     PHOENIX_REGISTER_FIELD(9, EnablePeriodicYielder_);
@@ -739,7 +757,8 @@ void TOrderedChunkPool::RegisterMetadata(auto&& registrar)
     PHOENIX_REGISTER_DELETED_FIELD(15, bool, UseNewSlicingImplementation_, ESnapshotVersion::RemoveOldOrderedChunkPoolSlicing);
     PHOENIX_REGISTER_FIELD(16, JobSizeAdjuster_,
         .SinceVersion(ESnapshotVersion::OrderedAndSortedJobSizeAdjuster));
-
+    PHOENIX_REGISTER_FIELD(17, AllowMultipleRangesInJob_,
+        .SinceVersion(ESnapshotVersion::RemoteCopyRangeSeparation));
 }
 
 PHOENIX_DEFINE_TYPE(TOrderedChunkPool);

@@ -27,7 +27,7 @@ inline bool IsAnonymousName(const TString& name) {
 }
 
 inline bool IsStreamingService(const TString& service) {
-    return service == NYql::RtmrProviderName || service == NYql::PqProviderName;
+    return service == NYql::PqProviderName;
 }
 
 struct TNodeWithUsageInfo: public TThrRefBase {
@@ -59,6 +59,7 @@ struct TScopedState: public TThrRefBase {
     bool SimplePgByDefault = false;
     TNamedNodesMap NamedNodes;
     THashSet<std::pair</*prefix=*/TString, /*pragma=*/TString>> ActivePragmas;
+    THashSet<std::pair</*prefix=*/TString, /*pragma=*/TString>> QueryPragmas;
 
     struct TLocal {
         TVector<std::pair<TString, TDeferredAtom>> UsedClusters;
@@ -178,6 +179,8 @@ public:
     bool UseUnordered(const TTableRef& table) const;
 
     bool SetPathPrefix(const TString& value, TMaybe<TString> arg = TMaybe<TString>());
+    void SetRelativePathPrefix(const TString& value);
+    void ResetRelativePathPrefix();
 
     TNodePtr GetPrefixedPath(const TString& service, const TDeferredAtom& cluster, const TDeferredAtom& path);
     TStringBuf GetPrefixPath(const TString& service, const TDeferredAtom& cluster) const;
@@ -269,6 +272,14 @@ public:
     TVector<NSQLTranslation::TSQLHint> PullHintForToken(
         NYql::TPosition tokenPos,
         std::function<bool(NSQLTranslation::TSQLHint)> pred);
+
+    const NSQLTranslation::TSQLHints& GetSqlHints() const {
+        return SqlHints_;
+    }
+
+    void SetSqlHints(NSQLTranslation::TSQLHints hints) {
+        SqlHints_ = std::move(hints);
+    }
 
     bool WarnUnusedHints();
 
@@ -382,13 +393,12 @@ public:
     bool PositionalUnionAll = false;
     bool BogousStarInGroupByOverJoin = false;
     bool UnorderedSubqueries = true;
-    bool PragmaDataWatermarks = true;
     bool WarnOnAnsiAliasShadowing = true;
     ui32 ResultRowsLimit = 0;
     ui64 ResultSizeLimit = 0;
     TString RuntimeLogLevel;
-    ui32 PragmaGroupByLimit = 1 << 6;
-    ui32 PragmaGroupByCubeLimit = 5;
+    ui32 PragmaGroupByLimit = Settings.GroupByLimit;
+    ui32 PragmaGroupByCubeLimit = Settings.GroupByCubeLimit;
     // if FlexibleTypes=true, emit TypeOrMember callable and resolve Type/Column uncertainty on type annotation stage, otherwise always emit Type
     bool FlexibleTypes = true;
     // see YQL-10265
@@ -408,13 +418,12 @@ public:
 
     THashMap<TString, ui32> PackageVersions;
     NYql::TWarningPolicy WarningPolicy;
-    TString PqReadByRtmrCluster;
+    bool PqReadByDq = false;
     bool EmitStartsWith = true;
     TMaybe<bool> EmitAggApply;
     bool UseBlocks = false;
     bool EmitTableSource = false;
     bool AnsiLike = false;
-    bool FeatureR010 = false; // Row pattern recognition: FROM clause
     TMaybe<bool> CompactGroupBy;
     bool BlockEngineEnable = false;
     bool BlockEngineForce = false;
@@ -428,6 +437,7 @@ public:
     bool DistinctOverKeys = false;
     bool GroupByExprAfterWhere = false;
     bool FailOnGroupByExprOverride = false;
+    bool RespectWarnPolicyForUnusedSqlHints = false;
     bool EmitUnionMerge = false;
     bool OptimizeSimpleIlike = false;
     EFlattenAndAggrExprsPersistence FlattenAndAggrExprsPersistence =
@@ -436,6 +446,7 @@ public:
     bool DebugPositions = false;
     bool WindowNewPipeline = true;
     bool YqlSelectAllowUnnamedGroupByExpr = false;
+    bool RuntimeUserAttrs = false;
     TMaybe<bool> DirectRowDependsOn;
     TVector<size_t> ForAllStatementsParts;
     TMaybe<TString> Engine;

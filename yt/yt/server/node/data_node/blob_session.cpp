@@ -237,7 +237,7 @@ private:
         auto totalSize = GetByteSize(blocks);
 
         YT_TLOG_DEBUG("Started writing blocks")
-            .With("Blocks", FormatBlocks(firstBlockIndex, firstBlockIndex + blockCount - 1))
+            .With("Blocks", FormatBlockIndexRange(firstBlockIndex, firstBlockIndex + blockCount - 1))
             .With("TotalSize", totalSize);
 
         TWallTimer timer;
@@ -255,7 +255,7 @@ private:
                 auto time = timer.GetElapsedTime();
 
                 YT_TLOG_DEBUG("Finished writing blocks")
-                    .With("Blocks", FormatBlocks(firstBlockIndex, firstBlockIndex + blockCount - 1))
+                    .With("Blocks", FormatBlockIndexRange(firstBlockIndex, firstBlockIndex + blockCount - 1))
                     .With("Time", time);
 
                 auto& performanceCounters = Location_->GetPerformanceCounters();
@@ -333,7 +333,8 @@ TBlobSession::TBlobSession(
     TStoreLocationPtr location,
     NConcurrency::TLease lease,
     TLockedChunkGuard lockedChunkGuard,
-    IChunkWriter::TWriteBlocksOptions writeBlocksOptions)
+    IChunkWriter::TWriteBlocksOptions writeBlocksOptions,
+    TWriteSessionStartCountersPtr startCounters)
     : TSessionBase(
         std::move(config),
         bootstrap,
@@ -342,7 +343,8 @@ TBlobSession::TBlobSession(
         std::move(location),
         std::move(lease),
         std::move(lockedChunkGuard),
-        std::move(writeBlocksOptions))
+        std::move(writeBlocksOptions),
+        std::move(startCounters))
     , Pipeline_(New<TBlobWritePipeline>(
         Location_,
         SessionInvoker_,
@@ -630,15 +632,18 @@ TFuture<NIO::TIOCounters> TBlobSession::DoPutBlocks(
 
     auto allPrecedingBlocksReceivedFuture = AllSucceeded(std::move(precedingBlockReceivedFutures));
 
-    if (Bootstrap_->GetDynamicConfigManager()->GetConfig()->DataNode->WaitPrecedingBlocksReceived) {
+    const auto dynamicConfig = Bootstrap_->GetDynamicConfigManager()->GetConfig()->DataNode;
+    if (dynamicConfig->WaitPrecedingBlocksReceived) {
+        auto sessionBlockReorderTimeout = dynamicConfig->SessionBlockReorderTimeout.value_or(
+            Config_->SessionBlockReorderTimeout);
         auto allPrecedingBlocksReceivedFutureWithTimeout = allPrecedingBlocksReceivedFuture
-            .WithTimeout(Config_->SessionBlockReorderTimeout)
-            .Apply(BIND([=, this, this_ = MakeStrong(this)] (const TError& error) {
+            .WithTimeout(sessionBlockReorderTimeout)
+            .Apply(BIND([=, this_ = MakeStrong(this)] (const TError& error) {
                 if (error.GetCode() == NYT::EErrorCode::Timeout) {
                     THROW_ERROR_EXCEPTION(
                         NChunkClient::EErrorCode::WriteThrottlingActive,
                         "Block reordering timeout")
-                        .With("timeout", Config_->SessionBlockReorderTimeout);
+                        .With("timeout", sessionBlockReorderTimeout);
                 }
 
                 if (!error.IsOK()) {
@@ -991,10 +996,7 @@ TFuture<ISession::TFlushBlocksResult> TBlobSession::DoFlushBlocks(int blockIndex
     if (!IsInWindow(blockIndex)) {
         YT_TLOG_DEBUG("Blocks are already flushed")
             .With("Block", blockIndex);
-        return MakeFuture(TFlushBlocksResult {
-            .IOCounters = {},
-            .ChunkWriterStatistics = New<NChunkClient::TChunkWriterStatistics>(),
-        });
+        return MakeFuture(OnBlockFlushed(blockIndex));
     }
 
     const auto& slot = GetSlot(blockIndex);
@@ -1014,19 +1016,17 @@ ISession::TFlushBlocksResult TBlobSession::OnBlockFlushed(int blockIndex)
 {
     YT_ASSERT_INVOKER_AFFINITY(SessionInvoker_);
 
-    auto flushBlocksResult = TFlushBlocksResult {
-        .IOCounters = {},
-        .ChunkWriterStatistics = New<NChunkClient::TChunkWriterStatistics>(),
-    };
-
-    if (Canceled_.load()) {
-        return flushBlocksResult;
+    if (!Canceled_.load() && IsInWindow(blockIndex)) {
+        ReleaseBlocks(blockIndex);
     }
 
-    ReleaseBlocks(blockIndex);
-
-    // The data for blob chunks is flushed to disk only when the blob session is finished, so return empty IO counters here.
-    return flushBlocksResult;
+    // Preserve FinishChunk statistics for existing clients and the I/O tracker.
+    return TFlushBlocksResult{
+        .IOCounters = {},
+        .ChunkWriterStatistics = New<NChunkClient::TChunkWriterStatistics>(),
+        .CumulativeIOConsumed = WriteBlocksOptions_.ClientOptions.ChunkWriterStatistics
+            ->DataBytesWrittenToDisk.load(std::memory_order::relaxed),
+    };
 }
 
 void TBlobSession::DoCancel(const TError& error)

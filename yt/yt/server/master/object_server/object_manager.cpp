@@ -34,6 +34,7 @@
 #include <yt/yt/server/master/security_server/user.h>
 #include <yt/yt/server/master/security_server/account.h>
 
+#include <yt/yt/server/master/sequoia_server/sequoia_manager.h>
 #include <yt/yt/server/master/sequoia_server/revision.h>
 
 #include <yt/yt/server/master/transaction_server/boomerang_tracker.h>
@@ -67,6 +68,7 @@
 #include <yt/yt/ytlib/election/cell_manager.h>
 
 #include <yt/yt/ytlib/object_client/master_ypath_proxy.h>
+#include <yt/yt/ytlib/object_client/object_service_proxy.h>
 
 #include <yt/yt/ytlib/api/native/connection.h>
 #include <yt/yt/ytlib/api/native/client.h>
@@ -466,6 +468,46 @@ public:
 
     void Invoke(const IYPathServiceContextPtr& context) override
     {
+        try {
+            GuardedInvoke(context);
+        } catch (const std::exception& ex) {
+            if (context->IsReplied()) {
+                YT_TLOG_ALERT("Exception caught while forwarding remote request; request is already replied")
+                    .With("RequestId", context->GetRequestId())
+                    .With(ex);
+            } else {
+                context->Reply(ex);
+            }
+        }
+    }
+
+    void DoWriteAttributesFragment(
+        IAsyncYsonConsumer* /*consumer*/,
+        const TAttributeFilter& /*attributeFilter*/,
+        bool /*stable*/) override
+    {
+        YT_TLOG_ALERT("TObjectManager::TRemoteProxy::DoWriteAttributesFragment called")
+            .With("ObjectId", ObjectId_)
+            .With("ForwardedCellTag", ForwardedCellTag_);
+
+        THROW_ERROR_EXCEPTION("Unexpected error: TRemoteProxy::DoWriteAttributesFragment called, please report this")
+            .With("object_id", ObjectId_)
+            .With("forwarded_cell_tag", ForwardedCellTag_);
+    }
+
+    bool ShouldHideAttributes() override
+    {
+        return false;
+    }
+
+private:
+    TBootstrap* const Bootstrap_;
+    const TObjectId ObjectId_;
+    const TCellTag ForwardedCellTag_;
+    const int ResolveDepth_;
+
+    void GuardedInvoke(const IYPathServiceContextPtr& context)
+    {
         auto* mutationContext = TryGetCurrentMutationContext();
         if (mutationContext) {
             mutationContext->SetResponseKeeperSuppressed(true);
@@ -477,10 +519,9 @@ public:
         }
 
         const auto& requestPath = GetOriginalRequestTargetYPath(context->RequestHeader());
-        context->SetRequestInfo("Method: %v.%v, Path: %v",
-            context->GetService(),
-            context->GetMethod(),
-            requestPath);
+        context->AnnotateRequest()
+            .WithFormat("Method", "%v.%v", context->GetService(), context->GetMethod())
+            .With("Path", requestPath);
 
         const auto& responseKeeper = Bootstrap_->GetHydraFacade()->GetResponseKeeper();
         auto mutationId = mutationContext ? mutationContext->Request().MutationId : NullMutationId;
@@ -614,27 +655,17 @@ public:
         auto counters = requestProfilingManager->GetCounters(context->GetAuthenticationIdentity().UserTag, context->GetMethod());
         counters->AutomatonForwardingRequestCounter.Increment();
 
-        YT_LOG_DEBUG("Forwarding object request (RequestId: %v -> %v, Method: %v.%v, "
-            "TargetPath: %v, %v%v%v, Mutating: %v, CellTag: %v, PeerKind: %v)",
-            context->GetRequestId(),
-            forwardedRequestId,
-            context->GetService(),
-            context->GetMethod(),
-            targetPathRewrite,
-            MakeFormatterWrapper([&] (auto* builder) {
-                if (!additionalPathRewrites.empty()) {
-                    builder->AppendFormat("AdditionalPaths: %v, ", additionalPathRewrites);
-                }
-            }),
-            MakeFormatterWrapper([&] (auto* builder) {
-                if (!additionalPathRewrites.empty()) {
-                    builder->AppendFormat("PrerequisiteRevisionPaths: %v, ", prerequisiteRevisionPathRewrites);
-                }
-            }),
-            context->GetAuthenticationIdentity(),
-            isMutating,
-            ForwardedCellTag_,
-            peerKind);
+        YT_TLOG_DEBUG("Forwarding object request")
+            .WithFormat("RequestId", "%v -> %v", context->GetRequestId(), forwardedRequestId)
+            .With("Service", context->GetService())
+            .With("Method", context->GetMethod())
+            .With("TargetPath", targetPathRewrite)
+            .WithIf(!additionalPathRewrites.empty(), "AdditionalPaths", additionalPathRewrites)
+            .WithIf(!prerequisiteRevisionPathRewrites.empty(), "PrerequisiteRevisionPaths", prerequisiteRevisionPathRewrites)
+            .With("AuthenticationIdentity", context->GetAuthenticationIdentity())
+            .With("Mutating", isMutating)
+            .With("CellTag", ForwardedCellTag_)
+            .With("PeerKind", peerKind);
 
         batchReq->Invoke().Subscribe(
             BIND([
@@ -674,31 +705,6 @@ public:
                 }
             }).Via(Bootstrap_->GetHydraFacade()->GetGuardedAutomatonInvoker(EAutomatonThreadQueue::ObjectService)));
     }
-
-    void DoWriteAttributesFragment(
-        IAsyncYsonConsumer* /*consumer*/,
-        const TAttributeFilter& /*attributeFilter*/,
-        bool /*stable*/) override
-    {
-        YT_TLOG_ALERT("TObjectManager::TRemoteProxy::DoWriteAttributesFragment called")
-            .With("ObjectId", ObjectId_)
-            .With("ForwardedCellTag", ForwardedCellTag_);
-
-        THROW_ERROR_EXCEPTION("Unexpected error: TRemoteProxy::DoWriteAttributesFragment called, please report this")
-            .With("object_id", ObjectId_)
-            .With("forwarded_cell_tag", ForwardedCellTag_);
-    }
-
-    bool ShouldHideAttributes() override
-    {
-        return false;
-    }
-
-private:
-    TBootstrap* const Bootstrap_;
-    const TObjectId ObjectId_;
-    const TCellTag ForwardedCellTag_;
-    const int ResolveDepth_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2033,17 +2039,15 @@ TFuture<TSharedRefArray> TObjectManager::ForwardObjectRequest(
     batchReq->AddRequestMessage(std::move(forwardedRequestMessage));
     SetAuthenticationIdentity(batchReq, identity);
 
-    YT_LOG_DEBUG("Forwarding object request (RequestId: %v -> %v, Method: %v.%v, Path: %v, %v, Mutating: %v, "
-        "CellTag: %v, ChannelKind: %v)",
-        requestId,
-        batchReq->GetRequestId(),
-        header.service(),
-        header.method(),
-        ypathExt.target_path(),
-        identity,
-        ypathExt.mutating(),
-        cellTag,
-        peerKind);
+    YT_TLOG_DEBUG("Forwarding object request")
+        .WithFormat("RequestId", "%v -> %v", requestId, batchReq->GetRequestId())
+        .With("Service", header.service())
+        .With("Method", header.method())
+        .With("Path", ypathExt.target_path())
+        .With("AuthenticationIdentity", identity)
+        .With("Mutating", ypathExt.mutating())
+        .With("CellTag", cellTag)
+        .With("ChannelKind", peerKind);
 
     return batchReq->Invoke().Apply(BIND([=] (const TObjectServiceProxy::TErrorOrRspExecuteBatchPtr& batchRspOrError) {
         if (!batchRspOrError.IsOK()) {
@@ -2344,8 +2348,15 @@ TFuture<void> TObjectManager::DestroySequoiaObjects(std::unique_ptr<NProto::TReq
     return Bootstrap_
         ->GetSequoiaConnection()
         ->CreateClient(GetRootAuthenticationIdentity())
-        ->StartTransaction(ESequoiaTransactionType::ObjectDestruction)
+        ->StartTransaction(
+            ESequoiaTransactionType::ObjectDestruction,
+            /*options*/ {},
+            TSequoiaTransactionOptions{.Features = Bootstrap_->GetSequoiaManager()->GetSequoiaTransactionFeatures()})
         .Apply(BIND([request = std::move(request), this, this_ = MakeStrong(this)] (const ISequoiaTransactionPtr& transaction) mutable {
+            const auto& features = transaction->GetFeatures();
+            auto useFineGrainedOrderingTags = features.UseFineGrainedOrderingTags.value_or(false);
+
+            THashSet<std::string> tags;
             for (const auto& protoId : request->object_ids()) {
                 auto id = FromProto<TObjectId>(protoId);
                 auto type = TypeFromId(id);
@@ -2355,6 +2366,17 @@ TFuture<void> TObjectManager::DestroySequoiaObjects(std::unique_ptr<NProto::TReq
                     continue;
                 }
                 handler->DestroySequoiaObject(object, transaction);
+
+                if (useFineGrainedOrderingTags) {
+                    tags.insert(ToString(id));
+                }
+            }
+
+            if (features.UseCoarseGrainedOrderingTags.value_or(true)) {
+                transaction->AddStrongOrderingTags(Bootstrap_->GetCellTag(), {NApi::NNative::SequoiaCypressOrderingTag});
+            }
+            if (useFineGrainedOrderingTags) {
+                transaction->AddStrongOrderingTags(Bootstrap_->GetCellTag(), tags);
             }
 
             transaction->AddTransactionAction(

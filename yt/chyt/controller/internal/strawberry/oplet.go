@@ -1,7 +1,6 @@
 package strawberry
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"reflect"
@@ -24,7 +23,6 @@ type persistentStateModification int
 
 const (
 	beginPersistentStateModification persistentStateModification = iota
-	addOpletInfo
 	addYTOpControllerSnapshot
 )
 
@@ -37,6 +35,7 @@ type AgentInfo struct {
 	ServiceToken       string // TODO: move me somewhere
 	Family             string
 	OperationNamespace string
+	BaseACL            []yt.ACE
 	// RobotUsername is needed for a temporary workaround to add the robot to the operation acl.
 	//
 	// TODO(dakovalkov): remove after YT-17557
@@ -279,6 +278,22 @@ func (oplet *Oplet) BrokenReason() string {
 	}
 }
 
+func (oplet *Oplet) SetExceedingFailedJobsLimitFailure() {
+	oplet.infoState.ExceedingFailedJobsLimit = true
+}
+
+func (oplet *Oplet) ClearExceedingFailedJobsLimitFailure() {
+	oplet.infoState.ExceedingFailedJobsLimit = false
+}
+
+// JobCount returns the saved job count and whether it is known.
+func (oplet *Oplet) JobCount() (int, bool) {
+	if oplet.persistentState.YTOpJobCount == nil {
+		return 0, false
+	}
+	return *oplet.persistentState.YTOpJobCount, true
+}
+
 func (oplet *Oplet) BrokenError() error {
 	switch {
 	case oplet.stateCorrupted():
@@ -334,13 +349,8 @@ func (oplet *Oplet) SetSecret(secret string, value any) {
 	oplet.secrets[secret] = value
 }
 
-func (oplet *Oplet) SetOpletInfo(info any) {
-	parsedInfo, err := yson.Marshal(info)
-	if err != nil {
-		oplet.l.Error("Failed to marshal oplet info", log.Error(err))
-		return
-	}
-	oplet.persistentState.OpletInfo = parsedInfo
+func (oplet *Oplet) OpletInfo() yson.RawValue {
+	return oplet.persistentState.OpletInfo
 }
 
 type OpletState string
@@ -376,6 +386,9 @@ func (oplet *Oplet) Health() (health OpletHealth, healthReason string) {
 	}
 	if oplet.infoState.Error != nil {
 		return OpletHealthFailed, "info state contains error"
+	}
+	if oplet.HasYTOperation() && oplet.infoState.ExceedingFailedJobsLimit {
+		return OpletHealthFailed, "crash loop detected: too many jobs are simultaneously unavailable"
 	}
 
 	if ok, reason := oplet.needsRestart(); ok {
@@ -576,6 +589,11 @@ func (oplet *Oplet) needFlushPersistentState() bool {
 }
 
 func (oplet *Oplet) setError(err error) {
+	if err == nil {
+		oplet.clearError()
+		return
+	}
+
 	oplet.l.Debug("oplet is in error state", log.Error(err))
 	stringError := err.Error()
 	oplet.infoState.Error = &stringError
@@ -617,11 +635,11 @@ func (oplet *Oplet) needsRestart() (needsRestart bool, reason string) {
 	if oplet.secretsRevision != oplet.persistentState.YTOpSecretsRevision {
 		return true, "secrets changed"
 	}
-	if oplet.strawberrySpeclet.RestartOnControllerChangeOrDefault() {
-		snapshot, err := oplet.c.GetControllerSnapshot()
+	if oplet.strawberrySpeclet.RestartOnControllerChangeOrDefault() && oplet.persistentState.YTOpControllerSnapshot != nil {
+		outdated, err := oplet.c.IsControllerSnapshotOutdated(oplet.persistentState.YTOpControllerSnapshot, oplet)
 		if err != nil {
-			oplet.l.Error("failed to get controller snapshot", log.Error(err))
-		} else if oplet.persistentState.YTOpControllerSnapshot != nil && !bytes.Equal(oplet.persistentState.YTOpControllerSnapshot, snapshot) {
+			oplet.l.Error("failed to compare controller snapshots", log.Error(err))
+		} else if outdated {
 			return true, "controller snapshot changed"
 		}
 	}
@@ -718,9 +736,6 @@ func (oplet *Oplet) needsModifyState() persistentStateModification {
 	if oplet.persistentState.YTOpControllerSnapshot == nil {
 		return addYTOpControllerSnapshot
 	}
-	if oplet.persistentState.OpletInfo == nil {
-		return addOpletInfo
-	}
 
 	return beginPersistentStateModification
 }
@@ -735,16 +750,30 @@ func (oplet *Oplet) modifyPersistentState(ctx context.Context, mod persistentSta
 		oplet.persistentState.YTOpControllerSnapshot = snapshot
 	}
 
-	if mod >= addOpletInfo {
-		info, err := oplet.c.GetOpletInfo(ctx, oplet)
-		if err != nil {
-			oplet.l.Error("failet to get oplet info", log.Error(err))
-			return err
-		}
-		oplet.SetOpletInfo(info)
-	}
-
 	return nil
+}
+
+func integerAsInt(value any) (int, bool) {
+	var n uint64
+	switch v := value.(type) {
+	case int:
+		n = uint64(v)
+	case int64:
+		n = uint64(v)
+	case uint64:
+		n = v
+	case *uint64:
+		if v == nil {
+			return 0, false
+		}
+		n = *v
+	default:
+		return 0, false
+	}
+	if n > uint64(^uint(0)>>1) {
+		return 0, false
+	}
+	return int(n), true
 }
 
 func (oplet *Oplet) needsBackoff() bool {
@@ -1029,6 +1058,21 @@ func (oplet *Oplet) getOpACL() (acl []yt.ACE) {
 			},
 		}
 	}
+	for _, ace := range oplet.agentInfo.BaseACL {
+		var permissions []yt.Permission
+		for _, permission := range ace.Permissions {
+			if permission == yt.PermissionRead || permission == yt.PermissionManage {
+				permissions = append(permissions, permission)
+			}
+		}
+		if len(permissions) > 0 {
+			acl = append(acl, yt.ACE{
+				Action:      ace.Action,
+				Subjects:    ace.Subjects,
+				Permissions: permissions,
+			})
+		}
+	}
 	readACL := toOperationACL(oplet.acl)
 	if readACL != nil {
 		acl = append(acl, readACL...)
@@ -1054,15 +1098,62 @@ func (oplet *Oplet) getUserClient() (yt.Client, error) {
 // TODO(iharbychyk): add new package for strawberry-specific error codes
 const CodePoolIsNotSet yterrors.ErrorCode = 800000
 
-func (oplet *Oplet) restartOp(ctx context.Context, reason string) error {
+func (oplet *Oplet) operationStartChecksum(controllerSnapshot, preparedOpletInfo yson.RawValue) (string, error) {
+	encoder := NewYsonHashEncoder()
+	var snapshot, opletInfo any
+	if len(controllerSnapshot) > 0 {
+		snapshot = controllerSnapshot
+	}
+	if len(preparedOpletInfo) > 0 {
+		opletInfo = preparedOpletInfo
+	}
+
+	// These key incarnation properties identify changes in oplet state that prevent adoption.
+	for _, value := range []any{
+		oplet.persistentState.SpecletRevision,
+		oplet.specletYson,
+		oplet.secretsRevision,
+		snapshot,
+		opletInfo,
+	} {
+		if err := encoder.Encode(value); err != nil {
+			return "", err
+		}
+	}
+	return encoder.Sum(), nil
+}
+
+func (oplet *Oplet) MatchesNextIncarnation(op *yt.OperationStatus) bool {
+	incarnation, ok := integerAsInt(op.RuntimeParameters.Annotations["strawberry_incarnation"])
+	return ok && incarnation == oplet.NextIncarnationIndex()
+}
+
+func (oplet *Oplet) getOperationByAlias(ctx context.Context, alias string) (*yt.OperationStatus, error) {
+	includeRuntime := true
+	op, err := oplet.systemClient.GetOperationByAlias(ctx, alias, &yt.GetOperationOptions{
+		Attributes: []string{
+			"id", "state", "start_time", "finish_time", "suspended", "runtime_parameters",
+		},
+		IncludeRuntime: &includeRuntime,
+	})
+	if yterrors.ContainsResolveError(err) ||
+		yterrors.ContainsErrorCode(err, yterrors.CodeNoSuchOperation) ||
+		yterrors.ContainsErrorCode(err, yterrors.CodeAPINoSuchOperation) ||
+		yterrors.ContainsMessageRE(err, unknownOperationAliasRE) {
+		return nil, nil
+	}
+	return op, err
+}
+
+func (oplet *Oplet) restartOp(ctx context.Context, reason string) (err error) {
+	defer func() { oplet.setError(err) }()
+
 	oplet.l.Info("restarting operation",
 		log.Int("next_incarnation_index", oplet.NextIncarnationIndex()),
 		log.String("reason", reason))
 
 	if oplet.strawberrySpeclet.Pool == nil && oplet.strawberrySpeclet.StageOrDefault() != StageUntracked {
-		err := yterrors.Err(CodePoolIsNotSet, "can't run operation because pool is not set")
-		oplet.setError(err)
-		return err
+		return yterrors.Err(CodePoolIsNotSet, "can't run operation because pool is not set")
 	}
 
 	if oplet.passTimeout != 0 {
@@ -1076,35 +1167,40 @@ func (oplet *Oplet) restartOp(ctx context.Context, reason string) error {
 
 	controllerSnapshot, err := oplet.c.GetControllerSnapshot()
 	if err != nil {
-		oplet.setError(err)
 		return err
 	}
 
-	spec, description, annotations, runAsUser, err := oplet.c.Prepare(ctx, oplet)
+	prepared, err := oplet.c.Prepare(ctx, oplet)
 	if err != nil {
-		oplet.setError(err)
+		return err
+	}
+
+	spec := prepared.Spec
+
+	checksum, err := oplet.operationStartChecksum(controllerSnapshot, prepared.OpletInfo)
+	if err != nil {
 		return err
 	}
 
 	// Extend our own annotations and description by controller's annotation and description.
-	strawberryAnnotations := oplet.OpAnnotations()
+	strawberryAnnotations := oplet.OpAnnotations(checksum)
 	for k, v := range strawberryAnnotations {
-		annotations[k] = v
+		prepared.Annotations[k] = v
 	}
 	strawberryDescription := oplet.OpDescription()
 	for k, v := range strawberryDescription {
-		description[k] = v
+		prepared.Description[k] = v
 	}
 
 	// TODO(gudqeit): move speclet patching to a separate method.
-	spec["annotations"] = annotations
-	spec["description"] = description
+	spec["annotations"] = prepared.Annotations
+	spec["description"] = prepared.Description
 
+	operationAlias := "*" + oplet.alias
 	if oplet.agentInfo.UseFamilyPrefixInOpAlias {
-		spec["alias"] = "*" + oplet.c.Family() + OpAliasFamilyDelimiter + oplet.alias
-	} else {
-		spec["alias"] = "*" + oplet.alias
+		operationAlias = "*" + oplet.c.Family() + OpAliasFamilyDelimiter + oplet.alias
 	}
+	spec["alias"] = operationAlias
 
 	if oplet.strawberrySpeclet.Pool != nil {
 		spec["pool"] = *oplet.strawberrySpeclet.Pool
@@ -1126,6 +1222,7 @@ func (oplet *Oplet) restartOp(ctx context.Context, reason string) error {
 		networkProject = oplet.strawberrySpeclet.NetworkProject
 	}
 
+	var jobCount *int
 	if _, ok := spec["tasks"]; ok {
 		tasks, ok := spec["tasks"].(map[string]any)
 		if !ok {
@@ -1133,6 +1230,7 @@ func (oplet *Oplet) restartOp(ctx context.Context, reason string) error {
 				yterrors.Attr("tasks", spec["tasks"]),
 				yterrors.Attr("type", reflect.TypeOf(spec["tasks"]).String()))
 		}
+		totalJobCount := 0
 		for key := range tasks {
 			task, ok := tasks[key].(map[string]any)
 			if !ok {
@@ -1141,6 +1239,13 @@ func (oplet *Oplet) restartOp(ctx context.Context, reason string) error {
 					yterrors.Attr("task", tasks[key]),
 					yterrors.Attr("type", reflect.TypeOf(tasks[key]).String()))
 			}
+			count, ok := integerAsInt(task["job_count"])
+			if !ok {
+				return yterrors.Err("invalid task job_count",
+					yterrors.Attr("task_name", key),
+					yterrors.Attr("job_count", task["job_count"]))
+			}
+			totalJobCount += count
 			if networkProject != nil {
 				task["network_project"] = *networkProject
 			}
@@ -1148,6 +1253,7 @@ func (oplet *Oplet) restartOp(ctx context.Context, reason string) error {
 				task["layer_paths"] = oplet.strawberrySpeclet.LayerPaths
 			}
 		}
+		jobCount = &totalJobCount
 	}
 
 	spec["secure_vault"] = oplet.Secrets()
@@ -1158,67 +1264,76 @@ func (oplet *Oplet) restartOp(ctx context.Context, reason string) error {
 
 	if oplet.HasYTOperation() {
 		if err := oplet.abortOp(ctx, "operation restart"); err != nil {
-			oplet.setError(err)
 			return err
 		}
 	}
 
 	var ytClientForOpStart yt.Client
-	if runAsUser {
+	if prepared.RunAsUser {
 		ytClientForOpStart, err = oplet.getUserClient()
 		if err != nil {
-			oplet.setError(err)
 			return err
 		}
 	} else {
 		ytClientForOpStart = oplet.systemClient
 	}
 
+	var adoptedOp *yt.OperationStatus
 	opID, err := ytClientForOpStart.StartOperation(ctx, yt.OperationVanilla, spec, nil)
-
-	// TODO(dakovalkov): Add GetOperationByAlias in go yt api and eliminate this.
 	if yterrors.ContainsMessageRE(err, aliasAlreadyUsedRE) {
-		oplet.l.Debug("alias is already used, aborting previous operation")
-		// Try to abort already existing operation with that alias.
-		oldOpID := extractOpID(err)
-		oplet.l.Debug("aborting operation", log.String("operation_id", oldOpID.String()))
-		abortErr := oplet.systemClient.AbortOperation(ctx, yt.OperationID(oldOpID), &yt.AbortOperationOptions{})
-		if abortErr != nil {
-			oplet.setError(abortErr)
-			return abortErr
+		op, lookupErr := oplet.getOperationByAlias(ctx, operationAlias)
+		if lookupErr != nil {
+			return lookupErr
 		}
-		opID, err = ytClientForOpStart.StartOperation(ctx, yt.OperationVanilla, spec, nil)
+		if op != nil && !op.State.IsFinished() {
+			if oplet.MatchesNextIncarnation(op) && op.RuntimeParameters.Annotations["strawberry_start_checksum"] == checksum {
+				opID, err = op.ID, nil
+				adoptedOp = op
+				opACL = op.RuntimeParameters.ACL
+			} else {
+				if err := oplet.systemClient.AbortOperation(ctx, op.ID, nil); err != nil {
+					return err
+				}
+			}
+		}
+		if adoptedOp == nil {
+			opID, err = ytClientForOpStart.StartOperation(ctx, yt.OperationVanilla, spec, nil)
+		}
 	}
 
 	if err != nil {
-		oplet.setError(err)
 		return err
-	} else {
-		oplet.clearError()
 	}
 
+	oplet.persistentState.OpletInfo = prepared.OpletInfo
 	oplet.persistentState.YTOpID = opID
-	oplet.persistentState.YTOpState = yt.StateInitializing
-	oplet.persistentState.YTOpSuspended = false
-	oplet.persistentState.ResumeMarker = oplet.strawberrySpeclet.ResumeMarker
-	oplet.persistentState.ConsecutiveBrokenRestartAttempts = 0
-	oplet.infoState.YTOpStartTime = yson.Time{}
-	oplet.infoState.YTOpFinishTime = yson.Time{}
+	if adoptedOp != nil {
+		oplet.UpdateOpStatus(adoptedOp)
+		oplet.persistentState.YTOpSuspended = adoptedOp.Suspended
+	} else {
+		oplet.persistentState.YTOpState = yt.StateInitializing
+		oplet.persistentState.YTOpSuspended = false
+		oplet.infoState.YTOpStartTime = yson.Time{}
+		oplet.infoState.YTOpFinishTime = yson.Time{}
+	}
+	oplet.persistentState.YTOpJobCount = jobCount
 
+	oplet.persistentState.ResumeMarker = oplet.strawberrySpeclet.ResumeMarker
 	oplet.persistentState.YTOpSpeclet = oplet.specletYson
 	oplet.persistentState.YTOpSpecletRevision = oplet.persistentState.SpecletRevision
-	oplet.persistentState.YTOpControllerSnapshot = controllerSnapshot
-
-	oplet.ytOpStrawberrySpeclet = oplet.strawberrySpeclet
-	oplet.ytOpControllerSpeclet = oplet.controllerSpeclet
-
 	oplet.persistentState.YTOpSecretsRevision = oplet.secretsRevision
+	oplet.persistentState.YTOpControllerSnapshot = controllerSnapshot
+	oplet.persistentState.ConsecutiveBrokenRestartAttempts = 0
 
 	oplet.persistentState.YTOpACL = opACL
 	oplet.persistentState.YTOpPool = oplet.strawberrySpeclet.Pool
 	oplet.persistentState.YTOpPoolTrees = oplet.strawberrySpeclet.PoolTrees
 
 	oplet.persistentState.IncarnationIndex++
+
+	oplet.ytOpStrawberrySpeclet = oplet.strawberrySpeclet
+	oplet.ytOpControllerSpeclet = oplet.controllerSpeclet
+	oplet.ClearExceedingFailedJobsLimitFailure()
 
 	oplet.l.Info("operation started",
 		log.String("alias", oplet.alias),

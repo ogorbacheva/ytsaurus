@@ -1,4 +1,4 @@
-from yt_env_setup import YTEnvSetup, wait
+from yt_env_setup import YTEnvSetup, wait, with_portals_dir
 
 from yt_commands import (
     assert_yt_error, authors, create, ls, get, set, copy, move, remove, create_domestic_medium, exists, multiset_attributes,
@@ -6,7 +6,7 @@ from yt_commands import (
     remove_group, remove_user, start_transaction, lock, read_table, write_table, alter_table, map,
     set_account_disk_space_limit, raises_yt_error, gc_collect, build_snapshot, create_access_control_object_namespace,
     create_access_control_object, get_active_primary_master_leader_address, concatenate, get_driver,
-    abort_transaction, unlock,
+    abort_transaction, unlock, make_rl_ace,
 )
 
 from yt_type_helpers import make_schema
@@ -21,15 +21,6 @@ import yt.yson as yson
 import pytest
 
 ##################################################################
-
-
-def make_rl_ace(users, row_access_predicate=None, mode=None, permission="read"):
-    ace = make_ace("allow", users, permission)
-    if row_access_predicate is not None:
-        ace["row_access_predicate"] = row_access_predicate
-    if mode is not None:
-        ace["inapplicable_row_access_predicate_mode"] = mode
-    return ace
 
 
 class TestCheckPermissionProfiling(YTEnvSetup):
@@ -176,7 +167,7 @@ class CheckPermissionBase(YTEnvSetup):
         assert check_permission("guest", "read", "//sys/chunks")["action"] == "allow"
 
     @authors("kiselyovp")
-    @not_implemented_in_sequoia
+    @not_implemented_in_sequoia  # YT-24542: "owner" ACE subject.
     def test_owner_user(self):
         create("map_node", "//tmp/x")
         create_user("u1")
@@ -193,7 +184,7 @@ class CheckPermissionBase(YTEnvSetup):
         assert check_permission("u2", "remove", "//tmp/x/2")["action"] == "allow"
 
     @authors("kiselyovp")
-    @not_implemented_in_sequoia
+    @not_implemented_in_sequoia  # YT-24542: "owner" ACE subject.
     def test_owner_group(self):
         create("map_node", "//tmp/x")
         create_user("u1")
@@ -1253,7 +1244,6 @@ class TestCypressAcls(CheckPermissionBase):
         assert get("//tmp/foo", authenticated_user="u") == {"bar": {"var": yson.YsonEntity()}}
 
     @authors("savrus")
-    @not_implemented_in_sequoia
     def test_safe_mode(self):
         create_user("u")
         with raises_yt_error("Access denied for user .*: .* permission for .* is not allowed by any matching ACE"):
@@ -1555,12 +1545,6 @@ class TestCypressAcls(CheckPermissionBase):
     @authors("shakurov", "danilalexeev")
     @pytest.mark.parametrize("removal", ["abort", "unlock"])
     def test_orphaned_node(self, removal):
-        if removal == "unlock":
-            # Using unlock() on snapshot branch leads to
-            # "Non-zero reference counter after object removal" alert.
-            # TODO(kvk1920): investigate it.
-            pytest.skip()
-
         create_user("u")
 
         create(
@@ -1641,7 +1625,6 @@ class TestCypressAcls(CheckPermissionBase):
         self._test_columnar_acl_copy_yt_12749("//tmp", "//tmp")
 
     @authors("danilalexeev")
-    @not_implemented_in_sequoia
     def test_check_all_ace_columns_full_read(self):
         create_user("u1")
         create_user("u2")
@@ -1936,7 +1919,6 @@ class TestCypressAcls(CheckPermissionBase):
             set("//tmp/dir/@acl/0/subject_tag_filter", "&".join([f"tag_{i}" for i in range(10)]))
 
     @authors("danilalexeev")
-    @not_implemented_in_sequoia
     def test_tag_filter_with_columnar_ace(self):
         create_user("u")
         set("//sys/users/u/@tags", ["u"])
@@ -1962,7 +1944,6 @@ class TestCypressAcls(CheckPermissionBase):
             read_table("//tmp/t{secret}", authenticated_user="u")
 
     @authors("h0pless")
-    @not_implemented_in_sequoia
     def test_disable_subject_tag_filters(self):
         create_user("George50")
         set("//sys/users/George50/@tags", ['cool', 'lonely'])
@@ -2003,7 +1984,6 @@ class TestCypressAcls(CheckPermissionBase):
             )
 
     @authors("kivedernikov")
-    @not_implemented_in_sequoia
     def test_permissions_concatenate(self):
         create_user("u1")
         create_group("g1")
@@ -2348,6 +2328,51 @@ class TestRowAcls(YTEnvSetup):
         # Just check for sanity.
         with raises_yt_error():
             self._read("no_read")
+
+    @authors("coteeq")
+    @pytest.mark.parametrize("optimize_for", ["scan", "lookup"])
+    def test_authenticated_user(self, optimize_for):
+        users = ["val_2", "val_9", "no_matching_rows"]
+        for user in users:
+            create_user(user)
+
+        self._create_and_write_table(
+            [make_rl_ace(users), make_rl_ace(users, 'col2 = [$authenticated_user]')],
+            optimize_for,
+        )
+        rows = self._rows(*range(2, 10))
+
+        for user in users:
+            expected = [row for row in rows if row["col2"] == user]
+            assert self._read(user) == expected
+            assert self._read(user, path="//tmp/t{col1}") == [
+                {"col1": row["col1"]} for row in expected
+            ]
+
+        assert read_table("//tmp/t") == rows
+
+    @authors("coteeq")
+    @pytest.mark.parametrize("optimize_for", ["scan", "lookup"])
+    def test_authenticated_user_without_table_columns(self, optimize_for):
+        users = ["allowed_user", "denied_user"]
+        for user in users:
+            create_user(user)
+
+        self._create_and_write_table(
+            [
+                make_rl_ace(users),
+                make_rl_ace(users, '[$authenticated_user] = "allowed_user"'),
+            ],
+            optimize_for,
+        )
+        rows = self._rows(*range(2, 10))
+
+        assert self._read("allowed_user") == rows
+        assert self._read("denied_user") == []
+        assert self._read("allowed_user", path="//tmp/t{col1}") == [
+            {"col1": row["col1"]} for row in rows
+        ]
+        assert self._read("denied_user", path="//tmp/t{col1}") == []
 
     @authors("coteeq")
     def test_has_row_level_ace_attribute(self):
@@ -2857,6 +2882,7 @@ class TestCypressAclsPortal(TestCypressAclsMulticell):
     }
 
     @authors("shakurov")
+    @with_portals_dir
     def test_columnar_acl_copy_yt_12749(self):
         set(
             "//sys/@config/multicell_manager/cell_descriptors",
@@ -2874,6 +2900,7 @@ class TestCypressAclsPortal(TestCypressAclsMulticell):
         self._test_columnar_acl_copy_yt_12749("//portals/p", "//tmp")
 
     @authors("shakurov")
+    @with_portals_dir
     def test_special_acd_holders(self):
         super(TestCypressAclsPortal, self).test_special_acd_holders()
 

@@ -1,4 +1,5 @@
 #include "private.h"
+#include "resource_instances.h"
 
 #include "job_balancer.h"
 #include "job_balancer_common.h"
@@ -13,12 +14,17 @@
 #include <yt/yt/flow/library/cpp/common/resource_controller.h>
 #include <yt/yt/flow/library/cpp/common/resource_manager.h>
 #include <yt/yt/flow/library/cpp/common/state.h>
+#include <yt/yt/flow/library/cpp/common/trigger_condition.h>
 
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
+#include <yt/yt/flow/library/cpp/partitioning/partitioning_coordinator.h>
 
 #include <yt/yt/flow/library/cpp/client/public.h>
 
+#include <yt/yt/core/profiling/timing.h>
+
 #include <yt/yt/core/ytree/ephemeral_node_factory.h>
+#include <yt/yt/core/ytree/fluent.h>
 
 #include <library/cpp/iterator/concatenate.h>
 
@@ -68,7 +74,6 @@ public:
         THROW_ERROR_EXCEPTION_UNLESS(State_, "Initial JobManagerState cannot be null");
 
         THashSet<TWorkerGroupId> workerGroups;
-        auto computationControllerCommonContext = New<TComputationControllerCommonContext>();
 
         // Collect the controller-side required resources across all computations and load them
         // once. LoadRequiredResources also drives the always-on resources, so it is called even
@@ -87,10 +92,11 @@ public:
         for (const auto& [computationId, spec] : Spec_->Computations) {
             const auto dynamicSpec = GetOrDefault(DynamicSpec_->Computations, computationId, New<TDynamicComputationSpec>());
             workerGroups.insert(spec->WorkerGroup);
-            auto context = New<TComputationControllerContext>(computationControllerCommonContext);
+            auto context = New<TComputationControllerContext>();
             context->ComputationSpec = spec;
             context->ComputationId = computationId;
             context->TimeProvider = Context_->TimeProvider;
+            context->VersionProvider = Context_->VersionProvider;
             context->Profiler = WithPipelineRelatedTags(
                 ControllerProfiler()
                     .WithPrefix("/computation")
@@ -118,7 +124,8 @@ public:
                 .With("ComputationId", computationId);
             try {
                 auto controller = TRegistry::Get()->CreateComputationController(context, dynamicContext);
-                controller->Init(StateManager_->CreateContext(computationId));
+                auto initContext = StateManager_->CreateContext(computationId);
+                controller->Init(initContext);
                 ComputationControllers_[computationId] = controller;
             } catch (const std::exception& ex) {
                 THROW_ERROR_EXCEPTION("Failed to create computation controller")
@@ -127,13 +134,25 @@ public:
             }
         }
 
+        PartitioningCoordinator_ = New<NPartitioning::TPartitioningCoordinator>(
+            ComputationControllers_,
+            Spec_,
+            StateManager_->CreatePartitioningContext(),
+            Logger(),
+            PublicControllerLogger(),
+            Profiler_.WithPrefix("/partitioning"),
+            Context_->StatusProfiler->WithPrefix("/partitioning"));
+
         for (const auto& [resourceId, resourceSpec] : Spec_->Resources) {
             auto resourceControllerContext = New<TResourceControllerContext>();
             resourceControllerContext->ResourceId = resourceId;
             resourceControllerContext->ResourceSpec = resourceSpec;
+            resourceControllerContext->PipelineAuthenticator = PipelineAuthenticator_;
             resourceControllerContext->ClientsCache = Context_->ClientsCache;
+            resourceControllerContext->HttpClient = Context_->HttpClient;
             resourceControllerContext->PipelinePath = Context_->PipelinePath;
             resourceControllerContext->Invoker = Context_->MainCycleInvoker;
+            resourceControllerContext->TimeProvider = Context_->TimeProvider;
             resourceControllerContext->Logger = Logger().WithTag("ResourceController", resourceId);
             resourceControllerContext->Profiler = WithPipelineRelatedTags(
                 ControllerProfiler()
@@ -153,7 +172,9 @@ public:
                     dynamicResourceControllerContext);
                 YT_VERIFY(resourceController);
                 resourceController->Init(StateManager_->CreateResourceContext(resourceId));
-                EmplaceOrCrash(ResourceControllers_, resourceId, TResourceControllerEntry{.Controller = std::move(resourceController)});
+                EmplaceOrCrash(ResourceControllers_, resourceId, TResourceControllerEntry{
+                        .Controller = std::move(resourceController),
+                                                                 });
             } catch (const std::exception& ex) {
                 THROW_ERROR_EXCEPTION("Failed to create resource controller")
                     .With("resource_id", resourceId)
@@ -187,8 +208,14 @@ public:
         }
     }
 
+    void BeginIteration(const TFlowViewPtr& committedFlowView) override
+    {
+        PartitioningCoordinator_->BeginIteration(committedFlowView);
+    }
+
     void Reconfigure(TDynamicPipelineSpecPtr dynamicSpec) override
     {
+        auto previousDynamicSpec = DynamicSpec_;
         DynamicSpec_ = std::move(dynamicSpec);
 
         ActualizeBalancing();
@@ -204,10 +231,28 @@ public:
             controller->Reconfigure(dynamicContext);
         }
 
-        for (const auto& [resourceId, entry] : ResourceControllers_) {
+        for (auto& [resourceId, entry] : ResourceControllers_) {
+            auto previousDynamicResourceSpec = GetOrDefault(
+                previousDynamicSpec->Resources,
+                resourceId,
+                New<TDynamicResourceSpec>());
+            auto dynamicResourceSpec = GetOrDefault(
+                DynamicSpec_->Resources,
+                resourceId,
+                New<TDynamicResourceSpec>());
+            if (NYTree::AreNodesEqual(
+                NYTree::ConvertToNode(previousDynamicResourceSpec),
+                NYTree::ConvertToNode(dynamicResourceSpec)))
+            {
+                continue;
+            }
+
             auto dynamicContext = New<TDynamicResourceControllerContext>();
-            dynamicContext->DynamicResourceSpec = GetOrDefault(DynamicSpec_->Resources, resourceId, New<TDynamicResourceSpec>());
+            dynamicContext->DynamicResourceSpec = std::move(dynamicResourceSpec);
             entry.Controller->Reconfigure(dynamicContext);
+            if (entry.PublishedTarget->GetValue()) {
+                entry.PublishedTarget->Bump(Context_->VersionProvider);
+            }
         }
 
         // Reconfigure resources.
@@ -243,8 +288,12 @@ public:
         }
         {
             THashSet<TComputationId> uncoveredComputations;
-            for (const auto& [computationId, controller] : ComputationControllers_) {
-                if (!controller->IsFullCoverage(groupedPartitions[computationId], flowView)) {
+            for (const auto& [computationId, _] : ComputationControllers_) {
+                if (!PartitioningCoordinator_->IsFullCoverage(
+                    computationId,
+                    groupedPartitions[computationId],
+                    flowView))
+                {
                     YT_TLOG_INFO("Computation does not have full coverage")
                         .With("ComputationId", computationId);
                     uncoveredComputations.insert(computationId);
@@ -309,9 +358,9 @@ public:
             auto computationSpec = GetOrCrash(spec->Computations, computationId);
             auto& current = traverseData->Computations[computationId];
             try {
-                auto processTraverseDataResult = GetOrCrash(ComputationControllers_, computationId)->ProcessPartitionTraverseData(nodes, flowView);
+                auto processTraverseDataResult = GetOrCrash(ComputationControllers_, computationId)->ProcessPartitionTraverseData(nodes, current, flowView);
                 flowView->EphemeralState->StreamTraverseDataMetrics[computationId] = processTraverseDataResult->StreamMetrics;
-                current = AdvanceNodeTraverseData(current, processTraverseDataResult->MergedTraverseData);
+                current = processTraverseDataResult->AcceptedTraverseData;
             } catch (const std::exception& ex) {
                 // One failing computation must not abort the whole aggregation - that freezes the
                 // traverse (stream metrics, watermarks) of the entire pipeline. Reuse the previous
@@ -374,7 +423,13 @@ public:
 
         YT_TLOG_INFO("TraverseData")
             .With("TraverseData", NYson::ConvertToYsonString(traverseData, NYson::EYsonFormat::Text));
-        std::vector<TStreamTraverseDataPtr> completedStream = {MakeCompletedStreamTraverseData(flowView->State->ExecutionSpec->GetEpoch(), flowView->State->CurrentTimestamp)};
+        auto currentTimestamp = flowView->State->CurrentTimestamp;
+        std::vector<TStreamTraverseDataPtr> completedStream = {
+            MakeCompletedStreamTraverseData(
+                flowView->State->ExecutionSpec->GetEpoch(),
+                /*systemWatermark*/ currentTimestamp,
+                /*eventWatermark*/ currentTimestamp),
+        };
 
         traverseData->UnitedSourceStream = MergeStreamTraverseData(ConcatVectors(sourceStreams, completedStream), EInflightMerge::Sum, /*allowPartial*/ true);
         traverseData->UnitedTimerStream = MergeStreamTraverseData(ConcatVectors(timerStreams, completedStream), EInflightMerge::Sum, /*allowPartial*/ true);
@@ -382,15 +437,15 @@ public:
         traverseData->UnitedOutputStream = MergeStreamTraverseData(ConcatVectors(outputStreams, completedStream), EInflightMerge::Sum, /*allowPartial*/ true);
         auto unitedInputStream = MergeStreamTraverseData(ConcatVectors(inputStreams, completedStream), EInflightMerge::None);
 
-        if (unitedInputStream->Epoch == flowView->State->ExecutionSpec->GetEpoch() && traverseData->UnitedOutputStream->Epoch == flowView->State->ExecutionSpec->GetEpoch()) {
-            auto newWatermark = std::min(traverseData->UnitedOutputStream->SystemWatermark, unitedInputStream->SystemWatermark);
-            if (traverseData->InputSystemWatermark > newWatermark) {
-                YT_TLOG_WARNING("Possible data loss: system has events below InputSystemWatermark.")
-                    .With("InputSystemWatermark", traverseData->InputSystemWatermark)
-                    .With("ComputedWatermark", newWatermark);
-            }
-            traverseData->InputSystemWatermark = std::max(newWatermark, traverseData->InputSystemWatermark);
+        // A partition id keeps its range, and its reported watermark is a durable monotone frontier.
+        // With full current-layout coverage above, an older-epoch report can only lower this minimum.
+        auto newWatermark = std::min(traverseData->UnitedOutputStream->SystemWatermark, unitedInputStream->SystemWatermark);
+        if (traverseData->InputSystemWatermark > newWatermark) {
+            YT_TLOG_WARNING("Possible data loss: system has events below InputSystemWatermark.")
+                .With("InputSystemWatermark", traverseData->InputSystemWatermark)
+                .With("ComputedWatermark", newWatermark);
         }
+        traverseData->InputSystemWatermark = std::max(newWatermark, traverseData->InputSystemWatermark);
 
         traverseData->UnitedStream = MergeStreamTraverseData(
             ConcatVectors(sourceStreams, timerStreams, keyVisitorStreams, outputStreams, completedStream),
@@ -440,6 +495,41 @@ public:
             }
         }
         flowView->State->ExecutionSpec->WatermarkState->TrySetValue(watermarkState, Context_->VersionProvider);
+        UpdateWatermarkHistory(flowView, watermarkState);
+    }
+
+    //! Records the published watermarks of the streams that event-time and system-time timers wait for.
+    void UpdateWatermarkHistory(const TFlowViewPtr& flowView, const TWatermarkStatePtr& watermarkState)
+    {
+        THashSet<TStreamId> eventTimeStreams;
+        THashSet<TStreamId> systemTimeStreams;
+        for (const auto& [_, computationSpec] : Spec_->Computations) {
+            for (const auto& [timerId, condition] : BuildTimerTriggerConditions(computationSpec->TimerStreams, computationSpec->StreamsDependency)) {
+                if (condition.TimeType == ETimeType::CurrentTime) {
+                    continue;
+                }
+
+                auto& streams = condition.TimeType == ETimeType::EventTime ? eventTimeStreams : systemTimeStreams;
+                for (const auto& [streamId, delay] : condition.StreamsWithDelays) {
+                    streams.insert(streamId);
+                }
+            }
+        }
+
+        const auto& watermarkHistory = flowView->State->WatermarkHistory;
+        // A changed factor needs no migration: existing elements are never split, so after an increase
+        // the bound tightens gradually as new samples arrive.
+        auto thinningFactor = DynamicSpec_->JobManager->WatermarkHistoryThinningFactor;
+        for (auto timeType : {ETimeType::EventTime, ETimeType::SystemTime}) {
+            auto& histories = watermarkHistory->Get(timeType);
+            const auto& streams = timeType == ETimeType::EventTime ? eventTimeStreams : systemTimeStreams;
+            DropMissingKeys(histories, streams);
+
+            for (const auto& streamId : streams) {
+                // The same lookup as the worker's trigger pass, so a missing stream is recorded as zero.
+                histories[streamId].Append(flowView->State->CurrentTimestamp, watermarkState->GetWatermark(streamId, timeType), thinningFactor);
+            }
+        }
     }
 
     void UpdateResourceControllers(const TFlowViewPtr& flowView) override
@@ -447,26 +537,37 @@ public:
         // With no resource controllers the maps below come out empty, wiping anything a
         // previously configured pipeline spec might have published.
 
+        RestorePublishedTargets(flowView);
+
         const auto& workerStatuses = flowView->Feedback->WorkerStatuses;
+        THashMap<std::string, TWorkerStatusPtr> currentWorkerStatuses;
+        for (const auto& [workerAddress, workerStatus] : workerStatuses) {
+            const auto worker = GetOrDefault(flowView->State->Workers, workerAddress, nullptr);
+            if (workerStatus &&
+                workerStatus->WorkerIncarnationId &&
+                worker &&
+                *workerStatus->WorkerIncarnationId == worker->IncarnationId)
+            {
+                currentWorkerStatuses.emplace(workerAddress, workerStatus);
+            }
+        }
         auto controllerStatuses = ResourceManager_->CollectResourceStatuses();
         for (const auto& [resourceId, entry] : ResourceControllers_) {
-            THashMap<std::string, TWorkerResourceStatusPtr> statuses;
-            for (const auto& [workerAddress, workerStatus] : workerStatuses) {
-                if (!workerStatus) {
-                    continue;
-                }
-                if (auto it = workerStatus->ResourceStatuses.find(resourceId); it != workerStatus->ResourceStatuses.end()) {
-                    statuses.emplace(workerAddress, it->second);
-                }
+            std::optional<i64> publishedRevisionId;
+            if (entry.PublishedTarget->GetValue()) {
+                publishedRevisionId = entry.PublishedTarget->GetVersion().Underlying();
             }
-            entry.Controller->CollectStatuses(statuses, GetOrDefault(controllerStatuses, resourceId));
+            entry.Controller->CollectStatuses(
+                currentWorkerStatuses,
+                GetOrDefault(controllerStatuses, resourceId),
+                publishedRevisionId);
         }
 
         for (auto& [resourceId, entry] : ResourceControllers_) {
-            if (entry.PublishedSpec->TrySetValue(entry.Controller->BuildTargetRevisionSpec(), Context_->VersionProvider)) {
+            if (entry.PublishedTarget->TrySetValue(BuildTargetRevisionCandidate(entry), Context_->VersionProvider)) {
                 YT_TLOG_INFO("Publishing resource target revision")
                     .With("ResourceId", resourceId)
-                    .With("RevisionId", entry.PublishedSpec->GetVersion().Underlying());
+                    .With("RevisionId", entry.PublishedTarget->GetVersion().Underlying());
             }
         }
 
@@ -476,7 +577,8 @@ public:
 
         THashMap<TResourceId, NYTree::IMapNodePtr> views;
         for (const auto& [resourceId, entry] : ResourceControllers_) {
-            if (auto view = entry.Controller->GetView()) {
+            auto view = entry.Controller->GetView();
+            if (view) {
                 views.emplace(resourceId, std::move(view));
             }
         }
@@ -485,6 +587,7 @@ public:
 
     void CheckCompletedPartitions(const TFlowViewPtr& flowView) override
     {
+        EnsureResourceInstances(flowView);
         YT_TLOG_INFO("Looking for new completed partitions")
             .With("PartitionCount", flowView->Feedback->PartitionJobStatuses.size());
         ui64 foundOk = 0;
@@ -527,10 +630,11 @@ public:
                     .With("ComputationId", partition->ComputationId)
                     .With("TargetWorkerAddress", targetWorkerIt->second->RpcAddress);
 
-                layout->RemoveJob(currentJobStatus->JobId, EJobFinishReason::Rebalanced);
+                NBalancer::RemoveJobKeepingMetrics(flowView, currentJobStatus->JobId, EJobFinishReason::Rebalanced);
 
                 auto newJob = New<TJob>();
                 newJob->JobId = TJobId(TGuid::Create());
+                newJob->Generation = TUniqueSeqNo(Context_->VersionProvider->GenerateVersion().Underlying());
                 newJob->WorkerAddress = targetWorkerIt->second->RpcAddress;
                 newJob->WorkerIncarnationId = targetWorkerIt->second->IncarnationId;
                 newJob->PartitionId = partition->PartitionId;
@@ -589,6 +693,9 @@ public:
             if (!currentJobStatus || !currentJobStatus->IsFinished || !layout->Jobs.contains(currentJobStatus->JobId)) {
                 continue;
             }
+            if (currentJobStatus->Error.FindMatching(EErrorCode::PartitionKeyLimitExceeded)) {
+                continue;
+            }
             if (!currentJobStatus->Error.IsOK()) {
                 if (currentJobStatus->Error.FindMatching(NFlow::EErrorCode::GracefulShutdown)) {
                     // A graceful-shutdown finish that CheckCompletedPartitions did not re-create
@@ -599,7 +706,7 @@ public:
                         .With("JobId", currentJobStatus->JobId)
                         .With("PartitionId", partitionId)
                         .With("ComputationId", GetOrCrash(layout->Partitions, partitionId)->ComputationId);
-                    layout->RemoveJob(currentJobStatus->JobId, EJobFinishReason::Rebalanced);
+                    NBalancer::RemoveJobKeepingMetrics(flowView, currentJobStatus->JobId, EJobFinishReason::Rebalanced);
                     continue;
                 }
                 foundError += 1;
@@ -608,7 +715,7 @@ public:
                     .With("PartitionId", partitionId)
                     .With("ComputationId", GetOrCrash(layout->Partitions, partitionId)->ComputationId)
                     .With(currentJobStatus->Error);
-                layout->RemoveJob(currentJobStatus->JobId, EJobFinishReason::Failed);
+                NBalancer::RemoveJobKeepingMetrics(flowView, currentJobStatus->JobId, EJobFinishReason::Failed);
 
                 auto partitionState = flowView->EphemeralState->GetPartitionState(partitionId);
                 partitionState->PreviousJobFailInstant = partitionJobStatus->CurrentJobStatusUpdateTime;
@@ -660,6 +767,7 @@ public:
 
     void RemoveLostJobs(const TFlowViewPtr& flowView) override
     {
+        NProfiling::TWallTimer timer;
         YT_TLOG_INFO("Looking for lost jobs")
             .With("CheckedPartitionsCount", flowView->Feedback->PartitionJobStatuses.size());
 
@@ -681,7 +789,7 @@ public:
             YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Error, "")
                 .With(error);
             removed++;
-            layout->RemoveJob(jobId, EJobFinishReason::LostWorker);
+            NBalancer::RemoveJobKeepingMetrics(flowView, jobId, EJobFinishReason::LostWorker);
 
             auto partitionState = flowView->EphemeralState->GetPartitionState(job->PartitionId);
             partitionState->PreviousJobFailInstant = TInstant::Seconds(flowView->State->CurrentTimestamp.Underlying());
@@ -724,7 +832,8 @@ public:
 
         YT_TLOG_INFO("Finished removing lost jobs")
             .With("Removed", removed)
-            .With("CheckedPartitionsCount", flowView->Feedback->PartitionJobStatuses.size());
+            .With("CheckedPartitionsCount", flowView->Feedback->PartitionJobStatuses.size())
+            .With("Duration", timer.GetElapsedTime());
         LostJobsCounter_.Increment(removed);
     }
 
@@ -757,19 +866,7 @@ public:
 
 
         ssize_t oldUpdated = layout->GetUpdated();
-        {
-            THashMap<TComputationId, std::vector<TPartitionId>> partitions;
-            for (const auto& [partitionId, partition] : layout->Partitions) {
-                if (ComputationControllers_.count(partition->ComputationId) > 0) {
-                    partitions[partition->ComputationId].push_back(partitionId);
-                } else if (partition->State == EPartitionState::Executing || partition->State == EPartitionState::Completing || partition->State == EPartitionState::Interrupting) {
-                    layout->UpdatePartition(partitionId, EPartitionState::Interrupted, flowView->State->ExecutionSpec->GetEpoch(), TInstant::Now());
-                }
-            }
-            for (auto& [computationId, controller] : ComputationControllers_) {
-                controller->DoPartitioning(partitions[computationId], flowView);
-            }
-        }
+        PartitioningCoordinator_->DoPartitioning(flowView);
         ssize_t updated = layout->GetUpdated() - oldUpdated;
 
         const auto& partitionJobStatuses = flowView->Feedback->PartitionJobStatuses;
@@ -824,6 +921,7 @@ public:
 
     void DistributeJobs(const TFlowViewPtr& flowView) override
     {
+        EnsureResourceInstances(flowView);
         const auto& layout = flowView->State->ExecutionSpec->Layout;
         ui64 executing = 0;
         ui64 completing = 0;
@@ -890,10 +988,38 @@ public:
             return StopAllJobs(flowView);
         }
 
+        THashMap<TComputationId, i64> keyCountCaps;
+        THashMap<TComputationId, i64> keyCountOwners;
+        THashSet<TComputationId> drainingKeyCountComputations;
+        for (const auto& [id, controller] : ComputationControllers_) {
+            const auto staticParameters = DynamicPointerCast<TPartitioningSpec>(controller->GetParametersBase());
+            if (staticParameters && staticParameters->KeyCountPartitioning->Enable) {
+                const auto parameters = DynamicPointerCast<TDynamicPartitioningSpec>(controller->GetDynamicParametersBase());
+                keyCountCaps[id] = parameters->GetPartitionCountBounds().second;
+                keyCountOwners[id] = 0;
+            }
+        }
+        for (const auto& [_, partition] : layout->Partitions) {
+            if (partition->State == EPartitionState::Interrupting && keyCountCaps.contains(partition->ComputationId)) {
+                drainingKeyCountComputations.insert(partition->ComputationId);
+            }
+        }
+
+        auto updateKeyCountOwners = [&] (const auto& partition, TJobId jobId, i64 delta) {
+            if (auto* count = keyCountOwners.FindPtr(partition->ComputationId)) {
+                const auto* feedback = flowView->Feedback->PartitionJobStatuses.FindPtr(partition->PartitionId);
+                const auto status = feedback ? (*feedback)->CurrentJobStatus : nullptr;
+                if (!status || status->JobId != jobId || !status->IsFinished) {
+                    *count += delta;
+                }
+            }
+        };
+
         ssize_t stopCount = 0;
         auto stopJob = [&] (const auto& partition) {
+            updateKeyCountOwners(partition, *partition->CurrentJobId, -1);
             stopCount++;
-            layout->RemoveJob(partition->CurrentJobId.value(), EJobFinishReason::Rebalanced);
+            NBalancer::RemoveJobKeepingMetrics(flowView, partition->CurrentJobId.value(), EJobFinishReason::Rebalanced);
 
             auto partitionState = flowView->EphemeralState->GetPartitionState(partition->PartitionId);
             partitionState->PreviousRebalancingInstant = TInstant::Seconds(flowView->State->CurrentTimestamp.Underlying());
@@ -915,6 +1041,19 @@ public:
         };
         ssize_t createCount = 0;
         auto createJob = [&] (const auto& partitionId, const auto& worker) {
+            if (flowView->EphemeralState->KeyCountPartitioningBlockedComputations.contains(
+                GetOrCrash(layout->Partitions, partitionId)->ComputationId))
+            {
+                return;
+            }
+            const auto& partition = GetOrCrash(layout->Partitions, partitionId);
+            if (const auto* cap = keyCountCaps.FindPtr(partition->ComputationId)) {
+                if (GetOrCrash(keyCountOwners, partition->ComputationId) >= *cap ||
+                    (partition->State != EPartitionState::Interrupting && drainingKeyCountComputations.contains(partition->ComputationId)))
+                {
+                    return;
+                }
+            }
             createCount++;
             // A partition without a dynamic partition spec never reaches the worker: the heartbeat
             // response omits its job, which then dies by the status timeout with a misleading
@@ -927,10 +1066,12 @@ public:
             }
             auto job = New<TJob>();
             job->JobId = TJobId(TGuid::Create());
+            job->Generation = TUniqueSeqNo(Context_->VersionProvider->GenerateVersion().Underlying());
             job->WorkerAddress = worker->RpcAddress;
             job->WorkerIncarnationId = worker->IncarnationId;
             job->PartitionId = partitionId;
             layout->CreateJob(job);
+            updateKeyCountOwners(partition, job->JobId, +1);
         };
 
         for (const auto& [jobId, job] : layout->Jobs) {
@@ -951,9 +1092,15 @@ public:
                     .With("worker_incarnation_id", job->WorkerIncarnationId)
                     .With("actual_worker_incarnation_id", worker->IncarnationId);
             }
+            updateKeyCountOwners(partition, jobId, +1);
         }
 
         const auto jobManagerSpec = DynamicSpec_->JobManager;
+        THashSet<TWorkerGroupId> workerGroups;
+        for (const auto& [workerGroup, _] : BalanceSynchronizers_) {
+            workerGroups.insert(workerGroup);
+        }
+        NBalancer::PruneBalancerGroups(flowView, workerGroups);
         for (const auto& [workerGroup, balanceSynchronizer] : BalanceSynchronizers_) {
             const auto groupJobBalancerSpec = GetOrDefault(jobManagerSpec->WorkerGroupOverride, workerGroup, jobManagerSpec);
             auto rebalanceResult = balanceSynchronizer->DoBalance(
@@ -1002,16 +1149,30 @@ public:
             }
 
             for (const auto& preloadAction : rebalanceResult.PreloadResourceActions) {
+                auto* worker = flowView->State->Workers.FindPtr(preloadAction.WorkerAddress);
                 auto* existingSpec = layout->WorkerSpecs.FindPtr(preloadAction.WorkerAddress);
-                auto workerSpec = existingSpec ? CloneYsonStruct(*existingSpec) : New<TWorkerSpec>();
+                // A spec of a previous incarnation of the address does not apply to the current one:
+                // start a new spec, do not copy its resources.
+                bool existingSpecIsVoid = existingSpec && worker &&
+                    (*existingSpec)->WorkerIncarnationId &&
+                    *(*existingSpec)->WorkerIncarnationId != (*worker)->IncarnationId;
+                auto workerSpec = existingSpec && !existingSpecIsVoid ? CloneYsonStruct(*existingSpec) : New<TWorkerSpec>();
                 if (preloadAction.Type == NBalancer::ERebalanceActionType::Add) {
-                    workerSpec->PreloadResources.insert(preloadAction.ResourceId);
+                    if (workerSpec->PreloadResources.insert(preloadAction.ResourceId).second) {
+                        workerSpec->PreloadRequestTimes[preloadAction.ResourceId] = TInstant::Now();
+                    }
                 } else {
                     workerSpec->PreloadResources.erase(preloadAction.ResourceId);
+                    workerSpec->PreloadRequestTimes.erase(preloadAction.ResourceId);
+                }
+                if (worker) {
+                    workerSpec->WorkerIncarnationId = (*worker)->IncarnationId;
                 }
                 layout->WorkerSpecs.insert_or_assign(preloadAction.WorkerAddress, std::move(workerSpec));
             }
         }
+
+        EnsureResourceInstances(flowView);
 
         YT_TLOG_INFO("Finished job distributions")
             .With("Mutations", createCount + stopCount + gracefulStopCount)
@@ -1021,6 +1182,7 @@ public:
 
     void StopAllJobs(const TFlowViewPtr& flowView) override
     {
+        NProfiling::TWallTimer timer;
         const auto& layout = flowView->State->ExecutionSpec->Layout;
         // Actually it seems to be safe to iterate over layout->Jobs and remove jobs right in the loop.
         // But on the other hand it's hard to prove, so better to extract IDs before removal.
@@ -1031,8 +1193,16 @@ public:
             jobIds.emplace_back(jobId);
         }
         for (const auto& jobId : jobIds) {
-            layout->RemoveJob(jobId, EJobFinishReason::Stopped);
+            NBalancer::RemoveJobKeepingMetrics(flowView, jobId, EJobFinishReason::Stopped);
         }
+        YT_TLOG_INFO("Stopped all jobs")
+            .With("JobCount", jobIds.size())
+            .With("Duration", timer.GetElapsedTime());
+    }
+
+    const THashMap<TComputationId, IComputationControllerPtr>& GetComputationControllers() const override
+    {
+        return ComputationControllers_;
     }
 
     TJobManagerStatePtr GetState() override
@@ -1040,12 +1210,17 @@ public:
         for (const auto& [computationId, controller] : ComputationControllers_) {
             controller->Sync();
         }
+        PartitioningCoordinator_->Sync();
         StateManager_->Sync();
-        return CloneYsonStruct(State_);
+        auto snapshot = New<TJobManagerState>();
+        // Immutable YSON payloads can be shared; only the mutable maps need a snapshot.
+        snapshot->Computations = State_->Computations;
+        return snapshot;
     }
 
     void Commit(const TFlowViewPtr& flowView) override
     {
+        PartitioningCoordinator_->Commit();
         for (const auto& [computationId, controller] : ComputationControllers_) {
             controller->UpdateWatermarkState(flowView->State->ExecutionSpec->WatermarkState->GetValue());
             controller->Commit();
@@ -1064,6 +1239,7 @@ private:
     const IResourceManagerPtr ResourceManager_;
 
     THashMap<TComputationId, IComputationControllerPtr> ComputationControllers_;
+    NPartitioning::TPartitioningCoordinatorPtr PartitioningCoordinator_;
     THashMap<TWorkerGroupId, IStatusErrorStatePtr> InsufficientWorkersErrorStates_;
 
     struct TResourceControllerEntry
@@ -1071,23 +1247,62 @@ private:
         IResourceControllerPtr Controller;
         //! SetValue dedups by content and the value's version is the published revision id.
         //! A null value means nothing is published.
-        TIntrusivePtr<TVersionedValue<NYTree::INodePtr>> PublishedSpec =
+        TIntrusivePtr<TVersionedValue<NYTree::INodePtr>> PublishedTarget =
             New<TVersionedValue<NYTree::INodePtr>>();
     };
 
     THashMap<TResourceId, TResourceControllerEntry> ResourceControllers_;
+    bool PublishedTargetsRestored_ = false;
+
+    void RestorePublishedTargets(const TFlowViewPtr& flowView)
+    {
+        if (PublishedTargetsRestored_) {
+            return;
+        }
+        PublishedTargetsRestored_ = true;
+
+        const auto& restoredTargets = flowView->State->ExecutionSpec->ResourceTargetRevisions->GetValue();
+        for (const auto& [resourceId, restoredTarget] : restoredTargets) {
+            auto entryIt = ResourceControllers_.find(resourceId);
+            if (entryIt == ResourceControllers_.end() ||
+                entryIt->second.PublishedTarget->GetVersion() != TVersion(0) ||
+                !restoredTarget ||
+                restoredTarget->RevisionId <= 0)
+            {
+                continue;
+            }
+
+            auto target = CloneYsonStruct(restoredTarget);
+            auto revisionId = target->RevisionId;
+            target->RevisionId = 0;
+            entryIt->second.PublishedTarget = NYTree::ConvertTo<
+                TIntrusivePtr<TVersionedValue<NYTree::INodePtr>>>(
+                NYTree::BuildYsonNodeFluently()
+                    .BeginMap()
+                    .Item("version")
+                    .Value(revisionId)
+                    .Item("value")
+                    .Value(target)
+                    .EndMap());
+        }
+    }
+
+    NYTree::INodePtr BuildTargetRevisionCandidate(const TResourceControllerEntry& entry) const
+    {
+        auto revision = entry.Controller->BuildTargetRevision();
+        return revision ? NYTree::ConvertToNode(revision) : nullptr;
+    }
 
     THashMap<TResourceId, TResourceRevisionPtr> BuildTargetRevisions() const
     {
         THashMap<TResourceId, TResourceRevisionPtr> result;
         for (const auto& [resourceId, entry] : ResourceControllers_) {
-            const auto& publishedSpec = entry.PublishedSpec->GetValue();
-            if (!publishedSpec) {
+            const auto& publishedTarget = entry.PublishedTarget->GetValue();
+            if (!publishedTarget) {
                 continue;
             }
-            auto revision = New<TResourceRevision>();
-            revision->RevisionId = entry.PublishedSpec->GetVersion().Underlying();
-            revision->Spec = publishedSpec;
+            auto revision = NYTree::ConvertTo<TResourceRevisionPtr>(publishedTarget);
+            revision->RevisionId = entry.PublishedTarget->GetVersion().Underlying();
             result[resourceId] = std::move(revision);
         }
         return result;

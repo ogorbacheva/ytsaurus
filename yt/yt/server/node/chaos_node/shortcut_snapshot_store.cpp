@@ -4,9 +4,11 @@
 
 #include <yt/yt/core/concurrency/thread_affinity.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <library/cpp/yt/string/guid.h>
+
+#include <library/cpp/containers/absl/flat_hash_map.h>
 
 namespace NYT::NChaosNode {
 
@@ -48,7 +50,7 @@ public:
         auto* bucket = GetBucket(chaosObjectId);
         {
             auto guard = ReaderGuard(bucket->Lock);
-            if (auto it = bucket->ShortcutSnapshots.find(chaosObjectId)) {
+            if (auto it = bucket->ShortcutSnapshots.find(chaosObjectId); it != bucket->ShortcutSnapshots.end()) {
                 return it->second;
             }
         }
@@ -78,8 +80,8 @@ public:
 private:
     struct TBucket
     {
-        THashMap<TChaosObjectId, TShortcutSnapshot> ShortcutSnapshots;
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock);
+        absl::flat_hash_map<TChaosObjectId, TShortcutSnapshot> ShortcutSnapshots;
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, Lock);
     };
 
     std::array<TBucket, ConcurrentHashBucketCount> Buckets_;

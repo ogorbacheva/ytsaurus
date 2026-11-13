@@ -4,7 +4,7 @@
 If adding dates to your query text before execution isn't convenient, do as follows:
 
 1. Write a user-defined function (UDF) in [Python](../udf/python.md) or [C++](../udf/cpp.md) with the signature `(String)->Bool`. By the table name, this function should return TRUE only for the dates from the relevant range, using the current time or date obtained by the tools of the selected programming language.
-2. Pass this UDF to the [FILTER](../syntax/select/index.md#func_table) function, including the prefix to the log directory.
+2. Pass this UDF to the [FILTER](../syntax/select/concat.md) function, including the prefix to the log directory.
 3. Use the FILTER result anywhere where you expect a path to the input data ([FROM](../syntax/select/from.md), [PROCESS](../syntax/process.md), [REDUCE](../syntax/reduce.md))
 
 
@@ -59,7 +59,7 @@ If you read this table in YQL, the `newColumn` field will be available in the `_
 SELECT * FROM `//tmp/table_not_strict` AS t;
 ```
 
-![](../../../images/yql_other_field.png)
+![](../../../_images/yql_other_field.png)
 
 There are multiple methods for retrieving the value of new `newColumn`:
 
@@ -101,7 +101,7 @@ SELECT * FROM as_table(ListCreate(ListItemType(TypeOf($s))))
 ```
 
 ## How to work with a string without unpacking protobuf?
-YQL can unpack protobuf messages. We recommend setting up <!--[automatic unpacking](../misc/schema.md#_yql_proto_field)--> automatic unpacking by using table metadata. In some cases, in case of an unpacked message, you need to work with a source row. For this purpose, it makes sense to use a special [raw](../syntax/select/index.md#view) view:
+YQL can unpack protobuf messages. We recommend setting up <!--[automatic unpacking](../misc/schema.md#_yql_proto_field)--> automatic unpacking by using table metadata. In some cases, in case of an unpacked message, you need to work with a source row. For this purpose, it makes sense to use a special [raw](../syntax/select/view.md) view:
 
 ```yql
 SELECT *

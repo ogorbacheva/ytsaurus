@@ -175,12 +175,28 @@ void TStoreBackgroundActivityOrchidConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+const TExponentialBackoffOptions TCompactionHintFetcherConfig::DefaultRetryBackoff{
+    .InvocationCount = std::numeric_limits<int>::max(),
+    .MinBackoff = TDuration::Seconds(5),
+    .MaxBackoff = TDuration::Minutes(5),
+    .BackoffMultiplier = 2.0,
+};
+
 void TCompactionHintFetcherConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("periodic_executor", &TThis::PeriodicExecutor)
-        .Default({.Period = TDuration::Seconds(5)});
+        .Default({.Period = TDuration::Seconds(1)});
     registrar.Parameter("request_throttler", &TThis::RequestThrottler)
         .DefaultCtor([] { return TThroughputThrottlerConfig::Create(/*limit*/ 300); });
+    registrar.Parameter("retry_backoff", &TThis::RetryBackoff)
+        .Default(DefaultRetryBackoff);
+
+    registrar.Postprocessor([] (TThis* config) {
+        THROW_ERROR_EXCEPTION_UNLESS(
+            config->RetryBackoff.InvocationCount == std::numeric_limits<int>::max(),
+            "\"invocation_count\" must be equal to %v",
+            std::numeric_limits<int>::max());
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -216,6 +232,8 @@ void TStoreFlusherDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("min_forced_flush_data_size", &TThis::MinForcedFlushDataSize)
         .GreaterThan(0)
         .Optional();
+    registrar.Parameter("use_query_pool", &TThis::UseQueryPool)
+        .Default(false);
     registrar.Parameter("orchid", &TThis::Orchid)
         .DefaultNew();
 }
@@ -271,12 +289,13 @@ void TStoreCompactorDynamicConfig::Register(TRegistrar registrar)
         .Optional();
     registrar.Parameter("partitioning_query_pool", &TThis::PartitioningFairSharePool)
         .Optional();
+    registrar.Parameter("use_query_pool", &TThis::UseQueryPool)
+        .Default(false);
 
     registrar.Parameter("reuse_compaction_invoker_for_writer_compression", &TThis::ReuseCompactionInvokerForWriterCompression)
         .Default(false);
-
-    registrar.Parameter("schedule_new_tasks_after_task_completion", &TThis::ScheduleNewTasksAfterTaskCompletion)
-        .Default(true);
+    registrar.Parameter("reuse_compaction_invoker_for_reader_decompression", &TThis::ReuseCompactionInvokerForReaderDecompression)
+        .Default(false);
 
     registrar.Parameter("starving_tables_tasks_ratio", &TThis::StarvingTablesTasksRatio)
         .InRange(0.0, 1.0)
@@ -292,6 +311,18 @@ void TStoreCompactorDynamicConfig::Register(TRegistrar registrar)
             }
         }
     });
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TGlobalStoresUpdateThrottlerConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enable", &TThis::Enable)
+        .Default(false);
+    registrar.Parameter("rpc_timeout", &TThis::RpcTimeout)
+        .Default(TDuration::Minutes(1));
+    registrar.Parameter("no_such_method_backoff_time", &TThis::NoSuchMethodBackoffTime)
+        .Default(TDuration::Hours(6));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -697,6 +728,8 @@ void TTabletNodeDynamicConfig::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("compression_dictionary_builder", &TThis::CompressionDictionaryBuilder)
         .DefaultNew();
+    registrar.Parameter("global_stores_update_throttler", &TThis::GlobalStoresUpdateThrottler)
+        .DefaultNew();
 
     registrar.Parameter("versioned_chunk_meta_cache", &TThis::VersionedChunkMetaCache)
         .DefaultNew();
@@ -710,6 +743,9 @@ void TTabletNodeDynamicConfig::Register(TRegistrar registrar)
         .Default(TDuration::Minutes(5));
     registrar.Parameter("incremental_structured_tablet_heartbeat_period", &TThis::IncrementalStructuredTabletHeartbeatPeriod)
         .Default(TDuration::Seconds(5));
+
+    registrar.Parameter("profiling_tag_export_mode", &TThis::ProfilingTagExportMode)
+        .Default(EProfilingTagExportMode::TableTag);
 
     registrar.Parameter("master_connector", &TThis::MasterConnector)
         .DefaultNew();
@@ -767,6 +803,11 @@ void TTabletNodeDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("client_cache", &TThis::ClientCache)
         .DefaultNew();
+
+    registrar.Parameter("use_query_pool_for_bus_xfer", &TThis::UseQueryPoolForBusXfer)
+        .Default(false);
+    registrar.Parameter("use_query_pool_for_rpc", &TThis::UseQueryPoolForRpc)
+        .Default(false);
 
     registrar.Postprocessor([] (TThis* config) {
         // Instantiate default distributed throttler configs.

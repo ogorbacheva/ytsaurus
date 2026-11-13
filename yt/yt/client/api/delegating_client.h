@@ -89,7 +89,7 @@ public:
         (path, options))
 
     // Queues
-    DELEGATE_METHOD(TFuture<NQueueClient::IQueueRowsetPtr>, PullQueue, (
+    DELEGATE_METHOD(TFuture<TPullQueueResult>, PullQueue, (
         const NYPath::TRichYPath& queuePath,
         i64 offset,
         int partitionIndex,
@@ -97,7 +97,7 @@ public:
         const TPullQueueOptions& options),
         (queuePath, offset, partitionIndex, rowBatchReadOptions, options))
 
-    DELEGATE_METHOD(TFuture<NQueueClient::IQueueRowsetPtr>, PullQueueConsumer, (
+    DELEGATE_METHOD(TFuture<TPullQueueResult>, PullQueueConsumer, (
         const NYPath::TRichYPath& consumerPath,
         const NYPath::TRichYPath& queuePath,
         std::optional<i64> offset,
@@ -339,6 +339,11 @@ public:
     DELEGATE_METHOD(TFuture<IPrerequisitePtr>, AttachChaosLease, (
         NChaosClient::TChaosLeaseId chaosLeaseId,
         const TChaosLeaseAttachOptions& options),
+        (chaosLeaseId, options));
+
+    DELEGATE_METHOD(TFuture<void>, PingChaosLease, (
+        NChaosClient::TChaosLeaseId chaosLeaseId,
+        const TChaosLeasePingOptions& options),
         (chaosLeaseId, options));
 
     DELEGATE_METHOD(TFuture<void>, SetUserBanned, (

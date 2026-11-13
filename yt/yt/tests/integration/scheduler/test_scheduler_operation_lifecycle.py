@@ -10,9 +10,9 @@ from yt_commands import (
     authors, print_debug, wait, wait_no_assert, wait_breakpoint, release_breakpoint, with_breakpoint,
     create, ls, get, update_pool_tree_config_option,
     set, remove, exists, create_account, create_tmpdir, create_user, create_pool, create_pool_tree,
-    start_transaction, abort_transaction,
+    start_transaction, abort_transaction, lock,
     lookup_rows, read_table, write_table, map, reduce, sort,
-    run_test_vanilla, run_sleeping_vanilla, execute_command,
+    run_test_vanilla, run_sleeping_vanilla, execute_command, get_allocation_id_from_job_id,
     suspend_op, resume_op, abort_op, update_op_parameters,
     abort_job, get_job, get_job_fail_context, list_jobs, list_operations, get_operation, clean_operations,
     abandon_job, sync_create_cells, update_controller_agent_config, update_scheduler_config,
@@ -24,6 +24,8 @@ from yt_scheduler_helpers import (
     scheduler_orchid_default_pool_tree_path)
 
 from yt_helpers import JobCountProfiler, get_current_time, parse_yt_time, profiler_factory, get_job_count_profiling
+
+import yt_error_codes
 
 from yt.yson import YsonEntity
 from yt.common import uuid_to_parts, YtResponseError, datetime_to_string
@@ -377,7 +379,7 @@ class TestSchedulerFunctionality(YTEnvSetup, PrepareTables):
             out="//tmp/out",
         )
 
-        wait_breakpoint()
+        wait_breakpoint(op)
         update_controller_agent_config("operation_time_limit", 100)
 
         wait(lambda: op.get_state() == "failed")
@@ -434,9 +436,10 @@ class TestSchedulerFunctionality(YTEnvSetup, PrepareTables):
         for i in range(op_count):
             self._create_table("//tmp/in" + str(i))
             self._create_table("//tmp/out" + str(i))
+            # 7/4/1 jobs: counts differ by 3, so a job scheduled out of order does not flip the FIFO order.
             write_table(
                 "//tmp/in" + str(i),
-                [{"foo": j} for j in range(op_count * (op_count - i))],
+                [{"foo": j} for j in range(3 * (op_count - i) - 2)],
             )
 
         create_pool("fifo_pool", ignore_existing=True, attributes=dict(mode="fifo", fifo_sort_parameters=["pending_job_count"]))
@@ -451,7 +454,7 @@ class TestSchedulerFunctionality(YTEnvSetup, PrepareTables):
             ops.append(
                 map(
                     track=False,
-                    command="sleep 1.0; cat >/dev/null",
+                    command="cat >/dev/null",
                     in_=["//tmp/in" + str(i)],
                     out="//tmp/out" + str(i),
                     spec={"pool": "fifo_pool", "data_size_per_job": 1},
@@ -528,7 +531,7 @@ class TestSchedulerFunctionality(YTEnvSetup, PrepareTables):
 
         op.wait_for_fresh_snapshot()
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         events = get(op.get_path() + "/@events")
         assert [
@@ -636,26 +639,32 @@ class TestSchedulerFunctionality(YTEnvSetup, PrepareTables):
 
         op = map(
             track=False,
-            command="sleep 1; cat",
+            command=with_breakpoint("BREAKPOINT; cat"),
             in_="//tmp/t_in",
             out="//tmp/t_out",
-            spec={"data_size_per_job": 1},
+            spec={"job_count": 1},
         )
 
-        for i in range(5):
-            time.sleep(0.5)
+        for i in range(2):
+            job_id, = wait_breakpoint(op)
             op.suspend(abort_running_jobs=True)
-            time.sleep(0.5)
+            wait(lambda: op.get_job_count("aborted/scheduled/operation_suspended") == i + 1)
+            # NB: Aborted job's breakpoint file persists; drop it.
+            release_breakpoint(job_id=job_id)
             op.resume()
 
+        job_id, = wait_breakpoint(op)
         for i in range(5):
             op.suspend()
             op.resume()
+        assert job_id in op.get_running_jobs()
 
+        # Suspend right after resume to race with job scheduling.
         for i in range(5):
             op.suspend(abort_running_jobs=True)
             op.resume()
 
+        release_breakpoint()
         op.track()
 
         assert sorted_dicts(read_table("//tmp/t_out")) == [{"foo": i} for i in range(10)]
@@ -810,6 +819,106 @@ class TestSuspendStopsSchedulingInCurrentSnapshot(YTEnvSetup):
         op.resume()
 
         wait(lambda: len(op.get_running_jobs()) == 2)
+
+
+class TestSuspendOperationDuringMasterDisconnect(YTEnvSetup):
+    ENABLE_MULTIDAEMON = False  # Check scheduler process liveness.
+    NUM_MASTERS = 1
+    NUM_NODES = 1
+    NUM_SCHEDULERS = 1
+
+    DELTA_SCHEDULER_CONFIG = {
+        "scheduler": {
+            "node_shard_count": 1,
+            "connect_retry_backoff_time": 30000,
+        },
+    }
+
+    @authors("yaishenka")
+    @pytest.mark.timeout(120)
+    @pytest.mark.parametrize("unregister_agent_first", [False, True])
+    def test_suspend_operation_during_master_disconnect(self, unregister_agent_first):
+        op = run_sleeping_vanilla()
+        op.wait_for_state("running")
+        wait(lambda: len(op.get_running_jobs()) == 1)
+        job_id = next(iter(op.get_running_jobs()))
+        allocation_id = get_allocation_id_from_job_id(job_id)
+
+        suspension_delay = 15000
+        update_scheduler_config(
+            "testing_options/operation_scheduling_suspension_delay",
+            {"duration": suspension_delay, "type": "async"},
+        )
+
+        # Queue an exclusive lock before aborting the scheduler transaction, so
+        # reconnect cannot overtake the old suspend RPC.
+        scheduler_transaction = get("//sys/scheduler/lock/@locks")[0]["transaction_id"]
+        blocking_transaction = start_transaction(timeout=120000)
+        try:
+            blocking_lock = lock(
+                "//sys/scheduler/lock",
+                mode="exclusive",
+                tx=blocking_transaction,
+                waitable=True,
+            )["lock_id"]
+
+            response = execute_command(
+                "suspend_op",
+                {"operation_id": op.id, "abort_running_jobs": False},
+                return_response=True,
+            )
+            wait(lambda: get(f"//sys/scheduler/orchid/scheduler/operations/{op.id}/suspended"))
+
+            # This request runs on the same shard invoker, after the suspend
+            # command has reached its asynchronous delay.
+            assert get(f"//sys/scheduler/orchid/scheduler/allocations/{allocation_id}/running")
+
+            if unregister_agent_first:
+                agent_address = op.get_controller_agent_address()
+                incarnation_id = get(
+                    f"//sys/controller_agents/instances/{agent_address}"
+                    "/orchid/controller_agent/incarnation_id"
+                )
+                abort_transaction(incarnation_id)
+                wait(response.is_set)
+                assert not response.is_ok()
+                assert YtResponseError(response.error()).contains_code(
+                    yt_error_codes.Scheduler.AgentUnregistered
+                )
+
+            abort_transaction(scheduler_transaction)
+            wait(lambda: get(f"#{blocking_lock}/@state") == "acquired")
+            wait(lambda: not get("//sys/scheduler/orchid/scheduler/service/connected"))
+
+            # Keep reconnect blocked until the injected delay has elapsed,
+            # including when cancellation returns the RPC early.
+            time.sleep(suspension_delay / 1000)
+            response.wait()
+            assert not response.is_ok()
+            # The agent incarnation transaction is nested in the scheduler one, so
+            # agent unregistration may cancel the suspend request first.
+            error = YtResponseError(response.error())
+            assert (
+                error.contains_code(yt_error_codes.MasterDisconnected)
+                or error.contains_code(yt_error_codes.Scheduler.AgentUnregistered)
+            )
+            self.Env.check_liveness(
+                callback_func=lambda env, process, args: pytest.fail(
+                    f"Process {args} exited with code {process.returncode}"
+                )
+            )
+        finally:
+            abort_transaction(blocking_transaction)
+
+        wait(lambda: get("//sys/scheduler/orchid/scheduler/service/connected"))
+        update_scheduler_config("testing_options/operation_scheduling_suspension_delay", None)
+        op.wait_for_state("running")
+        if get(op.get_path() + "/@suspended"):
+            resume_op(op.id)
+        suspend_op(op.id)
+        assert get(op.get_path() + "/@suspended")
+        resume_op(op.id)
+        assert not get(op.get_path() + "/@suspended")
 
 
 class TestSchedulerProfiling(YTEnvSetup, PrepareTables):
@@ -1358,7 +1467,6 @@ class TestSchedulerErrorTruncate(YTEnvSetup):
 
     MASTER_CELL_DESCRIPTORS = {
         "11": {"roles": ["chunk_host"]},
-        "12": {"roles": ["chunk_host"]},
     }
 
     @classmethod
@@ -1695,7 +1803,7 @@ class TestSchedulerAttributes(YTEnvSetup):
         transaction_id = start_transaction(timeout=300 * 1000)
         op = run_test_vanilla(with_breakpoint("BREAKPOINT"), tx=transaction_id)
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: exists(op.get_path() + "/@brief_spec"))
         assert get(op.get_path() + "/@brief_spec/user_transaction_id") == transaction_id
@@ -1743,7 +1851,7 @@ class TestAsyncControllerActions(YTEnvSetup):
     def test_fast_operation_flow_revive(self):
         op = run_test_vanilla(with_breakpoint("BREAKPOINT"))
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         with Restarter(self.Env, CONTROLLER_AGENTS_SERVICE):
             pass

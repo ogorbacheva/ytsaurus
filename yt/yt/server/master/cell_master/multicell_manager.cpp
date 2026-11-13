@@ -383,6 +383,18 @@ public:
         return RoleMasterCells_[cellRole];
     }
 
+    TCellTagSet GetNodeHostMasterCells() const override
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        auto guard = ReaderGuard(MasterCellRolesLock_);
+
+        auto cellTags = RoleMasterCells_[EMasterCellRole::CypressNodeHost];
+        const auto& sequoiaNodeHostCellTags = RoleMasterCells_[EMasterCellRole::SequoiaNodeHost];
+        cellTags.insert(sequoiaNodeHostCellTags.begin(), sequoiaNodeHostCellTags.end());
+        return cellTags;
+    }
+
     int GetRoleMasterCellCount(EMasterCellRole cellRole) const override
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
@@ -604,15 +616,15 @@ private:
     TPeriodicExecutorPtr SyncHiveClocksExecutor_;
 
     //! Caches master channels returned by FindMasterChannel and GetMasterChannelOrThrow.
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, MasterChannelCacheLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, MasterChannelCacheLock_);
     THashMap<std::tuple<TCellTag, EPeerKind>, IChannelPtr> MasterChannelCache_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, MasterCellRolesLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, MasterCellRolesLock_);
     THashMap<TCellTag, EMasterCellRoles> MasterCellRolesMap_;
     TEnumIndexedArray<EMasterCellRole, TCellTagSet> RoleMasterCells_;
     TEnumIndexedArray<EMasterCellRole, std::atomic<int>> RoleMasterCellCounts_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, MasterCellNamesLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, MasterCellNamesLock_);
     THashMap<TCellTag, std::string> MasterCellNameMap_;
     THashMap<std::string, TCellTag> NameMasterCellMap_;
 
@@ -709,7 +721,7 @@ private:
             }
 
             if (!IsRegisteredMasterCell(cellTag) && DynamicallyPropagatedMasterCellTags_.insert(cellTag).second) {
-                YT_TLOG_ALERT_UNLESS(GetCurrentSnapshotLoadContext()->ReadOnly, "New master cell is found in static config without readonly mode")
+                YT_TLOG_FATAL_UNLESS(GetCurrentSnapshotLoadContext()->ReadOnly, "New master cell is found in static config without readonly mode")
                     .With("CellTag", cellTag);
 
                 if (IsDynamicallyPropagatedMasterCell(selfCellTag)) {

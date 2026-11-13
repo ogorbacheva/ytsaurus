@@ -268,6 +268,14 @@ public:
         return Decommission_ && LeaseMap_.empty();
     }
 
+    void Reconfigure(TLeaseManagerDynamicConfigPtr dynamicConfig) override
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        AutomatonInvoker_->Invoke(
+            BIND(&TLeaseManager::DoReconfigure, MakeWeak(this), std::move(dynamicConfig)));
+    }
+
     IServicePtr GetRpcService() override
     {
         return this;
@@ -369,6 +377,17 @@ private:
 
         for (auto [leaseId, lease] : LeaseMap_) {
             lease->SetTransientRefCounter(0);
+        }
+    }
+
+    void DoReconfigure(TLeaseManagerDynamicConfigPtr dynamicConfig)
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        Config_->ApplyDynamicInplace(*dynamicConfig);
+
+        if (LeaseRemovalExecutor_) {
+            LeaseRemovalExecutor_->SetPeriod(Config_->LeaseRemovalPeriod);
         }
     }
 
@@ -505,7 +524,8 @@ private:
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
         auto leaseId = FromProto<TLeaseId>(request->lease_id());
-        context->SetRequestInfo("LeaseId: %v", leaseId);
+        context->AnnotateRequest()
+            .With("LeaseId", leaseId);
 
         NProto::TReqRegisterLease req;
         ToProto(req.mutable_lease_id(), leaseId);
@@ -520,9 +540,9 @@ private:
 
         auto leaseId = FromProto<TLeaseId>(request->lease_id());
         auto force = request->force();
-        context->SetRequestInfo("LeaseId: %v, Force: %v",
-            leaseId,
-            force);
+        context->AnnotateRequest()
+            .With("LeaseId", leaseId)
+            .With("Force", force);
 
         NProto::TReqRevokeLease req;
         ToProto(req.mutable_lease_id(), leaseId);
@@ -539,10 +559,10 @@ private:
         auto leaseId = FromProto<TLeaseId>(request->lease_id());
         auto persistent = request->persistent();
         auto force = request->force();
-        context->SetRequestInfo("LeaseId: %v, Persistent: %v, Force: %v",
-            leaseId,
-            persistent,
-            force);
+        context->AnnotateRequest()
+            .With("LeaseId", leaseId)
+            .With("Persistent", persistent)
+            .With("Force", force);
 
         if (persistent) {
             NProto::TReqToggleLeaseRefCounter req;
@@ -565,9 +585,9 @@ private:
 
         auto leaseId = FromProto<TLeaseId>(request->lease_id());
         auto persistent = request->persistent();
-        context->SetRequestInfo("LeaseId: %v, Persistent: %v",
-            leaseId,
-            persistent);
+        context->AnnotateRequest()
+            .With("LeaseId", leaseId)
+            .With("Persistent", persistent);
 
         if (persistent) {
             NProto::TReqToggleLeaseRefCounter req;

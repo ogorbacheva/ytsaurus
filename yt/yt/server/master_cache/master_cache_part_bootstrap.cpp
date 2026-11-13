@@ -85,7 +85,7 @@ private:
 
     TObjectServiceCachePtr ObjectServiceCache_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     THashMap<TCellTag, ICachingObjectServicePtr> CachingObjectServices_;
 
     void OnDynamicConfigChanged(
@@ -124,7 +124,9 @@ private:
         const TSecondaryMasterConnectionConfigs& changedSecondaryMasterConfigs,
         const THashSet<TCellTag>& removedSecondaryMasterCellTags)
     {
-        YT_TLOG_ALERT_UNLESS(removedSecondaryMasterCellTags.empty(), "Some cells disappeared in received configuration of secondary masters")
+        YT_TLOG_ALERT_UNLESS(
+            removedSecondaryMasterCellTags.empty(),
+            "Some cells disappeared in received configuration of secondary masters")
             .With("RemovedCellTags", removedSecondaryMasterCellTags);
 
         {

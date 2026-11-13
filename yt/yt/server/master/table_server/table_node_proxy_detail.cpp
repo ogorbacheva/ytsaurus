@@ -16,6 +16,8 @@
 #include <yt/yt/server/master/cell_master/config_manager.h>
 #include <yt/yt/server/master/cell_master/hydra_facade.h>
 
+#include <yt/yt/server/master/chaos_server/helpers.h>
+
 #include <yt/yt/server/master/chunk_server/chunk.h>
 #include <yt/yt/server/master/chunk_server/chunk_list.h>
 #include <yt/yt/server/master/chunk_server/chunk_visitor.h>
@@ -217,6 +219,8 @@ void TTableNodeProxy::ListSystemAttributes(std::vector<TAttributeDescriptor>* de
     bool isQueueConsumer = table->IsQueueConsumer();
     bool isQueueProducer = table->IsQueueProducer();
     bool isNative = table->IsNative();
+    bool isReplicated = table->IsReplicated();
+    bool isChaosTable = isDynamic && trunkTable->GetReplicationCardId();
 
     TBase::DoListSystemAttributes(descriptors, /*showTabletAttributes*/ isDynamic);
 
@@ -296,6 +300,19 @@ void TTableNodeProxy::ListSystemAttributes(std::vector<TAttributeDescriptor>* de
         .SetWritable(true)
         .SetExternal(isExternal)
         .SetPresent(isDynamic && trunkTable->GetReplicationCardId()));
+    if (isChaosTable) {
+        descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::Era)
+            .SetExternal(isExternal));
+        descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::CoordinatorCellIds)
+            .SetExternal(isExternal));
+        descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::Replicas)
+            .SetExternal(isExternal));
+        descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ReplicatedTableOptions)
+            .SetExternal(isExternal));
+        descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::CollocatedReplicationCardIds)
+            .SetExternal(isExternal)
+            .SetOpaque(true));
+    }
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ReplicationProgress)
         .SetExternal(isExternal)
         .SetPresent(isDynamic)
@@ -401,12 +418,13 @@ void TTableNodeProxy::ListSystemAttributes(std::vector<TAttributeDescriptor>* de
         .SetReplicated(true)
         .SetPresent(isDynamic));
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ReplicationCollocationId)
-        .SetPresent(table->IsReplicated() && trunkTable->GetReplicationCollocation())
-        .SetWritable(true)
-        .SetRemovable(true)
-        .SetReplicated(true));
+        .SetPresent((isReplicated && trunkTable->GetReplicationCollocation()) || isChaosTable)
+        .SetExternal(isExternal && isChaosTable)
+        .SetWritable(isReplicated)
+        .SetRemovable(isReplicated)
+        .SetReplicated(isReplicated));
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::ReplicationCollocationTablePaths)
-        .SetPresent(table->IsReplicated() && trunkTable->GetReplicationCollocation())
+        .SetPresent(isReplicated && trunkTable->GetReplicationCollocation())
         .SetOpaque(true));
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::BackupState)
         .SetExternal(isExternal)
@@ -465,7 +483,7 @@ void TTableNodeProxy::ListSystemAttributes(std::vector<TAttributeDescriptor>* de
         .SetWritable(true)
         .SetReplicated(true)
         .SetRemovable(true)
-        .SetPresent(table->GetHunkStorage()));
+        .SetPresent(isDynamic));
     descriptors->push_back(TAttributeDescriptor(EInternedAttributeKey::AssignedMountConfigExperiments)
         .SetPresent(isDynamic)
         .SetOpaque(true));
@@ -1096,13 +1114,15 @@ bool TTableNodeProxy::GetBuiltinAttribute(TInternedAttributeKey key, IYsonConsum
         }
 
         case EInternedAttributeKey::HunkStorageId: {
-            const auto* hunkStorage = table->GetHunkStorage();
-            if (!hunkStorage) {
+            if (!isDynamic) {
                 break;
             }
 
+            const auto* hunkStorage = table->GetHunkStorage();
+            auto hunkStorageId = hunkStorage ? hunkStorage->GetId() : NullObjectId;
             BuildYsonFluently(consumer)
-                .Value(hunkStorage->GetId());
+                .Value(hunkStorageId);
+
             return true;
         }
 
@@ -1116,7 +1136,7 @@ bool TTableNodeProxy::GetBuiltinAttribute(TInternedAttributeKey key, IYsonConsum
             NTabletNode::TTableConfigExperiment::TTableDescriptor descriptor{
                 .TableId = table->GetId(),
                 .TablePath = GetPath(),
-                .TabletCellBundle = table->TabletCellBundle()->GetName(),
+                .TabletCellBundle = table->GetTabletCellBundle()->GetName(),
                 .InMemoryMode = table->GetInMemoryMode(),
                 .Sorted = table->IsSorted(),
                 .Replicated = table->IsReplicated(),
@@ -1145,9 +1165,10 @@ bool TTableNodeProxy::GetBuiltinAttribute(TInternedAttributeKey key, IYsonConsum
                 .DoMapFor(
                     trunkTable->SecondaryIndices(),
                     [&] (auto fluent, TSecondaryIndex* secondaryIndex) {
-                        auto indexPath = cypressManager->GetNodePath(
-                            tableManager->GetTableNodeOrThrow(secondaryIndex->GetIndexTableId()),
-                            GetTransaction());
+                        auto* indexTable = tableManager->FindTableNode(secondaryIndex->GetIndexTableId());
+                        auto indexPath = indexTable
+                            ? cypressManager->GetNodePath(indexTable, GetTransaction())
+                            : FromObjectId(secondaryIndex->GetIndexTableId());
                         auto kind = secondaryIndex->GetKind();
 
                         fluent
@@ -1184,9 +1205,10 @@ bool TTableNodeProxy::GetBuiltinAttribute(TInternedAttributeKey key, IYsonConsum
             const auto& tableManager = Bootstrap_->GetTableManager();
 
             auto secondaryIndex = trunkTable->GetIndexTo();
-            auto tablePath = cypressManager->GetNodePath(
-                tableManager->GetTableNodeOrThrow(secondaryIndex->GetTableId()),
-                GetTransaction());
+            auto* indexedTable = tableManager->FindTableNode(secondaryIndex->GetTableId());
+            auto tablePath = indexedTable
+                ? cypressManager->GetNodePath(indexedTable, GetTransaction())
+                : FromObjectId(secondaryIndex->GetTableId());
             auto kind = secondaryIndex->GetKind();
 
             BuildYsonFluently(consumer)
@@ -1245,6 +1267,7 @@ bool TTableNodeProxy::GetBuiltinAttribute(TInternedAttributeKey key, IYsonConsum
 
             BuildYsonFluently(consumer)
                 .BeginMap()
+                    .Item("hunk_chunk_count").Value(hunkChunkListStatistics.ChunkCount)
                     .Item("local_referenced_data_weight").Value(chunkListStatistics.HunkDataWeight)
                     .Item("local_referenced_data_size").Value(chunkListStatistics.HunkDataSize)
                     .Item("local_referenced_regular_disk_space").Value(chunkListStatistics.HunkRegularDiskSpace)
@@ -1276,8 +1299,24 @@ TFuture<TYsonString> TTableNodeProxy::GetBuiltinAttributeAsync(TInternedAttribut
     bool isQueue = table->IsQueue();
     bool isQueueConsumer = table->IsQueueConsumer();
     bool isQueueProducer = table->IsQueueProducer();
+    auto replicationCardId = table->GetReplicationCardId();
 
     switch (key) {
+        case EInternedAttributeKey::Era:
+        case EInternedAttributeKey::CoordinatorCellIds:
+        case EInternedAttributeKey::Replicas:
+        case EInternedAttributeKey::ReplicationCollocationId:
+        case EInternedAttributeKey::ReplicatedTableOptions:
+        case EInternedAttributeKey::CollocatedReplicationCardIds:
+            if (!table->IsDynamic() || !replicationCardId) {
+                break;
+            }
+
+            return GetReplicationCardAttribute(
+                Bootstrap_->GetClusterConnection(),
+                replicationCardId,
+                key);
+
         case EInternedAttributeKey::TableChunkFormatStatistics:
             if (isExternal) {
                 break;
@@ -1309,6 +1348,8 @@ TFuture<TYsonString> TTableNodeProxy::GetBuiltinAttributeAsync(TInternedAttribut
                 });
         }
 
+        // NB: The attribute is obsolete; use HunkReferenceStatistics instead.
+        // The visitor counts shared hunk chunks once per occurrence in the chunk tree.
         case EInternedAttributeKey::HunkStatistics: {
             if (isExternal) {
                 break;
@@ -1521,6 +1562,7 @@ bool TTableNodeProxy::RemoveBuiltinAttribute(TInternedAttributeKey key)
 
         case EInternedAttributeKey::HunkStorageId: {
             auto* lockedTable = LockThisImpl();
+            lockedTable->ValidateAllTabletsUnmounted("Cannot remove hunk storage");
             lockedTable->ResetHunkStorage();
             return true;
         }
@@ -1627,8 +1669,8 @@ bool TTableNodeProxy::SetBuiltinAttribute(TInternedAttributeKey key, const TYson
 
             auto codecId = ConvertTo<NErasure::ECodec>(value);
             if (codecId != NErasure::ECodec::None) {
-                auto* codec = NErasure::GetCodec(codecId);
-                if (!codec->IsBytewise()) {
+                auto* codec = NErasure::GetCodecOrThrow(codecId);
+                if (!codec->GetParams().Bytewise) {
                     THROW_ERROR_EXCEPTION("%Qlv codec is not suitable for erasure hunks",
                         codecId);
                 }
@@ -1950,6 +1992,7 @@ bool TTableNodeProxy::SetBuiltinAttribute(TInternedAttributeKey key, const TYson
             auto objectId = ConvertTo<TObjectId>(value);
             auto* object = objectManager->GetObjectOrThrow(objectId);
 
+            lockedTable->ValidateAllTabletsUnmounted("Cannot reset hunk storage");
             lockedTable->ValidateAndSetHunkStorage(object);
 
             return true;
@@ -2176,7 +2219,8 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, ReshardAutomatic)
 
     bool keepActions = request->keep_actions();
 
-    context->SetRequestInfo("KeepActions: %v", keepActions);
+    context->AnnotateRequest()
+        .With("KeepActions", keepActions);
 
     ValidateNoTransaction();
 
@@ -2194,7 +2238,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, GetMountInfo)
     DeclareNonMutating();
     SuppressAccessTracking();
 
-    context->SetRequestInfo();
+    context->AnnotateRequest();
 
     const auto& dynamicConfig = Bootstrap_->GetConfigManager()->GetConfig()->TableManager;
     if (const auto& delay = dynamicConfig->Testing.GetMountInfoDelay) {
@@ -2212,6 +2256,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, GetMountInfo)
     ToProto(response->mutable_schema(), trunkTable->GetSchema()->AsCompactTableSchema());
     response->set_enable_detailed_profiling(trunkTable->GetEnableDetailedProfiling());
     response->set_serialization_type(ToProto(trunkTable->GetSerializationType()));
+    response->set_commit_ordering(ToProto(trunkTable->GetCommitOrdering()));
 
     THashSet<TTabletCell*> cells;
     for (auto tabletBase : trunkTable->Tablets()) {
@@ -2271,11 +2316,11 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, GetMountInfo)
         ToProto(response->mutable_hunk_storage_id(), hunkStorage->GetId());
     }
 
-    context->SetResponseInfo("TabletCount: %v, TabletCellCount: %v, ReplicaCount: %v, IndexCount: %v",
-        response->tablets_size(),
-        response->tablet_cells_size(),
-        response->replicas_size(),
-        response->indices_size());
+    context->AnnotateResponse()
+        .With("TabletCount", response->tablets_size())
+        .With("TabletCellCount", response->tablet_cells_size())
+        .With("ReplicaCount", response->replicas_size())
+        .With("IndexCount", response->indices_size());
 
     context->Reply();
 }
@@ -2336,31 +2381,39 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, Alter)
         options.ClipTimestamp = FromProto<TTimestamp>(request->clip_timestamp());
     }
 
-    auto dynamicConfig = Bootstrap_->GetConfigManager()->GetConfig()->TableManager;
-    auto maxSchemaMemoryUsageToLog = dynamicConfig->MaxSchemaMemoryUsageToLog;
+    const auto& config = Bootstrap_->GetConfigManager()->GetConfig();
+    const auto& tableManagerConfig = config->TableManager;
+    auto maxSchemaMemoryUsageToLog = tableManagerConfig->MaxSchemaMemoryUsageToLog;
 
-    if (options.ColumnToConstraint && !dynamicConfig->EnableColumnConstraintsForTables) {
+    if (options.ColumnToConstraint && !tableManagerConfig->EnableColumnConstraintsForTables) {
         THROW_ERROR_EXCEPTION("Table schema alter of tables with column constraints is prohibited by system administrator");
     }
 
     const auto& tableManager = Bootstrap_->GetTableManager();
-    context->SetRequestInfo("Dynamic: %v, UpstreamReplicaId: %v, SchemaModification: %v, ReplicationProgress: %v, "
-        "ClipTimestamp: %v, SchemaId: %v, SchemaMemoryUsage: %v, Schema: %v, ColumnToConstraint: %v",
-        options.Dynamic,
-        options.UpstreamReplicaId,
-        options.SchemaModification,
-        options.ReplicationProgress,
-        options.ClipTimestamp,
-        options.SchemaId,
-        options.Schema ? options.Schema->GetMemoryUsage() : 0,
-        MakeTableSchemaTruncatedFormatter(tableManager->GetHeavyTableSchemaSync(options.Schema), maxSchemaMemoryUsageToLog),
-        MakeShrunkFormattableView(
-            options.ColumnToConstraint ? *options.ColumnToConstraint : TColumnNameToConstraintMap(),
-            TDefaultFormatter(),
-            dynamicConfig->ColumnToConstraintLogLimit));
+    context->AnnotateRequest()
+        .With("Dynamic", options.Dynamic)
+        .With("UpstreamReplicaId", options.UpstreamReplicaId)
+        .With("SchemaModification", options.SchemaModification)
+        .With("ReplicationProgress", options.ReplicationProgress)
+        .With("ClipTimestamp", options.ClipTimestamp)
+        .With("SchemaId", options.SchemaId)
+        .With("SchemaMemoryUsage", options.Schema ? options.Schema->GetMemoryUsage() : 0)
+        .With("Schema", MakeTableSchemaTruncatedFormatter(tableManager->GetHeavyTableSchemaSync(options.Schema), maxSchemaMemoryUsageToLog))
+        .With("ColumnToConstraint", MakeShrunkFormattableView(options.ColumnToConstraint ? *options.ColumnToConstraint : TColumnNameToConstraintMap(), TDefaultFormatter(), tableManagerConfig->ColumnToConstraintLogLimit));
 
     const auto& tabletManager = Bootstrap_->GetTabletManager();
     auto* table = LockThisImpl();
+
+    if (options.Dynamic && !config->TabletManager->EnableLegacyDynamicityAlter) {
+        if (table->IsNative()) {
+            THROW_ERROR_EXCEPTION("Table dynamicity must be altered via the two-phase alter protocol");
+        } else {
+            YT_TLOG_ALERT("Legacy table alter request received on external cell")
+                .With("TableId", table->GetId())
+                .With("Dynamic", *options.Dynamic);
+        }
+    }
+
     auto dynamic = options.Dynamic.value_or(table->IsDynamic());
     auto schemaReceived = options.SchemaId || options.Schema;
 
@@ -2394,7 +2447,6 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, Alter)
         schema = New<TCompactTableSchema>(heavySchema->ToUniqueKeys());
     }
 
-    const auto& config = Bootstrap_->GetConfigManager()->GetConfig();
     const auto& securityManager = Bootstrap_->GetSecurityManager();
 
     if (table->IsNative()) {
@@ -2541,21 +2593,24 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, Alter)
             table->ValidateAllTabletsUnmounted("Cannot set clip timestamp");
         }
 
-        const auto& config = Bootstrap_->GetConfigManager()->GetConfig();
-        const auto& tableManager = Bootstrap_->GetTableManager();
         auto newTableSchema = tableManager->GetHeavyTableSchemaSync(schema);
         auto oldTableSchema = tableManager->GetHeavyTableSchemaSync(table->GetSchema());
 
-        ValidateTableSchemaUpdateInternal(
+        ValidateTableSchemaAlter(
+            tableManager,
+            config,
+            table,
             *oldTableSchema,
             *newTableSchema,
-            GetSchemaUpdateEnabledFeatures(config),
-            dynamic,
-            table->IsEmpty() && !table->IsDynamic(),
-            config->AllowAlterKeyColumnToAny);
+            dynamic);
 
         if (table->IsDynamic()) {
             if (auto index = table->GetIndexTo()) {
+                THROW_ERROR_EXCEPTION_IF(table->IsSequoia(),
+                    "Alter of index table %v with secondary index %v is not supported at the moment in Sequoia",
+                    table->GetId(),
+                    index->GetId());
+
                 auto* indexTableNode = tableManager->GetTableNodeOrThrow(index->GetTableId());
                 auto indexTableSchema = tableManager->GetHeavyTableSchemaSync(indexTableNode->GetSchema());
                 ValidateIndexSchema(
@@ -2568,6 +2623,11 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, Alter)
             }
 
             for (const auto index : GetValuesSortedByKey(table->SecondaryIndices())) {
+                THROW_ERROR_EXCEPTION_IF(table->IsSequoia(),
+                    "Alter of indexed table %v with secondary index %v is not supported at the moment in Sequoia",
+                    table->GetId(),
+                    index->GetId());
+
                 auto* indexTableNode = tableManager->GetTableNodeOrThrow(index->GetIndexTableId());
                 auto indexTableSchema = tableManager->GetHeavyTableSchemaSync(indexTableNode->GetSchema());
                 ValidateIndexSchema(
@@ -2578,22 +2638,6 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, Alter)
                     index->EvaluatedColumnsSchema(),
                     index->UnfoldedColumns());
             }
-        }
-
-        if (!config->EnableDescendingSortOrder ||
-            dynamic && !config->EnableDescendingSortOrderDynamic)
-        {
-            ValidateNoDescendingSortOrder(schema->GetSortOrders(), schema->GetKeyColumns());
-        }
-
-        if (!config->EnableTableColumnRenaming ||
-            dynamic && !config->EnableDynamicTableColumnRenaming)
-        {
-            ValidateNoRenamedColumns(*newTableSchema);
-        }
-
-        if (!config->EnableAggregateStateType) {
-            ValidateNoAggregateStateType(*newTableSchema);
         }
 
         if (options.Dynamic) {
@@ -2729,8 +2773,8 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, LockDynamicTable)
 
     auto timestamp = FromProto<NTransactionClient::TTimestamp>(request->timestamp());
 
-    context->SetRequestInfo("Timestamp: %v",
-        timestamp);
+    context->AnnotateRequest()
+        .With("Timestamp", timestamp);
 
     const auto& tabletManager = Bootstrap_->GetTabletManager();
     tabletManager->LockDynamicTable(
@@ -2745,7 +2789,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, CheckDynamicTableLock)
 {
     ValidateTransaction();
 
-    context->SetRequestInfo();
+    context->AnnotateRequest();
 
     const auto& tabletManager = Bootstrap_->GetTabletManager();
     tabletManager->CheckDynamicTableLock(
@@ -2774,10 +2818,10 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, StartBackup)
     auto replicaDescriptors = FromProto<std::vector<TTableReplicaBackupDescriptor>>(
         request->replicas());
 
-    context->SetRequestInfo("Timestamp: %v, BackupMode: %v, ClockClusterTag: %v",
-        timestamp,
-        backupMode,
-        clockClusterTag);
+    context->AnnotateRequest()
+        .With("Timestamp", timestamp)
+        .With("BackupMode", backupMode)
+        .With("ClockClusterTag", clockClusterTag);
 
     const auto& backupManager = Bootstrap_->GetBackupManager();
     backupManager->StartBackup(
@@ -2800,7 +2844,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, StartRestore)
     auto replicaDescriptors = FromProto<std::vector<TTableReplicaBackupDescriptor>>(
         request->replicas());
 
-    context->SetRequestInfo();
+    context->AnnotateRequest();
 
     const auto& backupManager = Bootstrap_->GetBackupManager();
     backupManager->StartRestore(
@@ -2815,7 +2859,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, CheckBackup)
 {
     ValidateTransaction();
 
-    context->SetRequestInfo();
+    context->AnnotateRequest();
 
     const auto& backupManager = Bootstrap_->GetBackupManager();
     backupManager->CheckBackup(
@@ -2829,7 +2873,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, FinishBackup)
 {
     ValidateTransaction();
 
-    context->SetRequestInfo();
+    context->AnnotateRequest();
 
     const auto& backupManager = Bootstrap_->GetBackupManager();
     context->ReplyFrom(backupManager->FinishBackup(GetThisImpl()));
@@ -2839,7 +2883,7 @@ DEFINE_YPATH_SERVICE_METHOD(TTableNodeProxy, FinishRestore)
 {
     ValidateTransaction();
 
-    context->SetRequestInfo();
+    context->AnnotateRequest();
 
     const auto& backupManager = Bootstrap_->GetBackupManager();
     context->ReplyFrom(backupManager->FinishRestore(GetThisImpl()));

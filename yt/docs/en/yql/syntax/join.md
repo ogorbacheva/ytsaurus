@@ -146,7 +146,7 @@ results in:
 
 
 
-## JOIN execution strategies in {{product-name}}
+## JOIN execution strategies in {{product-name}} {#join-execution-strategies-in-ytsaurus} {#join_strategy}
 
 ### Introduction
 
@@ -387,7 +387,7 @@ Sharded MapJoin is only possible for certain `JOIN` types (`INNER`,`CROSS`, and 
 
 `yt.MapJoinLimit` set to 0 disables the MapJoin strategy.
 
-### StarJoin strategy
+### StarJoin strategy {#starjoin-strategy} {#starjoin}
 
 This strategy makes it possible to perform several subsequent `JOIN`s at once through a single Reduce operation.
 
@@ -416,7 +416,7 @@ When you specify the hint:
 
 | Name | Description |
 | --- | --- |
-| [`yt.JoinEnableStarJoin`](pragma/yt.md#ytjoinenablestarjoin) | Enables/disables StarJoin strategy selection (enabled by default) |
+| `yt.JoinEnableStarJoin` | Enables/disables StarJoin strategy selection (enabled by default) |
 
 ### Strategy selection sequence
 

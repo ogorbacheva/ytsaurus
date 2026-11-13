@@ -1,5 +1,5 @@
 from yt_env_setup import (
-    YTEnvSetup, Restarter, MASTERS_SERVICE, with_additional_threads)
+    YTEnvSetup, Restarter, MASTERS_SERVICE, with_additional_threads, with_portals_dir)
 
 from yt_sequoia_helpers import not_implemented_in_sequoia
 
@@ -55,6 +55,48 @@ class TestCypressRootCreationTime(YTEnvSetup):
         create("map_node", "//a", tx=tx)
         commit_transaction(tx)
         assert creation_time == get("//@creation_time")
+        remove("//a")
+
+
+##################################################################
+
+
+class TestCypressConfig(YTEnvSetup):
+    ENABLE_MULTIDAEMON = True
+    NUM_MASTERS = 1
+    NUM_CELLS = 1
+    NUM_NODES = 0
+
+    DELTA_MASTER_CONFIG = {
+        "logging": {
+            "abort_on_alert": False,
+        },
+    }
+
+    @authors("h0pless")
+    def test_strong_ordering_tags_config(self):
+        initial_config = get("//sys/@config/sequoia_manager")
+
+        # Expected initial configuration.
+        assert not get("//sys/@config/sequoia_manager/use_coarse_grained_ordering_tags")
+        assert get("//sys/@config/sequoia_manager/use_fine_grained_ordering_tags")
+
+        try:
+            # Both true.
+            set("//sys/@config/sequoia_manager/use_coarse_grained_ordering_tags", True)
+            # Inverted.
+            set("//sys/@config/sequoia_manager/use_fine_grained_ordering_tags", False)
+            # Both false.
+            with raises_yt_error("Cannot disable both coarse and fine grained strong ordering tags"):
+                set("//sys/@config/sequoia_manager/use_coarse_grained_ordering_tags", False)
+
+            # Default is "true" and it's not serialized.
+            assert not exists("//sys/@config/sequoia_manager/use_coarse_grained_ordering_tags")
+        finally:
+            set("//sys/@config/sequoia_manager", initial_config)
+
+
+##################################################################
 
 
 class TestCypress(YTEnvSetup):
@@ -720,7 +762,7 @@ class TestCypress(YTEnvSetup):
         create("map_node", "//tmp/p2")
 
         create("file", "//tmp/p1/f", attributes={"account": "a"})
-        wait(lambda: get("//sys/accounts/a/@resource_usage/master_memory/total") > 0)
+        wait(lambda: get("//sys/accounts/a/@resource_usage/node_count") > 0)
 
         with raises_yt_error("Cannot remove account .* because its usage is not zero"):
             remove("//sys/accounts/a")
@@ -2526,7 +2568,6 @@ class TestCypress(YTEnvSetup):
         assert not exists("//tmp/t2")
 
     @authors("koloshmet")
-    @not_implemented_in_sequoia
     def test_copy_preserve_expiration_time_authorized(self):
         auth_user1, auth_user2 = ("u1", "u2")
         create_user(auth_user1)
@@ -2561,7 +2602,6 @@ class TestCypress(YTEnvSetup):
         assert exists("//tmp/t2")
 
     @authors("koloshmet")
-    @not_implemented_in_sequoia
     def test_copy_dont_preserve_expiration_time_authorized(self):
         auth_user1, auth_user2 = ("u1", "u2")
         create_user(auth_user1)
@@ -2595,7 +2635,6 @@ class TestCypress(YTEnvSetup):
         assert not exists("//tmp/t2")
 
     @authors("koloshmet")
-    @not_implemented_in_sequoia
     def test_copy_preserve_expiration_timeout_authorized(self):
         auth_user1, auth_user2 = ("u1", "u2")
         create_user(auth_user1)
@@ -4292,12 +4331,13 @@ class TestCypress(YTEnvSetup):
         assert not exists("//tmp/test_node/child/@annotation")
 
     @authors("danilalexeev")
+    @with_portals_dir
     def test_annotation_clone(self):
         create("map_node", "//tmp/test_node")
         create("map_node", "//tmp/test_node/child")
         set("//tmp/test_node/@annotation", "test")
-        move("//tmp/test_node", "//test")
-        assert get("//test/@annotation") == get("//test/child/@annotation") == "test"
+        move("//tmp/test_node", "//portals/test")
+        assert get("//portals/test/@annotation") == get("//portals/test/child/@annotation") == "test"
 
     @authors("theevilbird")
     def test_immediate_annotation_attribute(self):
@@ -4376,6 +4416,30 @@ class TestCypress(YTEnvSetup):
         set("//tmp/t1/@acl", acl)
         copy("//tmp/t1", "//tmp/t2", preserve_acl=True)
         move("//tmp/t1", "//tmp/t3", preserve_acl=True)
+
+        assert not get("//tmp/t2/@inherit_acl")
+        assert not get("//tmp/t3/@inherit_acl")
+        assert_items_equal(get("//tmp/t2/@acl"), acl)
+        assert_items_equal(get("//tmp/t3/@acl"), acl)
+
+    @authors("achains")
+    def test_preserve_acl_transaction(self):
+        create("table", "//tmp/t1")
+
+        set("//tmp/t1/@inherit_acl", False)
+        acl = [make_ace("deny", "guest", "write")]
+        set("//tmp/t1/@acl", acl)
+
+        tx = start_transaction()
+        copy("//tmp/t1", "//tmp/t2", preserve_acl=True, tx=tx)
+        move("//tmp/t1", "//tmp/t3", preserve_acl=True, tx=tx)
+
+        assert not get("//tmp/t2/@inherit_acl", tx=tx)
+        assert not get("//tmp/t3/@inherit_acl", tx=tx)
+        assert_items_equal(get("//tmp/t2/@acl", tx=tx), acl)
+        assert_items_equal(get("//tmp/t3/@acl", tx=tx), acl)
+
+        commit_transaction(tx)
 
         assert not get("//tmp/t2/@inherit_acl")
         assert not get("//tmp/t3/@inherit_acl")
@@ -4774,11 +4838,18 @@ class TestCypress(YTEnvSetup):
         with raises_yt_error("No such transaction .*"):
             get(f"#{object_id}", tx=tx)
 
-    @authors("kivedernikov")
+    @authors("h0pless")
     def test_touch_time_without_expiration_timeout(self):
-        create("table", "//tmp/t")
+        path = "//tmp/node"
+        create("map_node", path)
+
         with raises_yt_error("Attribute .* is not found"):
-            get("//tmp/t/@touch_time")
+            get(f"{path}/@touch_time")
+
+        tx = start_transaction()
+        lock(path, tx=tx)
+        with raises_yt_error("Attribute .* is not found"):
+            get(f"{path}/@touch_time", tx=tx)
 
     @authors("kivedernikov")
     @pytest.mark.parametrize(
@@ -4921,6 +4992,15 @@ class TestCypress(YTEnvSetup):
         remove("//sys/accounts/a1/@backup_config")
         assert not get("//tmp/dir/t/@table_backup_enabled")
 
+    @authors("kvk1920")
+    def test_lock_with_prerequisite_revision(self):
+        create("map_node", "//tmp/m")
+        tx = start_transaction()
+        lock("//tmp/m", mode="exclusive", tx=tx, prerequisite_revisions=[{
+            "path": "//tmp/m",
+            "revision": get("//tmp/m/@revision"),
+        }])
+
 
 ##################################################################
 
@@ -4977,7 +5057,6 @@ class TestCypressMulticell(TestCypress):
         assert not exists("//tmp/t/@external_cell_bias")
 
     @authors("shakurov")
-    @not_implemented_in_sequoia
     @pytest.mark.parametrize("use_offloading", [False, True])
     def test_virtual_map_read_authenticated_user_propagation(self, use_offloading):
         if use_offloading:
@@ -5012,7 +5091,21 @@ class TestCypressPortal(TestCypressMulticell):
         "13": {"roles": ["chunk_host"]},
     }
 
+    @authors("kvk1920")
+    def test_cross_cell_prerequisite_revision(self):
+        tx = start_transaction()
+
+        create("map_node", "//tmp/m")
+        m_revision = get("//tmp/m/@revision")
+        root_revision = get("//@revision")
+        with raises_yt_error("Request is cross-cell"):
+            exists("//tmp/m/@type", tx=tx, prerequisite_revisions=[{"path": "/", "revision": root_revision}])
+
+        with raises_yt_error("Prerequisite check failed"):
+            exists("//@type", tx=tx, prerequisite_revisions=[{"path": "//tmp/m", "revision": m_revision}])
+
     @authors("h0pless")
+    @with_portals_dir
     def test_cyclic_link_through_portal(self):
         create("portal_entrance", "//portals/p", attributes={"exit_cell_tag": 12})
 
@@ -5026,6 +5119,7 @@ class TestCypressPortal(TestCypressMulticell):
             link("//portals/p/r/l2", "//portals/p/r/l2", force=True)
 
     @authors("h0pless")
+    @with_portals_dir
     def test_node_copy_rollback(self):
         create("portal_entrance", "//portals/p", attributes={"exit_cell_tag": 12})
         create("table", "//tmp/t", attributes={"external_cell_tag": 13})
@@ -5038,6 +5132,7 @@ class TestCypressPortal(TestCypressMulticell):
         remove("//sys/@config/cypress_manager/max_locks_per_transaction_subtree")
 
     @authors("shakurov")
+    @with_portals_dir
     def test_cross_shard_copy_inheritable_attributes(self):
         create("portal_entrance", "//portals/p", attributes={"exit_cell_tag": 12})
 
@@ -5063,6 +5158,7 @@ class TestCypressPortal(TestCypressMulticell):
         assert get("//portals/p/d2/@tablet_cell_bundle") == "b"
 
     @authors("aleksandra-zh")
+    @with_portals_dir
     def test_cross_shard_copy_builtin_attributes(self):
         create("portal_entrance", "//portals/p", attributes={"exit_cell_tag": 12})
 
@@ -5096,6 +5192,7 @@ class TestCypressPortal(TestCypressMulticell):
         assert get("//tmp/t2/@enable_skynet_sharing")
 
     @authors("shakurov")
+    @with_portals_dir
     def test_cross_shard_copy_w_tx(self):
         create("portal_entrance", "//portals/p", attributes={"exit_cell_tag": 12})
 
@@ -5109,6 +5206,7 @@ class TestCypressPortal(TestCypressMulticell):
         move("//tmp/t2", "//portals/p/t2_copy", tx=tx)
 
     @authors("cherepashka")
+    @with_portals_dir
     def test_access_time_in_shard_copy(self):
         create("portal_entrance", "//portals/p", attributes={"exit_cell_tag": 11})
         create("table", "//tmp/t1")
@@ -5118,6 +5216,7 @@ class TestCypressPortal(TestCypressMulticell):
         assert get("//tmp/t1/@access_time") > creation_time
 
     @authors("avmatrosov")
+    @with_portals_dir
     def test_annotation_portal(self):
         set("//sys/@config/cypress_manager/graft_synchronization_period", 1000)
         set("//portals/@annotation", "test")
@@ -5139,6 +5238,7 @@ class TestCypressPortal(TestCypressMulticell):
         pass
 
     @authors("avmatrosov")
+    @with_portals_dir
     def test_preserve_owner(self):
         create_user("u1")
         create("document", "//tmp/doc", authenticated_user="u1")
@@ -5149,6 +5249,7 @@ class TestCypressPortal(TestCypressMulticell):
         assert get("//tmp/doc/@owner") == get("//portals/p/doc/@owner") == "u1"
 
     @authors("avmatrosov")
+    @with_portals_dir
     def test_preserve_acl(self):
         create("document", "//tmp/t1")
         create("portal_entrance", "//portals/p", attributes={"exit_cell_tag": 12})
@@ -5795,7 +5896,6 @@ class TestCypressSequoia(TestCypressMulticell):
         "11": {"roles": ["chunk_host", "cypress_node_host"]},
         "12": {"roles": ["sequoia_node_host"]},
         "13": {"roles": ["chunk_host"]},
-        "14": {"roles": ["sequoia_node_host"]},
     }
 
     @authors("theevilbird")

@@ -19,7 +19,7 @@
 
 #include <library/cpp/yt/misc/property.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <deque>
 
@@ -38,6 +38,14 @@ struct TMessageIdRange
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TIncomingMessageProgress
+{
+    TMessageId NextMessageId = 0;
+    NHydra::TCausalTime CausalTime = NHydra::TCausalTime(0);
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TPersistentMailboxState final
 {
 public:
@@ -48,7 +56,8 @@ public:
     void LoadFromCookie(TPersistentMailboxStateCookie&& cookie);
 
     TMessageId GetNextPersistentIncomingMessageId() const;
-    void SetNextPersistentIncomingMessageId(TMessageId id);
+    TIncomingMessageProgress GetIncomingMessageProgress() const;
+    void SetNextPersistentIncomingMessageId(TMessageId id, NHydra::TCausalTime causalTime);
 
     TMessageId AddOutcomingMessage(TOutcomingMessage message);
     TMessageId TrimLastestOutcomingMessages(int count);
@@ -58,7 +67,7 @@ public:
         const std::function<bool(const TOutcomingMessage&)>& visitor) const;
 
 private:
-    std::atomic<TMessageId> NextPersistentIncomingMessageId_ = 0;
+    TAtomicObject<TIncomingMessageProgress> IncomingMessageProgress_;
 
     struct TOutcomingMessages
     {
@@ -66,7 +75,7 @@ private:
         std::deque<TOutcomingMessage> Messages;
     };
 
-    NThreading::TAtomicObject<TOutcomingMessages> OutcomingMessages_;
+    TAtomicObject<TOutcomingMessages> OutcomingMessages_;
 };
 
 DEFINE_REFCOUNTED_TYPE(TPersistentMailboxState)

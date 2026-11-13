@@ -310,8 +310,15 @@ void TNontemplateCypressNodeTypeHandlerBase::BranchCorePrologue(
 
     // Copy sequoia properties.
     if (IsNativeSequoiaNode(originatingNode) && originatingNode->MutableSequoiaProperties()) {
-        YT_VERIFY(!originatingNode->MutableSequoiaProperties()->Tombstone);
-        YT_VERIFY(!originatingNode->MutableSequoiaProperties()->BeingCreated);
+        YT_TLOG_ALERT_IF(originatingNode->MutableSequoiaProperties()->Tombstone,
+            "A tombstoned Sequoia node has been branched")
+            .With("NodeId", GetObjectId(originatingNode))
+            .With("TransactionId", GetObjectId(transaction));
+
+        YT_TLOG_ALERT_IF(originatingNode->MutableSequoiaProperties()->BeingCreated,
+            "A Sequoia node that is being created has been branched")
+            .With("NodeId", GetObjectId(originatingNode))
+            .With("TransactionId", GetObjectId(transaction));
 
         branchedNode->ImmutableSequoiaProperties() =
             std::make_unique<TCypressNode::TImmutableSequoiaProperties>(*originatingNode->ImmutableSequoiaProperties());
@@ -480,9 +487,11 @@ void TNontemplateCypressNodeTypeHandlerBase::CloneCoreEpilogue(
     }
 
     // Copy ACD.
+    // NB: ACD is only present on the trunk version of the node.
     if (factory->ShouldPreserveAcl(mode)) {
-        clonedTrunkNode->Acd().SetInherit(sourceNode->Acd().Inherit());
-        clonedTrunkNode->Acd().SetEntries(sourceNode->Acd().Acl());
+        const auto& sourceAcd = sourceNode->GetTrunkNode()->Acd();
+        clonedTrunkNode->Acd().SetInherit(sourceAcd.Inherit());
+        clonedTrunkNode->Acd().SetEntries(sourceAcd.Acl());
     }
 
     // Copy builtin attributes.

@@ -17,7 +17,7 @@
 #include <yt/yt/library/numeric/binary_search.h>
 #include <yt/yt/library/numeric/algorithm_helpers.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
@@ -332,9 +332,9 @@ private:
     TGauge QueueTotalAmount_;
     TTimeGauge EstimatedOverdraftDuration_;
     std::atomic<bool> ProfilingInitialized_ = false;
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ProfilingInitializationLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ProfilingInitializationLock_);
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, HistoricUsageAggregatorLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, HistoricUsageAggregatorLock_);
     TAverageAdjustedExponentialMovingAverage HistoricUsageAggregator_;
 
     void UpdateHistoricUsage(i64 amount)
@@ -370,7 +370,7 @@ DECLARE_REFCOUNTED_STRUCT(TThrottlers)
 
 struct TThrottlers final
 {
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, Lock);
     THashMap<TThrottlerId, TWeakPtr<TWrappedThrottler>> Throttlers;
 };
 
@@ -643,26 +643,26 @@ private:
 
     struct TMemberShard
     {
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, MemberIdToLastUpdateTimeLock);
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, MemberIdToLastUpdateTimeLock);
         THashMap<TMemberId, TInstant> MemberIdToLastUpdateTime;
 
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, MemberIdToLimitLock);
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, MemberIdToLimitLock);
         THashMap<TMemberId, THashMap<TThrottlerId, double>> MemberIdToLimit;
 
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, MemberIdToThrottlersLocalUsageLock);
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, MemberIdToThrottlersLocalUsageLock);
         THashMap<TMemberId, THashMap<TThrottlerId, TThrottlerLocalUsage>> MemberIdToThrottlersLocalUsage;
     };
     std::vector<TMemberShard> MemberShards_;
 
     struct TThrottlerShard
     {
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, TotalLimitsLock);
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, TotalLimitsLock);
         THashMap<TThrottlerId, std::optional<double>> ThrottlerIdToTotalLimit;
 
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, UniformLimitLock);
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, UniformLimitLock);
         THashMap<TThrottlerId, double> ThrottlerIdToUniformLimit;
 
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, LastUpdateTimeLock);
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, LastUpdateTimeLock);
         THashMap<TThrottlerId, TInstant> ThrottlerIdToLastUpdateTime;
     };
     std::vector<TThrottlerShard> ThrottlerShards_;
@@ -670,7 +670,7 @@ private:
     std::atomic<bool> UpdateTotalLimitsExplicitlySet_ = false;
 
     // This map is used to keep member weights for exponential smoothing. We do not need to shard it.
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ThrottlerIdToMemberWeightsLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ThrottlerIdToMemberWeightsLock_);
     THashMap<TThrottlerId, THashMap<TMemberId, double>> ThrottlerIdToMemberWeights_;
 
     DECLARE_RPC_SERVICE_METHOD(NDistributedThrottler::NProto, Heartbeat)
@@ -686,9 +686,9 @@ private:
 
         const auto& memberId = request->member_id();
 
-        context->SetRequestInfo("MemberId: %v, ThrottlerCount: %v",
-            memberId,
-            request->throttlers().size());
+        context->AnnotateRequest()
+            .With("MemberId", memberId)
+            .With("ThrottlerCount", request->throttlers().size());
 
         if (!request->throttlers().empty()) {
             // Get usages of member's throttlers.
@@ -714,9 +714,8 @@ private:
             UpdateMemberThrottlersLocalUsage(memberId, std::move(throttlerIdToLocalUsage));
         }
 
-        context->SetResponseInfo("MemberId: %v, ThrottlerCount: %v",
-            memberId,
-            response->throttlers().size());
+        context->AnnotateResponse()
+            .With("ThrottlerCount", response->throttlers().size());
 
         context->Reply();
     }
@@ -735,9 +734,9 @@ private:
         const auto& throttlerId = request->throttler_id();
         auto amount = request->amount();
 
-        context->SetRequestInfo("ThrottlerId: %v, Amount: %v",
-            throttlerId,
-            amount);
+        context->AnnotateRequest()
+            .With("ThrottlerId", throttlerId)
+            .With("Amount", amount);
 
         Throttle(throttlerId, amount).Subscribe(BIND([=] (const TError& error) {
             context->Reply(error);
@@ -1505,11 +1504,11 @@ private:
 
     std::atomic<bool> Active_ = false;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, Lock_);
     std::optional<TMemberId> LeaderId_;
     IChannelPtr LeaderChannel_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, UpdateQueueLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, UpdateQueueLock_);
     TRingQueue<std::pair<TThrottlerId, TWeakPtr<TWrappedThrottler>>> UpdateQueue_;
     THashSet<TThrottlerId> UnreportedThrottlers_;
 
@@ -1840,6 +1839,10 @@ private:
 
         auto* attributes = MemberClient_->GetAttributes();
         attributes->SetYson(LocalThrottlersAttributeKey, yson);
+        guard.Release();
+
+        YT_TLOG_DEBUG("Member attribute updated")
+            .With("Attribute", LocalThrottlersAttributeKey);
     }
 
     void UpdateGlobalThrottlersAttribute()

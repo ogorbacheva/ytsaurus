@@ -98,7 +98,7 @@ public:
             .ToUncancelable();
     }
 
-    TFuture<i64> WriteRecord(TSharedRef record) override
+    TFuture<i64> WriteRecord(TSharedRef record) noexcept override
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -111,7 +111,7 @@ public:
             .Run();
     }
 
-    TFuture<void> WriteEncodedRecordParts(std::vector<TSharedRef> recordParts) override
+    TFuture<void> WriteEncodedRecordParts(std::vector<TSharedRef> recordParts) noexcept override
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -421,7 +421,8 @@ private:
                 node->Descriptor.GetDefaultAddress())
                 .With(rspOrError);
             YT_TLOG_DEBUG("Failed to start chunk session at node")
-                .With(error);
+                .With("Address", node->Descriptor.GetDefaultAddress())
+                .With(rspOrError);
             THROW_ERROR_EXCEPTION(error);
         }
     }
@@ -814,8 +815,8 @@ private:
         if (options->ErasureCodec == NErasure::ECodec::None) {
             return options->ReplicationFactor;
         } else {
-            auto* codec = NErasure::GetCodec(options->ErasureCodec);
-            return codec->GetTotalPartCount();
+            auto* codec = NErasure::GetCodecOrThrow(options->ErasureCodec);
+            return codec->GetParams().TotalPartCount;
         }
     }
 
@@ -939,7 +940,7 @@ private:
             } else {
                 YT_VERIFY(recordParts.size() == 1);
                 auto encodingResult = EncodeErasureJournalRows(
-                    NErasure::GetCodec(Options_->ErasureCodec),
+                    NErasure::GetCodecOrThrow(Options_->ErasureCodec),
                     recordParts);
                 YT_VERIFY(std::ssize(encodingResult) == 1);
                 encodedParts = std::move(encodingResult[0]);

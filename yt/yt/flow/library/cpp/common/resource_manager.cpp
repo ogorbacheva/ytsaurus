@@ -3,13 +3,15 @@
 #include <yt/yt/flow/library/cpp/common/flow_view.h>
 #include <yt/yt/flow/library/cpp/common/registry.h>
 #include <yt/yt/flow/library/cpp/common/resource.h>
+#include <yt/yt/flow/library/cpp/common/resource_status.h>
 #include <yt/yt/flow/library/cpp/common/spec.h>
-#include <yt/yt/flow/library/cpp/misc/ema.h>
 
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
 
+#include <yt/yt/core/actions/invoker_util.h>
+
 #include <yt/yt/core/misc/collection_helpers.h>
-#include <yt/yt/core/misc/ema_counter.h>
+#include <yt/yt/core/ytree/convert.h>
 
 #include <library/cpp/yt/memory/new.h>
 
@@ -22,7 +24,7 @@ using namespace NLogging;
 ////////////////////////////////////////////////////////////////////////////////
 
 class TFailedResource
-    : public IResource
+    : public TResourceLifecycleBase
 {
 public:
     explicit TFailedResource(const IStatusProfilerPtr& statusProfiler, const TError& error)
@@ -62,47 +64,6 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class TResourceStatus
-{
-public:
-    explicit TResourceStatus()
-    { }
-
-    void Update(i64 morePushedToQueue, i64 moreFetchedFromQueue)
-    {
-        QueuePushedTotal_ += morePushedToQueue;
-        QueueFetchedTotal_ += moreFetchedFromQueue;
-        QueuePushCount_.Update(QueuePushedTotal_);
-        QueueFetchCount_.Update(QueueFetchedTotal_);
-        QueueSize_.Set(QueuePushedTotal_ - QueueFetchedTotal_);
-    }
-
-    TWorkerResourceStatusPtr Collect() const
-    {
-        auto status = New<TWorkerResourceStatus>();
-        status->QueueSize30s = QueueSize_.Average()[0];
-        status->QueueSize10m = QueueSize_.Average()[1];
-        status->QueueGrowthRate30s = QueueSize_.GrowthRate()[0];
-        status->QueueGrowthRate10m = QueueSize_.GrowthRate()[1];
-        status->QueuePushRate30s = QueuePushCount_.GetRate(0);
-        status->QueuePushRate10m = QueuePushCount_.GetRate(1);
-        status->QueueFetchRate30s = QueueFetchCount_.GetRate(0);
-        status->QueueFetchRate10m = QueueFetchCount_.GetRate(1);
-        return status;
-    }
-
-private:
-    static constexpr int TimeWindowsCount = 2;
-    static constexpr std::array<TDuration, TimeWindowsCount> TimeWindowDurations = {TDuration::Seconds(30), TDuration::Minutes(10)};
-    i64 QueuePushedTotal_ = 0;
-    i64 QueueFetchedTotal_ = 0;
-    TEmaCounter<double, TimeWindowsCount> QueuePushCount_{{TimeWindowDurations.begin(), TimeWindowDurations.end()}};
-    TEmaCounter<double, TimeWindowsCount> QueueFetchCount_{{TimeWindowDurations.begin(), TimeWindowDurations.end()}};
-    TMultiWindowEma<double, TimeWindowsCount, true> QueueSize_{{TimeWindowDurations}};
-};
-
-////////////////////////////////////////////////////////////////////////////////
-
 struct TResourcePreloadState
     : public TRefCounted
 {
@@ -125,10 +86,12 @@ public:
         const THashMap<TResourceId, TResourceSpecPtr>& resources,
         const THashMap<TResourceId, TDynamicResourceSpecPtr>& dynamicResourceSpecs,
         const THashMap<TResourceId, TResourceRevisionPtr>& targetRevisions,
-        const THashMap<TResourceId, TResourceInstanceState>& predecessorInstanceStates)
+        const THashMap<TResourceId, TResourceInstanceState>& predecessorInstanceStates,
+        bool externallyAssigned = false)
         : ManagerContext_(std::move(managerContext))
         , Invoker_(ManagerContext_->Invoker)
         , Logger(ManagerContext_->Logger)
+        , ExternallyAssigned_(externallyAssigned)
     {
         ResourceSpecs_ = resources;
         DynamicResourceSpecs_ = dynamicResourceSpecs;
@@ -148,7 +111,6 @@ public:
         // requires on this unit are loaded here.
         {
             auto guard = Guard(Lock_);
-            std::vector<TFuture<void>> alwaysOnFutures;
 
             // For each resource referenced by some computation, whether this unit requires it: a
             // resource may be needed only on the worker or only on the controller.
@@ -175,12 +137,184 @@ public:
                 }
                 YT_TLOG_INFO("Loading always-on resource")
                     .With("ResourceId", resourceId);
-                alwaysOnFutures.push_back(LoadGuarded(resourceId, guard, /*isPreload*/ false));
+                AlwaysOnResourceIds_.push_back(resourceId);
+                Y_UNUSED(LoadGuarded(resourceId, guard, /*isPreload*/ false));
             }
-            // Collect the load futures so callers can await readiness via LoadRequiredResources().
-            // AllSucceeded over an empty vector resolves immediately.
-            AlwaysOnLoadedFuture_ = AllSucceeded(std::move(alwaysOnFutures));
         }
+    }
+
+    ~TResourceManager() override
+    {
+        for (const auto& [resourceId, resource] : Resources_) {
+            resource->Stop();
+        }
+        for (const auto& [resourceId, future] : ResourcesInitializationFutures_) {
+            future.Cancel(TError("Resource manager destroyed")
+                    .With("resource_id", resourceId));
+        }
+    }
+
+    IResourcePtr Get(TResourceInstanceId instanceId) override
+    {
+        auto guard = Guard(Lock_);
+        return GetGuarded(GetResourceIdOrThrow(instanceId), guard);
+    }
+
+    TFuture<void> Load(const THashSet<TResourceInstanceId>& instanceIds) override
+    {
+        try {
+            auto guard = Guard(Lock_);
+            std::vector<TFuture<void>> futures;
+            for (auto instanceId : instanceIds) {
+                futures.push_back(LoadGuarded(GetResourceIdOrThrow(instanceId), guard));
+            }
+            for (const auto& resourceId : AlwaysOnResourceIds_) {
+                futures.push_back(LoadGuarded(resourceId, guard));
+            }
+            return AllSucceeded(std::move(futures));
+        } catch (const std::exception& ex) {
+            return MakeFuture<void>(TError(ex));
+        }
+    }
+
+    void FeedStatus(TResourceInstanceId instanceId, i64 morePushedToQueue, i64 moreFetchedFromQueue) override
+    {
+        auto guard = Guard(Lock_);
+        if (auto it = InstanceResourceIds_.find(instanceId); it != InstanceResourceIds_.end()) {
+            auto& resourceStatus = ResourceStatuses_[it->second];
+            resourceStatus.Update(morePushedToQueue, moreFetchedFromQueue);
+            UpdateQueueSizeGaugeGuarded(it->second, resourceStatus.GetQueueSize(), guard);
+        }
+    }
+
+    THashMap<TResourceInstanceId, TWorkerResourceStatusPtr> CollectResourceInstanceStatuses() override
+    {
+        THashMap<TResourceInstanceId, TWorkerResourceStatusPtr> result;
+        std::vector<std::pair<IResourcePtr, TWorkerResourceStatusPtr>> resources;
+        {
+            auto guard = Guard(Lock_);
+            auto now = TInstant::Now();
+            for (const auto& [instanceId, resourceId] : InstanceResourceIds_) {
+                auto status = ResourceStatuses_[resourceId].Collect(now);
+                status->ResourceId = resourceId;
+                status->ResourceInstanceId = instanceId;
+                if (auto error = ResourceCreationErrors_.find(resourceId); error != ResourceCreationErrors_.end()) {
+                    status->LoadState = EResourceLoadState::Failed;
+                    status->LoadError = error->second;
+                } else if (auto future = ResourcesInitializationFutures_.find(resourceId); future != ResourcesInitializationFutures_.end()) {
+                    if (auto error = future->second.TryGet()) {
+                        status->LoadState = error->IsOK() ? EResourceLoadState::Loaded : EResourceLoadState::Failed;
+                        status->LoadError = *error;
+                    } else {
+                        status->LoadState = EResourceLoadState::Loading;
+                    }
+                }
+                result.emplace(instanceId, status);
+                resources.emplace_back(GetOrCrash(Resources_, resourceId), std::move(status));
+            }
+        }
+        for (const auto& [resource, status] : resources) {
+            FillRevisionStatus(status, resource->GetRevisionState());
+        }
+        return result;
+    }
+
+    void ReconfigureInstances(
+        const THashMap<TResourceId, TResourceSpecPtr>& resourceSpecs,
+        const THashMap<TResourceInstanceId, TResourceInstancePtr>& instances,
+        const THashMap<TResourceInstanceId, TResourceInstanceDynamicSpecPtr>& dynamicSpecs) override
+    {
+        YT_VERIFY(ExternallyAssigned_);
+        THashMap<TResourceId, TResourceInstanceId> assignedIds;
+        for (const auto& [instanceId, instance] : instances) {
+            EmplaceOrCrash(assignedIds, instance->ResourceId, instanceId);
+            THROW_ERROR_EXCEPTION_UNLESS(dynamicSpecs.contains(instanceId),
+                "Missing dynamic spec for resource instance %v",
+                instanceId);
+        }
+        std::vector<IResourcePtr> released;
+        std::vector<std::pair<TResourceInstanceId, TFuture<void>>> canceledLoads;
+        std::vector<std::pair<IResourcePtr, TDynamicResourceContextPtr>> reconfigured;
+        THashSet<TResourceInstanceId> eager;
+        {
+            auto guard = Guard(Lock_);
+            for (auto it = PredecessorDestructionFutures_.begin(); it != PredecessorDestructionFutures_.end();) {
+                if (it->second.IsSet()) {
+                    PredecessorDestructionFutures_.erase(it++);
+                } else {
+                    ++it;
+                }
+            }
+            for (auto it = Resources_.begin(); it != Resources_.end();) {
+                const auto& resourceId = it->first;
+                auto instanceId = GetOrCrash(ResourceInstanceStates_, resourceId).InstanceId;
+                auto assigned = assignedIds.find(resourceId);
+                if (assigned != assignedIds.end() && assigned->second == instanceId) {
+                    ++it;
+                    continue;
+                }
+                InstanceResourceIds_.erase(instanceId);
+                if (auto load = ResourcesInitializationFutures_.find(resourceId); load != ResourcesInitializationFutures_.end()) {
+                    canceledLoads.emplace_back(instanceId, std::move(load->second));
+                    ResourcesInitializationFutures_.erase(load);
+                }
+                ResourceStatuses_.erase(resourceId);
+                ResourceMetrics_.erase(resourceId);
+                ResourceCreationErrors_.erase(resourceId);
+                DynamicResourceSpecs_.erase(resourceId);
+                TargetRevisions_.erase(resourceId);
+                auto destroyed = it->second->GetDestroyedFuture();
+                auto& predecessorsDestroyed = PredecessorDestructionFutures_[resourceId];
+                // An unloaded intermediate instance must not hide an older live predecessor.
+                predecessorsDestroyed = predecessorsDestroyed
+                    ? AllSucceeded(std::vector{predecessorsDestroyed, destroyed}).ToUncancelable()
+                    : destroyed;
+                released.push_back(std::move(it->second));
+                Resources_.erase(it++);
+            }
+            ResourceSpecs_ = resourceSpecs;
+            AlwaysOnResourceIds_.clear();
+            for (const auto& [resourceId, instanceId] : assignedIds) {
+                const auto& dynamicSpec = GetOrCrash(dynamicSpecs, instanceId);
+                auto it = Resources_.find(resourceId);
+                if (it == Resources_.end()) {
+                    DynamicResourceSpecs_[resourceId] = dynamicSpec->DynamicResourceSpec;
+                    if (dynamicSpec->TargetRevision) {
+                        TargetRevisions_[resourceId] = dynamicSpec->TargetRevision;
+                    }
+                    Resources_.emplace(resourceId, CreateResource(resourceId, instanceId));
+                } else if (auto context = UpdateDynamicContext(resourceId, dynamicSpec->DynamicResourceSpec, dynamicSpec->TargetRevision)) {
+                    reconfigured.emplace_back(it->second, std::move(context));
+                }
+                if (GetOrCrash(resourceSpecs, resourceId)->AlwaysOn) {
+                    AlwaysOnResourceIds_.push_back(resourceId);
+                }
+                if (GetOrCrash(resourceSpecs, resourceId)->AlwaysOn || dynamicSpec->Preload) {
+                    eager.insert(instanceId);
+                }
+            }
+        }
+        if (!released.empty()) {
+            // Cancellation can release dependencies, and resource destructors may switch fibers.
+            GetFinalizerInvoker()->Invoke(BIND([
+                canceledLoads = std::move(canceledLoads),
+                released = std::move(released)
+            ] () mutable {
+                for (const auto& resource : released) {
+                    resource->Stop();
+                }
+                for (const auto& [instanceId, future] : canceledLoads) {
+                    future.Cancel(TError("Resource instance is no longer assigned")
+                            .With("resource_instance_id", instanceId));
+                }
+                canceledLoads.clear();
+                released.clear();
+            }));
+        }
+        for (const auto& [resource, context] : reconfigured) {
+            resource->Reconfigure(context);
+        }
+        YT_UNUSED_FUTURE(Load(eager));
     }
 
     IResourcePtr Get(TResourceId resourceId) override
@@ -201,20 +335,17 @@ public:
     {
         auto guard = Guard(Lock_);
 
-        std::vector<TFuture<void>> futures;
-        futures.reserve(requiredResourceIds.size() + 1);
-        for (const auto& resourceId : requiredResourceIds) {
-            // Always-on resources are already loaded eagerly and awaited via AlwaysOnLoadedFuture_,
-            // so skip them here to avoid requesting the same load twice.
-            auto specIt = ResourceSpecs_.find(resourceId);
-            if (specIt != ResourceSpecs_.end() && specIt->second->AlwaysOn) {
-                continue;
-            }
-            futures.push_back(LoadGuarded(resourceId, guard, /*isPreload*/ false));
-        }
         // Besides the passed ids, this also awaits the always-on resources (loaded eagerly in the
         // ctor), so it must be called even with an empty requiredResourceIds to ensure they are ready.
-        futures.push_back(AlwaysOnLoadedFuture_);
+        // A failed load of either is started afresh here.
+        auto resourceIds = requiredResourceIds;
+        resourceIds.insert(AlwaysOnResourceIds_.begin(), AlwaysOnResourceIds_.end());
+
+        std::vector<TFuture<void>> futures;
+        futures.reserve(resourceIds.size());
+        for (const auto& resourceId : resourceIds) {
+            futures.push_back(LoadGuarded(resourceId, guard, /*isPreload*/ false));
+        }
         return AllSucceeded(std::move(futures));
     }
 
@@ -227,35 +358,8 @@ public:
             auto guard = Guard(Lock_);
 
             for (const auto& [resourceId, resource] : Resources_) {
-                bool changed = false;
-
-                if (auto it = dynamicSpecs.find(resourceId); it != dynamicSpecs.end()) {
-                    const auto& newDynamicSpec = it->second;
-                    auto oldDynamicSpec = GetOrDefault(DynamicResourceSpecs_, resourceId);
-                    if (!oldDynamicSpec || !AreNodesEqual(oldDynamicSpec->Parameters, newDynamicSpec->Parameters)) {
-                        DynamicResourceSpecs_[resourceId] = newDynamicSpec;
-                        changed = true;
-                    }
-                }
-
-                auto newTarget = GetOrDefault(targetRevisions, resourceId);
-                auto oldTarget = GetOrDefault(TargetRevisions_, resourceId);
-                auto oldRevisionId = oldTarget ? std::optional(oldTarget->RevisionId) : std::nullopt;
-                auto newRevisionId = newTarget ? std::optional(newTarget->RevisionId) : std::nullopt;
-                if (oldRevisionId != newRevisionId) {
-                    if (newTarget) {
-                        TargetRevisions_[resourceId] = newTarget;
-                    } else {
-                        TargetRevisions_.erase(resourceId);
-                    }
-                    changed = true;
-                }
-
-                if (changed) {
-                    YT_TLOG_INFO("Reconfiguring resource")
-                        .With("ResourceId", resourceId)
-                        .With("TargetRevisionId", newTarget ? std::optional(newTarget->RevisionId) : std::nullopt);
-                    toReconfigure.emplace_back(resource, BuildDynamicContext(resourceId));
+                if (auto context = UpdateDynamicContext(resourceId, GetOrDefault(dynamicSpecs, resourceId), GetOrDefault(targetRevisions, resourceId))) {
+                    toReconfigure.emplace_back(resource, std::move(context));
                 }
             }
         }
@@ -269,7 +373,9 @@ public:
     {
         auto guard = Guard(Lock_);
 
-        ResourceStatuses_[resourceId].Update(morePushedToQueue, moreFetchedFromQueue);
+        auto& resourceStatus = ResourceStatuses_[resourceId];
+        resourceStatus.Update(morePushedToQueue, moreFetchedFromQueue);
+        UpdateQueueSizeGaugeGuarded(resourceId, resourceStatus.GetQueueSize(), guard);
     }
 
     THashMap<TResourceId, TWorkerResourceStatusPtr> CollectResourceStatuses() override
@@ -279,8 +385,10 @@ public:
         {
             auto guard = Guard(Lock_);
 
-            for (const auto& [resourceId, resourceStatus] : ResourceStatuses_) {
-                EmplaceOrCrash(result, resourceId, resourceStatus.Collect());
+            // One instant for the whole snapshot keeps the resources consistent with each other.
+            const auto now = TInstant::Now();
+            for (auto& [resourceId, resourceStatus] : ResourceStatuses_) {
+                EmplaceOrCrash(result, resourceId, resourceStatus.Collect(now));
             }
             // Report resources whose load was scheduled, including a pending initial load.
             for (const auto& [resourceId, future] : ResourcesInitializationFutures_) {
@@ -292,16 +400,18 @@ public:
         // Revision states are queried outside the lock: GetRevisionState is overridable.
         for (const auto& [resourceId, resource] : scheduledResources) {
             auto revisionState = resource->GetRevisionState();
-            if (!revisionState.AppliedRevisionId && !revisionState.TargetRevisionId && !revisionState.UpdateState) {
+            if (!revisionState.AppliedRevisionId &&
+                !revisionState.TargetRevisionId &&
+                !revisionState.ActiveFileSnapshotId &&
+                !revisionState.PreparingFileSnapshot)
+            {
                 continue;
             }
             auto& status = result[resourceId];
             if (!status) {
                 status = New<TWorkerResourceStatus>();
             }
-            status->AppliedRevisionId = revisionState.AppliedRevisionId;
-            status->TargetRevisionId = revisionState.TargetRevisionId;
-            status->UpdateState = revisionState.UpdateState;
+            FillRevisionStatus(status, revisionState);
         }
 
         return result;
@@ -326,12 +436,11 @@ public:
                 // Mark as cancelled so the subscribe callback does nothing on completion.
                 preloadState->Cancelled = true;
             }
-            // Erase the initialization future so the resource can be re-loaded fresh next time.
-            ResourcesInitializationFutures_.erase(resourceId);
             PreloadStatus_.erase(resourceId);
-            // Recreate the resource object so it starts from a clean state on next load.
-            // Now its the only way to undo loading of the resource.
-            Resources_[resourceId] = CreateResource(resourceId);
+            ResetResourceGuarded(resourceId, guard);
+            if (auto it = ResourceStatuses_.find(resourceId); it != ResourceStatuses_.end()) {
+                UpdateQueueSizeGaugeGuarded(resourceId, it->second.GetQueueSize(), guard);
+            }
         }
 
         // Handle added resources: those in the new set but not yet in PreloadStatus_.
@@ -376,10 +485,9 @@ public:
                         YT_TLOG_ERROR("Resource preload failed")
                             .With("ResourceId", resourceId)
                             .With(error);
-                        // Drop failed initialization state so the next update starts a fresh incarnation.
-                        strongThis->ResourcesInitializationFutures_.erase(resourceId);
                         strongThis->PreloadStatus_.erase(resourceId);
-                        strongThis->Resources_[resourceId] = strongThis->CreateResource(resourceId);
+                        // Unless a new load has already replaced the failed one.
+                        strongThis->ResetResourceIfFailedGuarded(resourceId, guard);
                     }
                 })
                     .Via(Invoker_));
@@ -405,36 +513,102 @@ public:
     }
 
 private:
+    struct TResourceMetrics
+    {
+        NProfiling::TGauge QueueSize;
+
+        TResourceMetrics(const NProfiling::TProfiler& profiler, const TResourceId& resourceId)
+            : QueueSize(profiler
+                    .WithTag("resource", resourceId.Underlying())
+                    .WithPrefix("/resource")
+                    .Gauge("/queue_size"))
+        { }
+    };
+
     const TResourceManagerContextPtr ManagerContext_;
     const IInvokerPtr Invoker_;
     const TLogger Logger;
+    const bool ExternallyAssigned_;
 
     THashMap<TResourceId, IResourcePtr> Resources_;
     THashMap<TResourceId, TResourceSpecPtr> ResourceSpecs_;
     THashMap<TResourceId, TDynamicResourceSpecPtr> DynamicResourceSpecs_;
     THashMap<TResourceId, TResourceRevisionPtr> TargetRevisions_;
     THashMap<TResourceId, TResourceStatus> ResourceStatuses_;
+    THashMap<TResourceId, TResourceMetrics> ResourceMetrics_;
+    THashMap<TResourceInstanceId, TResourceId> InstanceResourceIds_;
+    THashMap<TResourceId, TError> ResourceCreationErrors_;
 
     YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     // Protected by Lock_.
     THashMap<TResourceId, TResourceInstanceState> ResourceInstanceStates_;
     THashMap<TResourceId, TFuture<void>> ResourcesInitializationFutures_;
+    THashMap<TResourceId, TFuture<void>> PredecessorDestructionFutures_;
     THashMap<TResourceId, TResourcePreloadStatePtr> PreloadStatus_;
 
-    // AllSucceeded over all always-on resource loads; always set once in the constructor.
-    TFuture<void> AlwaysOnLoadedFuture_;
+    // Always-on resources required on this unit.
+    std::vector<TResourceId> AlwaysOnResourceIds_;
+
+    TResourceId GetResourceIdOrThrow(TResourceInstanceId instanceId) const
+    {
+        auto it = InstanceResourceIds_.find(instanceId);
+        THROW_ERROR_EXCEPTION_UNLESS(it != InstanceResourceIds_.end(), "Resource instance %v is not assigned", instanceId);
+        return it->second;
+    }
+
+    static void FillRevisionStatus(const TWorkerResourceStatusPtr& status, const TResourceRevisionState& revision)
+    {
+        status->AppliedRevisionId = revision.AppliedRevisionId;
+        status->TargetRevisionId = revision.TargetRevisionId;
+        if (revision.ResourceInstanceId) {
+            status->ResourceInstanceId = revision.ResourceInstanceId;
+        }
+        status->ResourceIncarnationGeneration = revision.ResourceIncarnationGeneration;
+        status->ActiveFileSnapshotId = revision.ActiveFileSnapshotId;
+        status->PreparingFileSnapshot = revision.PreparingFileSnapshot;
+        status->LiveAccessorCounts = revision.LiveAccessorCounts;
+    }
+
+    TDynamicResourceContextPtr UpdateDynamicContext(
+        const TResourceId& resourceId,
+        const TDynamicResourceSpecPtr& dynamicSpec,
+        const TResourceRevisionPtr& targetRevision)
+    {
+        bool changed = false;
+        if (dynamicSpec) {
+            auto oldSpec = GetOrDefault(DynamicResourceSpecs_, resourceId);
+            if (!oldSpec || !AreNodesEqual(NYTree::ConvertToNode(oldSpec), NYTree::ConvertToNode(dynamicSpec))) {
+                DynamicResourceSpecs_[resourceId] = dynamicSpec;
+                changed = true;
+            }
+        }
+        auto oldTarget = GetOrDefault(TargetRevisions_, resourceId);
+        if ((oldTarget ? std::optional(oldTarget->RevisionId) : std::nullopt) !=
+            (targetRevision ? std::optional(targetRevision->RevisionId) : std::nullopt))
+        {
+            if (targetRevision) {
+                TargetRevisions_[resourceId] = targetRevision;
+            } else {
+                TargetRevisions_.erase(resourceId);
+            }
+            changed = true;
+        }
+        return changed ? BuildDynamicContext(resourceId) : nullptr;
+    }
 
     // Returns the resource for the given resourceId. Must be called with Lock_ held.
     IResourcePtr GetGuarded(TResourceId resourceId, const TGuard<TSpinLock>&)
     {
+        auto resource = Resources_.find(resourceId);
+        THROW_ERROR_EXCEPTION_UNLESS(resource != Resources_.end(), "Resource %Qv is not assigned", resourceId);
         auto resourceSpec = GetOrCrash(ResourceSpecs_, resourceId);
-        if (resourceSpec->PreloadRequired) {
+        if (!ExternallyAssigned_ && resourceSpec->PreloadRequired) {
             auto it = PreloadStatus_.find(resourceId);
             if (it == PreloadStatus_.end() || it->second->State != EPreloadedResourceState::Preloaded) {
                 THROW_ERROR_EXCEPTION("Resource %v is used via Get while it's not preloaded", resourceId);
             }
         }
-        return GetOrCrash(Resources_, resourceId);
+        return resource->second;
     }
 
     // Loads the resource with the given resourceId. Must be called with Lock_ held.
@@ -442,63 +616,139 @@ private:
     // to initiate loading of a preload-required resource).
     TFuture<void> LoadGuarded(TResourceId resourceId, const TGuard<TSpinLock>& guard, bool isPreload = false)
     {
+        // A failed load starts afresh: the failure may be transient, e.g. a file not delivered yet.
+        if (!ExternallyAssigned_ && ResetResourceIfFailedGuarded(resourceId, guard)) {
+            YT_TLOG_INFO("Reloading resource after a failed load")
+                .With("ResourceId", resourceId);
+        }
         if (auto it = ResourcesInitializationFutures_.find(resourceId); it != ResourcesInitializationFutures_.end()) {
-            return it->second;
+            return it->second.ToUncancelable();
         }
 
+        auto resourceIt = Resources_.find(resourceId);
+        if (resourceIt == Resources_.end()) {
+            return MakeFuture<void>(TError("Resource %Qv is not assigned", resourceId));
+        }
         const auto& resourceSpec = GetOrCrash(ResourceSpecs_, resourceId);
-        const auto& resource = GetOrCrash(Resources_, resourceId);
+        const auto& resource = resourceIt->second;
+        auto instanceId = GetOrCrash(ResourceInstanceStates_, resourceId).InstanceId;
 
-        if (!isPreload && resourceSpec->PreloadRequired) {
+        if (!ExternallyAssigned_ && !isPreload && resourceSpec->PreloadRequired) {
             if (!PreloadStatus_.contains(resourceId)) {
                 THROW_ERROR_EXCEPTION("Resource %v is used via Load while its preload is not scheduled", resourceId);
             }
         }
 
         auto promise = NewPromise<void>();
-        auto future = promise.ToFuture().ToUncancelable();
+        auto future = promise.ToFuture();
         EmplaceOrCrash(ResourcesInitializationFutures_, resourceId, future);
 
         std::vector<TFuture<void>> dependencyFutures;
+        if (auto it = PredecessorDestructionFutures_.find(resourceId); it != PredecessorDestructionFutures_.end()) {
+            dependencyFutures.push_back(it->second);
+        }
         THashMap<TResourceId, IResourcePtr> readyDependencies;
-        {
+        try {
             for (const auto& [depResourceId, resourceDescription] : resourceSpec->Dependencies) {
                 dependencyFutures.push_back(LoadGuarded(depResourceId, guard));
                 const auto& aliasResourceId = resourceDescription->Alias ? *resourceDescription->Alias : depResourceId;
                 readyDependencies[aliasResourceId] = GetGuarded(depResourceId, guard);
             }
+        } catch (const std::exception& ex) {
+            promise.Set(TError(ex));
+            return future.ToUncancelable();
         }
 
         auto result = AllSucceeded(dependencyFutures)
+            // Cancel this wait without affecting shared dependencies or the destruction barrier.
+            .ToImmediatelyCancelable(false)
             .Apply(
-                BIND([weakThis = MakeWeak(this), resourceId, resource, readyDependencies = std::move(readyDependencies)] {
+                BIND([
+                    weakThis = MakeWeak(this),
+                    resourceId,
+                    instanceId,
+                    weakResource = MakeWeak(resource),
+                    readyDependencies = std::move(readyDependencies)
+                ] {
                     auto strongThis = weakThis.Lock();
                     THROW_ERROR_EXCEPTION_UNLESS(strongThis, "Resource manager is dead");
 
-                    const auto& Logger = strongThis->Logger;
+                    auto resource = weakResource.Lock();
+                    THROW_ERROR_EXCEPTION_UNLESS(resource,
+                        "Resource instance %v was released before loading",
+                        instanceId);
+                    if (strongThis->ExternallyAssigned_) {
+                        auto guard = Guard(strongThis->Lock_);
+                        strongThis->GetResourceIdOrThrow(instanceId);
+                    }
+                    const auto Logger = strongThis->Logger;
+                    strongThis.Reset();
 
                     YT_TLOG_INFO("Loading resource")
                         .With("ResourceId", resourceId);
-                    return resource->Load(readyDependencies);
+                    return resource->Load(readyDependencies).Apply(BIND([resource] (const TError& error) {
+                        // A resource may return a future that does not retain it.
+                        Y_UNUSED(resource);
+                        error.ThrowOnError();
+                    }));
                 })
-                    .AsyncVia(Invoker_))
-            .ToUncancelable();
+                    .AsyncVia(Invoker_));
 
         promise.SetFrom(result);
 
-        return future;
+        return future.ToUncancelable();
+    }
+
+    // Forgets the load and recreates the resource object. Must be called with Lock_ held.
+    void ResetResourceGuarded(TResourceId resourceId, const TGuard<TSpinLock>&)
+    {
+        ResourcesInitializationFutures_.erase(resourceId);
+        auto retired = std::exchange(Resources_[resourceId], CreateResource(resourceId));
+        GetFinalizerInvoker()->Invoke(BIND([retired = std::move(retired)] () mutable {
+            retired->Stop();
+            retired.Reset();
+        }));
+    }
+
+    // Updates the queue size gauge, dropping it for an unloaded resource with an empty queue. Must be called with Lock_ held.
+    void UpdateQueueSizeGaugeGuarded(TResourceId resourceId, i64 queueSize, const TGuard<TSpinLock>&)
+    {
+        if (queueSize == 0 && !ResourcesInitializationFutures_.contains(resourceId)) {
+            ResourceMetrics_.erase(resourceId);
+            return;
+        }
+        auto& resourceMetrics = ResourceMetrics_.try_emplace(resourceId, ManagerContext_->Profiler, resourceId).first->second;
+        resourceMetrics.QueueSize.Update(queueSize);
+    }
+
+    // Resets the resource if its current load has failed. Must be called with Lock_ held.
+    bool ResetResourceIfFailedGuarded(TResourceId resourceId, const TGuard<TSpinLock>& guard)
+    {
+        auto it = ResourcesInitializationFutures_.find(resourceId);
+        if (it == ResourcesInitializationFutures_.end()) {
+            return false;
+        }
+        auto result = it->second.TryGet();
+        if (!result || result->IsOK()) {
+            return false;
+        }
+        ResetResourceGuarded(resourceId, guard);
+        return true;
     }
 
     // Creates the resource object for the given resourceId.
-    IResourcePtr CreateResource(TResourceId resourceId)
+    IResourcePtr CreateResource(TResourceId resourceId, TResourceInstanceId assignedId = {})
     {
         const auto& resourceSpec = GetOrCrash(ResourceSpecs_, resourceId);
 
         ui64 incarnationGeneration = 0;
         if (auto it = ResourceInstanceStates_.find(resourceId); it != ResourceInstanceStates_.end()) {
             incarnationGeneration = it->second.IncarnationGeneration + 1;
+            InstanceResourceIds_.erase(it->second.InstanceId);
         }
-        auto resourceInstanceId = TResourceInstanceId(TGuid::Create());
+        auto resourceInstanceId = assignedId ? assignedId : TResourceInstanceId(TGuid::Create());
+        InstanceResourceIds_.emplace(resourceInstanceId, resourceId);
+        ResourceCreationErrors_.erase(resourceId);
         ResourceInstanceStates_[resourceId] = {
             .InstanceId = resourceInstanceId,
             .IncarnationGeneration = incarnationGeneration,
@@ -517,11 +767,13 @@ private:
         context->Invoker = Invoker_;
         context->Logger = Logger.WithTag("Resource", resourceId);
         context->Profiler = ManagerContext_->Profiler.WithTag("resource", resourceId.Underlying()).WithPrefix("/resource");
-        context->StatusProfiler = ManagerContext_->StatusProfiler->WithPrefix(Format("/resources/%v", resourceId));
+        context->StatusProfiler = ManagerContext_->StatusProfiler->WithPrefix(
+            ExternallyAssigned_ ? Format("/resources/%v", resourceInstanceId) : Format("/resources/%v", resourceId));
 
         try {
             return TRegistry::Get()->CreateResource(context, BuildDynamicContext(resourceId));
         } catch (const std::exception& ex) {
+            ResourceCreationErrors_[resourceId] = TError(ex);
             return New<TFailedResource>(context->StatusProfiler, TError(ex));
         }
     }
@@ -536,6 +788,17 @@ private:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+
+IResourceManagerPtr CreateResourceManager(TResourceManagerContextPtr managerContext)
+{
+    return New<TResourceManager>(
+        std::move(managerContext),
+        THashMap<TResourceId, TResourceSpecPtr>{},
+        THashMap<TResourceId, TDynamicResourceSpecPtr>{},
+        THashMap<TResourceId, TResourceRevisionPtr>{},
+        THashMap<TResourceId, TResourceInstanceState>{},
+        /*externallyAssigned*/ true);
+}
 
 IResourceManagerPtr CreateResourceManager(
     TResourceManagerContextPtr managerContext,

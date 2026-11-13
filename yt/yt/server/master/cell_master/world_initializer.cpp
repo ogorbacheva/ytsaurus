@@ -31,6 +31,7 @@
 #include <yt/yt/ytlib/cypress_transaction_client/cypress_transaction_service_proxy.h>
 
 #include <yt/yt/ytlib/object_client/master_ypath_proxy.h>
+#include <yt/yt/ytlib/object_client/object_service_proxy.h>
 
 #include <yt/yt/ytlib/election/cell_manager.h>
 #include <yt/yt/ytlib/election/config.h>
@@ -60,7 +61,7 @@
 
 #include <yt/yt/core/yson/protobuf_helpers.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 namespace NYT::NCellMaster {
 
@@ -152,8 +153,8 @@ private:
 
     std::vector<TFuture<void>> ScheduledMutations_;
 
-    NThreading::TAtomicObject<std::vector<TYPath>> OrchidAddresses_;
-    NThreading::TAtomicObject<THashMap<TYPath, TYsonString>> OrchidAddressToAnnotations_;
+    TAtomicObject<std::vector<TYPath>> OrchidAddresses_;
+    TAtomicObject<THashMap<TYPath, TYsonString>> OrchidAddressToAnnotations_;
 
 
     bool IsInitializedUncached()
@@ -849,6 +850,11 @@ private:
                 "//sys/groups",
                 transactionId,
                 EObjectType::GroupMap);
+
+            ScheduleCreateNode(
+                "//sys/master_cell_groups",
+                transactionId,
+                EObjectType::MasterCellGroupMap);
 
             ScheduleCreateNode(
                 "//sys/network_projects",

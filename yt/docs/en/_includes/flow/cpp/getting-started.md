@@ -4,6 +4,8 @@ In this section, you’ll learn step by step how to implement your first [pipeli
 
 ## Prerequisites
 
+This guide builds user code into the worker. To host process functions in a separate executable, see [Running C++ process functions in a companion](../../../flow/cpp/companion.md).
+
 - Check out the [repository]({{source-root}}).
 - Set up `ya make` (the build system).
 - Familiarize yourself with the [basic concepts](../../../flow/concepts/glossary.md) of Flow.
@@ -34,78 +36,58 @@ struct TWordMessage
 YT_FLOW_DEFINE_YSON_MESSAGE(TWordMessage);
 ```
 
-For more details on message conversion, see the [Computation (C++)](../../../flow/cpp/computation.md) section, “TYsonMessage”.
+For more details on message conversion, see [Process functions (C++)](../../../flow/cpp/process-functions.md).
 
-### 2. Define the state {#define-state}
+### 2. Prepare external state {#define-state}
 
-If a [computation](../../../flow/concepts/glossary.md#stream-and-computation) works with a [state](../../../flow/concepts/glossary.md#state), define a class that inherits from `TStateBase`:
+In this example, the counters live in an external {{product-name}} table, and `TWordCountFunction` reads and updates them through `TMutableStateKeyClient<TSimpleExternalState>`. You don't need a separate state class: create the table in step 8 and configure `TSimpleExternalStateManager` in the step 6 spec. For details, see [Working with states (C++)](../../../flow/cpp/state.md).
+### 3. Implement a process function for the [Source](../../../flow/concepts/glossary.md#source) {#implement-source}
 
-```cpp
-struct TWordCountState
-    : public TStateBase
-{
-    i64 Count{};
-
-    REGISTER_YSON_STRUCT(TWordCountState);
-
-    static void Register(TRegistrar registrar)
-    {
-        registrar.Parameter("count", &TThis::Count)
-            .Default(0);
-    }
-};
-```
-
-For more details on working with states, see [Working with states (C++)](../../../flow/cpp/state.md).
-
-### 3. Implement the [Source](../../../flow/concepts/glossary.md#source) Computation {#implement-source}
-
-To read data from external sources, inherit from `TSwiftOrderedSourceComputation`. In the `DoProcessMessage` method, transform the input messages:
+Implement C++ user logic only as a [process function](../../../flow/cpp/process-functions.md). For element-wise processing, inherit from `IProcessFunction` and implement `ProcessMessage`:
 
 ```cpp
-class TTextReader
-    : public TSwiftOrderedSourceComputation
+class TTextReadFunction
+    : public IProcessFunction
 {
 public:
-    using TSwiftOrderedSourceComputation::TSwiftOrderedSourceComputation;
-
-    void DoProcessMessage(const TMessage& message, IOutputCollectorPtr output) override
+    void ProcessMessage(
+        const TInputMessageConstPtr& message,
+        const IOutputCollectorPtr& output,
+        const IRuntimeContextPtr& context) override
     {
         auto text = GetColumnValue<std::string>(message, "text");
         for (const auto& word : StringSplitter(text).SplitBySet(" \t\n\r").SkipEmpty()) {
             auto wordMessage = New<TWordMessage>();
             wordMessage->Word = word;
-            output->AddMessage(ConvertToMessage(wordMessage));
+            output->AddMessage(context->ConvertToMessage(wordMessage));
         }
     }
 };
 
-YT_FLOW_DEFINE_COMPUTATION(TTextReader);
+YT_FLOW_DEFINE_PROCESS_FUNCTION(TTextReadFunction);
 ```
 
-Note that `TSwiftOrderedSourceComputation` doesn’t materialize the messages themselves in YT; it only stores metadata for recovery. For more details, see [Computation (C++)](../../../flow/cpp/computation.md#tswiftorderedsourcecomputation).
+In the spec, the built-in `TProcessFunctionSourceComputation` executes this function. It selects source mode: output messages aren’t materialized in YT, and only recovery metadata is stored. For more details, see [Process functions](../../../flow/cpp/process-functions.md#how-it-works).
 
-### 4. Implement the Transform Computation {#implement-transform}
+### 4. Implement a stateful process function {#implement-transform}
 
-To process data with state, inherit from `TTransformComputation`. To work with external states, use `TSimpleExternalStateManager`:
+Use `IProcessFunction` for stateful processing as well. To work with external state, use `TSimpleExternalStateManager`:
 
 ```cpp
-class TWordCounter
-    : public TTransformComputation
+class TWordCountFunction
+    : public IProcessFunction
 {
 public:
-    using TTransformComputation::TTransformComputation;
-
-    void DoInit(IJobInitContextPtr initContext) override
+    void Init(const IRuntimeInitContextPtr& initContext) override
     {
         initContext->InitExternalStateClient(StateClient_, "/state");
     }
 
-    void DoProcessMessage(
+    void ProcessMessage(
         const TInputMessageConstPtr& message,
-        IOutputCollectorPtr /*output*/) override
+        const IOutputCollectorPtr& /*output*/,
+        const IRuntimeContextPtr& /*context*/) override
     {
-        const auto wordMessage = ConvertToYsonMessage<TWordMessage>(message);
         auto state = StateClient_.GetState(message->Key);
         i64 count = state->GetColumnValue<std::optional<i64>>("count").value_or(0);
         TPayloadBuilder builder(state->Schema);
@@ -117,13 +99,13 @@ private:
     TMutableStateKeyClient<TSimpleExternalState> StateClient_;
 };
 
-YT_FLOW_DEFINE_COMPUTATION(TWordCounter);
+YT_FLOW_DEFINE_PROCESS_FUNCTION(TWordCountFunction);
 ```
 
 Key points:
 - `TMutableStateKeyClient<TState>` is a type-safe client for external state. You set the manager’s parameters in the `Computation` spec (see below), not in your own `TParameters`/`TDynamicParameters`.
 - `InitExternalStateClient(StateClient_, "/state")` binds the client to the external state manager named `"/state"`, which is declared in the `external_state_managers` spec.
-- `ConvertToYsonMessage<T>` converts input messages into a type-safe structure.
+- In the spec, the built-in `TProcessFunctionComputation` executes the function and provides transform-mode exactly-once state commits.
 
 ### 5. Write main.cpp {#write-main}
 
@@ -158,42 +140,42 @@ The spec describes the pipeline topology in YSON format. Here’s an example for
 
 ```yson
 {
-    computations = {
-        text_reader = {
-            computation_ref = "TTextReader";
-            outputs = ["words"];
-            sources = {
-                source = {
-                    type = "TQueueSource";
-                    parameters = {
-                        queue_path = "//path/to/input/queue";
+    "spec" = {
+        "computations" = {
+            "reader" = {
+                "computation_class_name" = "NYT::NFlow::TProcessFunctionSourceComputation";
+                "processing_function" = "NYT::NFlow::NExample::TTextReadFunction";
+                "output_stream_ids" = ["words"];
+                "source_streams" = {
+                    "queue" = {
+                        "source_class_name" = "NYT::NFlow::TQueueSource";
+                        "parameters" = {
+                            "queue_path" = "<cluster=cluster_name>//path/to/queue";
+                            "consumer_path" = "<cluster=cluster_name>//path/to/consumer";
+                        };
                     };
                 };
             };
-            watermark_strategy = {
-                watermark_generator = {
-                    out_of_orderness_bound = "10s";
-                };
-            };
-        };
-        word_counter = {
-            computation_ref = "TWordCounter";
-            inputs = ["words"];
-            group_by_schema = [
-                {name = "hash"; type = "uint64"; expression = "farm_hash(word)"};
-                {name = "word"; type = "string"};
-            ];
-            external_state_managers = {
-                "/state" = {
-                    external_state_manager_class_name = "NYT::NFlow::TSimpleExternalStateManager";
-                    parameters = {
-                        path = "//path/to/state/table";
+            "counter" = {
+                "computation_class_name" = "NYT::NFlow::TProcessFunctionComputation";
+                "processing_function" = "NYT::NFlow::NExample::TWordCountFunction";
+                "input_stream_ids" = ["words"];
+                "output_stream_ids" = [];
+                "group_by_schema" = [
+                    {"name" = "hash"; "type" = "uint64"; "expression" = "farm_hash(word)";};
+                    {"name" = "word"; "type" = "string";};
+                ];
+                "external_state_managers" = {
+                    "/state" = {
+                        "external_state_manager_class_name" = "NYT::NFlow::TSimpleExternalStateManager";
+                        "parameters" = {
+                            "path" = "//path/to/state/table";
+                        };
                     };
                 };
             };
         };
     };
-    streams = {};
 }
 ```
 
@@ -203,30 +185,34 @@ For more details on the spec format, see [Spec & DynamicSpec](../../../flow/conc
 
 ### 7. Build the project {#build}
 
-Add the dependencies to your project’s `ya.make` and build it:
+The code fragments above explain the checked-in Word Count example; they aren't a standalone project. Build the example from the repository. Its dependencies are listed in [ya.make]({{source-root}}/yt/yt/flow/examples/cpp/word_count/ya.make):
 
 ```bash
-ya make path/to/your/project
+ya make yt/yt/flow/examples/cpp/word_count
 ```
+
+The binary is `yt/yt/flow/examples/cpp/word_count/word_count`. The simplified step 6 spec omits `min_word_length`, so the default `0` applies; the checked-in config sets it to `4`. If you move the process functions into another namespace, use their fully qualified names in the spec's `processing_function` fields.
 
 ### 8. Create objects in YT {#create-yt-objects}
 
 Before you run the pipeline, you need to create:
 - An input queue (if it doesn’t exist yet).
+- A consumer for the input queue, registered on it.
 - A state table (for `ExternalState`).
-- A pipeline object with [Flow inner tables](../../../flow/concepts/glossary.md#inner-pipeline-tables).
+{% if audience == "internal" %}- A pipeline object with [Flow inner tables](../../../flow/concepts/glossary.md#inner-pipeline-tables).{% endif %}
 
-{% if audience == "internal" %}To create the objects, use the [YtSync]({{yt-sync-docs}}/) utility (the pipeline spec is described [here]({{yt-sync-docs}}/pipeline_specification)).{% endif %}
+{% if audience == "internal" %}To create the objects, use the [YtSync]({{yt-sync-docs}}/) utility (the pipeline spec is described [here]({{yt-sync-docs}}/pipeline_specification)).{% else %}For a working example of creating the queue, consumer, and state table, see [Prepare the pipeline](../../../flow/quickstart.md#prepare) in the quick start. The C++ runner creates the pipeline and internal tables on first launch; for a separate preparation step, see [Creating a pipeline](../../../flow/concepts/pipeline-object.md#create).{% endif %}
 
 ### 9. Run and test {#run-and-test}
 
-Run the pipeline and monitor its operation in the {{product-name}} UI, following the path of your `pipeline`.
+{% if audience == "internal" %}Run the pipeline and monitor its operation in the {{product-name}} UI, following the path of your `pipeline`.{% else %}Save the YSON from step 6 as `<config.yson>`. Replace the queue, consumer, and external state table paths, then add `cluster_url`, the pipeline `path`, and a `vanilla` block with `enable = %true`, your scheduler `pool`, and `worker = {"count" = 1;}`, as shown in [Prepare the pipeline](../../../flow/quickstart.md#prepare). Launch the built binary with `--config <config.yson>` as in [Validate and launch](../../../flow/quickstart.md#launch). Check the state with `yt --proxy <cluster> flow get-pipeline-state <pipeline_path>`, where `<pipeline_path>` is the `path` value from your config; the CLI should print `working`.{% endif %}
 
-For detailed information about releases and pipeline management, read the [Releases and pipeline management](../../../flow/release/basic-rules.md) section.
+Before you release a new version, read [Release and table change rules](../../../flow/devops/vanilla/releases.md#release-and-configure-basic-rules). For lifecycle commands, see [Pipeline operations](../../../flow/devops/vanilla/pipeline-operations.md).
 
 ## See also
 
-- [Computation (C++)](../../../flow/cpp/computation.md)
+- [Process functions (C++)](../../../flow/cpp/process-functions.md)
+- [Computation modes (C++)](../../../flow/cpp/computation.md)
 - [Working with states (C++)](../../../flow/cpp/state.md)
 - [Watermarks](../../../flow/concepts/watermarks.md)
 - [Timers](../../../flow/concepts/timers.md)

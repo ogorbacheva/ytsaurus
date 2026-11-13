@@ -41,11 +41,11 @@ std::string GenerateShortNameForBundle(
         return shortName;
     }
 
-    shortName.resize(maxLength - 1);
+    shortName = shortName.substr(0, maxLength - 1);
 
     for (int index = 1; index < 100; ++index) {
         if (index == 10) {
-            shortName.resize(maxLength - 2);
+            shortName = shortName.substr(0, maxLength - 2);
         }
 
         auto proposed = Format("%v%v", shortName, index);
@@ -305,19 +305,6 @@ THashMap<std::string, THashSet<std::string>> GetAliveProxies(
     }
 
     return aliveProxies;
-}
-
-bool EnsureNodeDecommissioned(
-    const std::string& nodeName,
-    const TTabletNodeInfoPtr& nodeInfo,
-    TSchedulerMutations* mutations)
-{
-    if (!nodeInfo->Decommissioned) {
-        mutations->ChangedDecommissionedFlag[nodeName] = mutations->WrapMutation(true);
-        return false;
-    }
-    // Wait tablet cells to migrate.
-    return GetUsedSlotCount(nodeInfo) == 0;
 }
 
 struct TTabletCellRemoveOrder
@@ -820,6 +807,53 @@ TCpuLimitsPtr GetBundleEffectiveCpuLimits(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void ValidateBundleMemoryLimits(
+    const TBundleInfoPtr& bundleInfo,
+    const TZoneInfoPtr& zoneInfo,
+    bool enableNetworkLimits)
+{
+    const auto& targetConfig = bundleInfo->TargetConfig;
+    auto validateLimits = [&] (const TMemoryLimitBoundsPtr& overrides) {
+        auto bounds = NYTree::CloneYsonStruct(zoneInfo->TabletNodeMemoryLimitBounds);
+        for (auto member : {
+            &TMemoryLimitBounds::CompressedBlockCache,
+            &TMemoryLimitBounds::KeyFilterBlockCache,
+            &TMemoryLimitBounds::LookupRowCache,
+            &TMemoryLimitBounds::TabletDynamic,
+            &TMemoryLimitBounds::TabletStatic,
+            &TMemoryLimitBounds::UncompressedBlockCache,
+            &TMemoryLimitBounds::VersionedChunkMeta,
+            &TMemoryLimitBounds::Reserved,
+            &TMemoryLimitBounds::Query,
+        }) {
+            const auto& overrideRange = overrides.Get()->*member;
+            auto& range = bounds.Get()->*member;
+            if (overrideRange.Min) {
+                range.Min = overrideRange.Min;
+            }
+            if (overrideRange.Max) {
+                range.Max = overrideRange.Max;
+            }
+        }
+
+        bounds->ValidateMemoryLimits(targetConfig->MemoryLimits);
+    };
+
+    const auto& resources = targetConfig->TabletNodeResourceGuarantee;
+    for (const auto& [_, instanceSize] : zoneInfo->TabletNodeSizes) {
+        const auto& sizeResources = instanceSize->ResourceGuarantee;
+        bool sameResources = sizeResources->Vcpu == resources->Vcpu &&
+            sizeResources->Memory == resources->Memory &&
+            (!enableNetworkLimits || sizeResources->NetBytes == resources->NetBytes);
+        if (sameResources) {
+            validateLimits(instanceSize->MemoryLimitBounds);
+            return;
+        }
+    }
+
+    zoneInfo->TabletNodeMemoryLimitBounds->ValidateMemoryLimits(targetConfig->MemoryLimits);
+}
+
 void ManageBundlesDynamicConfig(TSchedulerInputState& input, TSchedulerMutations* mutations)
 {
     TBundlesDynamicConfig freshConfig;
@@ -837,10 +871,33 @@ void ManageBundlesDynamicConfig(TSchedulerInputState& input, TSchedulerMutations
             continue;
         }
 
+        if (auto zoneIt = input.Zones.find(bundleInfo->Zone); zoneIt != input.Zones.end()) {
+            try {
+                ValidateBundleMemoryLimits(bundleInfo, zoneIt->second, input.Config->EnableNetworkLimits);
+            } catch (const TErrorException& ex) {
+                YT_TLOG_WARNING("Bundle memory limits are out of bounds")
+                    .With("BundleName", bundleName)
+                    .With("Zone", bundleInfo->Zone)
+                    .With(ex.Error());
+
+                mutations->AlertsToFire.push_back({
+                    .Id = "invalid_bundle_memory_limits",
+                    .BundleName = bundleName,
+                    .Description = ex.Error().GetMessage(),
+                });
+
+                if (auto it = input.BundlesDynamicConfig.find(bundleInfo->NodeTagFilter); it != input.BundlesDynamicConfig.end()) {
+                    freshConfig.emplace(it->first, it->second);
+                }
+                continue;
+            }
+        }
+
         auto bundleConfig = New<TBundleDynamicConfig>();
         bundleConfig->CpuLimits = GetBundleEffectiveCpuLimits(bundleName, bundleInfo, input);
         bundleConfig->MemoryLimits = NYTree::CloneYsonStruct(bundleInfo->TargetConfig->MemoryLimits);
         bundleConfig->MediumThroughputLimits = NYTree::CloneYsonStructs(bundleInfo->TargetConfig->MediumThroughputLimits);
+        bundleConfig->FairSharePoolWeights = bundleInfo->TargetConfig->FairSharePoolWeights;
         freshConfig[bundleInfo->NodeTagFilter] = bundleConfig;
     }
 

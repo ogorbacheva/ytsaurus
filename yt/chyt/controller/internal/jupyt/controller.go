@@ -1,6 +1,7 @@
 package jupyt
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,10 +71,12 @@ func (c *Controller) GetControllerSnapshot() (yson.RawValue, error) {
 	return make(yson.RawValue, 0), nil
 }
 
-type jupytOpletInfo struct{}
-
-func (c *Controller) GetOpletInfo(ctx context.Context, oplet *strawberry.Oplet) (any, error) {
-	return jupytOpletInfo{}, nil
+func (c *Controller) IsControllerSnapshotOutdated(snapshot yson.RawValue, _ *strawberry.Oplet) (bool, error) {
+	current, err := c.GetControllerSnapshot()
+	if err != nil {
+		return false, err
+	}
+	return !bytes.Equal(snapshot, current), nil
 }
 
 func (c *Controller) buildCommand(speclet *Speclet) (command string, env map[string]string) {
@@ -96,35 +99,35 @@ func (c *Controller) buildCommand(speclet *Speclet) (command string, env map[str
 	return cmd, jupyterEnv
 }
 
-func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
-	spec map[string]any, description map[string]any, annotations map[string]any, runAsUser bool, err error) {
+func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (*strawberry.PrepareResult, error) {
+	result := &strawberry.PrepareResult{}
 	alias := oplet.Alias()
 
 	// description = buildDescription(c.cluster, alias, c.config.EnableYandexSpecificLinksOrDefault())
 	speclet := oplet.ControllerSpeclet().(Speclet)
 
-	description = map[string]any{}
+	result.Description = map[string]any{}
 
 	var filePaths []ypath.Rich
 
-	err = c.prepareCypressDirectories(ctx, oplet.Alias())
+	err := c.prepareCypressDirectories(ctx, oplet.Alias())
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	err = c.appendConfigs(ctx, oplet, &speclet, &filePaths)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	err = c.appendAdditionalFiles(&filePaths)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	command, env := c.buildCommand(&speclet)
 
-	spec = map[string]any{
+	result.Spec = map[string]any{
 		"tasks": map[string]any{
 			"jupyter": map[string]any{
 				"command":                            command,
@@ -144,14 +147,14 @@ func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
 		"max_stderr_count":     150,
 		"title":                "JUPYT notebook *" + alias,
 	}
-	annotations = map[string]any{
+	result.Annotations = map[string]any{
 		"is_notebook": true,
 		"expose":      true,
 	}
 
-	runAsUser = c.config.RunAsUser
+	result.RunAsUser = c.config.RunAsUser
 
-	return
+	return result, nil
 }
 
 func (c *Controller) Family() string {

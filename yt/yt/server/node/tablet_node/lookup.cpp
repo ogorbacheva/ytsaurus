@@ -1165,6 +1165,8 @@ struct TPartitionSession
     // TODO(akozhikhov): Proper block fetcher: Create all partition sessions at the beginning of the lookup session.
     // Right know we cannot do that because chunk reader may call Open in ctor and start reading blocks.
     bool SessionStarted = false;
+    // Prevents reading the partition until all its store sessions are open.
+    TFuture<void> OpenStoreSessionsFuture;
 
     TStoreSessionList StoreSessions;
     bool StoreSessionsPrepared = false;
@@ -1313,6 +1315,7 @@ private:
     const IInvokerPtr Invoker_;
     const TTabletSnapshotPtr TabletSnapshot_;
     const TTimestamp Timestamp_;
+    const TTimestamp RetentionTimestamp_;
     const bool ProduceAllVersions_;
     const TClientChunkReadOptions SessionChunkReadOptions_;
     const TClientChunkReadOptions TabletChunkReadOptions_;
@@ -1348,7 +1351,7 @@ private:
     TDuration InitializationDuration_;
     TDuration PartitionsLookupDuration_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, CancelationSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, CancelationSpinLock_);
     std::optional<TError> CancelationError_;
     TFuture<void> SessionFuture_ = OKFuture;
 
@@ -1362,6 +1365,7 @@ private:
         const TSharedRange<TLegacyKey>& keys);
 
     std::vector<TFuture<void>> OpenStoreSessions(const TStoreSessionList& sessions);
+    void StartPartitionSession(TPartitionSession* partitionSession);
 
     void LookupInPartitions(const TError& error);
 
@@ -1923,6 +1927,7 @@ TTabletLookupSession<TPipeline>::TTabletLookupSession(
     , Invoker_(lookupSession->Invoker_)
     , TabletSnapshot_(std::move(tabletSnapshot))
     , Timestamp_(lookupSession->TimestampRange_.Timestamp)
+    , RetentionTimestamp_(lookupSession->TimestampRange_.RetentionTimestamp)
     , ProduceAllVersions_(produceAllVersions)
     , SessionChunkReadOptions_(lookupSession->ChunkReadOptions_)
     , TabletChunkReadOptions_(std::move(tabletChunkReadOptions))
@@ -1985,6 +1990,7 @@ TTabletLookupSession<TPipeline>::TTabletLookupSession(
     , Invoker_(std::move(invoker))
     , TabletSnapshot_(std::move(tabletSnapshot))
     , Timestamp_(readTimestampRange.Timestamp)
+    , RetentionTimestamp_(readTimestampRange.RetentionTimestamp)
     , ProduceAllVersions_(produceAllVersions)
     , SessionChunkReadOptions_(chunkReadOptions)
     , TabletChunkReadOptions_(SessionChunkReadOptions_)
@@ -2089,11 +2095,10 @@ auto TTabletLookupSession<TPipeline>::Run() -> TFuture<typename decltype(TPipeli
     openStoreSessions(ChunkEdenSessions_);
 
     YT_VERIFY(!PartitionSessions_.empty());
-    PartitionSessions_[0].SessionStarted = true;
-    PartitionSessions_[0].StoreSessions = CreateStoreSessions(
-        PartitionSessions_[0].PartitionSnapshot->Stores,
-        PartitionSessions_[0].ChunkLookupKeys);
-    openStoreSessions(PartitionSessions_[0].StoreSessions);
+    StartPartitionSession(&PartitionSessions_[0]);
+    if (PartitionSessions_[0].OpenStoreSessionsFuture != OKFuture) {
+        openFutures.push_back(PartitionSessions_[0].OpenStoreSessionsFuture);
+    }
 
     InflightKeyLookupCount_ += std::ssize(PartitionSessions_[0].ChunkLookupKeys);
     ++OpenedPartitionSessionCount_;
@@ -2121,6 +2126,10 @@ TStoreSessionList TTabletLookupSession<TPipeline>::CreateStoreSessions(
 {
     YT_ASSERT_INVOKER_AFFINITY(Invoker_);
 
+    if (keys.empty()) {
+        return {};
+    }
+
     TStoreSessionList sessions;
     sessions.reserve(stores.size());
 
@@ -2145,7 +2154,7 @@ TStoreSessionList TTabletLookupSession<TPipeline>::CreateStoreSessions(
             ProduceAllVersions_,
             ProduceAllVersions_
                 ? TColumnFilter::MakeUniversal()
-                : *ColumnMappingInfo_.GetPhysicalColumnFilter(),
+                : GetStoreReaderColumnFilter(*ColumnMappingInfo_.GetPhysicalColumnFilter(), store, RetentionTimestamp_),
             TabletChunkReadOptions_,
             TabletChunkReadOptions_.WorkloadDescriptor.Category));
     }
@@ -2171,6 +2180,21 @@ std::vector<TFuture<void>> TTabletLookupSession<TPipeline>::OpenStoreSessions(
     }
 
     return futures;
+}
+
+template <class TPipeline>
+void TTabletLookupSession<TPipeline>::StartPartitionSession(TPartitionSession* partitionSession)
+{
+    YT_VERIFY(!std::exchange(partitionSession->SessionStarted, true));
+
+    partitionSession->StoreSessions = CreateStoreSessions(
+        partitionSession->PartitionSnapshot->Stores,
+        partitionSession->ChunkLookupKeys);
+
+    auto openFutures = OpenStoreSessions(partitionSession->StoreSessions);
+    partitionSession->OpenStoreSessionsFuture = openFutures.empty()
+        ? OKFuture
+        : AllSucceeded(std::move(openFutures));
 }
 
 template <class TPipeline>
@@ -2280,11 +2304,7 @@ void TTabletLookupSession<TPipeline>::MaybePrefetchPartitionSessions()
         prefetched = true;
 
         auto& partitionSession = PartitionSessions_[OpenedPartitionSessionCount_];
-        YT_VERIFY(!std::exchange(partitionSession.SessionStarted, true));
-        partitionSession.StoreSessions = CreateStoreSessions(
-            partitionSession.PartitionSnapshot->Stores,
-            partitionSession.ChunkLookupKeys);
-        OpenStoreSessions(partitionSession.StoreSessions);
+        StartPartitionSession(&partitionSession);
 
         InflightKeyLookupCount_ += std::ssize(partitionSession.ChunkLookupKeys);
         ++OpenedPartitionSessionCount_;
@@ -2307,24 +2327,23 @@ bool TTabletLookupSession<TPipeline>::LookupInCurrentPartition()
     if (!partitionSession.SessionStarted) {
         YT_VERIFY(CurrentPartitionSessionIndex_ == OpenedPartitionSessionCount_);
 
-        partitionSession.SessionStarted = true;
-        partitionSession.StoreSessions = CreateStoreSessions(
-            partitionSession.PartitionSnapshot->Stores,
-            partitionSession.ChunkLookupKeys);
-        auto openFutures = OpenStoreSessions(partitionSession.StoreSessions);
+        StartPartitionSession(&partitionSession);
 
         ++OpenedPartitionSessionCount_;
         InflightKeyLookupCount_ += std::ssize(partitionSession.ChunkLookupKeys);
+    }
 
-        if (!openFutures.empty()) {
-            auto sessionFuture = AllSucceeded(std::move(openFutures));
-            sessionFuture.Subscribe(BIND(
-                &TTabletLookupSession::LookupInPartitions,
-                MakeStrong(this))
-                .Via(Invoker_));
-            SetSessionFuture(std::move(sessionFuture));
-            return true;
-        }
+    YT_VERIFY(partitionSession.OpenStoreSessionsFuture);
+    if (const auto& maybeError = partitionSession.OpenStoreSessionsFuture.TryGet()) {
+        maybeError->ThrowOnError();
+    } else {
+        auto sessionFuture = partitionSession.OpenStoreSessionsFuture;
+        sessionFuture.Subscribe(BIND(
+            &TTabletLookupSession::LookupInPartitions,
+            MakeStrong(this))
+            .Via(Invoker_));
+        SetSessionFuture(std::move(sessionFuture));
+        return true;
     }
 
     return DoLookupInCurrentPartition();

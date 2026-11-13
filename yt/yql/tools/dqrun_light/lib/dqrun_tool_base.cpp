@@ -23,8 +23,8 @@
 #include <contrib/ydb/library/yql/providers/dq/interface/yql_dq_task_preprocessor.h>
 #include <contrib/ydb/library/yql/providers/dq/provider/exec/yql_dq_exectransformer.h>
 #include <contrib/ydb/library/yql/providers/dq/provider/yql_dq_provider.h>
-#include <contrib/ydb/library/yql/providers/yt/actors/yql_yt_provider_factories.h>
-#include <contrib/ydb/library/yql/providers/yt/dq_task_preprocessor/yql_yt_dq_task_preprocessor.h>
+#include <yt/yql/providers/yt/actors/yql_yt_provider_factories.h>
+#include <yt/yql/providers/yt/dq_task_preprocessor/yql_yt_dq_task_preprocessor.h>
 #include <contrib/ydb/library/yql/utils/bindings/utils.h>
 
 #include <util/stream/file.h>
@@ -123,6 +123,7 @@ TDqRunToolBase::TDqRunToolBase(TString name)
         if (EmulateYt_ && DqPort_) {
             throw yexception() << "Remote DQ instance cannot work with the emulated YT cluster";
         }
+        ValidateExtraOptions();
         if (EmulateYt_) {
             GetRunOptions().GatewayTypes.emplace(YtProviderName);
         }
@@ -165,15 +166,26 @@ TDqRunToolBase::TDqRunToolBase(TString name)
         auto compFactory = CreateCompNodeFactory();
         TIntrusivePtr<IDqGateway> dqGateway;
         if (DqPort_) {
-            dqGateway = CreateDqGateway(DqHost_.GetOrElse("localhost"), *DqPort_);
+            dqGateway = CreateRemoteDqGateway();
         } else {
             std::function<NActors::IActor*(void)> metricsPusherFactory = {};
             dqGateway = CreateLocalDqGateway(GetFuncRegistry().Get(), compFactory, CreateDqTaskTransformFactory(), CreateDqTaskPreprocessorFactories(),
                  EnableSpilling_, CreateAsyncIoFactory(), DqThreads_, GetMetricsRegistry(), metricsPusherFactory);
         }
 
-        return GetDqDataProviderInitializer(&CreateDqExecTransformer, dqGateway, compFactory, {}, GetFileStorage());
+        return GetDqDataProviderInitializer(&CreateDqExecTransformer, dqGateway, compFactory, /*metrics=*/{}, GetFileStorage(), /*externalUser=*/false, GetDqCliqueValidator());
     });
+}
+
+TIntrusivePtr<IDqGateway> TDqRunToolBase::CreateRemoteDqGateway() {
+    return CreateDqGateway(DqHost_.GetOrElse("localhost"), *DqPort_);
+}
+
+TDqCliqueValidator TDqRunToolBase::GetDqCliqueValidator() {
+    return {};
+}
+
+void TDqRunToolBase::RunDqWarmup() {
 }
 
 void TDqRunToolBase::RegisterExtraOptions(NLastGetopt::TOpts& opts) {
@@ -196,6 +208,9 @@ void TDqRunToolBase::FillExtraDqTaskTransformFactories(TVector<TTaskTransformFac
 
 void TDqRunToolBase::RegisterExtraAsyncIoFactories(NYql::NDq::TDqAsyncIoFactory& factory) {
     Y_UNUSED(factory);
+}
+
+void TDqRunToolBase::ValidateExtraOptions() {
 }
 
 IYtGateway::TPtr TDqRunToolBase::CreateYtGateway() {
@@ -282,6 +297,7 @@ TProgram::TStatus TDqRunToolBase::DoRunProgram(TProgramPtr program) {
 #ifdef PROFILE_MEMORY_ALLOCATIONS
     NAllocProfiler::StartAllocationSampling(true);
 #endif
+    RunDqWarmup();
     const TProgram::TStatus status = TYtRunTool::DoRunProgram(program);
 #ifdef PROFILE_MEMORY_ALLOCATIONS
     NAllocProfiler::StopAllocationSampling(Cout);

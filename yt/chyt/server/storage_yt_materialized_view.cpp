@@ -409,6 +409,7 @@ TMaterializedViewConfiguration BuildMaterializedViewConfiguration(
     }
 
     auto source = GetMaterializedViewSource(clonedCreate, context);
+    auto populate = queryContext->GetContextSettings(context)->MaterializedViewPopulate;
 
     auto getSingleTable = [] (const IStorageDistributorPtr& distributor, TStringBuf role) {
         THROW_ERROR_EXCEPTION_IF(!distributor,
@@ -451,24 +452,30 @@ TMaterializedViewConfiguration BuildMaterializedViewConfiguration(
             .SourcePath = sourcePath,
             .TargetPath = targetPath,
             .SourceObjectId = sourceObjectId,
+            .Populate = populate,
         };
     }
 
     if (sourceTable->Dynamic) {
-        THROW_ERROR_EXCEPTION("Materialized view source table must be static")
-            .With("source_path", sourcePath);
+        if (sourceTable->Schema->IsSorted()) {
+            THROW_ERROR_EXCEPTION("Materialized view dynamic source must be an ordered table")
+                .With("source_path", sourcePath);
+        }
+        if (!sourceTable->EnableDynamicStoreRead) {
+            THROW_ERROR_EXCEPTION("Materialized view dynamic source must have enable_dynamic_store_read")
+                .With("source_path", sourcePath);
+        }
     }
-
-    THROW_ERROR_EXCEPTION_IF(!sourceTable->RowCount,
-        "Materialized view source table has no row count")
-        .With("source_path", sourcePath);
 
     return {
         .CreateStatement = DB::getObjectDefinitionFromCreateQuery(cloned),
-        .SourceType = source.Type,
+        .SourceType = sourceTable->Dynamic
+            ? EMaterializedViewSourceType::Queue
+            : EMaterializedViewSourceType::StaticTable,
         .SourcePath = sourcePath,
         .TargetPath = targetPath,
         .SourceObjectId = sourceTable->ObjectId,
+        .Populate = populate,
     };
 }
 

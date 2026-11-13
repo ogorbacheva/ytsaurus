@@ -1,6 +1,8 @@
 #include "helpers.h"
 #include "private.h"
 
+#include <yt/yt/client/journal_client/helpers.h>
+
 #include <yt/yt/ytlib/chunk_client/chunk_meta_extensions.h>
 #include <yt/yt/ytlib/chunk_client/data_node_service_proxy.h>
 #include <yt/yt/ytlib/chunk_client/session_id.h>
@@ -42,42 +44,18 @@ void ValidateJournalAttributes(
     int readQuorum,
     int writeQuorum)
 {
-    if (readQuorum < 1) {
-        THROW_ERROR_EXCEPTION("\"read_quorum\" cannot be less than 1");
-    }
-    if (writeQuorum < 1) {
-        THROW_ERROR_EXCEPTION("\"write_quorum\" cannot be less than 1");
-    }
     if (codecId == NErasure::ECodec::None) {
-        ValidateReplicationFactor(replicationFactor);
-        if (readQuorum > replicationFactor) {
-            THROW_ERROR_EXCEPTION("\"read_quorum\" cannot be greater than \"replication_factor\"");
-        }
-        if (writeQuorum > replicationFactor) {
-            THROW_ERROR_EXCEPTION("\"write_quorum\" cannot be greater than \"replication_factor\"");
-        }
-        if (readQuorum + writeQuorum <= replicationFactor) {
-            THROW_ERROR_EXCEPTION("Read/write quorums are not safe: read_quorum + write_quorum <= replication_factor");
-        }
+        NJournalClient::ValidateReplicatedJournalAttributes(
+            replicationFactor,
+            readQuorum,
+            writeQuorum);
     } else {
-        auto* codec = NErasure::GetCodec(codecId);
-        if (!codec->IsBytewise()) {
-            THROW_ERROR_EXCEPTION("%Qlv codec is not suitable for erasure journals",
-                codecId);
-        }
-        if (replicationFactor != 1) {
-            THROW_ERROR_EXCEPTION("\"replication_factor\" must be 1 for erasure journals");
-        }
-        if (readQuorum > codec->GetTotalPartCount()) {
-            THROW_ERROR_EXCEPTION("\"read_quorum\" cannot be greater than total part count");
-        }
-        if (writeQuorum > codec->GetTotalPartCount()) {
-            THROW_ERROR_EXCEPTION("\"write_quorum\" cannot be greater than total part count");
-        }
-        int quorumThreshold = 2 * codec->GetTotalPartCount() - codec->GetGuaranteedRepairablePartCount() - 1;
-        if (readQuorum + writeQuorum <= quorumThreshold) {
-            THROW_ERROR_EXCEPTION("Read/write quorums are not safe: read_quorum + write_quorum <= 2 * total_parts - guraranteed_repairable_parts - 1");
-        }
+        NJournalClient::ValidateErasureJournalAttributes(
+            codecId,
+            NErasure::GetCodecOrThrow(codecId)->GetParams(),
+            replicationFactor,
+            readQuorum,
+            writeQuorum);
     }
 }
 
@@ -148,8 +126,9 @@ std::vector<std::vector<TSharedRef>> EncodeErasureJournalRows(
     NErasure::ICodec* codec,
     const std::vector<TSharedRef>& rows)
 {
-    int dataPartCount = codec->GetDataPartCount();
-    int totalPartCount = codec->GetTotalPartCount();
+    const auto& codecParams = codec->GetParams();
+    int dataPartCount = codecParams.DataPartCount;
+    int totalPartCount = codecParams.TotalPartCount;
 
     auto getRowPaddingSize = [&] (const TSharedRef& row) {
         return GetPaddingSize(sizeof(TErasureRowHeader) + row.Size(), dataPartCount);
@@ -225,7 +204,7 @@ std::vector<TSharedRef> DecodeErasureJournalRows(
     const NLogging::TLogger& logger)
 {
     auto Logger = logger;
-    int dataPartCount = codec->GetDataPartCount();
+    int dataPartCount = codec->GetParams().DataPartCount;
 
     YT_VERIFY(dataPartCount == std::ssize(encodedRowLists));
 
@@ -548,7 +527,8 @@ public:
         i64 replicaLagLimit,
         std::vector<TChunkReplicaDescriptor> replicas,
         TDuration requestTimeout,
-        INodeChannelFactoryPtr channelFactory)
+        INodeChannelFactoryPtr channelFactory,
+        TWorkloadDescriptor workloadDescriptor)
         : TQuorumSessionBase(
             chunkId,
             std::move(replicas),
@@ -558,6 +538,7 @@ public:
         , Overlayed_(overlayed)
         , CodecId_(codecId)
         , ReplicaLagLimit_(replicaLagLimit)
+        , WorkloadDescriptor_(std::move(workloadDescriptor))
     { }
 
     TFuture<TChunkQuorumInfo> Run()
@@ -572,6 +553,7 @@ private:
     const bool Overlayed_;
     const NErasure::ECodec CodecId_;
     const i64 ReplicaLagLimit_;
+    const TWorkloadDescriptor WorkloadDescriptor_;
 
     struct TChunkMetaResult
     {
@@ -626,7 +608,7 @@ private:
             // Request chunk meta.
             {
                 auto req = proxy.GetChunkMeta();
-                SetRequestWorkloadDescriptor(req, TWorkloadDescriptor(EWorkloadCategory::SystemTabletRecovery));
+                SetRequestWorkloadDescriptor(req, WorkloadDescriptor_);
                 ToProto(req->mutable_chunk_id(), partChunkId);
                 req->add_extension_tags(TProtoExtensionTag<TMiscExt>::Value);
                 req->set_supported_chunk_features(ToUnderlying(GetSupportedChunkFeatures()));
@@ -639,7 +621,7 @@ private:
             // Request header block.
             if (Overlayed_) {
                 auto req = proxy.GetBlockRange();
-                SetRequestWorkloadDescriptor(req, TWorkloadDescriptor(EWorkloadCategory::SystemTabletRecovery));
+                SetRequestWorkloadDescriptor(req, WorkloadDescriptor_);
                 ToProto(req->mutable_chunk_id(), partChunkId);
                 req->set_first_block_index(0);
                 req->set_block_count(1);
@@ -814,8 +796,8 @@ private:
         // Number of replicas required to read a record.
         int readReplicaCount = [&] {
             if (IsErasureChunkId(ChunkId_)) {
-                auto* codec = NErasure::GetCodec(CodecId_);
-                return codec->GetTotalPartCount() - codec->GetGuaranteedRepairablePartCount();
+                const auto& codecParams = NErasure::GetCodecOrThrow(CodecId_)->GetParams();
+                return codecParams.TotalPartCount - codecParams.GuaranteedRepairablePartCount;
             } else {
                 return 1;
             }
@@ -851,7 +833,8 @@ TFuture<TChunkQuorumInfo> ComputeQuorumInfo(
     i64 replicaLagLimit,
     std::vector<TChunkReplicaDescriptor> replicas,
     TDuration requestTimeout,
-    INodeChannelFactoryPtr channelFactory)
+    INodeChannelFactoryPtr channelFactory,
+    TWorkloadDescriptor workloadDescriptor)
 {
     return
         New<TComputeQuorumInfoSession>(
@@ -862,7 +845,8 @@ TFuture<TChunkQuorumInfo> ComputeQuorumInfo(
             replicaLagLimit,
             std::move(replicas),
             requestTimeout,
-            std::move(channelFactory))
+            std::move(channelFactory),
+            std::move(workloadDescriptor))
         ->Run();
 }
 

@@ -15,6 +15,8 @@
 #include <yt/yt/library/query/engine_api/builtin_function_profiler.h>
 #include <yt/yt/library/query/engine_api/position_independent_value_transfer.h>
 
+#include <yt/yt/client/table_client/unversioned_row.h>
+
 #include <yt/yt/core/crypto/crypto.h>
 
 #include <library/cpp/yt/memory/shared_range.h>
@@ -115,6 +117,7 @@ protected:
     void Fold(int numeric);
     void Fold(size_t numeric);
     void Fold(const char* str);
+    void Fold(const std::string& str);
     void Fold(const llvm::FoldingSetNodeID& id);
 
     static void AddLogicalType(const TLogicalType& logicalType, llvm::FoldingSetNodeID* id);
@@ -178,6 +181,13 @@ void TSchemaProfiler::Fold(const char* str)
     }
 }
 
+void TSchemaProfiler::Fold(const std::string& str)
+{
+    if (Id_) {
+        Id_->AddString(ToStringRef(str));
+    }
+}
+
 void TSchemaProfiler::Fold(const llvm::FoldingSetNodeID& id)
 {
     if (Id_) {
@@ -207,9 +217,10 @@ void TSchemaProfiler::Profile(const TTableSchemaPtr& tableSchema)
             NAst::TReferenceHarvester(&referencedColumns).Visit(
                 std::get<NAst::TExpressionPtr>(parsedExpression->AstHead.Ast));
 
-            for (int index = 0; index < std::ssize(columns); ++index) {
-                if (referencedColumns.contains(columns[index].Name())) {
-                    Fold(index);
+            for (int referencedIndex = 0; referencedIndex < std::ssize(columns); ++referencedIndex) {
+                if (referencedColumns.contains(columns[referencedIndex].Name())) {
+                    Fold(referencedIndex);
+                    Fold(columns[referencedIndex].Name());
                 }
             }
         }
@@ -756,7 +767,8 @@ size_t TExpressionProfiler::Profile(
     id.AddInteger(static_cast<ui8>(literalExpr->GetWireType()));
 
     auto savedId = id;
-    id.AddString(ToString(TValue(literalExpr->Value)).c_str());
+    auto value = TValue(literalExpr->Value);
+    id.AddString(ToStringRef(SerializeToString(TUnversionedValueRange(&value, /*length*/ 1))));
 
     if (const auto* ref = TryGetSubexpressionRef(fragments, id, isolated)) {
         return *ref;
@@ -767,7 +779,7 @@ size_t TExpressionProfiler::Profile(
     int index = Variables_->AddLiteralValue(literalExpr->Value);
     Fold(index);
 
-    bool nullable = TValue(literalExpr->Value).Type == EValueType::Null;
+    bool nullable = value.Type == EValueType::Null;
     Fold(nullable);
 
     fragments->DebugInfos.emplace_back(literalExpr, std::vector<size_t>());
@@ -855,6 +867,7 @@ size_t TExpressionProfiler::Profile(
         }
 
         if (ysonType->GetMetatype() == ELogicalMetatype::List &&
+            ysonType->GetElement()->GetMetatype() == ELogicalMetatype::Simple &&
             ysonType->GetElement()->AsSimpleTypeRef().GetElement() == ESimpleLogicalValueType::Int64)
         {
             if (auto ysonPath = functionExpr->Arguments[1]->As<TLiteralExpression>()) {
@@ -893,7 +906,7 @@ size_t TExpressionProfiler::Profile(
             {.ExecutionBackend = ExecutionBackend_},
             Id_),
         functionExpr->GetWireType(),
-        function->IsNullable(nullableArgs));
+        functionExpr->GetWireType() == EValueType::Null || function->IsNullable(nullableArgs));
 
     if (ExecutionBackend_ == EExecutionBackend::WebAssembly) {
         if (auto bytecode = function->GetWebAssemblyBytecodeFile(); !bytecode.Data.Empty()) {
@@ -1001,7 +1014,7 @@ size_t TExpressionProfiler::Profile(
 
     auto savedId = id;
     for (const auto& value : inExpr->Values) {
-        id.AddString(ToString(value).c_str());
+        id.AddString(ToStringRef(SerializeToString(value)));
     }
 
     if (const auto* ref = TryGetSubexpressionRef(fragments, id, isolated)) {
@@ -1045,8 +1058,8 @@ size_t TExpressionProfiler::Profile(
 
     auto savedId = id;
     for (const auto& range : betweenExpr->Ranges) {
-        id.AddString(ToString(range.first).c_str());
-        id.AddString(ToString(range.second).c_str());
+        id.AddString(ToStringRef(SerializeToString(range.first)));
+        id.AddString(ToStringRef(SerializeToString(range.second)));
     }
 
     if (const auto* ref = TryGetSubexpressionRef(fragments, id, isolated)) {
@@ -1098,7 +1111,7 @@ size_t TExpressionProfiler::Profile(
 
     auto savedId = id;
     for (const auto& value : transformExpr->Values) {
-        id.AddString(ToString(value).c_str());
+        id.AddString(ToStringRef(SerializeToString(value)));
     }
 
     if (const auto* ref = TryGetSubexpressionRef(fragments, id, isolated)) {
@@ -1110,17 +1123,8 @@ size_t TExpressionProfiler::Profile(
         ++fragments->Items[argId].UseCount;
     }
 
-    bool nullable = true;
-
     if (defaultExprId) {
         ++fragments->Items[*defaultExprId].UseCount;
-
-        nullable = false;
-        nullable |= fragments->Items[*defaultExprId].Nullable;
-
-        for (TRow row : transformExpr->Values) {
-            nullable |= row[argIds.size()].Type == EValueType::Null;
-        }
     }
 
     int index = Variables_->AddOpaque<TSharedRange<TRange<TPIValue>>>(
@@ -1131,7 +1135,7 @@ size_t TExpressionProfiler::Profile(
     fragments->Items.emplace_back(
         MakeCodegenTransformExpr(std::move(argIds), defaultExprId, index, hashtableIndex, transformExpr->GetWireType(), ComparerManager_),
         transformExpr->GetWireType(),
-        nullable);
+        /*nullable*/ true);
     return fragments->Items.size() - 1;
 }
 
@@ -1145,6 +1149,7 @@ size_t TExpressionProfiler::Profile(
     id.AddInteger(static_cast<int>(ExecutionBackend_));
     id.AddInteger(static_cast<int>(EFoldingObjectType::CaseExpr));
     id.AddInteger(static_cast<ui8>(caseExpr->GetWireType()));
+    id.AddBoolean(UseCanonicalNullRelations_);
     id.AddBoolean(static_cast<bool>(caseExpr->OptionalOperand));
     if (caseExpr->OptionalOperand) {
         id.AddInteger(static_cast<ui8>(caseExpr->OptionalOperand->GetWireType()));
@@ -1200,6 +1205,8 @@ size_t TExpressionProfiler::Profile(
         ++fragments->Items[*defaultExprId].UseCount;
 
         nullable |= fragments->Items[*defaultExprId].Nullable;
+    } else {
+        nullable = true;
     }
 
     auto argIds = std::vector<size_t>();
@@ -1213,18 +1220,13 @@ size_t TExpressionProfiler::Profile(
     }
     fragments->DebugInfos.emplace_back(caseExpr, argIds, defaultExprId, optionalOperandId);
 
-    std::optional<EValueType> optionalOperandType;
-    if (caseExpr->OptionalOperand) {
-        optionalOperandType = caseExpr->OptionalOperand->GetWireType();
-    }
-
     fragments->Items.emplace_back(
         MakeCodegenCaseExpr(
             optionalOperandId,
-            optionalOperandType,
             std::move(whenThenExpressionIds),
             defaultExprId,
             caseExpr->GetWireType(),
+            nullable,
             ComparerManager_,
             UseCanonicalNullRelations_),
         caseExpr->GetWireType(),
@@ -1612,6 +1614,57 @@ size_t TExpressionProfiler::Profile(
         MakeCodegenFragmentBodies(&codegenSource, fragmentInfos);
     }
 
+    bool considerLimit = !subqueryExpr->OrderClause &&
+        (subqueryExpr->Offset != 0 || subqueryExpr->Limit.has_value());
+    Fold(considerLimit);
+
+    int offsetId = -1;
+    int limitId = -1;
+    if (considerLimit || subqueryExpr->OrderClause) {
+        offsetId = Variables_->AddOpaque<i64>(subqueryExpr->Offset);
+        limitId = Variables_->AddOpaque<i64>(subqueryExpr->Limit.value_or(std::numeric_limits<i64>::max()));
+    }
+
+    if (auto orderClause = subqueryExpr->OrderClause.Get()) {
+        Fold(EFoldingObjectType::OrderOp);
+
+        auto orderExprIds = std::vector<size_t>();
+        auto orderColumnTypes = std::vector<EValueType>();
+        auto isDesc = std::vector<bool>();
+        auto orderExprFragments = TExpressionFragments();
+        id.AddInteger(orderClause->OrderItems.size());
+        for (const auto& orderItem : orderClause->OrderItems) {
+            orderExprIds.push_back(Profile(orderItem.Expression, &nestedReferenceProvider, &orderExprFragments));
+            orderColumnTypes.push_back(orderItem.Expression->GetWireType());
+            isDesc.push_back(orderItem.Descending);
+            id.AddInteger(orderExprIds.back());
+            id.AddBoolean(orderItem.Descending);
+        }
+
+        auto orderFragmentInfos = orderExprFragments.ToFragmentInfos("nestedOrder");
+        orderExprFragments.DumpArgs(orderExprIds);
+
+        auto schemaTypes = GetTypesFromSchema(*nestedSchema);
+        for (auto type : schemaTypes) {
+            Fold(static_cast<ui8>(type));
+        }
+
+        currentSlot = MakeCodegenNestedOrderOp(
+            &codegenSource,
+            &slotCount,
+            currentSlot,
+            orderFragmentInfos,
+            std::move(orderExprIds),
+            std::move(orderColumnTypes),
+            std::move(schemaTypes),
+            std::move(isDesc),
+            ComparerManager_,
+            offsetId,
+            limitId);
+
+        MakeCodegenFragmentBodies(&codegenSource, orderFragmentInfos);
+    }
+
     if (auto projectClause = subqueryExpr->ProjectClause.Get()) {
         Fold(EFoldingObjectType::ProjectOp);
 
@@ -1636,6 +1689,10 @@ size_t TExpressionProfiler::Profile(
         MakeCodegenFragmentBodies(&codegenSource, projectExprInfos);
 
         nestedSchema = projectClause->GetTableSchema();
+    }
+
+    if (considerLimit) {
+        currentSlot = MakeCodegenOffsetLimiterOp(&codegenSource, &slotCount, currentSlot, offsetId, limitId);
     }
 
     auto boundExprIds = std::vector<size_t>();
@@ -1732,7 +1789,6 @@ public:
             sdk)
         , MaxJoinBatchSize_(options.MaxJoinBatchSize)
         , OptimizationLevel_(options.OptimizationLevel)
-        , AllowUnorderedGroupByWithLimit_(options.AllowUnorderedGroupByWithLimit)
     { }
 
     void Profile(
@@ -1768,12 +1824,20 @@ private:
 protected:
     const i64 MaxJoinBatchSize_;
     const EOptimizationLevel OptimizationLevel_;
-
-    // COMPAT(sabdenovch)
-    const bool AllowUnorderedGroupByWithLimit_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+
+// If the query uses `WITH TOTALS` together with `LIMIT`, but without `ORDER BY`,
+// we should account totals on the query coordinator side,
+// since the coordinator decides which rows will be included into the response.
+// When totals are calculated at the coordinator, the coordinator should also finalize aggregated.
+bool ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator(const TConstBaseQueryPtr& query)
+{
+    return query->GroupClause &&
+        query->GroupClause->TotalsMode != ETotalsMode::None &&
+        query->ScanOrder == EScanOrder::Ordered;
+}
 
 class TGroupByStreamManager
 {
@@ -1792,8 +1856,7 @@ public:
         const TCodegenFragmentInfosPtr& havingFragmentsInfos,
         size_t havingPredicateId,
         TCGVariables* variables,
-        bool combineGroupOpWithOrderOp,
-        bool allowUnorderedGroupByWithLimit)
+        bool combineGroupOpWithOrderOp)
         : FinalMode_(finalMode)
         , ExclusiveGroupKeyView_(exclusiveGroupKeyView)
         , MergeMode_(mergeMode)
@@ -1810,7 +1873,6 @@ public:
         , HavingPredicateId_(havingPredicateId)
         , Variables_(variables)
         , CombineGroupOpWithOrderOp_(combineGroupOpWithOrderOp)
-        , AllowUnorderedGroupByWithLimit_(allowUnorderedGroupByWithLimit)
     { }
 
     void Process(size_t* intermediate, size_t* aggregated, size_t* delta, size_t* totals)
@@ -1848,18 +1910,6 @@ private:
     TCGVariables* const Variables_;
 
     const bool CombineGroupOpWithOrderOp_;
-
-    // COMPAT(sabdenovch)
-    const bool AllowUnorderedGroupByWithLimit_;
-
-    // If the query uses `WITH TOTALS` together with `LIMIT`, but without `ORDER BY`,
-    // we should account totals on the query coordinator side,
-    // since the coordinator decides which rows will be included into the response.
-    // When totals are calculated at the coordinator, the coordinator should also finalize aggregated.
-    bool ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator() const
-    {
-        return Query_->GroupClause->TotalsMode != ETotalsMode::None && Query_->GetScanOrder(AllowUnorderedGroupByWithLimit_) == EScanOrder::Ordered;
-    }
 
     // We should convert intermediates to deltas at the last stage of execution (query is final), since there will be no more groupings.
     // We can also convert intermediate to deltas if the query is disjoint (when the grouping key and the primary key are identical).
@@ -1912,11 +1962,11 @@ private:
 
     void LimitTotalsInput(size_t* totals) const
     {
-        bool considerLimit = (Query_->GetScanOrder(AllowUnorderedGroupByWithLimit_) == EScanOrder::Ordered) && Query_->IsFinal;
+        bool considerLimit = Query_->ScanOrder == EScanOrder::Ordered && Query_->IsFinal;
 
         if (considerLimit) {
             int offsetId = Variables_->AddOpaque<size_t>(Query_->Offset);
-            int limitId = Variables_->AddOpaque<size_t>(Query_->Limit);
+            int limitId = Variables_->AddOpaque<size_t>(Query_->Limit.value_or(std::numeric_limits<i64>::max()));
             *totals = MakeCodegenOffsetLimiterOp(CodegenSource_, SlotCount_, *totals, offsetId, limitId);
         }
     }
@@ -1927,7 +1977,7 @@ private:
             return;
         }
 
-        if (ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator()) {
+        if (ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator(Query_)) {
             if (!FinalMode_) {
                 // Do nothing.
             } else {
@@ -1978,7 +2028,7 @@ private:
 
     void AddDeltaToAggregated(size_t* delta, size_t* aggregated) const
     {
-        if (!ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator()) {
+        if (!ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator(Query_)) {
             *delta = MakeCodegenFinalizeOp(
                 CodegenSource_,
                 SlotCount_,
@@ -2001,7 +2051,7 @@ private:
             return;
         }
 
-        if (ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator()) {
+        if (ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator(Query_)) {
             *aggregated = MakeCodegenFinalizeOp(
                 CodegenSource_,
                 SlotCount_,
@@ -2061,6 +2111,7 @@ void TQueryProfiler::Profile(
 
     bool finalMode = query->IsFinal;
     bool exclusiveGroupKeyView = query->HasExclusiveGroupKeyView;
+    bool finalizeAggregatesAtCoordinator = ShouldFinalizeAggregatesAndAccountTotalsAtCoordinator(query);
 
     Fold(EFoldingObjectType::FinalMode);
     Fold(finalMode);
@@ -2068,7 +2119,7 @@ void TQueryProfiler::Profile(
     Fold(mergeMode);
     Fold(exclusiveGroupKeyView);
     Fold(EFoldingObjectType::QueryIsOrdered);
-    Fold(query->GetScanOrder(AllowUnorderedGroupByWithLimit_));
+    Fold(query->ScanOrder);
 
     auto combineGroupOpWithOrderOp = TCodegenOrderOpInfosPtr();
 
@@ -2148,7 +2199,9 @@ void TQueryProfiler::Profile(
             }
 
             stateTypes.push_back(GetWireType(aggregateItem.StateType));
-            aggregatedTypes.push_back(GetWireType(aggregateItem.ResultType));
+            aggregatedTypes.push_back(GetWireType(finalizeAggregatesAtCoordinator
+                ? aggregateItem.StateType
+                : aggregateItem.ResultType));
         }
 
         auto fragmentInfos = expressionFragments.ToFragmentInfos("groupExpression");
@@ -2190,6 +2243,7 @@ void TQueryProfiler::Profile(
                 for (const auto& item : orderClause->OrderItems) {
                     orderExprIds.push_back(
                         TExpressionProfiler::Profile(item.Expression, sourceSchema, &orderExprFragments));
+                    Fold(orderExprIds.back());
                     Fold(item.Descending);
                     isDesc.push_back(item.Descending);
                     orderColumnTypes.push_back(item.Expression->GetWireType());
@@ -2230,7 +2284,7 @@ void TQueryProfiler::Profile(
             groupClause->TotalsMode != ETotalsMode::None,
             // Input is ordered for ordered queries and bottom fragments if CommonPrefixWithPrimaryKey > 0.
             // Prefix comparer can be used only if input is ordered.
-            (!mergeMode || query->GetScanOrder(AllowUnorderedGroupByWithLimit_) == EScanOrder::Ordered) && (!combineGroupOpWithOrderOp) ? groupClause->CommonPrefixWithPrimaryKey : 0,
+            (!mergeMode || query->ScanOrder == EScanOrder::Ordered) && (!combineGroupOpWithOrderOp) ? groupClause->CommonPrefixWithPrimaryKey : 0,
             combineGroupOpWithOrderOp,
             ComparerManager_);
 
@@ -2266,8 +2320,7 @@ void TQueryProfiler::Profile(
             havingFragmentsInfos,
             havingPredicateId,
             Variables_,
-            combineGroupOpWithOrderOp != nullptr,
-            AllowUnorderedGroupByWithLimit_);
+            combineGroupOpWithOrderOp != nullptr);
 
         manager.Process(&intermediateSlot, &aggregatedSlot, &deltaSlot, &totalsSlot);
 
@@ -2300,6 +2353,7 @@ void TQueryProfiler::Profile(
         for (int index = 0; index < orderItemCount; ++index) {
             const auto& item = orderClause->OrderItems[index];
             orderExprIds[index] = TExpressionProfiler::Profile(item.Expression, schema, &orderExprFragments);
+            Fold(orderExprIds[index]);
             Fold(item.Descending);
             isDesc[index] = item.Descending;
             orderColumnTypes[index] = item.Expression->GetWireType();
@@ -2370,7 +2424,7 @@ void TQueryProfiler::Profile(
         schema = projectClause->GetTableSchema();
     }
 
-    bool considerLimit = (query->Limit < std::numeric_limits<i64>::max()) &&
+    bool considerLimit = query->Limit.has_value() &&
         !query->OrderClause &&
         (!query->GroupClause || query->IsFinal);
     Fold(considerLimit);
@@ -2379,7 +2433,7 @@ void TQueryProfiler::Profile(
         // it is safe to apply `limit` to the finalSlot of grouping queries.
 
         int offsetId = Variables_->AddOpaque<size_t>(query->Offset);
-        int limitId = Variables_->AddOpaque<size_t>(query->Limit);
+        int limitId = Variables_->AddOpaque<size_t>(*query->Limit);
 
         aggregatedSlot = MakeCodegenOffsetLimiterOp(codegenSource, slotCount, aggregatedSlot, offsetId, limitId);
     }
@@ -2424,7 +2478,9 @@ void TQueryProfiler::Profile(
                 }
 
                 for (const auto& item : query->GroupClause->AggregateItems) {
-                    aggregatedTypes.emplace_back(GetWireType(item.ResultType));
+                    aggregatedTypes.emplace_back(GetWireType(finalizeAggregatesAtCoordinator
+                        ? item.StateType
+                        : item.ResultType));
                 }
 
                 aggregatedSlot = MakeCodegenAddStreamOp(
@@ -2679,6 +2735,7 @@ void TQueryProfiler::Profile(
                     arrayExpressions[index],
                     schema,
                     &arrayAndPredicateFragments);
+                Fold(arrayIds[index]);
             }
 
             auto fragmentInfos = arrayAndPredicateFragments.ToFragmentInfos("joinedArrays");
@@ -2732,8 +2789,11 @@ void TQueryProfiler::Profile(
 
         size_t joinBatchSize = MaxJoinBatchSize_;
 
-        if ((query->GetScanOrder(AllowUnorderedGroupByWithLimit_) == EScanOrder::Ordered) && query->Offset + query->Limit < static_cast<ssize_t>(joinBatchSize)) {
-            joinBatchSize = query->Offset + query->Limit;
+        if (query->Limit &&
+            query->ScanOrder == EScanOrder::Ordered &&
+            query->Offset + *query->Limit < static_cast<ssize_t>(joinBatchSize))
+        {
+            joinBatchSize = query->Offset + *query->Limit;
         }
 
         std::vector<TSingleJoinCGParameters> parameters;
@@ -2746,6 +2806,7 @@ void TQueryProfiler::Profile(
             const auto& joinClause = query->JoinClauses[joinIndex];
 
             int equationCount = joinClause->SelfEquations.size();
+            Fold(equationCount);
 
             std::vector<size_t> selfKeys(equationCount);
             std::vector<EValueType> lookupKeyTypes(equationCount);
@@ -2754,6 +2815,7 @@ void TQueryProfiler::Profile(
                     joinClause->SelfEquations[index],
                     schema,
                     &equationFragments);
+                Fold(selfKeys[index]);
                 lookupKeyTypes[index] = joinClause->SelfEquations[index]->GetWireType();
             }
 
@@ -2941,7 +3003,7 @@ TCGQueryGenerator Profile(
     llvm::FoldingSetNodeID* id,
     TCGVariables* variables,
     const TJoinProfilerRegistry& joinProfilerRegistry,
-    TQueryFoldingProfilerOptions options,
+    const TQueryFoldingProfilerOptions& options,
     const TConstFunctionProfilerMapPtr& functionProfilers,
     const TConstAggregateProfilerMapPtr& aggregateProfilers,
     const NWebAssembly::TModuleBytecode& sdk)

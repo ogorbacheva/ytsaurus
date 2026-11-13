@@ -56,10 +56,9 @@ void TTransaction::Save(TSaveContext& context) const
     Save(context, PerRowSerializingTabletIds_);
     Save(context, PersistentPrepareSignature_);
     Save(context, PersistentGeneration_);
-    Save(context, CommitSignature_);
+    Save(context, PendingCommitApprovalCount_);
     Save(context, CommitOptions_);
-    Save(context, AuthenticationIdentity_.User);
-    Save(context, AuthenticationIdentity_.UserTag);
+    Save(context, AuthenticationIdentity_);
     Save(context, CommitTimestampClusterTag_);
     Save(context, TabletsToUpdateReplicationProgress_);
     Save(context, PersistentLeaseIds_);
@@ -109,11 +108,17 @@ void TTransaction::Load(TLoadContext& context)
     Load(context, PersistentGeneration_);
     TransientGeneration_ = PersistentGeneration_;
 
-    Load(context, CommitSignature_);
+    // COMPAT(kvk1920)
+    if (context.GetVersion() >= ETabletReign::DelayedWrite) {
+        Load(context, PendingCommitApprovalCount_);
+    } else {
+        // Former field CommitSignature_.
+        Load<TTransactionSignature>(context);
+    }
+
     Load(context, CommitOptions_);
 
-    Load(context, AuthenticationIdentity_.User);
-    Load(context, AuthenticationIdentity_.UserTag);
+    Load(context, AuthenticationIdentity_);
     Load(context, CommitTimestampClusterTag_);
     Load(context, TabletsToUpdateReplicationProgress_);
 

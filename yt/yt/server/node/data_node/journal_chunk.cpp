@@ -7,6 +7,7 @@
 #include "session.h"
 
 #include <yt/yt/server/node/cluster_node/config.h>
+#include <yt/yt/server/node/cluster_node/dynamic_config_manager.h>
 
 #include <yt/yt/server/lib/hydra/changelog.h>
 #include <yt/yt/server/lib/hydra/file_changelog.h>
@@ -16,6 +17,7 @@
 #include <yt/yt/ytlib/chunk_client/helpers.h>
 #include <yt/yt/ytlib/chunk_client/ref_counted_proto.h>
 
+#include <yt/yt/core/concurrency/prioritized_invoker.h>
 #include <yt/yt/core/concurrency/scheduler.h>
 #include <yt/yt/core/concurrency/thread_affinity.h>
 
@@ -155,7 +157,9 @@ TFuture<std::vector<TBlock>> TJournalChunk::ReadBlockSet(
             MakeStrong(this),
             blockIndexes,
             options)
-            .AsyncVia(Context_->StorageHeavyInvoker)
+            .AsyncVia(CreateFixedPriorityInvoker(
+                Context_->StorageHeavyInvoker,
+                options.WorkloadDescriptor.GetPriority()))
             .Run();
     }
 
@@ -182,12 +186,16 @@ TFuture<std::vector<TBlock>> TJournalChunk::OnBlockRangeReadFromDisk(
         std::ssize(alreadyReadBlocks) + blockCount == std::ssize(blockCookies));
 
     if (!blocksOrError.IsOK()) {
-        auto error = TError("Error occured while reading block range %v:%v of journal chunk %v",
+        auto error = TError("Error occurred while reading %v blocks starting from block %v of journal chunk %v",
+            blockCount,
             firstBlockIndex,
-            firstBlockIndex + blockCount,
             Id_)
             .With(blocksOrError);
-        YT_LOG_DEBUG(error);
+        YT_TLOG_DEBUG("Error reading block range of journal chunk")
+            .With("ChunkId", Id_)
+            .With("FirstBlockIndex", firstBlockIndex)
+            .With("BlockCount", blockCount)
+            .With(blocksOrError);
 
         if (!blockCookies.empty()) {
             // Just try to propagate error to each cookie, even if some had already been set.
@@ -206,8 +214,7 @@ TFuture<std::vector<TBlock>> TJournalChunk::OnBlockRangeReadFromDisk(
 
     YT_TLOG_DEBUG("Successfully read block range of journal chunk")
         .With("ChunkId", Id_)
-        .With("FirstBlockIndex", firstBlockIndex)
-        .With("BlockCount", blockCount)
+        .With("Blocks", FormatBlockIndexRange(firstBlockIndex, firstBlockIndex + blockCount - 1))
         .With("NewlyReadBlockCount", std::ssize(blocks))
         .With("AlreadyReadBlockCount", std::ssize(alreadyReadBlocks))
         .With("CookieCount", std::ssize(blockCookies));
@@ -249,11 +256,14 @@ void TJournalChunk::OnBlockReadFromDiskForPrecache(
     YT_VERIFY(precachedBlockInfo.Cookie->IsActive());
 
     if (!blocksOrError.IsOK()) {
+        YT_TLOG_DEBUG("Error reading block of chunk for precache")
+            .With("ChunkId", Id_)
+            .With("BlockIndex", precachedBlockInfo.BlockIndex)
+            .With(blocksOrError);
         auto error = TError("Error occured while reading block %v of chunk %v for precache",
             precachedBlockInfo.BlockIndex,
             Id_)
             .With(blocksOrError);
-        YT_LOG_DEBUG(error);
 
         precachedBlockInfo.Cookie->SetBlock(std::move(error));
         return;
@@ -328,6 +338,9 @@ TFuture<std::vector<TBlock>> TJournalChunk::ReadCompleteBlockSetAndCache(
     int indexInRequest = 0;
     int cachedBlockCount = 0;
     std::vector<TFuture<std::vector<TBlock>>> futures;
+    auto invoker = CreateFixedPriorityInvoker(
+        Context_->StorageHeavyInvoker,
+        options.WorkloadDescriptor.GetPriority());
 
     while (indexInRequest < std::ssize(blockIndexes)) {
         if (!blockCookies.empty() && !blockCookies[indexInRequest]->IsActive()) {
@@ -378,7 +391,7 @@ TFuture<std::vector<TBlock>> TJournalChunk::ReadCompleteBlockSetAndCache(
                 blockIndexes[firstIndexInRequest],
                 blockCount,
                 /*alreadyReadBlocks*/ std::vector<TBlock>{})
-            .AsyncVia(Context_->StorageHeavyInvoker));
+            .AsyncVia(invoker));
 
         if (!blockCookies.empty()) {
             uncachedBlocksFuture = uncachedBlocksFuture
@@ -397,7 +410,7 @@ TFuture<std::vector<TBlock>> TJournalChunk::ReadCompleteBlockSetAndCache(
             &TJournalChunk::OnBlockReadFromDiskForPrecache,
             MakeStrong(this),
             Passed(std::move(precachedBlockInfo)))
-            .Via(Context_->StorageHeavyInvoker));
+            .Via(invoker));
     }
 
     YT_TLOG_DEBUG("Started reading block set of journal chunk")
@@ -491,14 +504,16 @@ void TJournalChunk::DoReadBlockRange(const TReadBlockRangeSessionPtr& session)
 
         YT_TLOG_DEBUG("Started reading journal chunk blocks")
             .With("ChunkId", Id_)
-            .With("Blocks", FormatBlocks(firstBlockIndex, lastBlockIndex))
+            .With("Blocks", FormatBlockIndexRange(firstBlockIndex, lastBlockIndex))
             .With("LocationId", Location_->GetId())
             .With("LocationUuid", Location_->GetUuid())
             .With("LocationIndex", Location_->GetIndex());
 
         TWallTimer timer;
 
-        auto maxBytesPerRead = Context_->DataNodeConfig->MaxBytesPerRead;
+        const auto dynamicConfig = Context_->DynamicConfigManager->GetConfig()->DataNode;
+        auto maxBytesPerRead = dynamicConfig->MaxBytesPerRead.value_or(Context_->DataNodeConfig->MaxBytesPerRead);
+        auto maxBlocksPerRead = dynamicConfig->MaxBlocksPerRead.value_or(Context_->DataNodeConfig->MaxBlocksPerRead);
 
         // NB: The actual read request is still bounded by the config limit; the estimate
         // is only used to size the memory reservation, avoiding gross over-reservation
@@ -526,11 +541,11 @@ void TJournalChunk::DoReadBlockRange(const TReadBlockRangeSessionPtr& session)
                 session->Options.WorkloadDescriptor,
                 readBytesEstimate);
             if (!memoryGuardOrError.IsOK()) {
-                Location_->ReportThrottledRead();
-                auto error = TError("Read session aborted due to memory pressure");
-                YT_LOG_DEBUG(error);
+                Location_->ReportThrottledRead(ELocationReadThrottlingReason::ReadMemoryTrackerLimitExceeded);
+                static constexpr auto Message = "Read session aborted due to memory pressure"_sb;
+                YT_TLOG_DEBUG(Message);
 
-                session->Promise.TrySet(std::move(error));
+                session->Promise.TrySet(TError(Message));
                 return;
             }
 
@@ -545,7 +560,7 @@ void TJournalChunk::DoReadBlockRange(const TReadBlockRangeSessionPtr& session)
 
         auto blocksFuture = changelog->Read(
             firstBlockIndex,
-            std::min(blockCount, Context_->DataNodeConfig->MaxBlocksPerRead),
+            std::min(blockCount, maxBlocksPerRead),
             maxBytesPerRead);
         session->ChangelogReadFuture.Store(blocksFuture.As<void>());
 
@@ -586,7 +601,7 @@ void TJournalChunk::DoReadBlockRange(const TReadBlockRangeSessionPtr& session)
 
         YT_TLOG_DEBUG("Finished reading journal chunk blocks")
             .With("ChunkId", Id_)
-            .With("Blocks", FormatBlocks(firstBlockIndex, lastBlockIndex))
+            .With("Blocks", FormatBlockIndexRange(firstBlockIndex, lastBlockIndex))
             .With("LocationId", Location_->GetId())
             .With("LocationUuid", Location_->GetUuid())
             .With("LocationIndex", Location_->GetIndex())
@@ -611,35 +626,54 @@ TFuture<void> TJournalChunk::PrepareToReadChunkFragments(
     const TClientChunkReadOptions& /*options*/,
     bool /*useDirectIO*/)
 {
-    auto guard = ReaderGuard(LifetimeLock_);
+    IFileChangelogPtr changelog;
+    {
+        auto guard = ReaderGuard(LifetimeLock_);
 
-    YT_VERIFY(ReadLockCounter_.load() > 0);
+        YT_VERIFY(ReadLockCounter_.load() > 0);
 
-    if (Changelog_) {
-        return {};
+        if (Changelog_) {
+            return {};
+        }
+
+        changelog = WeakChangelog_.Lock();
     }
 
-    if (auto changelog = WeakChangelog_.Lock()) {
-        Changelog_ = std::move(changelog);
-        return {};
+    TPromise<void> openChangelogPromise;
+    {
+        auto guard = WriterGuard(LifetimeLock_);
+
+        if (Changelog_) {
+            return {};
+        }
+
+        if (changelog) {
+            Changelog_ = std::move(changelog);
+            return {};
+        }
+
+        if (OpenChangelogPromise_) {
+            return OpenChangelogPromise_.ToFuture();
+        }
+
+        openChangelogPromise = OpenChangelogPromise_ = NewPromise<void>();
     }
 
-    if (OpenChangelogPromise_) {
-        return OpenChangelogPromise_.ToFuture();
-    }
-
-    auto promise = OpenChangelogPromise_ = NewPromise<void>();
-
-    guard.Release();
-
-    promise.SetFrom(
+    openChangelogPromise.SetFrom(
         Context_->JournalDispatcher->OpenJournal(StoreLocation_, Id_)
-            .Apply(BIND([=, this, this_ = MakeStrong(this)] (const IFileChangelogPtr& changelog) {
+            .Apply(BIND([=, this, this_ = MakeStrong(this)] (const TErrorOr<IFileChangelogPtr>& changelogOrError) {
                 auto writerGuard = WriterGuard(LifetimeLock_);
 
-                OpenChangelogPromise_.Reset();
+                // Retry failed opens only while the location is enabled. Otherwise, keep the error
+                // cached to avoid redundant opens while chunks are being unregistered; location
+                // resurrection creates new chunk instances with fresh promises.
+                if (changelogOrError.IsOK() || StoreLocation_->IsEnabled()) {
+                    OpenChangelogPromise_.Reset();
+                }
 
-                if (ReadLockCounter_.load() == 0) {
+                const auto& changelog = changelogOrError.ValueOrThrow();
+
+                if (ReadLockCounter_.load() == 0 || Changelog_) {
                     return;
                 }
 
@@ -655,7 +689,7 @@ TFuture<void> TJournalChunk::PrepareToReadChunkFragments(
                     .With("LocationIndex", Location_->GetIndex());
             }).AsyncVia(Context_->StorageLightInvoker)));
 
-    return promise.ToFuture();
+    return openChangelogPromise.ToFuture();
 }
 
 TReadRequest TJournalChunk::MakeChunkFragmentReadRequest(
@@ -783,9 +817,19 @@ IFileChangelogPtr TJournalChunk::GetChangelog()
     {
         auto guard = WriterGuard(LifetimeLock_);
 
+        if (Changelog_) {
+            return Changelog_;
+        }
+
         Changelog_ = changelog;
         WeakChangelog_ = changelog;
     }
+
+    YT_TLOG_DEBUG("Changelog prepared to read")
+        .With("ChunkId", Id_)
+        .With("LocationId", Location_->GetId())
+        .With("LocationUuid", Location_->GetUuid())
+        .With("LocationIndex", Location_->GetIndex());
 
     return changelog;
 }

@@ -156,6 +156,8 @@ def get_dynamic_master_config():
 
         "transaction_manager": {
             "forbid_transaction_actions_for_cypress_transactions": True,
+            "profiling_period": 100,
+            "alert_flush_period": 100,
         },
         "table_manager": {
             "enable_column_constraints_for_tables": True,
@@ -167,7 +169,6 @@ def get_dynamic_master_config():
 
         "tablet_manager": {
             "cell_scan_period": 100,
-            "accumulate_preload_pending_store_count_correctly": True,
             "increase_upload_replication_factor": True,
 
             "replicated_table_tracker": {
@@ -215,10 +216,18 @@ def get_dynamic_master_config():
             "wrap_object_service_execute_into_sequoia_transaction": True,
             "enable_sequoia_revisions": True,
             "enable_prelock_tracker": True,
+            "use_coarse_grained_ordering_tags": False,
+            "use_fine_grained_ordering_tags": True,
         },
 
         "cell_master": {
             "alert_update_period": 500,
+            "logging": {
+                "message_level_overrides": {
+                    "Unexpected Cypress transaction in ChunkService request": "alert",
+                    "Starting mirrored Cypress transaction with replication to master cells with unexpected roles": "alert",
+                }
+            }
         },
     }
 
@@ -302,6 +311,7 @@ def get_clock_config():
 
 def get_timestamp_provider_config():
     return {
+        "cluster_connection": {},
         "timestamp_provider": {
             "soft_backoff_time": 100,
             "hard_backoff_time": 100,
@@ -737,6 +747,8 @@ def get_dynamic_node_config():
                     "job_common": {
                         "node_directory_prepare_backoff_time": 100,
                         "job_prepare_time_limit": 60000,
+                        # Nested in a YT job, slot-N.slot-M.<host> may exceed the 64-char host name limit.
+                        "job_host_name_prefix_pattern": "s$(SlotIndex)",
                     },
                     "unknown_operation_jobs_removal_delay": 5000,
                 },
@@ -752,6 +764,11 @@ def get_dynamic_node_config():
                     "heartbeat_executor": {
                         "period": 100,
                         "splay": 100,
+                        # Must stay below job_tracker/node_disconnection_timeout (2s);
+                        # the 5s default lets one failed heartbeat abort the node's jobs.
+                        "min_backoff": 200,
+                        "max_backoff": 200,
+                        "backoff_multiplier": 1.0,
                     },
                     "enable_tracing": True,
                     "resend_full_job_info": False,
@@ -840,6 +857,15 @@ def get_proxy_config():
         "api": {
             "cors": {
                 "disable_cors_check": True,
+            },
+            "user_access_validator": {
+                "ban_cache": {
+                    "expire_after_successful_update_time": 0,
+                    "refresh_time": 0,
+                    "expiration_period": 0,
+                    "expire_after_failed_update_time": 0,
+                    "expire_after_access_time": 0,
+                },
             },
         },
         "auth": {

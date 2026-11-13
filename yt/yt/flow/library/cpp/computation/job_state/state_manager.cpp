@@ -141,8 +141,13 @@ void TJobStateManager::Reconfigure(TDynamicJobStateManagerContextPtr dynamicCont
 
 bool TJobStateManager::HasPreloadCallbacks() const
 {
-    if (!MutableStateKeyProviders_.empty() || !ExternalStateManagers_.empty()) {
+    if (!MutableStateKeyProviders_.empty()) {
         return true;
+    }
+    for (const auto& [name, _] : ExternalStateManagers_) {
+        if (GetOrCrash(Context_->ExternalStateManagers, name)->AutoPreload) {
+            return true;
+        }
     }
     for (const auto& [name, _] : ExternalStateJoiners_) {
         if (GetOrCrash(Context_->ExternalStateJoiners, name)->AutoPreload) {
@@ -166,7 +171,11 @@ TFuture<void> TJobStateManager::PreloadKeyStates(const IInputContextPtr& inputCo
             futures.push_back(strongProvider->PreloadKeyStates(defaultKeys));
         }
     }
-    for (const auto& manager : GetValues(ExternalStateManagers_)) {
+    for (const auto& [name, manager] : ExternalStateManagers_) {
+        // A manual-preload manager is loaded by the computation itself.
+        if (!GetOrCrash(Context_->ExternalStateManagers, name)->AutoPreload) {
+            continue;
+        }
         futures.push_back(manager->PreloadKeyStates(defaultKeys));
     }
     for (const auto& [name, joiner] : ExternalStateJoiners_) {
@@ -212,6 +221,16 @@ TFuture<void> TJobStateManager::PreloadKeyStates(const IInputContextPtr& inputCo
     return AllSucceeded(futures);
 }
 
+void TJobStateManager::Clear()
+{
+    PartitionMutableStateProviders_.clear();
+    KeyMutableStateProviders_.clear();
+    MutableStateKeyProviders_.clear();
+    JoinedStateKeyProviders_.clear();
+    ExternalStateManagers_.clear();
+    ExternalStateJoiners_.clear();
+}
+
 void TJobStateManager::Sync(IRetryableTransactionPtr transaction)
 {
     auto doSync = [&] (auto& providers) {
@@ -242,6 +261,16 @@ void TJobStateManager::Sync(IRetryableTransactionPtr transaction)
             JoinedStateKeyProviders_.erase(iter++);
         }
     }
+}
+
+void TJobStateManager::ErasePartitionState(
+    IRetryableTransactionPtr transaction,
+    const std::string& name)
+{
+    YT_VERIFY(transaction);
+    Context_->PartitionStates->Erase(
+        transaction,
+        std::vector<NTables::IPartitionStates::TTableKey>{{Context_->PartitionId, name}});
 }
 
 IJobInitContextPtr TJobStateManager::CreateContext(std::string prefix)
@@ -299,11 +328,14 @@ TExternalStateManagerContextPtr TJobStateManager::CreateExternalStateManagerCont
     auto result = New<TExternalStateManagerContext>();
     result->ExternalStateManagerSpec = spec;
     result->StateCache = context->StateCache ? context->StateCache->WithName(name) : nullptr;
+    result->EpochUniqueSeqNoProvider = context->EpochUniqueSeqNoProvider;
     result->KeySchema = context->KeySchema;
     result->ClientsCache = context->ClientsCache;
+    result->StaticResources = context->StaticResources;
     result->PipelinePath = context->PipelinePath;
     result->SerializedInvoker = context->SerializedInvoker;
     result->StatusProfiler = context->StatusProfiler;
+    result->Profiler = context->Profiler.WithTag("external_state_manager", name);
     result->Logger = context->Logger.WithTag("ExternalStateManager", name);
     return result;
 }

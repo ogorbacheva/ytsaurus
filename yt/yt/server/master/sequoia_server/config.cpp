@@ -104,14 +104,32 @@ void TDynamicSequoiaManagerConfig::Register(TRegistrar registrar)
         .Default(false);
 
     registrar.Parameter(
+        "replicate_cypress_transactions_via_separate_sequoia_transaction_per_coordinator",
+        &TThis::ReplicateCypressTransactionsViaSeparateSequoiaTransactionPerCoordinator)
+        .Default(false)
+        .DontSerializeDefault();
+
+    registrar.Parameter(
         "enable_sequoia_revisions",
         &TThis::EnableSequoiaRevisions)
         .Default(false);
+
+    registrar.Parameter("use_coarse_grained_ordering_tags", &TThis::UseCoarseGrainedOrderingTags)
+        .Default(true)
+        .DontSerializeDefault();
+
+    registrar.Parameter("use_fine_grained_ordering_tags", &TThis::UseFineGrainedOrderingTags)
+        .Default(false)
+        .DontSerializeDefault();
 
     registrar.Postprocessor([] (TThis* config) {
         YT_TLOG_ALERT_IF(
             !config->WrapObjectServiceExecuteIntoSequoiaTransaction && config->EnableSequoiaRevisions,
             "Sequoia revisions requires wrapping every ObjectService::Execute into Sequoia transaction");
+
+        THROW_ERROR_EXCEPTION_IF(
+            !config->UseCoarseGrainedOrderingTags && !config->UseFineGrainedOrderingTags,
+            "Cannot disable both coarse and fine grained strong ordering tags");
     });
 }
 

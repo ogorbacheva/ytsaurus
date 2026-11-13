@@ -28,6 +28,7 @@
 #include <yt/yt/core/ytree/convert.h>
 
 #include <deque>
+#include <set>
 
 namespace NYT::NFlow {
 namespace {
@@ -222,6 +223,31 @@ TEST_F(TStaticTableKeyVisitorJoinerTest, ListPopulatesListed)
 
     EXPECT_EQ(std::ssize(result.Keys), 2);
     EXPECT_EQ(joiner->ListedSize(), 2);
+}
+
+// Swept as a weak source, the joiner lists keys that get no visit and would never be consumed.
+TEST_F(TStaticTableKeyVisitorJoinerTest, RetainListedDropsUnvisitedRowsOfTheRange)
+{
+    auto joiner = MakeJoiner();
+
+    auto visited = MakeRowKey(1, "a");
+    auto unvisited = MakeRowKey(1, "b");
+    auto outside = MakeRowKey(5, "c");
+    joiner->ScriptListResult(MakeListedStates({{visited, 10, "x"}, {unvisited, 20, "y"}, {outside, 30, "z"}}));
+    WaitFor(joiner->List({}, 100, std::nullopt))
+        .ValueOrThrow();
+    ASSERT_EQ(joiner->ListedSize(), 3);
+
+    joiner->RetainListed(
+        TKeyRange{.Lower = MakeRowKey(1, ""), .Upper = MakeRowKey(2, "")},
+        std::set<TKey>{visited});
+    EXPECT_EQ(joiner->ListedSize(), 2) << "the unvisited row of the range is dropped, the row past it is kept";
+
+    WaitFor(joiner->PreloadKeyStates({visited, outside}))
+        .ThrowOnError();
+    EXPECT_EQ(AsSimpleState(joiner->GetState(visited)).GetColumnValue<i64>("a"), 10);
+    EXPECT_EQ(AsSimpleState(joiner->GetState(outside)).GetColumnValue<i64>("a"), 30);
+    EXPECT_EQ(joiner->ListedSize(), 0);
 }
 
 TEST_F(TStaticTableKeyVisitorJoinerTest, PreloadPromotesPresentKey)
@@ -488,6 +514,11 @@ public:
         return {};
     }
 
+    NApi::TTableReaderTimingStatistics GetTimingStatistics() const override
+    {
+        return {};
+    }
+
     const TTableSchemaPtr& GetTableSchema() const override
     {
         return Schema_;
@@ -578,10 +609,9 @@ protected:
     TIntrusivePtr<TStaticTableKeyVisitorJoiner> MakeCursorJoiner()
     {
         using ::testing::_;
-        using ::testing::Invoke;
 
         EXPECT_CALL(*Mock_, GetNode(_, _))
-            .WillRepeatedly(Invoke([this] (const NYPath::TYPath& path, const NApi::TGetNodeOptions&) {
+            .WillRepeatedly([this] (const NYPath::TYPath& path, const NApi::TGetNodeOptions&) {
                 if (path.EndsWith("/@dynamic")) {
                     return MakeFuture(NYson::ConvertToYsonString(false));
                 }
@@ -589,9 +619,9 @@ protected:
                     return MakeFuture(NYson::ConvertToYsonString(TableSchema_));
                 }
                 return MakeFuture<NYson::TYsonString>(TError("Unexpected GetNode of %v", path));
-            }));
+            });
         EXPECT_CALL(*Mock_, CreateTableReader(_, _))
-            .WillRepeatedly(Invoke([this] (const NYPath::TRichYPath& path, const NApi::TTableReaderOptions&) {
+            .WillRepeatedly([this] (const NYPath::TRichYPath& path, const NApi::TTableReaderOptions&) {
                 auto lower = MinKey();
                 auto ranges = path.GetNewRanges(
                     TComparator(std::vector<ESortOrder>{ESortOrder::Ascending, ESortOrder::Ascending}));
@@ -610,7 +640,7 @@ protected:
                     TableSchema_,
                     std::move(rows),
                     std::exchange(LeadingEmptyBatches_, 0)));
-            }));
+            });
 
         auto context = New<TExternalStateJoinerContext>();
         context->KeySchema = KeySchema_;

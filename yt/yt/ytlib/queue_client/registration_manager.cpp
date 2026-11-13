@@ -240,7 +240,7 @@ protected:
 private:
     const NConcurrency::TPeriodicExecutorPtr CacheRefreshExecutor_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, CacheSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, CacheSpinLock_);
     THashMap<std::pair<TTablePath, TConsumerReference>, TConsumerRegistrationTableRow> Registrations_;
     THashMap<TTablePath, TTablePath> ReplicaToReplicatedTable_;
 
@@ -288,7 +288,7 @@ private:
 
         for (const auto& replicatedTableInfo : replicatedTableMapping) {
             for (const auto& replica : replicatedTableInfo.GetReplicas()) {
-                ReplicaToReplicatedTable_.emplace(TTablePath::FromRichYPath(replica), replicatedTableInfo.Path);
+                ReplicaToReplicatedTable_.insert_or_assign(TTablePath::FromRichYPath(replica), replicatedTableInfo.Path);
             }
         }
 

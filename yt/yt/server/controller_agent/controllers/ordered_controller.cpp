@@ -21,10 +21,10 @@
 
 #include <yt/yt/ytlib/chunk_client/chunk_meta_extensions.h>
 #include <yt/yt/ytlib/chunk_client/chunk_scraper.h>
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk_slice.h>
 #include <yt/yt/ytlib/chunk_client/job_spec_extensions.h>
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
 
 #include <yt/yt/ytlib/controller_agent/proto/job.pb.h>
 
@@ -309,7 +309,7 @@ protected:
 
     virtual i64 GetMinTeleportChunkSize() const = 0;
 
-    virtual void ValidateInputDataSlice(const TLegacyDataSlicePtr& /*dataSlice*/)
+    virtual void ValidateInputDataSlice(const TDataSlicePtr& /*dataSlice*/)
     { }
 
     virtual TCpuResource GetCpuLimit() const
@@ -476,7 +476,6 @@ protected:
         return TError();
     }
 
-    PHOENIX_DECLARE_FRIEND();
     PHOENIX_DECLARE_POLYMORPHIC_TYPE(TOrderedControllerBase, 0xfefb7805);
 };
 
@@ -699,7 +698,7 @@ private:
 
     void OnOperationCompleted(bool interrupted) override
     {
-        if (!interrupted) {
+        if (!interrupted && !InputManager_->HasSkippedInputChunks()) {
             auto isNontrivialInput = InputHasReadLimits() || InputHasVersionedTables() || InputHasDynamicStores();
             if (!isNontrivialInput && IsRowCountPreserved() && Spec_->ForceTransform) {
                 YT_TLOG_ERROR_IF(
@@ -926,7 +925,9 @@ private:
     TOrderedChunkPoolOptions GetOrderedChunkPoolOptions() const override
     {
         auto options = TOrderedControllerBase::GetOrderedChunkPoolOptions();
-        options.JobSizeAdjusterConfig = Config_->EnableOrderedMapJobSizeAdjustment ? Options_->JobSizeAdjuster : nullptr;
+        if (Options_->EnableOrderedMapJobSizeAdjustment) {
+            options.JobSizeAdjusterConfig = Options_->JobSizeAdjuster;
+        }
         return options;
     }
 

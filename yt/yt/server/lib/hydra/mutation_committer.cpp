@@ -8,6 +8,7 @@
 #include "helpers.h"
 #include "changelog.h"
 #include "config.h"
+#include "config_wrapper.h"
 #include "mutation_context.h"
 #include "serialize.h"
 #include "snapshot.h"
@@ -304,6 +305,7 @@ TLeaderCommitter::TLeaderCommitter(
         EpochContext_->EpochControlInvoker,
         BIND(&TLeaderCommitter::MaybeCheckpoint, MakeWeak(this)),
         Config_->Get()->CheckpointCheckPeriod))
+    , ConfigChangedCallback_(BIND_NO_PROPAGATE(&TLeaderCommitter::OnConfigChanged, MakeWeak(this)))
     , InitialState_(reachableState)
     , CommittedState_(std::move(reachableState))
     , BatchSizeSummary_(Profiler_.Summary("/mutation_batch_size"))
@@ -322,7 +324,24 @@ TLeaderCommitter::TLeaderCommitter(
     LastOffloadedSequenceNumber_ = CommittedState_.SequenceNumber;
     NextLoggedSequenceNumber_ = CommittedState_.SequenceNumber + 1;
 
+    Config_->SubscribeChanged(ConfigChangedCallback_);
+    // Catch up with config changes that raced with construction.
+    OnConfigChanged(Config_->Get());
+
     FlushMutationsExecutor_->Start();
+}
+
+TLeaderCommitter::~TLeaderCommitter()
+{
+    Config_->UnsubscribeChanged(ConfigChangedCallback_);
+}
+
+void TLeaderCommitter::OnConfigChanged(const TDistributedHydraManagerConfigPtr& config)
+{
+    YT_ASSERT_THREAD_AFFINITY_ANY();
+
+    FlushMutationsExecutor_->SetPeriod(config->MutationFlushPeriod);
+    CheckpointCheckExecutor_->SetPeriod(config->CheckpointCheckPeriod);
 }
 
 TFuture<void> TLeaderCommitter::GetLastMutationFuture()
@@ -440,15 +459,6 @@ void TLeaderCommitter::BuildMonitoring(TFluentMap fluent)
                     .Item("accept_mutations_mode").Value(peer.Mode)
                 .EndMap();
             });
-}
-
-void TLeaderCommitter::Reconfigure()
-{
-    YT_ASSERT_THREAD_AFFINITY(ControlThread);
-
-    auto config = Config_->Get();
-    FlushMutationsExecutor_->SetPeriod(config->MutationFlushPeriod);
-    CheckpointCheckExecutor_->SetPeriod(config->CheckpointCheckPeriod);
 }
 
 bool TLeaderCommitter::IsActive() const
@@ -694,7 +704,10 @@ void TLeaderCommitter::OnMutationsAcceptedByFollower(
     YT_VERIFY(peerState.InFlightMutationDataSize >= 0);
 
     if (!rspOrError.IsOK()) {
-        YT_TLOG_EVENT(Logger, IsChannelFailureError(rspOrError) ? ELogLevel::Debug : ELogLevel::Warning, "Error logging mutations at follower")
+        YT_TLOG_EVENT(
+            Logger,
+            IsChannelFailureError(rspOrError) ? ELogLevel::Debug : ELogLevel::Warning,
+            "Error logging mutations at follower")
             .With("FollowerId", followerId)
             .With(rspOrError);
 
@@ -1160,6 +1173,7 @@ void TLeaderCommitter::LogMutations(std::vector<TMutationDraft> mutationDrafts)
 
         MutationHeader_.Clear(); // don't forget to cleanup the pooled instance
         MutationHeader_.set_reign(mutationDraft.Request.Reign);
+        MutationHeader_.set_causal_dependency(mutationDraft.Request.CausalDependency.Underlying());
         MutationHeader_.set_mutation_type(mutationDraft.Request.Type);
         MutationHeader_.set_timestamp(timestamp.GetValue());
         MutationHeader_.set_random_seed(randomSeed);
@@ -1436,6 +1450,7 @@ void TFollowerCommitter::DoAcceptMutation(const TSharedRef& recordData)
 
     TMutationRequest request;
     request.Reign = MutationHeader_.reign();
+    request.CausalDependency = TCausalTime(MutationHeader_.causal_dependency());
     request.Type = std::move(*MutationHeader_.mutable_mutation_type());
     request.Data = std::move(mutationData);
     request.MutationId = FromProto<TMutationId>(MutationHeader_.mutation_id());

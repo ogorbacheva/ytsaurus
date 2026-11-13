@@ -13,11 +13,14 @@
 
 #include <yt/yt/ytlib/security_client/public.h>
 
+#include <yt/yt/client/api/client_common.h>
+
 #include <yt/yt/client/security_client/acl.h>
 
 #include <yt/yt/core/actions/public.h>
 
 #include <yt/yt/core/ytree/permission.h>
+#include <yt/yt/core/ytree/public.h>
 
 #include <string>
 
@@ -37,12 +40,13 @@ public:
 
     THost(
         IInvokerPtr controlInvoker,
+        NApi::NNative::IConnectionPtr connection,
         TPorts ports,
-        TYtConfigPtr config,
-        NApi::NNative::TConnectionCompoundConfigPtr connectionConfig);
+        TYtConfigPtr config);
 
     virtual ~THost() override;
 
+    void Reconfigure(const TYtDynamicConfigPtr& dynamicConfig);
     void Start();
 
     void HandleIncomingGossip(const TString& instanceId, EInstanceState state);
@@ -108,7 +112,9 @@ public:
 
     NApi::NNative::IClientPtr GetRootClient() const;
     NApi::NNative::IClientPtr GetDictionariesClient() const;
+    NApi::NNative::IClientPtr GetSqlObjectsClient() const;
     NApi::NNative::IClientPtr CreateClient(const std::string& user) const;
+    NApi::NNative::IConnectionPtr GetConnection() const;
 
     //! Return nodes available through discovery service.
     //! In some cases local node can be out of discovery protocol
@@ -124,9 +130,13 @@ public:
     //! or if the election is not configured (in which case it always returns |true|).
     bool IsLeader() const;
 
+    //! Returns nullopt outside leadership, or a null transaction id if election is disabled.
+    std::optional<NTransactionClient::TTransactionId> GetLeadershipTransactionId() const;
+
     const NChunkClient::IMultiReaderMemoryManagerPtr& GetMultiReaderMemoryManager() const;
 
-    TYtConfigPtr GetConfig() const;
+    const TYtConfigPtr& GetConfig() const;
+    TYtConfigPtr GetEffectiveConfig() const;
 
     EInstanceState GetInstanceState() const;
 
@@ -149,6 +159,11 @@ public:
     void InitSingletones();
 
     NTableClient::TTableColumnarStatisticsCachePtr GetTableColumnarStatisticsCache() const;
+
+    //! Returns nullptr if chunk spec caching is disabled (TSubqueryConfig::ChunkSpecCache is unset).
+    TChunkSpecCachePtr GetChunkSpecCache() const;
+
+    NProfiling::TEventTimer& GetChunkSpecsFetchTimeCounter() const;
 
     bool HasUserDefinedSqlObjectStorage() const;
     IUserDefinedSqlObjectsYTStorage* GetUserDefinedSqlObjectStorage();

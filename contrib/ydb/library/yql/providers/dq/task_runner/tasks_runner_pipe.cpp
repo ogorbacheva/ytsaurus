@@ -1,4 +1,5 @@
 #include "tasks_runner_pipe.h"
+#include "tasks_runner_pipe_process.h"
 
 #include <contrib/ydb/library/yql/dq/runtime/dq_input_channel.h>
 #include <contrib/ydb/library/yql/dq/runtime/dq_output_channel.h>
@@ -24,11 +25,13 @@
 #include <util/system/shellcommand.h>
 #include <util/system/thread.h>
 #include <util/system/fs.h>
+#include <util/folder/path.h>
 #include <util/stream/file.h>
 #include <util/stream/pipe.h>
 #include <util/stream/length.h>
 #include <util/generic/size_literals.h>
 #include <util/generic/maybe.h>
+#include <util/generic/scope.h>
 #include <util/string/cast.h>
 #include <util/string/strip.h>
 #include <util/string/builder.h>
@@ -49,11 +52,55 @@ extern "C" int fork(void);
 extern "C" int dup2(int oldfd, int newfd);
 extern "C" int close(int);
 extern "C" int pipe(int pipefd[2]);
-extern "C" int kill(int pid, int sig);
-extern "C" int waitpid(int pid, int* status, int options);
 #endif
 
 namespace {
+
+struct TPipeFactoryCounters {
+    explicit TPipeFactoryCounters(const NMonitoring::TDynamicCounterPtr& root)
+        : ProcessesInPool(root->GetCounter("ProcessesInPool"))
+        , ProcessesPendingStop(root->GetCounter("ProcessesPendingStop"))
+        , PoolAcquireHits(root->GetCounter("PoolAcquireHits", /*derivative=*/true))
+        , PoolAcquireMisses(root->GetCounter("PoolAcquireMisses", /*derivative=*/true))
+        , PoolEvictedOnKeyMismatch(root->GetCounter("PoolEvictedOnKeyMismatch", /*derivative=*/true))
+        , PoolStopDelayCount(root->GetCounter("PoolStopDelayCount", /*derivative=*/true))
+        , PoolStopDelayTotalUs(root->GetCounter("PoolStopDelayTotalUs", /*derivative=*/true))
+        , PortoContainersAlive(root->GetCounter("PortoContainersAlive"))
+        , PortoContainersStarted(root->GetCounter("PortoContainersStarted", /*derivative=*/true))
+        , PortoContainersDestroyed(root->GetCounter("PortoContainersDestroyed", /*derivative=*/true))
+        , PortoContainerDestroyErrors(root->GetCounter("PortoContainerDestroyErrors", /*derivative=*/true))
+        , PortoCleanupCallsInFlight(root->GetCounter("PortoCleanupCallsInFlight"))
+        , PortoCleanupCount(root->GetCounter("PortoCleanupCount", /*derivative=*/true))
+        , PortoCleanupTotalUs(root->GetCounter("PortoCleanupTotalUs", /*derivative=*/true))
+        , PortoOwnerReleasedWithoutDestroyAttempt(root->GetCounter("PortoOwnerReleasedWithoutDestroyAttempt", /*derivative=*/true))
+        , PortoOwnerReleasedAfterDestroyFailure(root->GetCounter("PortoOwnerReleasedAfterDestroyFailure", /*derivative=*/true))
+    {
+    }
+
+    const NMonitoring::TDynamicCounters::TCounterPtr ProcessesInPool;
+    const NMonitoring::TDynamicCounters::TCounterPtr ProcessesPendingStop;
+
+    const NMonitoring::TDynamicCounters::TCounterPtr PoolAcquireHits;
+    const NMonitoring::TDynamicCounters::TCounterPtr PoolAcquireMisses;
+    const NMonitoring::TDynamicCounters::TCounterPtr PoolEvictedOnKeyMismatch;
+    const NMonitoring::TDynamicCounters::TCounterPtr PoolStopDelayCount;
+    const NMonitoring::TDynamicCounters::TCounterPtr PoolStopDelayTotalUs;
+
+    // Best-effort count of Porto containers owned by live TPortoProcess objects.
+    // It intentionally does not query Porto and therefore cannot detect orphaned containers.
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoContainersAlive;
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoContainersStarted;
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoContainersDestroyed;
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoContainerDestroyErrors;
+
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoCleanupCallsInFlight;
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoCleanupCount;
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoCleanupTotalUs;
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoOwnerReleasedWithoutDestroyAttempt;
+    const NMonitoring::TDynamicCounters::TCounterPtr PortoOwnerReleasedAfterDestroyFailure;
+};
+
+using TPipeFactoryCountersPtr = std::shared_ptr<TPipeFactoryCounters>;
 
 void Load(IInputStream& input, void* buf, size_t size) {
     char* p = (char*)buf;
@@ -152,6 +199,9 @@ public:
 #ifdef _win_
         Y_ABORT_UNLESS(false);
 #else
+        // Preparing Porto bind targets may throw. Do it before opening raw pipe FDs.
+        PrepareForExec();
+
         int input[2];
         int output[2];
         int error[2];
@@ -160,11 +210,10 @@ public:
         Y_ABORT_UNLESS(pipe(output) == 0);
         Y_ABORT_UNLESS(pipe(error) == 0);
 
-        PrepareForExec();
-        Pid = fork();
-        Y_ABORT_UNLESS(Pid >= 0);
+        const int pid = fork();
+        Y_ABORT_UNLESS(pid >= 0);
 
-        if (Pid == 0) {
+        if (pid == 0) {
             try {
                 close(input[1]);
                 close(output[0]);
@@ -188,6 +237,7 @@ public:
             _exit(127);
         }
 
+        ProcessState.SetPid(pid);
         close(input[0]);
         close(output[1]);
         close(error[1]);
@@ -195,42 +245,21 @@ public:
         Stdin = MakeHolder<TPipedOutput>(input[1]);
         Stdout = MakeHolder<TPipedInput>(output[0]);
         Stderr = MakeHolder<TPipedInput>(error[0]);
-        YQL_CLOG(DEBUG, ProviderDq) << "Forked child, pid: " << Pid;
+        YQL_CLOG(DEBUG, ProviderDq) << "Forked child, pid: " << pid;
+        OnStarted();
 #endif
     }
 
     virtual void Kill() {
-#ifndef _win_
-        // todo: investigate why ain't killed sometimes
-        YQL_CLOG(DEBUG, ProviderDq) << "Kill child, pid: " << Pid;
-        kill(Pid, 9);
-#endif
+        ProcessState.Kill();
     }
 
     bool IsAlive() {
-#ifdef _win_
-        return true;
-#else
-        int status;
-        YQL_CLOG(TRACE, ProviderDq) << "Check Pid " << Pid;
-        return waitpid(Pid, &status, WNOHANG) <= 0;
-#endif
+        return ProcessState.IsAlive();
     }
 
     int Wait(TDuration timeout = TDuration::Seconds(5)) {
-        int status;
-        int ret;
-#ifndef _win_
-        TInstant start = TInstant::Now();
-        while ((ret = waitpid(Pid, &status, WNOHANG)) == 0 && TInstant::Now() - start < timeout) {
-            Sleep(TDuration::MilliSeconds(10));
-        }
-        if (ret <= 0) {
-            kill(Pid, 9);
-            waitpid(Pid, &status, 0);
-        }
-#endif
-        return status;
+        return ProcessState.Wait(timeout);
     }
 
     IOutputStream& GetStdin() {
@@ -258,7 +287,7 @@ protected:
     TVector<char*> ExecArgs;
     TVector<char*> ExecEnv;
 
-    int Pid = -1;
+    NPrivate::TChildProcessState ProcessState;
 
     virtual void PrepareForExec() {
         ExecArgs.resize(Args.size() + 1, nullptr);
@@ -273,6 +302,9 @@ protected:
             EnvElems.push_back(k + "=" + v);
             ExecEnv[i++] = const_cast<char*>(EnvElems.back().c_str());
         }
+    }
+
+    virtual void OnStarted() {
     }
 
     virtual void Exec() {
@@ -294,8 +326,9 @@ protected:
 /*______________________________________________________________________________________________*/
 
 struct TProcessHolder {
-    TProcessHolder()
-        : Watcher(MakeHolder<TThread>([this] () { Watch(); }))
+    explicit TProcessHolder(TPipeFactoryCountersPtr counters)
+        : Counters(std::move(counters))
+        , Watcher(MakeHolder<TThread>([this] () { Watch(); }))
     {
         Running.test_and_set();
         Watcher->Start();
@@ -305,6 +338,16 @@ struct TProcessHolder {
     {
         Running.clear();
         Watcher->Join();
+        if (!Processes.empty()) {
+            YQL_CLOG(DEBUG, ProviderDq) << "Stopping unused pool processes on shutdown (Count: " << Processes.size() << ")";
+        }
+        // This also runs if initial pool warmup throws after starting some runners.
+        for (const auto& [key, process] : Processes) {
+            process->Kill();
+            process->Wait(TDuration::Seconds(1));
+        }
+        Processes.clear();
+        UpdatePoolSize();
     }
 
     i64 Size() {
@@ -315,6 +358,7 @@ struct TProcessHolder {
     void Put(const TString& key, THolder<TChildProcess>process) {
         TGuard<TMutex> lock(Mutex);
         Processes.emplace_back(key, std::move(process));
+        UpdatePoolSize();
     }
 
     THolder<TChildProcess> Acquire(const TString& key, TList<THolder<TChildProcess>>* stopList) {
@@ -328,7 +372,14 @@ struct TProcessHolder {
                 break;
             }
             stopList->push_back(std::move(first.second));
+            ++*Counters->PoolEvictedOnKeyMismatch;
         }
+        if (result) {
+            ++*Counters->PoolAcquireHits;
+        } else {
+            ++*Counters->PoolAcquireMisses;
+        }
+        UpdatePoolSize();
         return result;
     }
 
@@ -347,6 +398,7 @@ struct TProcessHolder {
                         ++it;
                     }
                 }
+                UpdatePoolSize();
             }
 
             for (const auto& job : stopList) {
@@ -357,6 +409,11 @@ struct TProcessHolder {
         }
     }
 
+    void UpdatePoolSize() {
+        *Counters->ProcessesInPool = Processes.size();
+    }
+
+    const TPipeFactoryCountersPtr Counters;
     THolder<TThread> Watcher;
     std::atomic_flag Running;
 
@@ -368,10 +425,13 @@ struct TPortoSettings {
     bool Enable;
     TMaybe<ui64> MemoryLimit;
     TString Layer;
+    bool UseJobRoot;
     TString ContainerNamePrefix;
+    bool EnableAnonLimitRaiseBeforeDestroy;
+    TMaybe<TLocalJobProxySettings> LocalJobProxy;
 
     bool operator == (const TPortoSettings& o) const {
-        return Enable == o.Enable && MemoryLimit == o.MemoryLimit && Layer == o.Layer;
+        return Enable == o.Enable && MemoryLimit == o.MemoryLimit && Layer == o.Layer && UseJobRoot == o.UseJobRoot;
     }
 
     bool operator != (const TPortoSettings& o) const {
@@ -379,18 +439,22 @@ struct TPortoSettings {
     }
 
     TString ToString() const {
-        return TStringBuilder() << Enable << "," << MemoryLimit << "," << Layer;
+        return TStringBuilder() << Enable << "," << MemoryLimit << "," << Layer << "," << UseJobRoot;
     }
 };
 
 class TPortoProcess: public TChildProcess
 {
 public:
-    TPortoProcess(const TString& portoCtl, const TString& exeName, const TVector<TString>& args, const THashMap<TString, TString>& env, const TString& workDir, const TPortoSettings& portoSettings)
+    TPortoProcess(const TString& portoCtl, const TString& exeName, const TVector<TString>& args, const THashMap<TString, TString>& env, const TString& workDir, const TPortoSettings& portoSettings, TPipeFactoryCountersPtr counters)
         : TChildProcess(exeName, args, env, workDir)
         , PortoCtl(portoCtl)
         , PortoLayer(portoSettings.Layer)
+        , UseJobRoot(portoSettings.UseJobRoot)
+        , LocalJobProxy(portoSettings.LocalJobProxy)
         , MemoryLimit(portoSettings.MemoryLimit)
+        , EnablePortoAnonLimitRaiseBeforeDestroy(portoSettings.EnableAnonLimitRaiseBeforeDestroy)
+        , Counters(std::move(counters))
         , ContainerName(WorkDir.substr(WorkDir.rfind("/") + 1))
         , InternalWorkDir_("mnt/work")
         , InternalExeDir("usr/local/bin")
@@ -417,7 +481,22 @@ public:
     }
 
     ~TPortoProcess() {
+        if (Started) {
+            --*Counters->PortoContainersAlive;
+            if (!DestroyReported) {
+                // An owner can outlive its child; this does not prove a live-container leak.
+                if (DestroyAttempted) {
+                    ++*Counters->PortoOwnerReleasedAfterDestroyFailure;
+                } else {
+                    ++*Counters->PortoOwnerReleasedWithoutDestroyAttempt;
+                }
+            }
+        }
         try {
+            if (Started && !DestroyReported) {
+                YQL_CLOG(DEBUG, ProviderDq) << "Porto owner released without successful destroy (Container: " << ContainerName
+                    << ", DestroyAttempted: " << DestroyAttempted << ")";
+            }
             NFs::RemoveRecursive(TmpDir);
         } catch (...) {
             YQL_CLOG(DEBUG, ProviderDq) << "Error on TmpDir cleanup: " << CurrentExceptionMessage();
@@ -425,6 +504,12 @@ public:
     }
 
 private:
+
+    void OnStarted() override {
+        Started = true;
+        ++*Counters->PortoContainersStarted;
+        ++*Counters->PortoContainersAlive;
+    }
 
     TString GetPortoSetting(const TString& name) const {
         TShellCommand cmd(PortoCtl, {"get", ContainerName, name});
@@ -438,7 +523,14 @@ private:
     }
 
     void Kill() override {
-        if (MemoryLimit) {
+        const auto startedAt = TInstant::Now();
+        ++*Counters->PortoCleanupCallsInFlight;
+        Y_DEFER {
+            *Counters->PortoCleanupTotalUs += (TInstant::Now() - startedAt).MicroSeconds();
+            ++*Counters->PortoCleanupCount;
+            --*Counters->PortoCleanupCallsInFlight;
+        };
+        if (EnablePortoAnonLimitRaiseBeforeDestroy && MemoryLimit) {
             try {
                 // see YQL-13760
                 i64 anonLimit = -1;
@@ -461,13 +553,100 @@ private:
             }
         }
 
+        const auto destroyStartedAt = TInstant::Now();
+        bool destroyed = false;
+        DestroyAttempted = true;
         try {
             TShellCommand cmd(PortoCtl, {"destroy", ContainerName});
             cmd.Run().Wait();
+            const auto exitCode = cmd.GetExitCode();
+            destroyed = exitCode.GetOrElse(-1) == 0;
+            if (!destroyed) {
+                YQL_CLOG(DEBUG, ProviderDq) << "Cannot destroy container " << ContainerName
+                    << ", exit code: " << exitCode.GetOrElse(-1)
+                    << ", stderr: " << cmd.GetError();
+            }
         } catch (...) {
             YQL_CLOG(DEBUG, ProviderDq) << "Cannot destroy: " << CurrentExceptionMessage();
         }
+        const auto destroyFinishedAt = TInstant::Now();
+        if (destroyed && !DestroyReported) {
+            ++*Counters->PortoContainersDestroyed;
+            DestroyReported = true;
+        } else if (!destroyed && !DestroyReported) {
+            ++*Counters->PortoContainerDestroyErrors;
+        }
         TChildProcess::Kill();
+        YQL_CLOG(DEBUG, ProviderDq) << "Porto cleanup finished (Container: " << ContainerName
+            << ", AnonLimitDurationUs: " << (destroyStartedAt - startedAt).MicroSeconds()
+            << ", DestroyDurationUs: " << (destroyFinishedAt - destroyStartedAt).MicroSeconds()
+            << ", RaiseEnabled: " << EnablePortoAnonLimitRaiseBeforeDestroy
+            << ", MemoryLimitSet: " << MemoryLimit.Defined()
+            << ", Destroyed: " << destroyed << ")";
+    }
+
+    TString PrepareBindMounts(const TString& exeDir, const TString& exeName) {
+        // Sources belong to the parent YT job; destinations belong to this runner:
+        //   executable                         -> /usr/local/bin/<name> (ro)
+        //   WorkDir = <cache>/Slot-N            -> /mnt/work             (rw)
+        //   TmpDir = TmpDirSlot-N               -> /tmp                  (rw)
+        //   optional local job-proxy socket    -> /tmp/yt-job-proxy.sock
+        // WorkDir contains only resources assigned to this runner, not the whole cache.
+        // The tar/overlay mode keeps its historical executable-directory bind.
+        // Reusing root=/ also inherits the job's mounts, so it needs private mount
+        // targets and must hide the original paths to the cache and sandbox below.
+        TStringBuilder bind;
+        TString sandboxDir;
+
+        // 1. Prepare read-only destinations before mounting files/directories into them.
+        if (UseJobRoot) {
+            sandboxDir = NFs::CurrentWorkingDirectory();
+            const auto cacheDir = TFsPath(WorkDir).Parent();
+            // Private /mnt and /usr/local/bin binds can hide an external cache before
+            // Porto opens it as a source. Keep all runner resources in the job sandbox.
+            YQL_ENSURE(sandboxDir != "/" && cacheDir.IsSubpathOf(sandboxDir),
+                "Job-root Porto requires the file cache to be inside the job sandbox"
+                << " (cache: " << cacheDir.GetPath() << ", sandbox: " << sandboxDir << ")");
+
+            // A directory bind would either expose unrelated sandbox files or miss
+            // the executable if YT mounted it separately. Bind only the executable
+            // into a private directory. Create its mountpoint before making that
+            // directory read-only; otherwise Porto cannot create the target file.
+            const TString binDir = TmpDir + "/bin";
+            NFs::MakeDirectoryRecursive(binDir);
+            TFileOutput(binDir + '/' + exeName).Finish();
+            bind << binDir << ' ' << InternalExeDir << " ro;";
+            bind << ExeName << ' ' << InternalExeDir << '/' << exeName << " ro;";
+
+            // Porto makes the root read-only before applying binds. The YT root may
+            // lack /mnt/work, so supply /mnt with an existing work directory first.
+            const TString mountDir = TmpDir + "/mnt";
+            NFs::MakeDirectoryRecursive(mountDir + "/work");
+            bind << mountDir << " /mnt ro;";
+        }
+
+        // 2. Expose this runner's resources. Keep /tmp before its optional socket bind.
+        bind << WorkDir << ' ' << InternalWorkDir() << " rw;"; // see YQL-11392
+        if (!UseJobRoot) {
+            // Preserve the tar-mode bind order: work directory, executable, tmp.
+            bind << exeDir << ' ' << InternalExeDir << " ro;";
+        }
+        bind << TmpDir << " /tmp rw;";
+        if (LocalJobProxy) {
+            bind << LocalJobProxy->GetPortoBind();
+        }
+
+        // 3. Close alternate paths to other runners' files, after binding our sources.
+        if (UseJobRoot) {
+            // root_readonly affects the root mount, not inherited submounts such as
+            // YT's writable cache tmpfs. Cover their original paths with an empty
+            // directory; the explicit /mnt/work and /tmp binds remain accessible.
+            // The cache is inside this sandbox, as checked before preparing the binds.
+            const TString emptyDir = TmpDir + "/empty";
+            NFs::MakeDirectoryRecursive(emptyDir);
+            bind << emptyDir << ' ' << sandboxDir << " ro;";
+        }
+        return bind;
     }
 
     void PrepareForExec() override {
@@ -482,22 +661,24 @@ private:
         }
 
         TString caps = "CHOWN;DAC_OVERRIDE;FOWNER;KILL;SETPCAP;IPC_LOCK;SYS_CHROOT;SYS_PTRACE;MKNOD;AUDIT_WRITE;SETFCAP";
+        auto childEnv = Env;
+        if (LocalJobProxy) {
+            LocalJobProxy->ConfigureEnvironment(childEnv, /*porto*/ true);
+        }
         TStringBuilder env;
-        for (const auto& [k, v] : Env) {
+        for (const auto& [k, v] : childEnv) {
             env << k << '=' << v << ';';
         }
         env << "TMPDIR=/tmp;";
 
-        TStringBuilder bind;
-        bind << WorkDir << ' ' << InternalWorkDir() << " rw;"; // see YQL-11392
-        bind << exeDir << ' ' << InternalExeDir << " ro;";
-        bind << TmpDir << " /tmp rw;";
+        const auto bind = PrepareBindMounts(exeDir, exeName);
 
-        ArgsElems = TVector<TString>{
-            "portoctl",
-            "exec",
-            "-L",
-            PortoLayer.empty() ? "/" : PortoLayer,
+        ArgsElems = {"portoctl", "exec"};
+        if (!UseJobRoot) {
+            ArgsElems.push_back("-L");
+            ArgsElems.push_back(PortoLayer.empty() ? "/" : PortoLayer);
+        }
+        ArgsElems.insert(ArgsElems.end(), {
             ContainerName,
             "command=" + command,
             "capabilities=" + caps,
@@ -506,7 +687,12 @@ private:
             "root_readonly=true",
             "weak=false",
             "cpu_policy=idle"
-        };
+        });
+        if (UseJobRoot) {
+            // -L would allocate a new overlay volume even for the existing job root.
+            ArgsElems.push_back("root=/");
+            ArgsElems.push_back("cwd=/");
+        }
         if (MemoryLimit) {
             ArgsElems.push_back("anon_limit=" + ToString(*MemoryLimit));
         }
@@ -529,7 +715,14 @@ private:
 
     const TString PortoCtl;
     const TString PortoLayer;
+    const bool UseJobRoot;
+    const TMaybe<TLocalJobProxySettings> LocalJobProxy;
     const TMaybe<ui64> MemoryLimit;
+    const bool EnablePortoAnonLimitRaiseBeforeDestroy;
+    const TPipeFactoryCountersPtr Counters;
+    bool Started = false;
+    bool DestroyReported = false;
+    bool DestroyAttempted = false;
     TString ContainerName;
 
     const TString InternalWorkDir_;
@@ -1388,9 +1581,19 @@ public:
         , TaskId(Task.GetId())
         , StageId(stageId)
     {
-        StderrReader->Start();
-        InitTaskMeta();
-        InitChannels();
+        try {
+            InitTaskMeta();
+            InitChannels();
+            StderrReader->Start();
+        } catch (...) {
+            try {
+                Command->Kill();
+            } catch (...) { }
+            try {
+                Command->Wait(TDuration::Zero());
+            } catch (...) { }
+            throw;
+        }
     }
 
     ~TTaskRunner() {
@@ -1997,18 +2200,39 @@ class TPipeFactory: public IProxyFactory {
 
     struct TStopJob: public TTaskScheduler::ITask {
         TList<THolder<TChildProcess>> StopList;
+        const TPipeFactoryCountersPtr Counters;
+        const TInstant ScheduledAt = TInstant::Now();
 
-        TStopJob(TList<THolder<TChildProcess>>&& stopList)
+        TStopJob(TList<THolder<TChildProcess>>&& stopList, TPipeFactoryCountersPtr counters)
             : StopList(std::move(stopList))
+            , Counters(std::move(counters))
         { }
 
+        ~TStopJob() override {
+            // Scheduler shutdown discards queued tasks without calling Process().
+            StopProcesses();
+        }
+
         TInstant Process() override {
-            for (const auto& job : StopList) {
+            StopProcesses();
+            return TInstant::Max();
+        }
+
+    private:
+        void StopProcesses() {
+            if (!StopList.empty()) {
+                YQL_CLOG(DEBUG, ProviderDq) << "Stopping evicted pool processes (Count: " << StopList.size()
+                    << ", QueueDelayMs: " << (TInstant::Now() - ScheduledAt).MilliSeconds() << ")";
+            }
+            while (!StopList.empty()) {
+                const auto& job = StopList.front();
+                *Counters->PoolStopDelayTotalUs += (TInstant::Now() - ScheduledAt).MicroSeconds();
+                ++*Counters->PoolStopDelayCount;
                 job->Kill();
                 job->Wait(TDuration::Seconds(1));
+                --*Counters->ProcessesPendingStop;
+                StopList.pop_front();
             }
-
-            return TInstant::Max();
         }
     };
 
@@ -2020,7 +2244,10 @@ public:
                 EnablePorto,
                 Nothing(),
                 options.PortoLayer,
-                options.ContainerName
+                options.UseJobRoot,
+                options.ContainerName,
+                options.EnablePortoAnonLimitRaiseBeforeDestroy,
+                options.LocalJobProxy,
             })
         , FileCache(options.FileCache)
         , Args {"yql@child", "tasks_runner_proxy"}
@@ -2028,12 +2255,20 @@ public:
         , Revision(options.Revision
             ? *options.Revision
             : GetProgramCommitId())
+        , Counters(std::make_shared<TPipeFactoryCounters>(
+              options.Counters ? options.Counters : MakeIntrusive<NMonitoring::TDynamicCounters>()))
+        , ProcessHolder(Counters)
         , TaskScheduler(1)
         , MaxProcesses(options.MaxProcesses)
         , PortoCtlPath(options.PortoCtlPath)
     {
         Start(ExePath, PortoSettings);
         TaskScheduler.Start();
+    }
+
+    ~TPipeFactory() override {
+        // Refill callbacks capture this: finish them while all members are alive.
+        TaskScheduler.Stop();
     }
 
     ITaskRunner::TPtr GetOld(std::shared_ptr<NKikimr::NMiniKQL::TScopedAlloc> alloc, const NDq::TDqTaskSettings& tmp, const TString& traceId) override {
@@ -2060,7 +2295,7 @@ public:
 
 private:
     THolder<TChildProcess> StartOne(const TString& exePath, const TPortoSettings& portoSettings) {
-        return CreateChildProcess(PortoCtlPath, FileCache->GetDir(), exePath, Args, Env, ContainerId++, portoSettings);
+        return CreateChildProcess(PortoCtlPath, FileCache->GetDir(), exePath, Args, Env, ContainerId++, portoSettings, Counters);
     }
 
     void Start(const TString& exePath, const TPortoSettings& portoSettings) {
@@ -2082,7 +2317,8 @@ private:
     }
 
     void StopJobs(TList<THolder<TChildProcess>>&& stopList) {
-        Y_ABORT_UNLESS(TaskScheduler.Add(MakeIntrusive<TStopJob>(std::move(stopList)), TInstant()));
+        *Counters->ProcessesPendingStop += stopList.size();
+        Y_ABORT_UNLESS(TaskScheduler.Add(MakeIntrusive<TStopJob>(std::move(stopList), Counters), TInstant()));
     }
 
     TString GetKey(const TString& exePath, const TPortoSettings& settings)
@@ -2185,11 +2421,15 @@ private:
         auto key = GetKey(exePath, portoSettings);
         TList<THolder<TChildProcess>> stopList;
         THolder<TChildProcess> result = ProcessHolder.Acquire(key, &stopList);
+        // Transfer evicted runners to cleanup before preparing their replacement,
+        // which can throw while creating Porto bind targets.
+        if (!stopList.empty()) {
+            StopJobs(std::move(stopList));
+        }
         if (!result) {
             result = StartOne(exePath, portoSettings);
         }
         ProcessJobs(exePath, portoSettings);
-        StopJobs(std::move(stopList));
         return result;
     }
 
@@ -2200,11 +2440,12 @@ private:
         const TVector<TString>& args,
         const THashMap<TString, TString>& env,
         i64 containerId,
-        const TPortoSettings& portoSettings)
+        const TPortoSettings& portoSettings,
+        const TPipeFactoryCountersPtr& counters)
     {
         THolder<TChildProcess> command;
         if (portoSettings.Enable) {
-            command = MakeHolder<TPortoProcess>(portoCtlPath, exePath, args, env, cacheDir + "/Slot-" + ToString(containerId), portoSettings);
+            command = MakeHolder<TPortoProcess>(portoCtlPath, exePath, args, env, cacheDir + "/Slot-" + ToString(containerId), portoSettings, counters);
         } else {
             command = MakeHolder<TChildProcess>(exePath, args, env, cacheDir + "/Slot-" + ToString(containerId));
         }
@@ -2228,6 +2469,7 @@ private:
 
     const TString Revision;
 
+    const TPipeFactoryCountersPtr Counters;
     TProcessHolder ProcessHolder;
     TTaskScheduler TaskScheduler;
     const int MaxProcesses;

@@ -4,6 +4,8 @@
 #include "helpers.h"
 #include "hunk_storage_node.h"
 #include "hunk_tablet.h"
+#include "tablet_cell_bundle.h"
+#include "stores_update_throttler.h"
 
 #include <yt/yt/server/master/cell_master/automaton.h>
 #include <yt/yt/server/master/cell_master/bootstrap.h>
@@ -20,6 +22,8 @@
 
 #include <yt/yt/server/master/object_server/object_manager.h>
 
+#include <yt/yt/server/master/security_server/security_manager.h>
+
 #include <yt/yt/server/master/transaction_server/transaction_manager.h>
 
 #include <yt/yt/server/lib/tablet_server/proto/tablet_manager.pb.h>
@@ -34,11 +38,14 @@
 
 #include <yt/yt/client/chunk_client/chunk_replica.h>
 
+#include <library/cpp/iterator/enumerate.h>
+
 namespace NYT::NTabletServer {
 
 using namespace NCellMaster;
 using namespace NChunkServer;
 using namespace NChunkClient;
+using namespace NConcurrency;
 using namespace NHydra;
 using namespace NObjectClient;
 using namespace NObjectServer;
@@ -86,9 +93,20 @@ class TTabletChunkManager
     , public TMasterAutomatonPart
 {
 public:
-    explicit TTabletChunkManager(TBootstrap* bootstrap)
+    TTabletChunkManager(
+        TBootstrap* bootstrap,
+        IInvokerPtr storesUpdateThrottlerInvoker)
         : TMasterAutomatonPart(bootstrap, EAutomatonThreadQueue::TabletManager)
+        , StoresUpdateThrottler_(CreateStoresUpdateThrottler(New<TStoresUpdateThrottlerConfig>()))
+        , StoresUpdateThrottlerInvoker_(std::move(storesUpdateThrottlerInvoker))
     { }
+
+    void Initialize() override
+    {
+        const auto& configManager = Bootstrap_->GetConfigManager();
+        configManager->SubscribeConfigChanged(
+            BIND_NO_PROPAGATE(&TTabletChunkManager::OnDynamicConfigChanged, MakeWeak(this)));
+    }
 
     void CopyChunkListsIfShared(
         TTableNode* table,
@@ -724,6 +742,22 @@ public:
         newRootChunkList->AddOwningNode(hunkStorage);
     }
 
+    int ThrottleTabletStoresUpdate(
+        const std::string& bundleName,
+        ETabletStoresUpdateReason updateReason,
+        const std::vector<int>& storeCounts) override
+    {
+        YT_ASSERT_INVOKER_AFFINITY(StoresUpdateThrottlerInvoker_);
+
+        for (auto [index, storeCount] : Enumerate(storeCounts)) {
+            if (!StoresUpdateThrottler_->TryAcquire(bundleName, updateReason, storeCount)) {
+                return index;
+            }
+        }
+
+        return ssize(storeCounts);
+    }
+
     void PrepareUpdateTabletStores(
         TTablet* tablet,
         NProto::TReqUpdateTabletStores* request) override
@@ -775,7 +809,7 @@ public:
         }
     }
 
-    std::string CommitUpdateTabletStores(
+    NLogging::TLoggingTagList CommitUpdateTabletStores(
         TTablet* tablet,
         NTransactionServer::TTransaction* transaction,
         NProto::TReqUpdateTabletStores* request,
@@ -863,6 +897,34 @@ public:
                     .With("TableId", table->GetId())
                     .With("TabletId", tablet->GetId())
                     .With("StoreId", storeId);
+            }
+        }
+
+        {
+            auto prolongationCookie = TChunkProlongationCookie(tablet->GetId());
+            for (const auto& protoRemovedChunk : request->prolonged_chunks_to_remove()) {
+                auto chunkId = FromProto<TChunkId>(protoRemovedChunk);
+                chunkManager->ExpireProlongedChunk(chunkId, prolongationCookie);
+                auto erasedCount = tablet->ProlongedChunks().erase(chunkId);
+
+                YT_TLOG_ALERT_IF(erasedCount == 0,
+                    "Expired prolonged chunk already missing from tablet state on master")
+                    .With("TabletId", tablet->GetId())
+                    .With("ChunkId", chunkId);
+            }
+
+            auto prolongationInstant = GetCurrentMutationContext()->GetTimestamp();
+            for (const auto& protoProlongedChunk : request->prolonged_chunks_to_add()) {
+                auto chunkId = FromProto<TChunkId>(protoProlongedChunk);
+                auto [_, inserted] = tablet->ProlongedChunks().insert(chunkId);
+
+                if (inserted) {
+                    chunkManager->ProlongChunk(chunkId, prolongationCookie, prolongationInstant);
+                } else {
+                    YT_TLOG_DEBUG("Prolonged chunk already present in tablet state on master")
+                        .With("TabletId", tablet->GetId())
+                        .With("ChunkId", chunkId);
+                }
             }
         }
 
@@ -971,6 +1033,21 @@ public:
         }
 
         AttachChunksToTablet(tablet, hunkChunksToAttach);
+
+        // Hunk chunks may have been detached from the tablet concurrently (e.g. by bulk insert overwrite).
+        std::erase_if(hunkChunksToDetach, [&] (TChunkTreeRawPtr chunk) {
+            if (HasParent(chunk, GetTabletChildParent(tablet, chunk))) {
+                return false;
+            }
+            YT_LOG_ALERT("Hunk chunk to detach does not belong to tablet; skipped "
+                "(TableId: %v, TabletId: %v, ChunkId: %v, UpdateReason: %v)",
+                table->GetId(),
+                tablet->GetId(),
+                chunk->GetId(),
+                updateReason);
+            return true;
+        });
+
         DetachChunksFromTablet(
             tablet,
             hunkChunksToDetach,
@@ -1006,19 +1083,27 @@ public:
         counters->UpdateTabletStoresStoreCount.Increment(chunksToAttach.size() + chunksOrViewsToDetach.size());
         counters->UpdateTabletStoresHunkChunkCount.Increment(hunkChunksToAttach.size() + hunkChunksToDetach.size());
 
-        return Format("AttachedChunkIds: %v, DetachedChunkOrViewIds: %v, "
-            "AttachedHunkChunkIds: %v, DetachedHunkChunkIds: %v, "
-            "AttachedRowCount: %v, DetachedRowCount: %v, UpdateReason: %v",
-            MakeFormattableView(chunksToAttach, TObjectIdFormatter()),
-            MakeFormattableView(chunksOrViewsToDetach, TObjectIdFormatter()),
-            MakeFormattableView(hunkChunksToAttach, TObjectIdFormatter()),
-            MakeFormattableView(hunkChunksToDetach, TObjectIdFormatter()),
-            attachedRowCount,
-            detachedRowCount,
-            updateReason);
+        if (request->throttle_at_master() && IsLeader()) {
+            auto bundle = table->GetTabletCellBundle();
+            BIND(&IStoresUpdateThrottler::Acquire, StoresUpdateThrottler_)
+                .Via(StoresUpdateThrottlerInvoker_)
+                .Run(
+                    bundle ? bundle->GetName() : "",
+                    updateReason,
+                    ssize(chunksToAttach) + ssize(hunkChunksToAttach));
+        }
+
+        return NLogging::TLoggingTagList()
+            .With("AttachedChunkIds", MakeFormattableView(chunksToAttach, TObjectIdFormatter()))
+            .With("DetachedChunkOrViewIds", MakeFormattableView(chunksOrViewsToDetach, TObjectIdFormatter()))
+            .With("AttachedHunkChunkIds", MakeFormattableView(hunkChunksToAttach, TObjectIdFormatter()))
+            .With("DetachedHunkChunkIds", MakeFormattableView(hunkChunksToDetach, TObjectIdFormatter()))
+            .With("AttachedRowCount", attachedRowCount)
+            .With("DetachedRowCount", detachedRowCount)
+            .With("UpdateReason", updateReason);
     }
 
-    std::string CommitUpdateHunkTabletStores(
+    NLogging::TLoggingTagList CommitUpdateHunkTabletStores(
         THunkTablet* tablet,
         NProto::TReqUpdateHunkTabletStores* request) override
     {
@@ -1031,9 +1116,9 @@ public:
             auto* chunk = chunkManager->FindChunk(chunkId);
             if (!IsObjectAlive(chunk)) {
                 YT_TLOG_ALERT("Requested to attach dead chunk to hunk tablet; ignored")
-                    .With("ChunkId", chunk->GetId())
-                    .With("HunkStorageId", tablet->GetId())
-                    .With("TableId", tablet->GetOwner()->GetId());
+                    .With("ChunkId", chunkId)
+                    .With("TabletId", tablet->GetId())
+                    .With("HunkStorageId", tablet->GetOwner()->GetId());
                 continue;
             }
 
@@ -1049,7 +1134,7 @@ public:
             auto* chunk = chunkManager->FindChunk(chunkId);
             if (!IsObjectAlive(chunk)) {
                 YT_TLOG_ALERT("Requested to detach dead chunk from hunk tablet; ignored")
-                    .With("ChunkId", chunk->GetId())
+                    .With("ChunkId", chunkId)
                     .With("TabletId", tablet->GetId())
                     .With("HunkStorageId", tablet->GetOwner()->GetId());
                 continue;
@@ -1063,10 +1148,10 @@ public:
         std::vector<TChunk*> chunksToMarkSealable;
         for (const auto& chunkToMarkSealable : request->stores_to_mark_sealable()) {
             auto chunkId = FromProto<TChunkId>(chunkToMarkSealable.store_id());
-            auto* chunk = chunkManager->GetChunk(chunkId);
+            auto* chunk = chunkManager->FindChunk(chunkId);
             if (!IsObjectAlive(chunk)) {
                 YT_TLOG_ALERT("Requested to mark dead chunk as sealable; ignored")
-                    .With("ChunkId", chunk->GetId())
+                    .With("ChunkId", chunkId)
                     .With("TabletId", tablet->GetId())
                     .With("HunkStorageId", tablet->GetOwner()->GetId());
                 continue;
@@ -1087,10 +1172,10 @@ public:
             chunkManager->ScheduleChunkRequisitionUpdate(chunk);
         }
 
-        return Format("AddedChunkIds: %v, RemovedChunkIds: %v, MarkSealableChunkIds: %v)",
-            MakeFormattableView(chunksToAdd, TObjectIdFormatter()),
-            MakeFormattableView(chunksToRemove, TObjectIdFormatter()),
-            MakeFormattableView(chunksToMarkSealable, TObjectIdFormatter()));
+        return NLogging::TLoggingTagList()
+            .With("AddedChunkIds", MakeFormattableView(chunksToAdd, TObjectIdFormatter()))
+            .With("RemovedChunkIds", MakeFormattableView(chunksToRemove, TObjectIdFormatter()))
+            .With("MarkSealableChunkIds", MakeFormattableView(chunksToMarkSealable, TObjectIdFormatter()));
     }
 
     void MakeTableDynamic(NTableServer::TTableNode* table, i64 cumulativeDataWeight) override
@@ -1391,20 +1476,20 @@ public:
             }
         }
 
-        std::vector<TChunkTreeRawPtr> hunkChunksToAttach;
-        auto attachHunkChunks = [&] (TChunk* chunk) {
+        std::vector<TChunkTreeRawPtr> referencedHunkChunks;
+        auto collectReferencedHunkChunks = [&] (TChunk* chunk) {
             auto hunkChunks = GetReferencedHunkChunks(chunk);
-            if (!hunkChunks.empty()) {
-                YT_VERIFY(std::ssize(hunkChunks) == 1);
-                hunkChunksToAttach.push_back(hunkChunks[0]);
-            }
+            referencedHunkChunks.insert(
+                referencedHunkChunks.end(),
+                hunkChunks.begin(),
+                hunkChunks.end());
         };
 
         for (auto store : storesToAttach) {
             switch (store->GetType()) {
                 case EObjectType::Chunk:
                 case EObjectType::ErasureChunk: {
-                    attachHunkChunks(store->AsChunk());
+                    collectReferencedHunkChunks(store->AsChunk());
                     break;
                 }
 
@@ -1414,12 +1499,23 @@ public:
                     YT_VERIFY(
                         underlyingTree->GetType() == EObjectType::Chunk ||
                         underlyingTree->GetType() == EObjectType::ErasureChunk);
-                    attachHunkChunks(underlyingTree->AsChunk());
+                    collectReferencedHunkChunks(underlyingTree->AsChunk());
                     break;
                 }
 
                 default:
                     YT_ABORT();
+            }
+        }
+
+        SortUnique(referencedHunkChunks, TObjectIdComparer());
+
+        auto* hunkChunkList = tablet->GetHunkChunkList();
+        std::vector<TChunkTreeRawPtr> hunkChunksToAttach;
+        hunkChunksToAttach.reserve(referencedHunkChunks.size());
+        for (auto hunkChunk : referencedHunkChunks) {
+            if (!hunkChunkList->HasChild(hunkChunk)) {
+                hunkChunksToAttach.push_back(hunkChunk);
             }
         }
 
@@ -1432,7 +1528,6 @@ public:
         chunkManager->AttachToChunkList(chunkList, storesToAttach);
 
         if (!hunkChunksToAttach.empty()) {
-            auto* hunkChunkList = tablet->GetHunkChunkList();
             chunkManager->AttachToChunkList(hunkChunkList, hunkChunksToAttach);
         }
 
@@ -1480,6 +1575,9 @@ public:
     }
 
 private:
+    const IStoresUpdateThrottlerPtr StoresUpdateThrottler_;
+    const IInvokerPtr StoresUpdateThrottlerInvoker_;
+
     using TProfilerKey = std::tuple<std::optional<ETabletStoresUpdateReason>, std::string, bool>;
     THashMap<TProfilerKey, TProfilingCounters> Counters_;
 
@@ -1496,7 +1594,7 @@ private:
         }
 
         auto* table = owner->As<TTableNode>();
-        const auto& cellBundle = table->TabletCellBundle();
+        auto cellBundle = table->GetTabletCellBundle();
         if (!cellBundle) {
             return &nullCounters;
         }
@@ -1529,6 +1627,13 @@ private:
     const TDynamicTabletManagerConfigPtr& GetDynamicConfig() const
     {
         return Bootstrap_->GetConfigManager()->GetConfig()->TabletManager;
+    }
+
+    void OnDynamicConfigChanged(const TDynamicClusterConfigPtr& /*oldConfig*/)
+    {
+        BIND(&IStoresUpdateThrottler::Reconfigure, StoresUpdateThrottler_)
+            .Via(StoresUpdateThrottlerInvoker_)
+            .Run(GetDynamicConfig()->StoresUpdateThrottler);
     }
 
     TError CheckAllDynamicStoresFlushed(TTablet* tablet)
@@ -1750,8 +1855,7 @@ private:
         } else {
             if (GetParentCount(child) == 1) {
                 auto* parent = GetUniqueParent(child);
-                YT_VERIFY(parent->GetType() == EObjectType::ChunkList);
-                return parent;
+                return parent->AsChunkList();
             }
             return tablet->GetChunkList();
         }
@@ -1760,7 +1864,7 @@ private:
     void PruneEmptySubtabletChunkList(TChunkList* chunkList)
     {
         while (chunkList->GetKind() == EChunkListKind::SortedDynamicSubtablet && chunkList->Children().empty()) {
-            auto* parent = GetUniqueParent(chunkList);
+            auto* parent = GetUniqueParent(chunkList)->AsChunkList();
             const auto& chunkManager = Bootstrap_->GetChunkManager();
             chunkManager->DetachFromChunkList(parent, {chunkList}, EChunkDetachPolicy::SortedTablet);
             chunkList = parent;
@@ -2146,9 +2250,11 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
-ITabletChunkManagerPtr CreateTabletChunkManager(TBootstrap* bootstrap)
+ITabletChunkManagerPtr CreateTabletChunkManager(
+    TBootstrap* bootstrap,
+    IInvokerPtr storesUpdateThrottlerInvoker)
 {
-    return New<TTabletChunkManager>(bootstrap);
+    return New<TTabletChunkManager>(bootstrap, std::move(storesUpdateThrottlerInvoker));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

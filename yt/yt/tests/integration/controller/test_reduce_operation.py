@@ -934,7 +934,7 @@ echo {v = 2} >&7
             spec={"reducer": {"collective_options": {"size": 2}, "close_stdout_if_unused": True}, "job_count": 1},
             track=False,
         )
-        wait_breakpoint(job_count=1)
+        wait_breakpoint(op, job_count=1)
         release_breakpoint()
         op.track()
 
@@ -1949,7 +1949,7 @@ echo {v = 2} >&7
             **kwargs
         )
 
-        jobs = wait_breakpoint()
+        jobs = wait_breakpoint(op)
         op.interrupt_job(jobs[0], interruption_timeout=2000000)
         release_breakpoint()
 
@@ -2064,6 +2064,29 @@ echo {v = 2} >&7
         chunk_ids = get("//tmp/t2/@chunk_ids")
         expected = [3, 4, 5] if sort_order == "ascending" else [2, 5, 5]
         assert sorted([get("#" + chunk_id + "/@row_count") for chunk_id in chunk_ids]) == expected
+
+    @authors("coteeq")
+    def test_inconsistent_job_count_and_pivot_keys_alert(self):
+        skip_if_component_old(self.Env, (26, 2), "controller-agent")
+
+        create("table", "//tmp/t1")
+        write_table("//tmp/t1", [{"key": key} for key in range(3)], sorted_by=["key"])
+        create("table", "//tmp/t2")
+
+        op = reduce(
+            in_="//tmp/t1",
+            out="//tmp/t2",
+            command="cat",
+            reduce_by=["key"],
+            spec={
+                "job_count": 2,
+                "pivot_keys": [[1], [2]],
+            },
+        )
+
+        alert = op.get_alerts()["inconsistent_job_count_and_pivot_keys"]
+        assert alert["attributes"]["job_count"] == 2
+        assert alert["attributes"]["pivot_key_count"] == 2
 
     @authors("gritukan")
     def test_empty_pivot_key(self):

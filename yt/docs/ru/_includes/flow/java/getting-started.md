@@ -6,6 +6,8 @@
 
 [Примеры]({{source-root}}/yt/yt/flow/examples/java)
 
+Объекты, общие для джобов одной JVM, описаны в статье [Ресурсы companion](../../../flow/java/resources.md). Правила регистрации, подключения и жизненного цикла применимы и к Kotlin.
+
 ## Архитектура приложения {#architecture}
 
 Любой пайплайн Flow состоит из трёх составных частей:
@@ -15,7 +17,7 @@
 
 Java и Kotlin используются в `Runner` и `Worker`.
 
-![](../../../flow/images/java_flow_cluster.svg)
+![](../../../flow/_images/java_flow_cluster.svg)
 
 ## Два подхода к конфигурации
 
@@ -81,7 +83,7 @@ Java SDK Flow (с поддержкой Kotlin) предоставляет два
 
 ## Точка входа
 
-У пайплайна одна точка входа — класс с `main`-методом, который вызывает `FlowApplication.run(args, context)`. Роль процесса выбирается по переменной среды `YT_FLOW_MODE`:
+Без Spring Boot точка входа пайплайна — класс с `main`-методом, который вызывает `FlowApplication.run(args, context)`. Со Spring Boot метод `main` запускает Spring, который настраивает Flow; см. [Интеграция со Spring Boot](../../../flow/java/spring.md). Роль процесса выбирается по переменной среды `YT_FLOW_MODE`:
 
 - переменная не задана — процесс работает как **runner**: дополняет спеку пайплайна и передаёт запуск `flow_server`;
 - `YT_FLOW_MODE=Worker` — процесс работает как **компаньон**: поднимает gRPC-сервер и обслуживает запросы воркера. Эту переменную воркер выставляет сам, запуская компаньон.
@@ -139,7 +141,7 @@ Java SDK Flow (с поддержкой Kotlin) предоставляет два
 
 {% endlist %}
 
-Runner требует два аргумента: `--config` — путь к конфигу пайплайна, `--flow-bin` — путь к бинарю `flow_server`.
+Runner принимает два аргумента: обязательный `--config` — путь к конфигу пайплайна и `--flow-bin` — путь к бинарю `flow_server`. Без `--flow-bin` раннер берёт путь из переменной окружения `YT_FLOW_BIN`.
 
 ```bash
 ./run.sh com.example.pipeline.PipelineMain --config pipeline.yson --flow-bin flow_server
@@ -251,4 +253,5 @@ Runner требует два аргумента: `--config` — путь к ко
 - [Computation (Java)](../../../flow/java/computation.md)
 - [Работа со стейтами (Java)](../../../flow/java/state.md)
 - [Примеры](../../../flow/java/examples/wordcount.md)
+- [Регистрация через Spring Boot](../../../flow/java/spring.md)
 - [Companion](../../../flow/concepts/companion.md)

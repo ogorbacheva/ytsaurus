@@ -554,6 +554,7 @@ public:
     //! Node management.
     void RegisterNode(NNodeTrackerClient::TNodeId nodeId, const std::string& nodeAddress) override;
     void UnregisterNode(NNodeTrackerClient::TNodeId nodeId) override;
+    std::vector<TExecNodeDescriptorPtr> GetNodeDescriptors() const override;
 
     //! Scheduling.
     TFuture<void> ProcessSchedulingHeartbeat(
@@ -579,21 +580,22 @@ public:
         const std::vector<TAllocationUpdate>& allocationUpdates) override;
 
     //! Diagnostics.
-    void BuildSchedulingAttributesStringForNode(
+    NLogging::TLoggingTagList BuildSchedulingAttributeTagsForNode(
+        const TPoolTreeSnapshotPtr& treeSnapshot,
         const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
+        NNodeTrackerClient::TNodeId nodeId) const override;
+    void BuildSchedulingAttributesForNode(
+        const TPoolTreeSnapshotPtr& treeSnapshot,
         NNodeTrackerClient::TNodeId nodeId,
-        TDelimitedStringBuilderWrapper& delimitedBuilder) const override;
-    void BuildSchedulingAttributesForNode(NNodeTrackerClient::TNodeId nodeId, NYTree::TFluentMap fluent) const override;
-    void BuildSchedulingAttributesStringForOngoingAllocations(
+        NYTree::TFluentMap fluent) const override;
+    NLogging::TLoggingTagList BuildSchedulingAttributeTagsForOngoingAllocations(
         const TPoolTreeSnapshotPtr& treeSnapshot,
         const std::vector<TAllocationPtr>& allocations,
-        TInstant now,
-        TDelimitedStringBuilderWrapper& delimitedBuilder) const override;
+        TInstant now) const override;
 
-    void BuildElementLoggingStringAttributes(
+    NLogging::TLoggingTagList BuildElementLoggingTags(
         const TPoolTreeSnapshotPtr& treeSnapshot,
-        const TPoolTreeElement* element,
-        TDelimitedStringBuilderWrapper& delimitedBuilder) const override;
+        const TPoolTreeElement* element) const override;
 
     void PopulateOrchidService(const NYTree::ICompositeMapServicePtr& orchidService) const override;
 
@@ -646,7 +648,6 @@ private:
     NProfiling::TProfiler Profiler_;
 
     NConcurrency::TPeriodicExecutorPtr SchedulingSegmentsManagementExecutor_;
-    NConcurrency::TPeriodicExecutorPtr MinNodeResourceLimitsCheckExecutor_;
 
     TEnumIndexedArray<EAllocationSchedulingStage, std::unique_ptr<TSchedulingStageProfilingCounters>> SchedulingStageProfilingCounters_;
 
@@ -683,12 +684,11 @@ private:
     // and we start building up-to-date persistent state.
     TInstant SchedulingSegmentsInitializationDeadline_;
     TPersistentStatePtr InitialPersistentState_ = New<TPersistentState>();
-    TPersistentStatePtr PersistentState_;
+    // Treated as immutable after publication.
+    NYTree::INodePtr CachedPersistentStateNode_;
 
     TPersistentNodeSchedulingSegmentStateMap InitialPersistentSchedulingSegmentNodeStates_;
     TPersistentOperationSchedulingSegmentStateMap InitialPersistentSchedulingSegmentOperationStates_;
-
-    THashMap<std::string, TInstant> NodeToResourceLimitsViolationStartTime_;
 
     DECLARE_THREAD_AFFINITY_SLOT(ControlThread);
 
@@ -805,8 +805,6 @@ private:
     void ApplyNodeSchedulingSegmentsChanges(const TSetNodeSchedulingSegmentOptionsList& movedNodes);
 
     void ManageSchedulingSegments();
-
-    void CheckMinNodeResourceLimits();
 
     bool IsGpuTree() const;
 };

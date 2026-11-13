@@ -55,11 +55,22 @@ struct TComputationInvokesProcessFunctionSync<T, std::void_t<decltype(T::Invokes
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! Parameters of sources and sinks parsed by #TRegistry::ValidatePipelineSpecParseability, keyed by
+//! (computation id, local stream or sink id). Entities that fail to parse are absent.
+struct TParsedPipelineParameters
+{
+    THashMap<std::pair<TComputationId, TStreamId>, NYTree::TYsonStructPtr> Sources;
+    THashMap<std::pair<TComputationId, TSinkId>, NYTree::TYsonStructPtr> Sinks;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TRegistry
 {
 public:
     using TParametersFactory = std::function<NYTree::TYsonStructPtr()>;
-    using TProcessFunctionFactory = std::function<IProcessFunctionBasePtr()>;
+    using TProcessFunctionFactory =
+        std::function<IProcessFunctionBasePtr(const TProcessFunctionContextPtr&)>;
     //! Recovers the optional #ISyncProcessFunction mix-in of a function instance without RTTI (a
     //! static cast fixed at registration, where the concrete type is known).
     using TProcessFunctionSyncViewer = std::function<ISyncProcessFunction*(IProcessFunctionBase*)>;
@@ -91,11 +102,36 @@ public:
         const TDynamicComputationContextPtr& dynamicContext);
 
     //! Instantiates the process function registered under |name|. Throws if |name| is unknown.
-    IProcessFunctionBasePtr CreateProcessFunction(const std::string& name) const;
+    IProcessFunctionBasePtr CreateProcessFunction(
+        const std::string& name,
+        const TProcessFunctionContextPtr& context) const;
 
     //! Returns |function|'s sync mix-in if it opted in, else null — resolved without RTTI from the
     //! registration of |name|. |function| must be an instance created by CreateProcessFunction(|name|).
     ISyncProcessFunction* ViewProcessFunctionAsSync(const std::string& name, const IProcessFunctionBasePtr& function) const;
+
+    //! Returns whether the registered process function |name| implements #ISyncProcessFunction.
+    bool IsSyncProcessFunction(const std::string& name) const;
+
+    //! Parses |spec|'s static `processing_function_parameters` into the type its processing
+    //! function registered (an absent block parses as an empty map).
+    NYTree::TYsonStructPtr ParseProcessFunctionParameters(const TComputationSpecPtr& spec) const;
+
+    //! Throws if |parameters| are not valid static parameters of the process function |name|, including unknown fields.
+    void ValidateStaticProcessFunctionParameters(
+        const std::string& name,
+        const NYTree::IMapNodePtr& parameters) const;
+
+    //! Validates per-node dynamic parameters of a resolved process function graph |spec|.
+    void ValidateProcessFunctionGraphDynamicParameters(
+        const TComputationSpecPtr& spec,
+        const NYTree::IMapNodePtr& parameters) const;
+
+    //! Parses a dynamic `processing_function_parameters` node into the type |spec|'s processing
+    //! function registered (a null |parameters| parses as an empty map).
+    NYTree::TYsonStructPtr ParseDynamicProcessFunctionParameters(
+        const TComputationSpecPtr& spec,
+        const NYTree::IMapNodePtr& parameters) const;
 
     IComputationControllerPtr CreateComputationController(
         const TComputationControllerContextPtr& context,
@@ -168,11 +204,17 @@ public:
         const TDynamicResourceSpecPtr& dynamicSpec);
 
     template <class T>
-    void RegisterFileSource();
+    void RegisterFileProvider();
 
-    IFileSourcePtr CreateFileSource(const TFileSourceContextPtr& context);
+    IFileProviderPtr CreateFileProvider(
+        const TFileProviderContextPtr& context,
+        const TDynamicFileProviderContextPtr& dynamicContext);
 
-    NYTree::TYsonStructPtr ParseFileSourceParameters(const TFileSourceSpecPtr& spec);
+    NYTree::TYsonStructPtr ParseFileProviderParameters(const TFileProviderSpecPtr& spec);
+
+    NYTree::TYsonStructPtr ParseDynamicFileProviderParameters(
+        const TFileProviderSpecPtr& spec,
+        const TDynamicFileProviderSpecPtr& dynamicSpec);
 
     template <class T>
     void RegisterExternalStateManager();
@@ -232,7 +274,7 @@ public:
     void ValidateSourceSpec(const TSourceSpecPtr& spec) const;
     void ValidateSinkSpec(const TSinkSpecPtr& spec) const;
     void ValidateResourceSpec(const TResourceSpecPtr& spec) const;
-    void ValidateFileSourceSpec(const TFileSourceSpecPtr& spec) const;
+    void ValidateFileProviderSpec(const TFileProviderSpecPtr& spec) const;
     void ValidateStreamSpec(const TStreamSpecPtr& spec) const;
     void ValidateExternalStateManagerSpec(const TExternalStateManagerSpecPtr& spec) const;
     void ValidateExternalStateJoinerSpec(const TExternalStateJoinerSpecPtr& spec) const;
@@ -243,14 +285,20 @@ public:
 
     //! Recursively walks the (already-parsed) parameters struct and collects every
     //! YT-path ownership claim declared on a path-typed field via
-    //! `.AddOption(EYTPathOwnership)`. Each claimed path is normalized.
-    std::vector<TYTPathClaim> CollectYTPathClaims(const NYTree::TYsonStructPtr& parameters) const;
+    //! `.AddOption(EYTPathOwnership)` or `.AddOption(TYTPathOwnershipResolver)`. Each claimed path is normalized.
+    //! A path yields one claim per cluster in the union of its `cluster` and `clusters` attributes, or a claim on
+    //! |pipelineCluster| if both are unset.
+    std::vector<TYTPathClaim> CollectYTPathClaims(
+        const NYTree::TYsonStructPtr& parameters,
+        const std::optional<std::string>& pipelineCluster = std::nullopt) const;
 
     void ValidateYsonMessageType(TStringBuf name, const TYsonMessagePtr& ysonMessage) const;
 
     // Validate spec and return list of errors.
     // Possible errors: failed parsing, unrecognized fields.
-    std::vector<TError> ValidatePipelineSpecParseability(const NYTree::IMapNodePtr& specNode) const;
+    std::vector<TError> ValidatePipelineSpecParseability(
+        const NYTree::IMapNodePtr& specNode,
+        TParsedPipelineParameters* parsedParameters = nullptr) const;
     std::vector<TError> ValidateDynamicPipelineSpecParseability(const TPipelineSpecPtr& spec, const NYTree::IMapNodePtr& dynamicSpecNode) const;
 
 protected:
@@ -311,13 +359,18 @@ private:
         TParametersFactory ParametersFactory;
         TParametersFactory DynamicParametersFactory;
         std::function<void(const TResourceSpec&)> ValidateSpec;
+        bool SupportsFileProviderDiscovery = false;
     };
 
-    struct TFileSourceDescriptor
+    struct TFileProviderDescriptor
     {
-        std::function<IFileSourcePtr(const TFileSourceContextPtr& context)> Factory;
+        std::function<IFileProviderPtr(
+            const TFileProviderContextPtr& context,
+            const TDynamicFileProviderContextPtr& dynamicContext)>
+            Factory;
         TParametersFactory ParametersFactory;
-        std::function<void(const TFileSourceSpec&)> ValidateSpec;
+        TParametersFactory DynamicParametersFactory;
+        std::function<void(const TFileProviderSpec&)> ValidateSpec;
     };
 
     struct TExternalStateManagerDescriptor
@@ -356,7 +409,7 @@ private:
     THashMap<std::string, TSourceDescriptor> TypeNameToSourceDescriptor_;
     THashMap<std::string, TSinkDescriptor> TypeNameToSinkDescriptor_;
     THashMap<std::string, TResourceDescriptor> TypeNameToResourceDescriptor_;
-    THashMap<std::string, TFileSourceDescriptor> TypeNameToFileSourceDescriptor_;
+    THashMap<std::string, TFileProviderDescriptor> TypeNameToFileProviderDescriptor_;
     THashMap<std::string, TExternalStateManagerDescriptor> TypeNameToExternalStateManagerDescriptor_;
     THashMap<std::string, TExternalStateJoinerDescriptor> TypeNameToExternalStateJoinerDescriptor_;
     THashMap<std::string, TPayloadMigrationFunction> TypeNameToPayloadMigrationFunction_;
@@ -370,7 +423,7 @@ private:
     const TSourceDescriptor& GetSourceDescriptor(TStringBuf typeName) const;
     const TSinkDescriptor& GetSinkDescriptor(TStringBuf typeName) const;
     const TResourceDescriptor& GetResourceDescriptor(TStringBuf typeName) const;
-    const TFileSourceDescriptor& GetFileSourceDescriptor(TStringBuf typeName) const;
+    const TFileProviderDescriptor& GetFileProviderDescriptor(TStringBuf typeName) const;
     const TExternalStateManagerDescriptor& GetExternalStateManagerDescriptor(TStringBuf typeName) const;
     const TExternalStateJoinerDescriptor& GetExternalStateJoinerDescriptor(TStringBuf typeName) const;
     const TYsonMessageDescriptor& GetYsonMessageDescriptor(TStringBuf typeName) const;
@@ -432,9 +485,9 @@ private:
         ::NYT::NFlow::TRegistry::Get()->RegisterResource<type>(); \
     })
 
-#define YT_FLOW_DEFINE_FILE_SOURCE(type)                            \
-    YT_STATIC_INITIALIZER({                                         \
-        ::NYT::NFlow::TRegistry::Get()->RegisterFileSource<type>(); \
+#define YT_FLOW_DEFINE_FILE_PROVIDER(type)                            \
+    YT_STATIC_INITIALIZER({                                           \
+        ::NYT::NFlow::TRegistry::Get()->RegisterFileProvider<type>(); \
     })
 
 #define YT_FLOW_DEFINE_EXTERNAL_STATE_MANAGER(type)                           \

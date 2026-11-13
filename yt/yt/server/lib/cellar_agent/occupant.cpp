@@ -232,7 +232,7 @@ private:
     i64 TotalPayloadWrittenBytes_ = 0;
     i64 TotalMediaWrittenBytes_ = 0;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, WrittenBytesLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, WrittenBytesLock_);
     std::optional<TDuration> WrittenBytesMovingAverageWindow_;
     mutable TAverageDurationMovingAverage PayloadWrittenBytes_{DefaultWrittenBytesMovingAverageWindow};
     mutable TAverageDurationMovingAverage MediaWrittenBytes_{DefaultWrittenBytesMovingAverageWindow};
@@ -795,10 +795,18 @@ public:
 
         if (CanConfigure()) {
             if (const auto& hydraManager = HydraManager_.Acquire()) {
-                YT_UNUSED_FUTURE(hydraManager->Reconfigure(dynamicConfig->HydraManager));
+                hydraManager->Reconfigure(dynamicConfig->HydraManager);
             }
             if (ChangelogStoreFactory_) {
-                ChangelogStoreFactory_->Reconfigure(dynamicConfig->Changelogs);
+                try {
+                    ChangelogStoreFactory_->Reconfigure(dynamicConfig->Changelogs);
+                } catch (const std::exception& ex) {
+                    YT_TLOG_ERROR("Error while reconfiguring changelog store factory")
+                        .With(ex);
+                }
+            }
+            if (LeaseManager_) {
+                LeaseManager_->Reconfigure(dynamicConfig->LeaseManager);
             }
         }
     }

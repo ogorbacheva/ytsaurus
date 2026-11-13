@@ -19,9 +19,9 @@
 namespace NYql {
 
 bool TYtTableDescription::Fill(
-    const TString& cluster, const TString& table, const TQContext& qContext, TExprContext& ctx,
-    IModuleResolver* moduleResolver, IUrlListerManager* urlListerManager, IRandomProvider& randomProvider,
-    bool allowViewIsolation, IUdfResolver::TPtr udfResolver, const NSQLTranslation::TSqlFlags& sqlFlags) {
+    const TString& cluster, const TString& table, TExprContext& ctx,
+    TTypeAnnotationContext& types,
+    bool allowViewIsolation, const NSQLTranslation::TSqlFlags& sqlFlags) {
     const TStructExprType* type = RowSpec ? RowSpec->GetType() : nullptr;
     if (!type) {
         TVector<const TItemExprType*> items;
@@ -34,8 +34,8 @@ bool TYtTableDescription::Fill(
     }
 
     if (!TYtTableDescriptionBase::Fill(TString{YtProviderName}, cluster,
-        table, type, Meta->SqlView, Meta->SqlViewSyntaxVersion, qContext, Meta->Attrs, ctx,
-        moduleResolver, urlListerManager, randomProvider, allowViewIsolation, udfResolver, sqlFlags)) {
+        table, type, Meta->SqlView, Meta->SqlViewSyntaxVersion, Meta->Attrs, ctx,
+        types, allowViewIsolation, sqlFlags)) {
         return false;
     }
     if (QB2RowSpec) {
@@ -71,6 +71,8 @@ void TYtTableDescription::ToYson(NYson::TYsonWriter& writer, const TString& clus
         writer.OnBooleanScalar(RowSpec && RowSpec->IsSorted());
         writer.OnKeyedItem("IsDynamic");
         writer.OnBooleanScalar(Meta->IsDynamic);
+        writer.OnKeyedItem("IsLink");
+        writer.OnBooleanScalar(Meta->IsLink);
         writer.OnKeyedItem("HasRLS");
         writer.OnBooleanScalar(Meta->HasRLS);
         writer.OnKeyedItem("UniqueKeys");
@@ -251,12 +253,12 @@ void TYtTableDescription::SetConstraintsReady() {
 }
 
 bool TYtTableDescription::FillViews(
-    const TString& cluster, const TString& table, const TQContext& qContext, TExprContext& ctx,
-    IModuleResolver* moduleResolver, IUrlListerManager* urlListerManager, IRandomProvider& randomProvider,
-    bool allowViewIsolation, IUdfResolver::TPtr udfResolver, const NSQLTranslation::TSqlFlags& sqlFlags) {
+    const TString& cluster, const TString& table, TExprContext& ctx,
+    TTypeAnnotationContext& types,
+    bool allowViewIsolation, const NSQLTranslation::TSqlFlags& sqlFlags) {
     return TYtTableDescriptionBase::FillViews(
-        TString{YtProviderName}, cluster, table, Meta->Attrs, qContext, ctx,
-        moduleResolver, urlListerManager, randomProvider, allowViewIsolation, udfResolver, sqlFlags);
+        TString{YtProviderName}, cluster, table, Meta->Attrs, ctx,
+        types, allowViewIsolation, sqlFlags);
 }
 
 const TYtTableDescription& TYtTablesData::GetTable(const TString& cluster, const TString& table, TMaybe<ui32> epoch) const {
@@ -442,12 +444,33 @@ TDataProviderInitializer GetYtNativeDataProviderInitializer(IYtGateway::TPtr gat
         std::tie(ytState, statWriter) = CreateYtNativeState(gateway, userName, sessionId, ytGatewayConfig, typeCtx, optFactory, helper, tablesData, fullCapture, qContext);
         ytState->PlanLimits = planLimits;
 
+        TVector<TAttr> mrJobLabels;
+        if (ytGatewayConfig && ytGatewayConfig->HasMrJobLabel()) {
+            auto& setting = mrJobLabels.emplace_back();
+            setting.SetName("MrJobLabel");
+            setting.SetValue(ytGatewayConfig->GetMrJobLabel().GetLabel());
+            if (ytGatewayConfig->GetMrJobLabel().HasActivation()) {
+                *setting.MutableActivation() = ytGatewayConfig->GetMrJobLabel().GetActivation();
+            }
+        }
+        const auto activationPolicy = NCommon::TActivationSelectionPolicy(
+            NConfig::MakeActivationFilter<TAttr>(userName, typeCtx->Credentials),
+            [ytState](const TString& name) { RecordActivationStat(name, *ytState); });
+        const auto selectedLabels = activationPolicy.SelectAndSave<TAttr>(
+            "yt.MrJobLabel", qContext, mrJobLabels, /*hasProviderName=*/true);
+
         info.Names.insert({TString{YtProviderName}});
         info.Source = CreateYtDataSource(ytState);
         info.Sink = CreateYtDataSink(ytState);
         info.SupportFullResultDataSink = true;
         info.OpenSession = [
-            gateway, statWriter, qContext, fullCapture, useSecureTmp = ytState->UseSecureTmp
+            gateway,
+            statWriter,
+            qContext,
+            fullCapture,
+            mrJobLabel = selectedLabels.empty() ? TString{} : selectedLabels.front().GetValue(),
+            useSecureTmp = ytState->UseSecureTmp,
+            credentials = typeCtx->Credentials
         ](
             const TString& sessionId, const TString& username,
             const TOperationProgressWriter& progressWriter, const TYqlOperationOptions& operationOptions,
@@ -458,12 +481,14 @@ TDataProviderInitializer GetYtNativeDataProviderInitializer(IYtGateway::TPtr gat
                     .UserName(username)
                     .ProgressWriter(progressWriter)
                     .OperationOptions(operationOptions)
+                    .Credentials(credentials)
                     .RandomProvider(randomProvider)
                     .TimeProvider(timeProvider)
                     .StatWriter(statWriter)
                     .QContext(qContext)
                     .FullCapture(fullCapture)
                     .UseSecureTmp(useSecureTmp)
+                    .MrJobLabel(mrJobLabel)
             );
             return NThreading::MakeFuture();
         };
@@ -544,7 +569,9 @@ struct TYtDataSinkFunctions {
         Names.insert(TYtFill::CallableName());
         Names.insert(TYtTouch::CallableName());
         Names.insert(TYtCreateTable::CallableName());
+        Names.insert(TYtCreateSymlink::CallableName());
         Names.insert(TYtDropTable::CallableName());
+        Names.insert(TYtDropSymlink::CallableName());
         Names.insert(TYtCreateView::CallableName());
         Names.insert(TYtDropView::CallableName());
         Names.insert(TCoCommit::CallableName());
@@ -600,7 +627,11 @@ TMaybe<TString> TYtState::ResolveClusterToken(const TString& cluster) {
         }
 
         if (auto ytTokenResolver = Gateway->GetYtTokenResolver()) {
-            return ytTokenResolver->ResolveClusterToken(cluster);
+            auto ytName = Gateway->GetClusterYtName(cluster);
+            if (!ytName) {
+                ythrow yexception() << "Unknown cluster name: " << cluster;
+            }
+            return ytTokenResolver->ResolveClusterToken(ytName, *Types->Credentials);
         }
     }
 

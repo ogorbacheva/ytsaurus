@@ -17,6 +17,8 @@
 
 #include <yt/yt/server/master/sequoia_server/proto/ground_update_queue_manager.pb.h>
 
+#include <yt/yt/server/master/sequoia_server/sequoia_manager.h>
+
 #include <yt/yt/server/lib/hydra/mutation_context.h>
 
 #include <yt/yt/ytlib/transaction_client/action.h>
@@ -27,6 +29,8 @@
 #include <yt/yt/ytlib/sequoia_client/transaction.h>
 
 #include <yt/yt/client/table_client/unversioned_row.h>
+
+#include <yt/yt/core/concurrency/periodic_executor.h>
 
 #include <yt/yt/library/profiling/producer.h>
 
@@ -280,15 +284,16 @@ private:
         }
 
         if (queueRecords.empty()) {
-            auto error = TError("There are no updates to flush");
-            YT_LOG_DEBUG(error);
-            THROW_ERROR_EXCEPTION(error);
+            static constexpr auto Message = "There are no updates to flush"_sb;
+            YT_TLOG_DEBUG(Message);
+            THROW_ERROR_EXCEPTION(TError(Message));
         }
         if (queueRecords.front().SequenceNumber != request->start_sequence_number()) {
             auto error = TError("First record sequence number %v is different from requested sequence number %v",
                 queueRecords.front().SequenceNumber,
                 request->start_sequence_number());
-            YT_LOG_DEBUG(error);
+            YT_TLOG_DEBUG("First record sequence number differs from the requested one")
+                .With(error);
             THROW_ERROR_EXCEPTION(error);
         }
         if (queueRecords.back().SequenceNumber < request->end_sequence_number()) {
@@ -296,7 +301,8 @@ private:
                 queueRecords.back().SequenceNumber,
                 request->end_sequence_number());
             // This is still alert, looks weird.
-            YT_LOG_ALERT(error);
+            YT_TLOG_ALERT("Last queue sequence number is less than the requested one")
+                .With(error);
             THROW_ERROR_EXCEPTION(error);
         }
 
@@ -427,7 +433,10 @@ private:
         Y_UNUSED(WaitFor(Bootstrap_
             ->GetSequoiaConnection()
             ->CreateClient(NRpc::GetRootAuthenticationIdentity())
-            ->StartTransaction(ESequoiaTransactionType::GroundUpdateQueueFlush)
+            ->StartTransaction(
+                ESequoiaTransactionType::GroundUpdateQueueFlush,
+                /*options*/ {},
+                TSequoiaTransactionOptions{.Features = Bootstrap_->GetSequoiaManager()->GetSequoiaTransactionFeatures()})
             .Apply(BIND([queue, this, this_ = MakeStrong(this)] (const ISequoiaTransactionPtr& transaction) {
                 auto& queueState = QueueStates_[queue];
 
@@ -490,7 +499,15 @@ private:
                     NTransactionClient::MakeTransactionActionData(request));
 
                 transaction->AddBarrierTags({NApi::NNative::SequoiaCypressOrderingTag});
-                transaction->AddStrongOrderingTags({NApi::NNative::SequoiaCypressOrderingTag});
+
+                const auto& features = transaction->GetFeatures();
+                if (features.UseCoarseGrainedOrderingTags.value_or(true)) {
+                    transaction->AddStrongOrderingTags({NApi::NNative::SequoiaCypressOrderingTag});
+                }
+                if (features.UseFineGrainedOrderingTags.value_or(false)) {
+                    transaction->AddStrongOrderingTags({NApi::NNative::GroundUpdateQueueOrderingTag});
+                }
+
                 NApi::TTransactionCommitOptions commitOptions{
                     .CoordinatorCellId = Bootstrap_->GetCellId(),
                     .CoordinatorPrepareMode = NApi::ETransactionCoordinatorPrepareMode::Late,

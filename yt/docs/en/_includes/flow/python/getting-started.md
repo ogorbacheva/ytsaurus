@@ -6,10 +6,11 @@ You implement Python computations in Flow through the [companion](../../../flow/
 
 [Examples]({{source-root}}/yt/yt/flow/examples/python)
 
+For objects shared by jobs in one Python process, see [Companion resources](../../../flow/python/resources.md). Processing callbacks also have access to [shared HTTP clients](../../../flow/python/http-client.md).
+
 ## Application architecture {#architecture}
 
 Any Flow [pipeline](../../../flow/concepts/glossary.md#pipeline) consists of three components:
-
 - `Runner` — starts the pipeline and sets a new version of the [spec](../../../flow/concepts/glossary.md#spec-and-dynamic-spec).
 - `Controller` — manages the pipeline’s operation.
 - `Worker` — performs the actual data processing.
@@ -33,7 +34,7 @@ The `pipeline.add(computation_id, function)` method registers a processing funct
 To create a [computation](../../../flow/concepts/glossary.md#stream-and-computation) in Python, choose the appropriate registration mode that matches the [C++ Computation type](../../../flow/concepts/companion.md#computation-types):
 
 - `pipeline.add(id, fn)` — for `TTransformCompanionComputation` and `TSwiftMapCompanionComputation`.
-- `pipeline.add(id, fn, source=True)` — for `TSwiftOrderedSourceCompanionComputation`.
+- `pipeline.add(id, fn, source=True)` — for `TSwiftOrderedSourceCompanionComputation` and `TTransformOrderedSourceCompanionComputation`.
 
 ```python
 # SourceComputation to read data from a source
@@ -44,7 +45,6 @@ pipeline.add("mapper", WordCountMapper())
 ```
 
 `pipeline.add()` has two required parameters:
-
 - **computation_id** — this is used to map requests between the [worker](../../../flow/concepts/glossary.md#worker) and the companion.
 - **fn** — a function with the logic for processing [messages](../../../flow/concepts/glossary.md#message). It can be an instance of `RowFunction`, `BatchFunction`, a regular function, or a class with the `on_message`/`on_messages` method.
 
@@ -61,7 +61,7 @@ For more details, see the [Computation (Python)](../../../flow/python/computatio
 
 ## Message filtering {#message-filtering}
 
-To filter a message in SourceComputation, emit it with `output.add_message(message, distribute=False)`. The message won’t be published further along the graph, but it will still be accounted for when evaluating the watermark.
+To filter a message in SourceComputation, emit it with `output.add_message(message, distribute=False)`. The message is not published further along the graph, but it is still accounted for when the watermark is evaluated.
 
 For more details, see the [distribute flag (Python)](../../../flow/python/distribute.md) section.
 
@@ -140,7 +140,7 @@ Here’s what happens:
 - The Python binary (it links `library/python/companion`) reads `pipeline.yson`, enriches the spec — it writes *itself* into it as a Python companion, which `flow_server` will deliver to the Job — and writes the expanded config.
 - Then it passes control to the specified `flow_server` via `execv` (`flow_server --config <expanded config>`).
 
-`flow_server` is passed explicitly via `--flow-bin` and isn’t embedded in the Python binary: this keeps the pipeline lightweight, and the person launching the pipeline chooses the `flow_server` version. You can build both binaries with a single command:
+`flow_server` is not embedded in the Python binary. This keeps the pipeline lightweight and allows whoever runs the pipeline to select the `flow_server` version. If `--flow-bin` is not specified, the runner uses the path from the `YT_FLOW_BIN` environment variable. You can build both binaries with a single command:
 
 ```bash
 cd yt/yt/flow

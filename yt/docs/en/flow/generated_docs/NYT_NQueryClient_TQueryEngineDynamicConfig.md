@@ -16,6 +16,9 @@ Source: [yt/yt/library/query/engine_api/query_engine_config.h]({{source-root}}/y
  ||
 || `expression_builder_version` | **Type**: `std::optional<int>`
  ||
+|| `max_projection_count` | **Type**: `int`
+**Default value**: `1024`
+ ||
 || `codegen_optimization_level` | **Type**: `std::optional<`[NYT::NCodegen::EOptimizationLevel](./all_yson_structs#NYT_NCodegen_EOptimizationLevel)`>`
  ||
 || `allow_udf_object_code_cache` | **Type**: `std::optional<bool>`
@@ -27,6 +30,8 @@ Source: [yt/yt/library/query/engine_api/query_engine_config.h]({{source-root}}/y
 || `truncated_query_length_for_tracing` | **Type**: `std::optional<int>`
  ||
 || `allow_reverse_scan_for_order_by` | **Type**: `std::optional<bool>`
+ ||
+|| `enable_scalar_subquery_order_by_and_limit` | **Type**: `std::optional<bool>`
  ||
 || `allow_heavy_range_inference_in_joins` | **Type**: `std::optional<bool>`
  ||

@@ -40,7 +40,9 @@
 
 #include <yt/yt/core/logging/serializable_logger.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/memory/non_null_ptr.h>
+
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <expected>
 
@@ -128,6 +130,8 @@ public:
 
     bool IsCoreTableEnabled() const;
 
+    bool IsJournalNbdEnabled() const;
+
     virtual TDuration GetLocalityTimeout() const;
     virtual i64 GetLocality(NNodeTrackerClient::TNodeId nodeId) const;
     virtual bool HasInputLocality() const;
@@ -166,6 +170,10 @@ public:
     virtual TJobFinishedResult OnJobAborted(TJobletPtr joblet, const TAbortedJobSummary& jobSummary);
     virtual void OnJobRunning(TJobletPtr joblet, const TRunningJobSummary& jobSummary);
     virtual void OnJobLost(TCompletedJobPtr completedJob, NChunkClient::TChunkId chunkId);
+
+    //! Returning false makes loss of this output a no-op: no suspension, replay, or failure.
+    virtual bool IsJobOutputNeeded(const TCompletedJobPtr& completedJob) const;
+
     void OnOperationRevived();
 
     virtual void OnStripeRegistrationFailed(
@@ -343,7 +351,9 @@ protected:
         NNodeTrackerClient::TNodeDirectoryBuilder* directoryBuilder,
         NControllerAgent::NProto::TTableInputSpec* inputSpec,
         NChunkPools::TChunkStripePtr stripe,
-        NTableClient::TComparator comparator = NTableClient::TComparator());
+        TNonNullPtr<THashSet<NChunkClient::TChunkId>> seenHunkChunks,
+        NTableClient::TComparator comparator,
+        NControllerAgent::NProto::TJobSpecExt* jobSpecExt);
 
     void AddOutputTableSpecs(NControllerAgent::NProto::TJobSpec* jobSpec, TJobletPtr joblet);
 
@@ -380,15 +390,15 @@ protected:
     //! It transforms data slices into new mode, adapts them for using in corresponding chunk pool
     //! (using task-dependent AdaptInputDataSlice virtual method) and registers data slice
     //! input read limits in the InputChunkToReadBounds_ mapping.
-    void AdjustInputKeyBounds(const NChunkClient::TLegacyDataSlicePtr& dataSlice);
+    void AdjustInputKeyBounds(const NChunkClient::TDataSlicePtr& dataSlice);
 
     //! Default implementation simply drops key bounds which is perfectly OK for non-sorted chunk pools.
-    virtual void AdjustDataSliceForPool(const NChunkClient::TLegacyDataSlicePtr& dataSlice) const;
+    virtual void AdjustDataSliceForPool(const NChunkClient::TDataSlicePtr& dataSlice) const;
 
     //! This method is called for each output data slice before serializing it to the job spec.
     //! It applies data slice input read limits from the InputChunkToReadBounds_ mapping.
     //! It is overridden only in the legacy version of sorted controller.
-    void AdjustOutputKeyBounds(const NChunkClient::TLegacyDataSlicePtr& dataSlice) const;
+    void AdjustOutputKeyBounds(const NChunkClient::TDataSlicePtr& dataSlice) const;
 
     //! This method processes `chunkListIds`, forming the chunk stripes (maybe with boundary
     //! keys taken from `schedulerJobResult` if they are present) and sends them to the destination pools
@@ -436,6 +446,8 @@ private:
 
     THashMap<std::string, std::optional<i64>> MaximumUsedTmpfsSizes_;
 
+    i64 JournalNbdMemoryUsage_ = 0;
+
     mutable std::optional<TExtendedJobResources> CachedMinNeededResources_;
 
     bool CompletedFired_ = false;
@@ -468,7 +480,7 @@ private:
     // NB: This field is used in BuildJobSpecProto which is run in an non-serialized invoker,
     // so access it only under the following spinlock.
     THashMap<NTableClient::TTableSchemaPtr, TString> TableSchemaToProtobufTableSchema_;
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, TableSchemaToProtobufTableSchemaLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, TableSchemaToProtobufTableSchemaLock_);
 
     std::unique_ptr<IHistogram> EstimatedInputDataWeightHistogram_;
     std::unique_ptr<IHistogram> InputDataWeightHistogram_;
@@ -507,7 +519,7 @@ private:
 
     //! Availability of clusters read from by task.
     THashMap<NScheduler::TClusterName, bool> ClusterToNetworkBandwidthAvailability_;
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ClusterToNetworkBandwidthAvailabilityLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ClusterToNetworkBandwidthAvailabilityLock_);
 
     struct TOutputCookieInfo
     {
@@ -582,7 +594,6 @@ private:
         const std::optional<NTableClient::TRowsDigest>& rowsDigest,
         TJobId jobId);
 
-    PHOENIX_DECLARE_FRIEND();
     PHOENIX_DECLARE_POLYMORPHIC_TYPE(TTask, 0x81ab3cd3);
 };
 

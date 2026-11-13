@@ -115,6 +115,7 @@ void TSequoiaRetriesConfig::Register(TRegistrar registrar)
         config->StartBackoff = TDuration::MilliSeconds(150); // Average duration of Sequoia tx.
         config->MaxBackoff = TDuration::Seconds(10);
         config->BackoffMultiplier = 2;
+        config->BackoffJitter = 0.2;
         config->RetryCount = 15;
     });
 }
@@ -178,6 +179,8 @@ void TConnectionStaticConfig::Register(TRegistrar registrar)
         .Alias("name")
         .Default("default");
     registrar.Parameter("region", &TThis::Region)
+        .Default();
+    registrar.Parameter("datacenter", &TThis::Datacenter)
         .Default();
     registrar.Parameter("banned_replica_tracker_cache", &TThis::BannedReplicaTrackerCache)
         .DefaultNew();
@@ -244,6 +247,8 @@ void TConnectionDynamicConfig::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("replication_card_cache", &TThis::ReplicationCardCache)
         .Optional();
+    registrar.Parameter("chaos_lease_cache", &TThis::ChaosLeaseCache)
+        .Optional();
     registrar.Parameter("cluster_directory_synchronizer", &TThis::ClusterDirectorySynchronizer)
         .DefaultNew();
     registrar.Parameter("medium_directory_synchronizer", &TThis::MediumDirectorySynchronizer)
@@ -254,6 +259,12 @@ void TConnectionDynamicConfig::Register(TRegistrar registrar)
         .Default(false);
     registrar.Parameter("node_directory_synchronization_on_table_read_staleness_threshold", &TThis::NodeDirectorySynchronizationOnTableReadStalenessThreshold)
         .Default(TDuration::Minutes(15));
+    registrar.Parameter("max_file_partition_count", &TThis::MaxFilePartitionCount)
+        .GreaterThan(0)
+        .Default(10'000);
+    registrar.Parameter("max_chunk_specs_per_file_partition", &TThis::MaxChunkSpecsPerFilePartition)
+        .GreaterThan(0)
+        .Default(100'000);
     registrar.Parameter("chunk_slice_fetcher", &TThis::ChunkSliceFetcher)
         .DefaultNew();
     registrar.Parameter("discovery_connection", &TThis::DiscoveryConnection)
@@ -541,6 +552,12 @@ void TConnectionDynamicConfig::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("clock_manager", &TThis::ClockManager)
         .DefaultNew();
+    registrar.Parameter("replication_card_retry_count", &TThis::ReplicationCardRetryCount)
+        .GreaterThanOrEqual(0)
+        .Default(5);
+    registrar.Parameter("replication_card_retry_slack_period", &TThis::ReplicationCardRetrySlackPeriod)
+        .GreaterThan(TDuration::Zero())
+        .Default(TDuration::MilliSeconds(100));
     registrar.Parameter("replica_fallback_retry_count", &TThis::ReplicaFallbackRetryCount)
         .GreaterThanOrEqual(0)
         .Default(3);
@@ -588,6 +605,9 @@ void TConnectionDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("enable_reshard_with_slicing_by_default", &TThis::EnableReshardWithSlicingByDefault)
         .Default(true);
 
+    registrar.Parameter("use_cypress_proxy_for_two_phase_table_operations", &TThis::UseCypressProxyForTwoPhaseTableOperations)
+        .Default(false);
+
     registrar.Parameter("get_job_trace_batch_size", &TThis::GetJobTraceBatchSize)
         .Default(2'500)
         .GreaterThan(0);
@@ -600,6 +620,14 @@ void TConnectionDynamicConfig::Register(TRegistrar registrar)
 
     // COMPAT(atalmenev)
     registrar.Parameter("use_uniform_prepare_signatures", &TThis::UseUniformPrepareSignatures)
+        .Default(false);
+
+    // COMPAT(ifsmirnov)
+    registrar.Parameter("use_two_phase_dynamicity_alter", &TThis::UseTwoPhaseDynamicityAlter)
+        .Default(false);
+
+    // COMPAT(shamteev)
+    registrar.Parameter("enable_chaos_lease_transaction_participants", &TThis::EnableChaosLeaseTransactionParticipants)
         .Default(false);
 
     registrar.Postprocessor([] (TConnectionDynamicConfig* config) {

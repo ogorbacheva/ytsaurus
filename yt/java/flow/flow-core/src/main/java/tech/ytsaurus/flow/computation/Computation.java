@@ -19,6 +19,7 @@ import tech.ytsaurus.flow.row.ExtendedMessage;
 import tech.ytsaurus.flow.row.Timer;
 import tech.ytsaurus.flow.row.Visit;
 import tech.ytsaurus.flow.state.DefaultStateBackend;
+import tech.ytsaurus.flow.state.StateFormat;
 import tech.ytsaurus.ysontree.YTree;
 import tech.ytsaurus.ysontree.YTreeBuilder;
 import tech.ytsaurus.ysontree.YTreeConvertible;
@@ -46,12 +47,18 @@ public class Computation implements YTreeConvertible {
      */
     private final ProcessFunction processFunction;
 
+    /**
+     * Whether the process function resolves the {@code function_ids} parameter of the computation spec.
+     */
+    private final boolean supportsFunctionIds;
+
     Computation(Builder<?> builder) {
         this.computationId = Objects.requireNonNull(builder.computationId);
         if (builder.processFunction == null) {
             throw new IllegalArgumentException("Process function must be set");
         }
         this.processFunction = builder.processFunction;
+        this.supportsFunctionIds = builder.supportsFunctionIds;
     }
 
     /**
@@ -101,7 +108,8 @@ public class Computation implements YTreeConvertible {
                 request.getWatermarks(),
                 request.getMinWatermark(),
                 job.getStaticParameters(),
-                job.getDynamicParameters()
+                job.getDynamicParameters(),
+                request.getResources()
         );
         log.debug(
                 "States (InternalStateNames: {}, ExternalStateNames: {} InternalStatesSize: {}, " +
@@ -242,7 +250,15 @@ public class Computation implements YTreeConvertible {
         YTreeBuilder builder = YTree.builder()
                 .beginMap()
                 .key("computation_id").value(computationId)
-                .key("computation_type").value(getComputationType().toString());
+                .key("computation_type").value(getComputationType().toString())
+                // State wire formats this SDK can decode; the worker never sends a
+                // format that is not advertised here.
+                .key("supported_state_formats").beginList()
+                .value(StateFormat.SIMPLE_ROW.getFormatName())
+                .value(StateFormat.PROTO.getFormatName())
+                .endList()
+                // The worker rejects function_ids unless the computation resolves them.
+                .key("supports_function_ids").value(supportsFunctionIds);
         return builder.endMap().build();
     }
 
@@ -252,6 +268,7 @@ public class Computation implements YTreeConvertible {
     public static class Builder<B extends Computation.Builder<B>> {
         private @Nullable String computationId;
         private @Nullable ProcessFunction processFunction;
+        private boolean supportsFunctionIds;
 
         Builder() {
         }
@@ -268,6 +285,16 @@ public class Computation implements YTreeConvertible {
 
         public B setProcessFunction(ProcessFunction processFunction) {
             this.processFunction = processFunction;
+            return self();
+        }
+
+        /**
+         * Declares that the process function resolves the {@code function_ids} parameter of the computation spec.
+         * <p>
+         * The worker rejects a spec that sets {@code function_ids} for a computation that does not declare it.
+         */
+        public B setSupportsFunctionIds(boolean supportsFunctionIds) {
+            this.supportsFunctionIds = supportsFunctionIds;
             return self();
         }
 

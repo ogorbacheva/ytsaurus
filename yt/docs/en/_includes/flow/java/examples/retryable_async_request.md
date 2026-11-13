@@ -90,19 +90,19 @@ You register the `state` and `processor` computations with the `@FlowComputation
 
 {% endlist %}
 
-### NodeCompanionMain
+### PipelineMain
 
-This is the entry point of the companion based on Spring Boot:
+This single entry point starts the pipeline or serves as its companion, depending on `YT_FLOW_MODE`.
 
 {% list tabs group=lang %}
 
 - Java
 
-  {% code '/yt/yt/flow/examples/java/retryable_async_request/retryable_async_request/src/main/java/tech/ytsaurus/flow/examples/retryableasyncrequest/NodeCompanionMain.java' lang='java' lines='[BEGIN main]-[END main]' keep-indents %}
+  {% code '/yt/yt/flow/examples/java/retryable_async_request/retryable_async_request/src/main/java/tech/ytsaurus/flow/examples/retryableasyncrequest/PipelineMain.java' lang='java' lines='[BEGIN main]-[END main]' keep-indents %}
 
 - Kotlin
 
-  {% code '/yt/yt/flow/examples/kotlin/retryable_async_request/retryable_async_request/src/main/kotlin/tech/ytsaurus/flow/examples/retryableasyncrequest/NodeCompanionMain.kt' lang='kotlin' lines='[BEGIN main]-[END main]' keep-indents %}
+  {% code '/yt/yt/flow/examples/kotlin/retryable_async_request/retryable_async_request/src/main/kotlin/tech/ytsaurus/flow/examples/retryableasyncrequest/PipelineMain.kt' lang='kotlin' lines='[BEGIN main]-[END main]' keep-indents %}
 
 {% endlist %}
 
@@ -120,4 +120,3 @@ This is the entry point of the companion based on Spring Boot:
 | `RequestProcessorFunction` | Stateless, responds immediately | Has internal state and timers |
 | Failure handling | Not provided | Retry with a 5-second delay |
 | Request state | Absent | `RequestState` in YSON |
-

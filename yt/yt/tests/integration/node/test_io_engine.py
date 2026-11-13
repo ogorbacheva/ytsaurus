@@ -3,8 +3,10 @@ from yt_env_setup import (YTEnvSetup, Restarter, NODES_SERVICE)
 from yt_helpers import profiler_factory, is_uring_supported, is_uring_disabled
 
 import pytest
+import errno
 import threading
 import os
+import tempfile
 import time
 
 import yt
@@ -18,6 +20,7 @@ from yt.common import YtError
 
 @authors("capone212")
 class TestIoEngine(YTEnvSetup):
+    NUM_TEST_PARTITIONS = 2
     NUM_MASTERS = 1
     NUM_NODES = 6
     NUM_SCHEDULERS = 0
@@ -128,6 +131,67 @@ class TestIoEngine(YTEnvSetup):
         # we should receive read stats from at least one node
         wait(lambda: any(self.check_node_sensors(node_sensor) for node_sensor in read_sensors))
 
+    @authors("depression")
+    def test_use_direct_io_for_writes_option(self):
+        if not hasattr(os, "O_DIRECT"):
+            pytest.skip("Direct IO is not supported by the operating system")
+
+        for node_config in self.Env.configs["node"]:
+            for location in node_config["data_node"]["store_locations"]:
+                with tempfile.NamedTemporaryFile(dir=location["path"]) as probe_file:
+                    try:
+                        probe_fd = os.open(probe_file.name, os.O_WRONLY | os.O_DIRECT)
+                    except OSError as error:
+                        if error.errno in (errno.EINVAL, errno.EOPNOTSUPP):
+                            pytest.skip("Direct IO is not supported for {}".format(location["path"]))
+                        raise
+                    else:
+                        os.close(probe_fd)
+
+        direct_io_block_size = 64 * 1024
+        update_nodes_dynamic_config({
+            "data_node": {
+                "store_location_config_per_medium": {
+                    "default": {
+                        "io_config": {
+                            "direct_io_block_size": direct_io_block_size,
+                            "use_direct_io_for_writes": "on_demand",
+                        },
+                    },
+                },
+            },
+        })
+
+        def write_and_get_written_bytes(path, use_direct_io):
+            create("table", path, attributes={"replication_factor": 1})
+            counters = [
+                profiler_factory().at_node(node).counter(
+                    name="location/written_bytes",
+                    tags={
+                        "category": "user_batch",
+                        "location_type": "store",
+                    },
+                )
+                for node in ls("//sys/cluster_nodes")
+            ]
+
+            write_table(
+                path,
+                [{"value": "test"}],
+                table_writer={"use_direct_io": use_direct_io},
+            )
+
+            wait(lambda: sum(counter.get_delta() for counter in counters) > 0)
+            return sum(counter.get_delta() for counter in counters)
+
+        buffered_written_bytes = write_and_get_written_bytes("//tmp/buffered", False)
+        direct_written_bytes = write_and_get_written_bytes("//tmp/direct", True)
+
+        assert buffered_written_bytes < direct_io_block_size
+        assert buffered_written_bytes < direct_written_bytes
+        assert direct_written_bytes >= 2 * direct_io_block_size
+        assert direct_written_bytes % direct_io_block_size == 0
+
     @authors("don-dron")
     def test_pending_read_write_memory_tracking(self):
         REPLICATION_FACTOR = 2
@@ -214,14 +278,14 @@ class TestIoEngine(YTEnvSetup):
 
         nodes = ls("//sys/cluster_nodes")
 
-        def seed_counter(node, path):
-            return profiler_factory().at_node(node).counter(path)
+        def seed_counter(node, path, reason):
+            return profiler_factory().at_node(node).counter(path, tags={"reason": reason})
 
-        counters = [seed_counter(node, "location/throttled_reads") for node in nodes]
+        counters = [seed_counter(node, "location/throttled_reads", "total_in_flight_request_limit_exceeded") for node in nodes]
         read_res = read_table(path, return_response=True, table_reader={"probe_peer_count": 1})
         wait(lambda: any(counter.get_delta() > 0 for counter in counters))
 
-        counters = [seed_counter(node, "location/throttled_writes") for node in nodes]
+        counters = [seed_counter(node, "location/throttled_writes", "total_in_flight_request_limit_exceeded") for node in nodes]
         write_res = write_table(path, [{"a": 1}], return_response=True)
         wait(lambda: any(counter.get_delta() > 0 for counter in counters))
 
@@ -260,10 +324,10 @@ class TestIoEngine(YTEnvSetup):
 
         nodes = ls("//sys/cluster_nodes")
 
-        def seed_counter(node, path):
-            return profiler_factory().at_node(node).counter(path)
+        def seed_counter(node, path, reason):
+            return profiler_factory().at_node(node).counter(path, tags={"reason": reason})
 
-        counters = [seed_counter(node, "location/throttled_reads") for node in nodes]
+        counters = [seed_counter(node, "location/throttled_reads", "read_in_flight_request_limit_exceeded") for node in nodes]
         read_res = read_table(path, return_response=True, table_reader={"probe_peer_count": 1})
         wait(lambda: any(counter.get_delta() > 0 for counter in counters))
 
@@ -280,7 +344,7 @@ class TestIoEngine(YTEnvSetup):
             }
         })
 
-        counters = [seed_counter(node, "location/throttled_writes") for node in nodes]
+        counters = [seed_counter(node, "location/throttled_writes", "write_in_flight_request_limit_exceeded") for node in nodes]
         write_res = write_table(path, [{"a": 1}], return_response=True)
         wait(lambda: any(counter.get_delta() > 0 for counter in counters))
 
@@ -375,14 +439,21 @@ class TestIoEngine(YTEnvSetup):
         for response in responses:
             response.wait()
 
-    def _run_throttled(self, delta, is_read, need_throttle):
+    def _run_throttled(self, delta, is_read, need_throttle, reason=None):
         nodes = ls("//sys/cluster_nodes")
 
-        def seed_counter(node, path):
-            return profiler_factory().at_node(node).counter(path)
+        def seed_counter(node, path, counter_reason):
+            tags = {"reason": counter_reason} if counter_reason else {}
+            return profiler_factory().at_node(node).counter(path, tags=tags)
 
         update_nodes_dynamic_config(delta)
-        counters = [seed_counter(node, "location/throttled_reads" if is_read else "location/throttled_writes") for node in nodes]
+        counters = [
+            seed_counter(
+                node,
+                "location/throttled_reads" if is_read else "location/throttled_writes",
+                reason)
+            for node in nodes
+        ]
 
         responses = []
         for i in range(10):
@@ -472,6 +543,72 @@ class TestIoEngine(YTEnvSetup):
                 }
             }
         }, False)
+
+    @authors("depression")
+    def test_probe_put_blocks_stress_low_memory(self):
+        REPLICATION_FACTOR = self.NUM_NODES
+        BLOCK_SIZE = 64 * 1024
+
+        GROUP_SIZE = 2 * BLOCK_SIZE
+        WRITE_MEMORY_LIMIT = int(6.25 * GROUP_SIZE)
+        GROUP_COUNT = 2
+        WRITER_COUNT = 20
+
+        group_string = os.urandom(GROUP_SIZE // 2).hex()
+        update_nodes_dynamic_config({
+            "data_node": {
+                "use_probe_put_blocks": True,
+                "enable_probe_put_blocks_fair_share": False,
+                "store_location_config_per_medium": {
+                    "default": {
+                        "memory_limit_fraction_for_starting_new_sessions": 0.8,
+                        "write_memory_limit": WRITE_MEMORY_LIMIT,  # about six groups
+                    }
+                },
+            }
+        })
+
+        chunk_writer = {
+            "block_size": BLOCK_SIZE,
+            "group_size": GROUP_SIZE,
+            "node_ping_period": 500,
+            "min_upload_replication_factor": REPLICATION_FACTOR,
+            "upload_replication_factor": REPLICATION_FACTOR,
+            "use_probe_put_blocks": True,
+        }
+
+        paths = ["//tmp/deadlock_writer_{}".format(index) for index in range(WRITER_COUNT)]
+        for path in paths:
+            create(
+                "table",
+                path,
+                attributes={
+                    "compression_codec": "none",
+                    "replication_factor": REPLICATION_FACTOR,
+                    "chunk_writer": chunk_writer,
+                })
+
+        rows = [{"key": group_string} for _ in range(GROUP_COUNT)]
+        start_barrier = threading.Barrier(len(paths))
+        errors = []
+
+        def write(path):
+            start_barrier.wait()
+            try:
+                write_table(path, rows)
+            except Exception as error:
+                print_debug("error in writer: ", error)
+                errors.append(error)
+
+        writers = [threading.Thread(target=write, args=(path,), daemon=True) for path in paths]
+        for writer in writers:
+            writer.start()
+        join_deadline = time.monotonic() + 25
+        for writer in writers:
+            writer.join(timeout=max(0, join_deadline - time.monotonic()))
+
+        assert all(not writer.is_alive() for writer in writers)
+        assert not errors
 
     def _run_send_blocks_writes(self, need_send_blocks):
         nodes = ls("//sys/cluster_nodes")
@@ -607,7 +744,7 @@ class TestIoEngine(YTEnvSetup):
                     }
                 }
             }
-        }, False, True)
+        }, False, True, "workload_category_write_memory_limit_exceeded")
 
         self._run_throttled({
             "data_node": {
@@ -617,7 +754,7 @@ class TestIoEngine(YTEnvSetup):
                     }
                 }
             }
-        }, False, True)
+        }, False, True, "new_session_write_memory_limit_exceeded")
 
         self._run_throttled({
             "data_node": {
@@ -635,7 +772,7 @@ class TestIoEngine(YTEnvSetup):
                     }
                 }
             }
-        }, True, True)
+        }, True, True, "read_memory_limit_exceeded")
 
         self._run_throttled({
             "data_node": {
@@ -645,7 +782,7 @@ class TestIoEngine(YTEnvSetup):
                     }
                 }
             }
-        }, True, True)
+        }, True, True, "read_memory_limit_exceeded")
 
         self._run_throttled({
             "data_node": {
@@ -663,7 +800,7 @@ class TestIoEngine(YTEnvSetup):
                     }
                 }
             }
-        }, True, True)
+        }, True, True, "total_memory_limit_exceeded")
 
         self._run_throttled({
             "data_node": {
@@ -673,7 +810,7 @@ class TestIoEngine(YTEnvSetup):
                     }
                 }
             }
-        }, False, True)
+        }, False, True, "total_memory_limit_exceeded")
 
     @authors("yuryalekseev")
     def test_rpc_server_queue_bytes_size_limit(self):
@@ -941,12 +1078,27 @@ class TestFairShareHierarchicalIoEngine(TestIoEngine):
     def _category_orchid_key(category):
         return "".join(w.capitalize() for w in category.split("_"))
 
-    def _verify_bucket_tree_on_node(self, node, category_weights):
+    @staticmethod
+    def _workload_group(category):
+        if category == "idle":
+            return None
+        return "system" if category.startswith("system_") else "user"
+
+    def _category_bucket(self, root, category, group_weights):
+        group = self._workload_group(category)
+        parent = root if group_weights.get(group) is None else root["buckets"].get(group, {})
+        return parent.get("buckets", {}).get(self._category_orchid_key(category), {})
+
+    def _verify_bucket_tree_on_node(self, node, category_weights, group_weights):
         orchid = get("//sys/cluster_nodes/{}/orchid/fair_share_hierarchical_scheduler".format(node))
         root = orchid["root"]
 
         for category, weight in category_weights.items():
-            bucket = root["buckets"][self._category_orchid_key(category)]
+            group_weight = group_weights.get(self._workload_group(category))
+            if group_weight is not None:
+                group = root["buckets"][self._workload_group(category)]
+                assert abs(group["request_weight"] - group_weight) <= 0.05
+            bucket = self._category_bucket(root, category, group_weights)
 
             actual_request_weight = bucket["request_weight"]
             assert abs(actual_request_weight - weight) <= 0.05, (
@@ -954,14 +1106,21 @@ class TestFairShareHierarchicalIoEngine(TestIoEngine):
                     node, category, weight, actual_request_weight))
 
     @authors("vvshlyaga")
-    @pytest.mark.parametrize("category_weights", [
-        {"user_batch": 1.0, "user_interactive": 1.0},
-        {"user_batch": 1.0, "user_interactive": 2.0},
-        {"user_batch": 1.0, "user_interactive": 2.0, "user_realtime": 4.0},
-        {"idle": 0.0, "user_batch": 1.0, "user_interactive": 2.0, "user_realtime": 4.0},
+    @pytest.mark.parametrize("category_weights, system_weight, user_weight", [
+        ({"system_replication": 1.0, "system_repair": 2.0, "user_realtime": 4.0}, None, None),
+        ({"system_replication": 1.0, "system_repair": 2.0, "user_realtime": 4.0}, 2.0, None),
+        ({"system_replication": 1.0, "system_repair": 2.0, "user_realtime": 4.0}, None, 3.0),
+        ({"system_replication": 1.0, "system_repair": 2.0, "user_realtime": 4.0}, 1.0, 1.0),
+        ({"system_replication": 1.0, "system_repair": 2.0, "user_realtime": 4.0}, 2.0, 3.0),
+        ({"idle": 0.0, "system_replication": 1.0, "user_realtime": 4.0}, 1.0, 3.0),
+        ({"user_batch": 1.0, "user_interactive": 1.0}, None, None),
+        ({"user_batch": 1.0, "user_interactive": 2.0}, None, None),
+        ({"user_batch": 1.0, "user_interactive": 2.0, "user_realtime": 4.0}, None, None),
+        ({"idle": 0.0, "user_batch": 1.0, "user_interactive": 2.0, "user_realtime": 4.0}, None, None),
     ])
-    def test_category_weights(self, category_weights):
+    def test_category_weights(self, category_weights, system_weight, user_weight):
         nodes = ls("//sys/cluster_nodes")
+        group_weights = {"system": system_weight, "user": user_weight}
 
         dynamic_config = {
             "fair_share_hierarchical_scheduler": {
@@ -983,6 +1142,11 @@ class TestFairShareHierarchicalIoEngine(TestIoEngine):
         }
         if category_weights:
             dynamic_config["data_node"]["store_location_config_per_medium"]["default"]["fair_share_workload_category_weights"] = category_weights
+
+        location_config = dynamic_config["data_node"]["store_location_config_per_medium"]["default"]
+        for group, weight in group_weights.items():
+            if weight is not None:
+                location_config["fair_share_{}_weight".format(group)] = weight
 
         update_nodes_dynamic_config(dynamic_config)
 
@@ -1025,11 +1189,11 @@ class TestFairShareHierarchicalIoEngine(TestIoEngine):
                     orchid = get("//sys/cluster_nodes/{}/orchid/fair_share_hierarchical_scheduler".format(node))
                     root = orchid["root"]
                     if all(
-                        root["buckets"].get(self._category_orchid_key(cat), {}).get("slot_window_size", 0) > 0
-                        and root["buckets"].get(self._category_orchid_key(cat), {}).get("request_window_size", 0) > 0
+                        self._category_bucket(root, cat, group_weights).get("slot_window_size", 0) > 0
+                        and self._category_bucket(root, cat, group_weights).get("request_window_size", 0) > 0
                         for cat in categories
                     ):
-                        self._verify_bucket_tree_on_node(node, category_weights)
+                        self._verify_bucket_tree_on_node(node, category_weights, group_weights)
                         return True
                 return False
             except Exception:

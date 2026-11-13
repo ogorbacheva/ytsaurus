@@ -90,7 +90,7 @@ public:
         TTabletStoreReaderConfigPtr readerConfig)
         : Bootstrap_(bootstrap)
         , Client_(std::move(client))
-        , LocalNodeDescriptor_(std::move(localNodeDescriptor))
+        , LocalNodeDescriptor_(InternNodeDescriptor(std::move(localNodeDescriptor)))
         , ChunkRegistry_(std::move(chunkRegistry))
     {
         SetReaderConfig(readerConfig);
@@ -352,10 +352,10 @@ public:
 private:
     IBootstrap* const Bootstrap_;
     const NApi::NNative::IClientPtr Client_;
-    const TNodeDescriptor LocalNodeDescriptor_;
+    const TInternedNodeDescriptor LocalNodeDescriptor_;
     const IChunkRegistryPtr ChunkRegistry_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ReaderLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ReaderLock_);
     NProfiling::TCpuInstant ChunkReaderEvictionDeadline_ = 0;
     IChunkReaderPtr ChunkReader_;
     IOffloadingReaderPtr OffloadingReader_;

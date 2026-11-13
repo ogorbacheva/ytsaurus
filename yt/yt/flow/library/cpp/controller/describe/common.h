@@ -198,7 +198,12 @@ NYTree::INodePtr MakePrettyForUIDynamicComputationSpec(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void ValidateSpecs(TPipelineSpecPtr pipelineSpec, TDynamicPipelineSpecPtr dynamicPipelineSpec, std::vector<TMessage>& messages);
+//! Also returns the source and sink parameters it parses, if |parsedParameters| is set.
+void ValidateSpecs(
+    TPipelineSpecPtr pipelineSpec,
+    TDynamicPipelineSpecPtr dynamicPipelineSpec,
+    std::vector<TMessage>& messages,
+    TParsedPipelineParameters* parsedParameters = nullptr);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -207,9 +212,25 @@ THashSet<TComputationId> GetTopForHighlighting(const THashMap<TComputationId, do
 void FillRetryableErrors(const THashMap<std::string, TError>& errors, std::vector<TMessage>& messages, NLogging::ELogLevel* status = nullptr);
 void FillJobFailErrors(const THashMap<EJobFinishReason, TError>& errors, std::vector<TMessage>& messages, NLogging::ELogLevel* status = nullptr);
 
+struct TCurrentResourceUsage
+    : public NYTree::TYsonStruct
+{
+    double CpuUsageCores{};
+    i64 MemoryUsage{};
+
+    REGISTER_YSON_STRUCT(TCurrentResourceUsage);
+
+    static void Register(TRegistrar registrar);
+};
+
+DECLARE_REFCOUNTED_TYPE(TCurrentResourceUsage);
+DEFINE_REFCOUNTED_TYPE(TCurrentResourceUsage);
+
 THashMap<TComputationId, TComputationDescription> MakeComputationDescriptions(
     const TFlowViewPtr& flowView,
-    const THashMap<TComputationId, std::vector<TPartitionIntermediateDescription>>& intermediateDescriptions);
+    const THashMap<TComputationId, std::vector<TPartitionIntermediateDescription>>& intermediateDescriptions,
+    const THashMap<std::string, TError>& controllerErrors,
+    TCurrentResourceUsage* currentResourceUsage = nullptr);
 
 void FillPartitionDescription(
     const TPartitionIntermediateDescription& intermediateDescription,

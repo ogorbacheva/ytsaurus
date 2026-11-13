@@ -8,12 +8,15 @@
 #include <contrib/ydb/library/actors/core/actor_bootstrapped.h>
 #include <contrib/ydb/library/actors/core/log.h>
 #include <contrib/ydb/library/actors/interconnect/poller/poller_actor.h>
-#include <library/cpp/dns/cache.h>
 #include <library/cpp/monlib/metrics/metric_registry.h>
 #include <util/generic/variant.h>
 #include "http.h"
 #include "http_proxy_sock64.h"
 #include "http_proxy_ssl.h"
+
+#include <functional>
+#include <memory>
+#include <optional>
 
 namespace NHttp {
 
@@ -84,6 +87,7 @@ struct TEvHttpProxy {
         ui32 MaxRecycledRequestsCount = DEFAULT_MAX_RECYCLED_REQUESTS_COUNT;
         TDuration InactivityTimeout = TDuration::Minutes(2);
         bool AllowHttp2 = false; // enable HTTP/2 support on this port
+        TIntrusivePtr<TSocketDescriptor> PreboundSocket;
 
         TEvAddListeningPort() = default;
 
@@ -120,6 +124,8 @@ struct TEvHttpProxy {
     struct TEvHttpIncomingRequest : NActors::TEventLocal<TEvHttpIncomingRequest, EvHttpIncomingRequest> {
         THttpIncomingRequestPtr Request;
         TString UserToken; // built and serialized
+        TString Database; // raw extracted from request; empty if not specified
+        std::optional<std::shared_ptr<const std::function<TString(TStringBuf)>>> PathNormalizer;
 
         TEvHttpIncomingRequest(THttpIncomingRequestPtr request)
             : Request(std::move(request))
@@ -376,6 +382,7 @@ struct TUrlHandler {
 
 NActors::IActor* CreateHttpProxy(std::weak_ptr<NMonitoring::IMetricFactory> registry = NMonitoring::TMetricRegistry::SharedInstance());
 NActors::IActor* CreateHttpAcceptorActor(const TActorId& owner);
+TIntrusivePtr<TSocketDescriptor> TryBindListeningSocket(const TString& address, TIpPort port);
 NActors::IActor* CreateOutgoingConnectionActor(const TActorId& owner, TEvHttpProxy::TEvHttpOutgoingRequest::TPtr& event);
 NActors::IActor* CreateIncomingConnectionActor(
         std::shared_ptr<TPrivateEndpointInfo> endpoint,

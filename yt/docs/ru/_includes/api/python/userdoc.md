@@ -120,7 +120,7 @@ client = yt.YtClient(config=my_config)
 
 Пример конфигурации с профилями в формате yson:
 
-```
+```yson
 {
     "default_profile"="dev";
     "profiles"={
@@ -176,6 +176,8 @@ client = yt.YtClient(config=my_config)
 
 1. Из опции `config["token"]`, которая попадает в глобальную конфигурацию из переменной окружения `YT_TOKEN`.
 2. Из файла, указанного в `config["token_path"]`; по умолчанию эта опция равна `~/.yt/token`, также опция может быть переопределена с помощью переменной окружения `YT_TOKEN_PATH` (переменная окружения действует только на конфигурацию глобального клиента, детальней написано в [разделе](#configuration)).
+
+Переменная `YT_USER` не входит в конфигурацию Python API и CLI. При работе через HTTP-прокси пользователя определяет токен. Для RPC- и native-драйверов явное имя задаётся опцией `config["driver_user_name"]`; при работе через RPC оно должно совпадать с пользователем токена. Подробнее см. в разделе [Выбор имени пользователя](../../../user-guide/storage/auth.md#user-selection).
 
 #### Настройка повторных запросов (retry) { #configuration_retries }
 
@@ -343,7 +345,7 @@ else:
 
 Если параметр `encoding` указан и не равен `None`, то библиотека работает с unicode строками, но предполагает указанную кодировку для всех данных вместо UTF-8, которая используется по умолчанию.
 
-Пример использования с комментариями можно найти [в отдельном разделе](../../../api/python/examples.md#yson_string_proxy)
+<!-- Пример использования с комментариями можно найти [в отдельном разделе](../../../api/python/examples.md#yson_string_proxy) -->
 
 ### Batch-запросы
 
@@ -751,7 +753,7 @@ yt.is_sorted("//home/table") # Output: False
 
     Записывает строки из `input_stream` в таблицу `table`.
     Если таблица отсутствует, предварительно производится ее создание. Повторные запросы можно настроить через опцию конфига `write_retries`.
-    См. [пример](../../../api/python/examples.md#read_write_untyped) в соответствующем разделе.
+    <!-- См. [пример](../../../api/python/examples.md#read_write_untyped) в соответствующем разделе. -->
 
     {% note warning "Внимание" %}
 
@@ -795,7 +797,7 @@ yt.is_sorted("//home/table") # Output: False
     Опция `unordered` (bool) позволяет заказать неупорядоченное чтение. В таком случае данные могут читаться быстрее, но порядок их чтения будет не гарантирован.
     Опция `response_parameters` (dict) позволяет передать в нее dict, в который будут дозаписаны специальные параметры команды read (в текущей реализации это два параметра: start_row_index и approximate_row_count).
 
-    смотрите [пример](../../../user-guide/storage/examples.md#read_write_untyped) в соответствующем разделе.
+    <!-- смотрите [пример](../../../user-guide/storage/examples.md#read_write_untyped) в соответствующем разделе. -->
 
     Подробнее про чтение с повторными запросами: если вы читаете с повторными запросами, создается транзакция в текущем контексте и на таблицу берется snapshot-лок. Этот лок держится до тех пор, пока вы не вычитаете весь поток данных, либо не вызовете `.close()` у стрима или итератора, который вам вернули. Такая схема может приводить к ошибкам, например, следующий код **не будет** работать, так как из-за вложенной транзакции чтения не получится закоммитить транзакцию, явно созданную в коде (вложенная транзакция на чтение не завершена, так как [read_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.client_impl.YtClient.read_table) создал итератор, который не был использован):
 
@@ -1222,13 +1224,13 @@ yt.get_attribute("//sys/groups/testers", "members")
 
 Список команд для работы с содержимым динамических таблиц.
 - [insert_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.insert_rows) — [вставить](../../../user-guide/dynamic-tables/sorted-dynamic-tables.md#insert_rows) строки в динамическую таблицу
-- [lookup_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.lookup_rows) — [выбрать](../../../user-guide/dynamic-tables/sorted-dynamic-tables.md#chtenie-stroki) строки с заданными ключами
-- [delete_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.delete_rows) — [удалить](../../../user-guide/dynamic-tables//sorted-dynamic-tables.md#udalenie-stroki) строки с заданными ключами
-- [select_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.select_rows) — [выбрать](../../../user-guide/dynamic-tables/sorted-dynamic-tables.md#vypolnenie-zaprosa) строки, удовлетворяющие запросу на [диалекте SQL](../../../user-guide/dynamic-tables/dyn-query-language.md)
-- [lock_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.lock_rows) — [заблокировать](../../../user-guide/dynamic-tables/sorted-dynamic-tables.md#blokirovka-stroki) строки с заданными ключами
+- [lookup_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.lookup_rows) — [выбрать](../../../user-guide/dynamic-tables/sorted-dynamic-tables.md#reading-rows) строки с заданными ключами
+- [delete_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.delete_rows) — [удалить](../../../user-guide/dynamic-tables//sorted-dynamic-tables.md#deleting-rows) строки с заданными ключами
+- [select_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.select_rows) — [выбрать](../../../user-guide/dynamic-tables/sorted-dynamic-tables.md#running-a-script) строки, удовлетворяющие запросу на [диалекте SQL](../../../user-guide/dynamic-tables/dyn-query-language.md)
+- [lock_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.lock_rows) — [заблокировать](../../../user-guide/dynamic-tables/sorted-dynamic-tables.md#locking-rows) строки с заданными ключами
 - [trim_rows](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.trim_rows) — [удалить](../../../user-guide/dynamic-tables/ordered-dynamic-tables#trim) заданное количество строк из упорядоченной таблицы
 
-Команды, связанные с [монтирование](../../../user-guide/dynamic-tables/overview.md#mount_table) таблиц.
+Команды, связанные с [монтированием](../../../user-guide/dynamic-tables/operations.md#mount_table) таблиц.
 - [mount_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.mount_table) — примонтировать динамическую таблицу
 - [unmount_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.unmount_table) — отмонтировать динамическую таблицу
 - [remount_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.remount_table) — перемонтировать динамическую таблицу
@@ -1238,12 +1240,12 @@ yt.get_attribute("//sys/groups/testers", "members")
 - [reshard_table_automatic](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.reshard_table_automatic) — пошардировать примонтированные таблеты в соответствии с конфигурацией таблет-балансера.
 
 Другие команды.
-- [freeze_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.freeze_table) — [заморозить](../../../user-guide/dynamic-tables/overview.md#zamorozka) таблицу
-- [unfreeze_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.unfreeze_table) — [разморозить](../../../user-guide/dynamic-tables/overview.md#zamorozka) таблицу
-- [balance_tablet_cells](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.balance_tablet_cells) — распределить таблеты равномерно по [таблет-селлам](../../../user-guide/dynamic-tables/overview.md#tablet_cells)
-- [get_tablet_infos](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.get_tablet_infos) — получить атрибуты [таблета](../../../user-guide/dynamic-tables/overview.md#tablets)
-- [get_tablet_errors](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.get_tablet_errors) — получить ошибки [таблета](../../../user-guide/dynamic-tables/overview.md#tablets)
-- [alter_table_replica](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.alter_table_replica) — [изменить атрибуты](../../../user-guide/dynamic-tables/replicated-dynamic-tables.md#nastrojki-replik) реплики [реплицированной таблицы](../../../user-guide/dynamic-tables/replicated-dynamic-tables.md)
+- [freeze_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.freeze_table) — [заморозить](../../../user-guide/dynamic-tables/operations.md#freeze) таблицу
+- [unfreeze_table](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.unfreeze_table) — [разморозить](../../../user-guide/dynamic-tables/operations.md#freeze) таблицу
+- [balance_tablet_cells](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.balance_tablet_cells) — распределить таблеты равномерно по [таблет-селлам](../../../user-guide/dynamic-tables/concepts.md#tablet_cells)
+- [get_tablet_infos](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.get_tablet_infos) — получить атрибуты [таблета](../../../user-guide/dynamic-tables/concepts.md#tablets)
+- [get_tablet_errors](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.get_tablet_errors) — получить ошибки [таблета](../../../user-guide/dynamic-tables/concepts.md#tablets)
+- [alter_table_replica](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.dynamic_table_commands.alter_table_replica) — [изменить атрибуты](../../../user-guide/dynamic-tables/replicated-dynamic-tables.md#replica-state) реплики [реплицированной таблицы](../../../user-guide/dynamic-tables/replicated-dynamic-tables.md)
 
 ### Другие команды { #etc_commands }
 
@@ -1261,7 +1263,7 @@ yt.get_attribute("//sys/groups/testers", "members")
 
 ### Общая информация { #python_operations_intro }
 
-Для того, чтобы запустить операцию, необходимо описать специальный класс-наследник `yt.wrapper.TypedJob` и передать объект данного класса в [функцию](#run_operation_commands) запуска операции (либо указать в соответствующем поле [SpecBuilder-а](#spec_builders)).
+Для того, чтобы запустить операцию, необходимо описать специальный класс-наследник `yt.wrapper.TypedJob` и передать объект данного класса в [функцию](#run_operation_commands) запуска операции (либо указать в соответствующем поле [SpecBuilder-а](#spec_builder)).
 
 В классе джоба обязательно должен быть определен метод `__call__(self, row)` (для mapper-а) или `__call__(self, rows)` (для reducer-а). На вход данному методу приходят строки таблицы (в случае reducer-а один вызов `__call__` соответствует набору строк с одинаковым ключом). Он обязан вернуть (**с помощью `yield`**) строки, которые нужно записать в выходную таблицу. Если выходных таблиц несколько, нужно использовать класс-обёртку `yt.wrapper.OutputRow`, конструктор которого принимает записываемую строку и `table_index` в виде именованного параметра (смотрите [пример](../../../api/python/examples.md#table_switches) в туториале).
 
@@ -1278,7 +1280,7 @@ yt.get_attribute("//sys/groups/testers", "members")
 
 ### Описание типа данных { #prepare_operation }
 
-Для указания входных и выходных типов строк в классе джоба можно использовать тайп хинты (смотрите примеры в туториале: [раз](../../../api/python/examples.md#simple_map), [два](../../../api/python/examples.md#multiple_input_reduce), [три](../../../api/python/examples.md#multiple_input_multiple_output_reduce) и [четыре](../../../api/python/examples.md#map_reduce_multiple_intermediate_streams)), либо переопределить метод [`.prepare_operation(self, context, preparer)`](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.prepare_operation.TypedJob.prepare_operation). Указание типов производится через методы объекта `preparer` типа [`OperationPreparer`](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.prepare_operation.OperationPreparer). Полезные методы:
+Для указания входных и выходных типов строк в классе джоба можно использовать тайп хинты (смотрите примеры в туториале: [раз](../../../api/python/examples.md#simple_map), [два](../../../api/python/examples.md#reduce_multiple_output), [три](../../../api/python/examples.md#reduce_multiple_input_output) и [четыре](../../../api/python/examples.md#map_reduce_multiple_intermediate_streams)), либо переопределить метод [`.prepare_operation(self, context, preparer)`](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.prepare_operation.TypedJob.prepare_operation). Указание типов производится через методы объекта `preparer` типа [`OperationPreparer`](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.prepare_operation.OperationPreparer). Полезные методы:
    1. [`inputs`](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.prepare_operation.OperationPreparer.inputs): позволяет указать для нескольких входных таблиц тип входной строки (обязан быть классом с декоратором [`@yt.wrapper.yt_dataclass`](#dataclass)), список имён колонок, которые нужны джобу, а также переименования колонок.
    2. [`outputs`](https://pydoc.ytsaurus.tech/yt.wrapper.html#yt.wrapper.prepare_operation.OperationPreparer.outputs): позволяет указать для нескольких выходных таблиц тип выходной строки (обязан быть классом с декоратором [`@yt.wrapper.yt_dataclass`](#dataclass)), а также схему, которую хочется вывести для этих таблиц (по умолчанию схема выводится из датакласса).
    3. `input` и `output` — аналоги соответствующих методов, принимающие единственный индекс.
@@ -1342,14 +1344,14 @@ print(op.get_job_statistics()["custom"])
 ### Porto-слои { #porto_layers }
 
 При запуске операции можно указать, какой [образ ФС](../../../user-guide/data-processing/layers/layer-paths.md) необходимо подготовить перед запуском джобов.
-Есть некоторый набор [готовых слоёв](../../../user-guide/data-processing/layers/layer-paths.md#gotovye-sloi-v-kiparise), которые находятся по пути `//porto_layers`.
+Можно использовать [готовый слой](../../../user-guide/data-processing/layers/layer-paths.md#porto_layers), совместимый с окружением вашего джоба.
 
 Указать путь до нужного слоя можно через параметр `layer_paths` в спеке джоба, например, так:
 ```python
 spec_builder = ReduceSpecBuilder() \
     .begin_reducer() \
         .command(reducer) \
-        .layer_paths(["//porto_layers/ubuntu-precise-base.tar.xz"]) \
+        .layer_paths(["//path/to/base_layer"]) \
     .end_reducer() \
     ...
 yt.run_operation(spec_builder)
@@ -1568,7 +1570,7 @@ def reducer(key, rows):
 
 Обратите внимание, что декораторы реализованы через простановку атрибута на функции. Поэтому, например, объявить функцию с декоратором, а потом сделать поверх неё `functools.partial` не получится. Если вы хотите прямо при вызове передать какие-то параметры в функцию – стоит завести класс с декоратором (смотрите последний пример ниже).
 
-Примеры можно найти в [туториале](../../../api/python/examples.md#job_decorators_untyped).
+<!-- Примеры можно найти в [туториале](../../../api/python/examples.md#job_decorators_untyped). -->
 
 
 ### Форматы { #python_formats }
@@ -1622,8 +1624,6 @@ def reducer(key, rows):
 - `iterator`(default) — при парсинге потока формат выдаст итератор по записям, чтобы получить в джобе контрольные атрибуты будет необходимо воспользоваться контекстом.
 - `row_fields` — заказанные контрольные атрибуты будут записаны в качестве полей у каждой записи. Например, если заказан row_index, то у каждой записи будет поле `@row_index`, в котором записан номер данной записи.
 - `none` — никакой специальной обработки контрольных атрибутов производиться не будет, то есть клиенту придет поток записей, в котором будут встречаться записи типа entity с контрольными атрибутами.
-
-Примеры переключения между выходными таблицами с `table_index` при `control_attributes_mode`, равном `iterator` и `row_fields`, а также пример получения индекса текущей строки таблицы в reducer-е с помощью `context`, можно найти [здесь](../../../api/python/examples.md#table_switches_untyped)
 
 #### Другие форматы { #other_formats }
 

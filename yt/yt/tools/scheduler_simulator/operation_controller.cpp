@@ -211,7 +211,8 @@ public:
         const std::string& /* treeId */,
         const NYPath::TYPath& /* poolPath */,
         std::optional<TDuration> /* waitingForResourcesOnNodeTimeout */,
-        std::optional<std::string> /* allocationGroupName */) override;
+        std::optional<std::string> /* allocationGroupName */,
+        TAllocationId allocationId) override;
 
     void UpdateGroupedNeededResources() override;
     TAllocationGroupResourcesMap GetGroupedNeededResources() const override;
@@ -230,7 +231,7 @@ private:
     TLockProtectedMap<TAllocationId, TJobDescription> AllocationIdToJobDescription_;
     NLogging::TLogger Logger;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     // Protected by Lock_.
     int PendingJobCount_ = 0;
     int CompletedJobCount_ = 0;
@@ -453,7 +454,8 @@ TFuture<TControllerScheduleAllocationResultPtr> TSimulatorOperationController::S
     const std::string& /* treeId */,
     const NYPath::TYPath& /* poolPath */,
     std::optional<TDuration> /* waitingForResourcesOnNodeTimeout */,
-    std::optional<std::string> /* allocationGroupName */)
+    std::optional<std::string> /* allocationGroupName */,
+    TAllocationId specifiedAllocationId)
 {
     MaybeDelay(ScheduleJobDelay_);
 
@@ -468,8 +470,9 @@ TFuture<TControllerScheduleAllocationResultPtr> TSimulatorOperationController::S
         return MakeFuture(scheduleAllocationResult);
     }
 
-    auto jobId = TJobId(TGuid::Create());
-    auto allocationId = AllocationIdFromJobId(jobId);
+    auto allocationId = specifiedAllocationId
+        ? specifiedAllocationId
+        : AllocationIdFromJobId(TJobId(TGuid::Create()));
     scheduleAllocationResult->StartDescriptor.emplace(TAllocationStartDescriptor{
         .Id = allocationId,
         .ResourceLimits = jobToSchedule.ResourceLimits,

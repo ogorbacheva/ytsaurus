@@ -7,7 +7,11 @@
 #include <yql/essentials/public/issue/yql_issue.h>
 #include <yql/essentials/public/issue/yql_issue_message.h>
 
+#include <yql/essentials/utils/log/log.h>
+
 namespace NYT::NYqlPlugin {
+
+using namespace NYqlClient;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -45,29 +49,51 @@ NYql::NProto::ETaskAction ExecuteModeToProto(int executeMode)
     }
 }
 
-void UpdateTaskResultData(NYql::NProto::TTaskResult& to, const NYql::NProto::TTaskResult& from)
+std::optional<TString> ExtractDefaultCluster(const NYql::TGatewaysConfig& config)
 {
-    if (from.HasAst()) {
-        to.SetAst(from.GetAst());
+    if (config.HasYt()) {
+        for (const auto& mapping : config.GetYt().GetClusterMapping()) {
+            if (mapping.GetDefault()) {
+                return mapping.GetName();
+            }
+        }
     }
-    if (from.HasPlan()) {
-        to.SetPlan(from.GetPlan());
-    }
-    if (from.HasStatus()) {
-        to.SetStatus(from.GetStatus());
-    }
-    if (from.HasStatistics()) {
-        to.SetStatistics(from.GetStatistics());
-    }
+    return {};
+}
+
+void UpdateTaskResultData(
+    NYql::NProto::TTaskResult& to,
+    const NYql::NProto::TTaskResult& from,
+    THashMap<EProgressPart, ui32>* latestPartRevisions)
+{
     if (from.IssuesSize() > 0) {
         *to.MutableIssues() = from.GetIssues();
     }
     if (from.ResultsSize() > 0) {
         *to.MutableResults() = from.GetResults();
     }
-    if (from.HasRevision() && from.GetRevision() != 0) {
-        to.SetRevision(from.GetRevision());
+    if (from.HasStatus()) {
+        to.SetStatus(from.GetStatus());
     }
+
+    if (from.GetRevision() == 0) {
+        YQL_LOG(ERROR) << "Skip revisioned parts of an update with zero revision: " << from.ShortDebugString();
+        return;
+    }
+
+    if (from.HasAst()) {
+        (*latestPartRevisions)[EProgressPart::YqlAst] = from.GetRevision();
+        to.SetAst(from.GetAst());
+    }
+    if (from.HasPlan()) {
+        (*latestPartRevisions)[EProgressPart::YqlPlan] = from.GetRevision();
+        to.SetPlan(from.GetPlan());
+    }
+    if (from.HasStatistics()) {
+        (*latestPartRevisions)[EProgressPart::YqlStatistics] = from.GetRevision();
+        to.SetStatistics(from.GetStatistics());
+    }
+    to.SetRevision(from.GetRevision());
 }
 
 TString BuildYsonResultList(const NYql::NProto::TTaskResult& result)
@@ -82,34 +108,63 @@ TString BuildYsonResultList(const NYql::NProto::TTaskResult& result)
         .ToString();
 }
 
-TQueryResult TaskResultToYqlResult(const NYql::NProto::TTaskResult& result, TString progress)
+TQueryResult TaskResultToYqlResult(
+    const NYql::NProto::TTaskResult& result,
+    const THashMap<EProgressPart, ui32>& latestPartRevisions,
+    const THashMap<TString, std::pair<ui32, TString>>& latestProgressPartRevisions,
+    std::optional<ui32> progressTruncatedRevision,
+    std::optional<ui32> mainRevision,
+    std::optional<ui32> progressRevision)
 {
-    if (result.GetStatus() == NYql::NProto::ETaskStatus::ERROR) {
-        if (result.IssuesSize() > 0) {
-            NYql::TIssues issues;
-            IssuesFromMessage(result.GetIssues(), issues);
-            return TQueryResult{
-                .YsonError = IssuesToYtErrorYson(issues),
-            };
+    auto checkRevision = [&] (EProgressPart part) {
+        if (!mainRevision) {
+            return true;
         }
-        return TQueryResult{
-            .YsonError = MessageToYtErrorYson("Query finished with ERROR status on worker"),
-        };
+        auto it = latestPartRevisions.find(part);
+        return it != latestPartRevisions.end() && it->second > *mainRevision;
+    };
+
+    std::optional<ui32> latestProgressRevision;
+    TString progressAfterRevision = NYTree::BuildYsonStringFluently()
+        .BeginMap()
+            .DoFor(latestProgressPartRevisions, [&] (NYTree::TFluentMap fluent, const auto& part) {
+                const auto& [name, revisionWithValue] = part;
+                const auto& [revision, value] = revisionWithValue;
+                if (!progressRevision || revision > *progressRevision) {
+                    fluent.Item(name).Value(NYson::TYsonStringBuf(value));
+                    latestProgressRevision = std::max(latestProgressRevision.value_or(0), revision);
+                }
+            })
+        .EndMap()
+        .ToString();
+
+    bool hasProgress = latestProgressRevision.has_value();
+    std::optional<bool> progressTruncated;
+    if (progressTruncatedRevision && (!progressRevision || *progressTruncatedRevision > *progressRevision)) {
+        progressTruncated = true;
+        latestProgressRevision = std::max(latestProgressRevision.value_or(0), *progressTruncatedRevision);
     }
 
     TString ysonResult = BuildYsonResultList(result);
     auto queryResult = TQueryResult{
         .YsonResult = ysonResult ? std::make_optional(ysonResult) : std::nullopt,
-        .Plan = result.HasPlan() ? std::make_optional(result.GetPlan()) : std::nullopt,
-        .Statistics = result.HasStatistics() ? std::make_optional(result.GetStatistics()) : std::nullopt,
-        .Progress = std::move(progress),
-        .Ast = result.HasAst() ? std::make_optional(result.GetAst()) : std::nullopt,
+        .Plan = result.HasPlan() && checkRevision(EProgressPart::YqlPlan) ? std::make_optional(result.GetPlan()) : std::nullopt,
+        .Statistics = result.HasStatistics() && checkRevision(EProgressPart::YqlStatistics) ? std::make_optional(result.GetStatistics()) : std::nullopt,
+        .Progress = hasProgress ? std::make_optional(std::move(progressAfterRevision)) : std::nullopt,
+        .ProgressTruncated = progressTruncated,
+        .Ast = result.HasAst() && checkRevision(EProgressPart::YqlAst) ? std::make_optional(result.GetAst()) : std::nullopt,
+        .MainRevision = result.HasRevision() ? std::make_optional(result.GetRevision()) : std::nullopt,
+        .ProgressRevision = latestProgressRevision,
     };
 
-    if (result.IssuesSize() > 0) {
-        NYql::TIssues issues;
-        IssuesFromMessage(result.GetIssues(), issues);
-        queryResult.YsonError = IssuesToYtErrorYson(issues);
+    if (result.GetStatus() == NYql::NProto::ETaskStatus::ERROR) {
+        if (result.IssuesSize() > 0) {
+            NYql::TIssues issues;
+            IssuesFromMessage(result.GetIssues(), issues);
+            queryResult.YsonError = IssuesToYtErrorYson(issues);
+        } else {
+            queryResult.YsonError = MessageToYtErrorYson("Query finished with ERROR status on worker");
+        }
     }
 
     return queryResult;

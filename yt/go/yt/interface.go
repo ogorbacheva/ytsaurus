@@ -376,6 +376,7 @@ type StartTxOptions struct {
 	Attributes                 map[string]any `http:"attributes,omitnil"`
 
 	*TransactionOptions
+	*MutatingOptions
 	*ReadRetryOptions
 }
 
@@ -581,6 +582,10 @@ type MultiTablePartitions struct {
 type ReadTablePartitionOptions struct {
 	// Format is YSON-serializable output format. If not specified "yson" will be used.
 	Format any `http:"output_format,omitnil"`
+
+	// TableSchema is used by the client-side Skiff decoder for strongly typed
+	// complex values. It is not sent to the server.
+	TableSchema *schema.Schema
 
 	*TransactionOptions
 	*AccessTrackingOptions
@@ -1314,6 +1319,9 @@ type ReshardTableOptions struct {
 
 	PivotKeys   any  `http:"pivot_keys,omitnil"`
 	TabletCount *int `http:"tablet_count,omitnil"`
+
+	// Initial cumulative data weights for newly created tablets of an ordered table.
+	CumulativeDataWeights []int64 `http:"cumulative_data_weights,omitnil"`
 }
 
 type AlterTableOptions struct {
@@ -1327,6 +1335,8 @@ type AlterTableOptions struct {
 type AlterTableReplicaOptions struct {
 	Enabled *bool             `http:"enabled,omitnil"`
 	Mode    *TableReplicaMode `http:"mode,omitnil"`
+
+	*MutatingOptions
 }
 
 // Tx is high level API for master transactions.
@@ -1379,6 +1389,10 @@ type LookupRowsOptions struct {
 
 	// Columns filters columns in lookup result.
 	Columns []string `http:"column_names,omitnil"`
+
+	// VersionedReadOptions adds "$timestamp:columnName" to the result
+	// if ReadMode is VersionedReadModeLatestTimestamp.
+	VersionedReadOptions *VersionedReadOptions `http:"versioned_read_options,omitnil"`
 
 	*TransactionOptions
 }
@@ -1451,6 +1465,10 @@ type SelectRowsOptions struct {
 	UseCanonicalNullRelations *bool `http:"use_canonical_null_relations,omitnil"`
 
 	Timestamp *Timestamp `http:"timestamp,omitnil"`
+
+	// VersionedReadOptions adds "$timestamp:columnName" to the result
+	// if ReadMode is VersionedReadModeLatestTimestamp.
+	VersionedReadOptions *VersionedReadOptions `http:"versioned_read_options,omitnil"`
 
 	PlaceholderValues any `http:"placeholder_values,omitnil"`
 
@@ -1835,6 +1853,7 @@ type StartQueryOptions struct {
 	Secrets []Secret `http:"secrets,omitnil"`
 
 	*QueryTrackerOptions
+	*MutatingOptions
 }
 
 type AbortQueryOptions struct {
@@ -2018,6 +2037,7 @@ type Client interface {
 	FileClient
 	TableClient
 	DistributedWriteClient
+	DistributedWriteFileClient
 
 	// BeginTx creates new tx.
 	//
@@ -2145,6 +2165,12 @@ type FinishDistributedWriteSessionOptions struct{}
 type TableFragmentWriterOptions struct {
 	TableWriter any `http:"table_writer"`
 
+	// Format is YSON-serializable input format. If not specified "yson" will be used.
+	//
+	// Possible values:
+	//   - skiff.Format with a single *skiff.Schema (see skiff.FromTableSchema).
+	Format any `http:"input_format,omitnil"`
+
 	MaxRowBufferSize *int64 `http:"max_row_buffer_size,omitnil"`
 }
 
@@ -2194,4 +2220,100 @@ type DistributedWriteClient interface {
 		cookie WriteFragmentCookie,
 		options *TableFragmentWriterOptions,
 	) (w TableFragmentWriter, err error)
+}
+
+// Distributed file write session API.
+//
+// Works like the distributed table write API; FinishDistributedWriteFileSession concatenates
+// the fragments in the order of the passed results. See
+// https://ytsaurus.tech/docs/en/api/commands#start_distributed_write_file_session
+
+// DistributedWriteFileSession is an opaque signed descriptor of a distributed file write session.
+type DistributedWriteFileSession struct {
+	Header    string `yson:"header"`
+	Signature []byte `yson:"signature"`
+	Payload   []byte `yson:"payload"`
+}
+
+// WriteFileFragmentCookie is an opaque signed token that authorizes a participant to
+// write file fragments within a session. One cookie may be used for several fragments.
+type WriteFileFragmentCookie struct {
+	Header    string `yson:"header"`
+	Signature []byte `yson:"signature"`
+	Payload   []byte `yson:"payload"`
+}
+
+// WriteFileFragmentResult is an opaque signed result of a single WriteFileFragment call.
+type WriteFileFragmentResult struct {
+	Header    string `yson:"header"`
+	Signature []byte `yson:"signature"`
+	Payload   []byte `yson:"payload"`
+}
+
+// DistributedWriteFileSessionWithCookies is the result of StartDistributedWriteFileSession.
+type DistributedWriteFileSessionWithCookies struct {
+	Session DistributedWriteFileSession `yson:"session"`
+	Cookies []WriteFileFragmentCookie   `yson:"cookies"`
+}
+
+type StartDistributedWriteFileSessionOptions struct {
+	// CookieCount is the number of participant cookies to generate.
+	CookieCount *int `http:"cookie_count,omitnil"`
+	// SessionTimeout is how long the session lives without a ping (akin to a transaction timeout).
+	SessionTimeout *yson.Duration `http:"session_timeout,omitnil"`
+
+	*TransactionOptions
+}
+
+type PingDistributedWriteFileSessionOptions struct{}
+
+type FinishDistributedWriteFileSessionOptions struct{}
+
+type FileFragmentWriterOptions struct{}
+
+// FileFragmentWriter writes a single file fragment within a distributed write session.
+//
+// After a successful Close, Result returns the signed fragment result that must be
+// handed back to the coordinator for FinishDistributedWriteFileSession.
+type FileFragmentWriter interface {
+	io.WriteCloser
+
+	// Result returns the signed write fragment result. It is valid only after Close returns successfully.
+	Result() WriteFileFragmentResult
+}
+
+// DistributedWriteFileClient provides the distributed file write API.
+type DistributedWriteFileClient interface {
+	// http:verb:"start_distributed_write_file_session"
+	// http:params:"path"
+	StartDistributedWriteFileSession(
+		ctx context.Context,
+		path ypath.YPath,
+		options *StartDistributedWriteFileSessionOptions,
+	) (result DistributedWriteFileSessionWithCookies, err error)
+
+	// http:verb:"ping_distributed_write_file_session"
+	// http:params:"session"
+	PingDistributedWriteFileSession(
+		ctx context.Context,
+		session DistributedWriteFileSession,
+		options *PingDistributedWriteFileSessionOptions,
+	) (err error)
+
+	// http:verb:"finish_distributed_write_file_session"
+	// http:params:"session","results"
+	FinishDistributedWriteFileSession(
+		ctx context.Context,
+		session DistributedWriteFileSession,
+		results []WriteFileFragmentResult,
+		options *FinishDistributedWriteFileSessionOptions,
+	) (err error)
+
+	// http:verb:"write_file_fragment"
+	// http:params:"cookie"
+	WriteFileFragment(
+		ctx context.Context,
+		cookie WriteFileFragmentCookie,
+		options *FileFragmentWriterOptions,
+	) (w FileFragmentWriter, err error)
 }

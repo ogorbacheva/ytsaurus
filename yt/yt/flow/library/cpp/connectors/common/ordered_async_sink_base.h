@@ -45,6 +45,12 @@ public:
 protected:
     const NLogging::TLogger Logger;
 
+    //! The seqNo of the last message the persisted state marks as distributed; such messages are never
+    //! distributed again.
+    i64 GetMaxPersistedSeqNo() const;
+    //! The seqNo of the last message registered by #Distribute().
+    i64 GetLastDistributedSeqNo() const;
+
 private:
     struct TRequest
     {
@@ -57,7 +63,7 @@ private:
     TMessageId LastDistributedMessageId_ = {};
     i64 LastDistributedSeqNo_ = 0;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     std::deque<TRequest> RegisteredRequests_;
     std::deque<TRequest> DistributedRequests_;
     std::deque<TRequest> PersistedRequests_;

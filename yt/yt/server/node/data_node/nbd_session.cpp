@@ -8,6 +8,8 @@
 #include <yt/yt/server/tools/proc.h>
 #include <yt/yt/server/tools/tools.h>
 
+#include <yt/yt/core/concurrency/prioritized_invoker.h>
+
 #include <yt/yt/core/profiling/timing.h>
 
 #include <util/system/types.h>
@@ -33,15 +35,20 @@ TNbdSession::TNbdSession(
     TSessionOptions options,
     TStoreLocationPtr storeLocation,
     NConcurrency::TLease lease,
-    TLockedChunkGuard lockedChunkGuard)
+    TLockedChunkGuard lockedChunkGuard,
+    TWriteSessionStartCountersPtr startCounters)
     : Config_(std::move(config))
     , Bootstrap_(std::move(bootstrap))
     , Id_(sessionId)
     , Options_(std::move(options))
+    , StorageHeavyInvoker_(CreateFixedPriorityInvoker(
+        Bootstrap_->GetStorageHeavyInvoker(),
+        Options_.WorkloadDescriptor.GetPriority()))
     , StoreLocation_(std::move(storeLocation))
     , Lease_(std::move(lease))
     , LockedChunkGuard_(std::move(lockedChunkGuard))
     , StartTime_(TInstant::Now())
+    , StartCounters_(std::move(startCounters))
 {
     YT_VERIFY(Options_.NbdChunkFsType);
     YT_VERIFY(Options_.NbdChunkSize);
@@ -51,7 +58,7 @@ TNbdSession::TNbdSession(
         Id_.ChunkId,
         Options_.WorkloadDescriptor,
         StoreLocation_,
-        Bootstrap_->GetStorageHeavyInvoker(),
+        StorageHeavyInvoker_,
         Bootstrap_->GetOutThrottler(Options_.WorkloadDescriptor),
         Bootstrap_->GetInThrottler(Options_.WorkloadDescriptor));
 }
@@ -123,7 +130,7 @@ TFuture<void> TNbdSession::Create()
             throw;
         }
     })
-    .AsyncVia(Bootstrap_->GetStorageHeavyInvoker()));
+    .AsyncVia(StorageHeavyInvoker_));
 }
 
 //! Remove NBD chunk.
@@ -136,7 +143,7 @@ TFuture<void> TNbdSession::Destroy()
         // Unlock NBD chunk and unregister session.
         Finished_.Fire(Error_);
     })
-    .AsyncVia(Bootstrap_->GetStorageHeavyInvoker()));
+    .AsyncVia(StorageHeavyInvoker_));
 }
 
 /*
@@ -184,7 +191,10 @@ TFuture<void> TNbdSession::Start()
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
-    return Create();
+    return Create().Apply(BIND([this, this_ = MakeStrong(this)] (const TError& error) {
+        StartCounters_->Update(error);
+        return error;
+    }));
 }
 
 void TNbdSession::Cancel(const TError& error)

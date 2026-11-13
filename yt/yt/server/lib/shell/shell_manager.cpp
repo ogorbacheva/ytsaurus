@@ -4,6 +4,7 @@
 #include "config.h"
 
 #include <yt/yt/library/containers/instance.h>
+#include <yt/yt/library/containers/porto_helpers.h>
 
 #include <yt/yt/server/lib/exec_node/public.h>
 #include <yt/yt/server/lib/exec_node/helpers.h>
@@ -332,6 +333,8 @@ public:
     {
         options->EnableJobShellSeccopm = EnableJobShellSeccopm;
 
+        ValidatePortoContainerSubpath(jobShellDescriptor.Subcontainer);
+
         auto subcontainerName = (RootInstance_ ? RootInstance_->GetName() : "") + jobShellDescriptor.Subcontainer;
         options->ContainerName = Format("%v/js-%v", subcontainerName, options->Index);
 #ifdef _linux_
@@ -375,7 +378,6 @@ private:
         auto toolDirectory = JoinPaths(containerRoot, ShellToolDirectory);
         if (!Exists(toolDirectory)) {
             RunTool<TCreateDirectoryAsRootTool>(toolDirectory);
-            auto toolPathOrError = ResolveBinaryPath(std::string(NTools::ToolsProgramName));
         }
 
         if (IsDirEmpty(toolDirectory)) {

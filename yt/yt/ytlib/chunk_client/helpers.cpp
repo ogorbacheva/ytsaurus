@@ -655,10 +655,10 @@ TChunkReplicaWithMediumList AllocateWriteTargets(
 
     auto replicas = FromProto<TChunkReplicaWithMediumList>(rsp.replicas());
     if (replicas.empty()) {
-        THROW_ERROR_EXCEPTION(
-            NChunkClient::EErrorCode::MasterCommunicationFailed,
+        throwOnError(TError(
+            NChunkClient::EErrorCode::NotEnoughAvailableNodes,
             "Not enough data nodes available to write chunk %v",
-            sessionId);
+            sessionId));
     }
 
     YT_TLOG_DEBUG("Write targets allocated")
@@ -765,6 +765,13 @@ IChunkReaderPtr CreateRemoteReader(
     optionsPerChunk->UseProxyingDataNodeService = chunkSpec.use_proxying_data_node_service();
 
     if (IsErasureChunkId(chunkId)) {
+        if (chunkSpec.striped_erasure()) {
+            THROW_ERROR_EXCEPTION(
+                NChunkClient::EErrorCode::UnsupportedChunkFeature,
+                "Reading striped erasure chunk %v is not supported",
+                chunkId);
+        }
+
         auto erasureCodecId = FromProto<ECodec>(chunkSpec.erasure_codec());
         YT_TLOG_DEBUG("Creating erasure remote reader")
             .With("Codec", erasureCodecId);
@@ -775,10 +782,11 @@ IChunkReaderPtr CreateRemoteReader(
             partIndexToReplica[replica.GetReplicaIndex()] = replica;
         }
 
-        auto* erasureCodec = GetCodec(erasureCodecId);
+        auto* erasureCodec = GetCodecOrThrow(erasureCodecId);
+        const auto& codecParams = erasureCodec->GetParams();
         auto partCount = config->EnableAutoRepair ?
-            erasureCodec->GetTotalPartCount() :
-            erasureCodec->GetDataPartCount();
+            codecParams.TotalPartCount :
+            codecParams.DataPartCount;
 
         auto partConfig = CloneYsonStruct(config);
         partConfig->FailOnNoSeeds = true;
@@ -1189,7 +1197,7 @@ bool IsLargeEnoughChunkWeight(i64 chunkWeight, i64 chunkWeightThreshold)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-std::string FormatBlocks(int startBlockIndex, int endBlockIndex)
+std::string FormatBlockIndexRange(int startBlockIndex, int endBlockIndex)
 {
     TStringBuilder builder;
 

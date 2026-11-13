@@ -11,6 +11,8 @@
 #include "nbd_session.h"
 
 #include <yt/yt/server/node/cluster_node/master_connector.h>
+#include <yt/yt/server/node/cluster_node/config.h>
+#include <yt/yt/server/node/cluster_node/dynamic_config_manager.h>
 
 #include <yt/yt/client/chunk_client/chunk_replica.h>
 
@@ -223,6 +225,15 @@ ISessionPtr TSessionManager::StartSession(
     return session;
 }
 
+TWriteSessionStartCountersPtr TSessionManager::GetOrCreateWriteSessionStartCounters(
+    const std::string& mediumName)
+{
+    return *WriteSessionStartCounters_.FindOrInsert(mediumName, [&] {
+        return New<TWriteSessionStartCounters>(
+            DataNodeProfiler().WithTag("medium", mediumName));
+    }).first;
+}
+
 ISessionPtr TSessionManager::CreateSession(
     TSessionId sessionId,
     const TSessionOptions& options)
@@ -231,6 +242,8 @@ ISessionPtr TSessionManager::CreateSession(
 
     const auto& chunkStore = Bootstrap_->GetChunkStore();
     auto [location, lockedChunkGuard] = chunkStore->AcquireNewChunkLocation(sessionId, options);
+
+    auto counters = GetOrCreateWriteSessionStartCounters(location->GetMediumName());
 
     auto lease = TLeaseManager::CreateLease(
         Config_->SessionTimeout,
@@ -249,8 +262,8 @@ ISessionPtr TSessionManager::CreateSession(
                 location,
                 lease,
                 std::move(lockedChunkGuard),
-                /*writeBlocksOptions*/ IChunkWriter::TWriteBlocksOptions{});
-            break;
+                /*writeBlocksOptions*/ IChunkWriter::TWriteBlocksOptions{},
+                std::move(counters));
 
         case EObjectType::JournalChunk:
         case EObjectType::ErasureJournalChunk:
@@ -262,8 +275,8 @@ ISessionPtr TSessionManager::CreateSession(
                 location,
                 lease,
                 std::move(lockedChunkGuard),
-                /*writeBlocksOptions*/ IChunkWriter::TWriteBlocksOptions{});
-            break;
+                /*writeBlocksOptions*/ IChunkWriter::TWriteBlocksOptions{},
+                std::move(counters));
 
         case EObjectType::NbdChunk:
             return New<TNbdSession>(
@@ -273,8 +286,8 @@ ISessionPtr TSessionManager::CreateSession(
                 options,
                 location,
                 lease,
-                std::move(lockedChunkGuard));
-            break;
+                std::move(lockedChunkGuard),
+                std::move(counters));
 
         default:
             THROW_ERROR_EXCEPTION("Invalid session chunk type %Qlv",
@@ -420,7 +433,10 @@ bool TSessionManager::CanPassSessionOutOfTurn(TChunkId chunkId)
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
-    auto count = Config_->MaxOutOfTurnSessions;
+    auto count = Bootstrap_->GetDynamicConfigManager()
+        ->GetConfig()
+        ->DataNode
+        ->MaxOutOfTurnSessions.value_or(Config_->MaxOutOfTurnSessions);
     if (count == 0) {
         return false;
     }

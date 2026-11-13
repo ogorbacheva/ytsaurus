@@ -54,6 +54,7 @@ The default values, if set, are provided in parentheses:
 - `job_node_account` (tmp_jobs) — account under which chunks of files with the error log (stderr) and input context are stored.
 - `suspend_operation_if_account_limit_exceeded` (false) — suspends (pauses) the operation in case of the "Account limit exceeded" error in a job.
 - `enable_job_splitting` (true) — determines if the scheduler is allowed to adaptively split user jobs that take a long time.
+- `enable_job_interrupts` (true) — determines whether operation jobs may be gracefully interrupted. Disabling this option also disables adaptive job splitting.
 - `fail_on_job_restart` (false) — force-interrupts the operation if a started job terminates in any state other than success (such as abort or fail). Useful for operations that do not tolerate job restarts.
 - `suspend_on_job_failure` (false) — suspends (pauses) the operation if any job fails. When enabled, instead of failing the operation after reaching `max_failed_job_count`, the operation is suspended for investigation. The operation can be resumed after addressing the issue.
 - `title` — operation title. The passed-in text is shown in the web interface.
@@ -110,7 +111,7 @@ The following parameters are supported for each user script (default values, if 
   - `account` — account for which the requested disk space is provided.
   - `medium_name` (default) — name of the [medium](../../../../user-guide/storage/media.md) that a disk is being requested from.
 - `interruption_signal` — number of the signal sent to the user process if the job is preempted. There is a timeout period between sending the signal and the job interruption. The duration of this timeout is determined by the cluster settings. During this time, the user process may attempt to finish processing the data and successfully complete the job.
-- `restart_exit_code` — exit code signaling the need to restart the job after it was interrupted. This option is important for vanilla jobs that represent services or handle data that is external to {{product-name}}.
+- `restart_exit_code` — exit code signaling the need to restart the job after it was interrupted. This option is important for vanilla jobs that represent services or handle data that is external to {{product-name}}. It cannot be combined with `fail_on_job_restart` set for the same task or the whole operation.
 {% if audience == "internal" %}
 - `network_project` — name of the MTN project with the network where the job should be run. The project must be registered in Cypress, with the necessary access rights granted.{% endif %}
 - `job_speculation_timeout` — optional timeout in milliseconds, after which the scheduler forcibly launches a speculative copy of the currently executing job (a parallel job on the same input data). The countdown starts from the moment the job begins and includes the preparation time (`prepare_duration`) and execution time (`exec_duration`). Not set by default. This is a guaranteed speculation trigger that is independent of the Job Splitter heuristics, which may launch a speculative job earlier — based on read/write speed statistics, preparation time, and other heuristics. The value set in `user_job_spec` takes higher priority than the value set in the operation `spec`.
@@ -147,7 +148,7 @@ In addition, specifying `disk_space` means that {{product-name}} starts limiting
 
 If you want to use other disks for your operations' jobs, such as an SSD in place of the default HDD, specify the desired `medium` and your `account` for quoting the requested space.
 
-{% if audience == "internal" %}In the current implementation, {{mr-clusters}} clusters have SSDs for jobs in the `ssd_slots_physical` medium. In order to use them, you need to request the disk quota for your account in this medium. For more information about requesting a quota, see [Requesting and getting resources](../../../../user-guide/storage/quota-request.md#zapros-na-rasshirenie-kvoty-pod-sushestvuyushij-akkaunt).{% endif %}
+{% if audience == "internal" %}In the current implementation, {{mr-clusters}} clusters have SSDs for jobs in the `ssd_slots_physical` medium. In order to use them, you need to request the disk quota for your account in this medium. For more information about requesting a quota, see [Requesting and getting resources](../../../../user-guide/storage/quota-request.md#account-quota-request).{% endif %}
 
 ## Path attributes { #path_attributes }
 

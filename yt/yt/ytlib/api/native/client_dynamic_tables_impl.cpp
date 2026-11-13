@@ -1,6 +1,5 @@
 #include "backup_session.h"
 #include "chaos_helpers.h"
-#include "chaos_lease.h"
 #include "client_impl.h"
 #include "config.h"
 #include "connection.h"
@@ -10,11 +9,13 @@
 #include "sticky_mount_cache.h"
 #include "tablet_helpers.h"
 #include "transaction.h"
+#include "two_phase_table_operation.h"
 #include "type_handler.h"
 
 #include <yt/yt/ytlib/cell_master_client/cell_directory.h>
 
 #include <yt/yt/ytlib/chaos_client/banned_replica_tracker.h>
+#include <yt/yt/ytlib/chaos_client/chaos_lease_serialization.h>
 #include <yt/yt/ytlib/chaos_client/chaos_master_service_proxy.h>
 #include <yt/yt/ytlib/chaos_client/chaos_node_service_proxy.h>
 #include <yt/yt/ytlib/chaos_client/chaos_residency_cache.h>
@@ -26,9 +27,9 @@
 #include <yt/yt/ytlib/chunk_client/chunk_reader_options.h>
 #include <yt/yt/ytlib/chunk_client/chunk_reader_statistics.h>
 #include <yt/yt/ytlib/chunk_client/chunk_spec_fetcher.h>
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 #include <yt/yt/ytlib/chunk_client/helpers.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk.h>
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
 
 #include <yt/yt/ytlib/cypress_client/cypress_ypath_proxy.h>
 #include <yt/yt/ytlib/cypress_client/rpc_helpers.h>
@@ -71,6 +72,10 @@
 #include <yt/yt/ytlib/transaction_client/action.h>
 #include <yt/yt/ytlib/transaction_client/helpers.h>
 
+#include <yt/yt/client/api/chaos_lease.h>
+
+#include <yt/yt/client/chaos_client/chaos_lease.h>
+#include <yt/yt/client/chaos_client/chaos_lease_cache.h>
 #include <yt/yt/client/chaos_client/helpers.h>
 #include <yt/yt/client/chaos_client/replication_card.h>
 #include <yt/yt/client/chaos_client/replication_card_cache.h>
@@ -103,11 +108,14 @@
 
 #include <yt/yt/core/yson/protobuf_helpers.h>
 
+#include <yt/yt/core/ytree/ypath_client.h>
+
 #include <yt/yt/library/heavy_schema_validation/schema_validation.h>
 
+#include <yt/yt/library/query/base/expr_builder_base.h>
 #include <yt/yt/library/query/base/functions.h>
-#include <yt/yt/library/query/base/query_preparer.h>
 #include <yt/yt/library/query/base/query_helpers.h>
+#include <yt/yt/library/query/base/query_preparer.h>
 
 #include <yt/yt/library/query/engine_api/column_evaluator.h>
 #include <yt/yt/library/query/engine_api/new_range_inferrer.h>
@@ -167,16 +175,35 @@ constexpr TSchemaUpdateEnabledFeatures SchemaUpdateEnabledFeatures{
 
 ////////////////////////////////////////////////////////////////////////////////
 
-template <class TReq>
-void SetDynamicTableCypressRequestFullPath(TReq* /*req*/, const TYPath& /*fullPath*/)
-{ }
-
-template <>
-void SetDynamicTableCypressRequestFullPath<NTabletClient::NProto::TReqMount>(
-    NTabletClient::NProto::TReqMount* req,
-    const TYPath& fullPath)
+template <CTwoPhaseTableRequest TRequest>
+auto CreateTwoPhaseTableOperationRequest(
+    const TObjectServiceProxy& proxy,
+    const TYPath& path,
+    TRequest request)
 {
-    req->set_path(fullPath);
+    auto rpcRequest = [&] {
+        if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqMount>) {
+            return proxy.Mount();
+        } else if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqUnmount>) {
+            return proxy.Unmount();
+        } else if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqRemount>) {
+            return proxy.Remount();
+        } else if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqFreeze>) {
+            return proxy.Freeze();
+        } else if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqUnfreeze>) {
+            return proxy.Unfreeze();
+        } else if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqReshard>) {
+            return proxy.Reshard();
+        } else if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqTwoPhaseAlter>) {
+            return proxy.TwoPhaseAlter();
+        } else {
+            static_assert(false, "Unsupported two-phase table operation request");
+        }
+    }();
+
+    rpcRequest->Swap(&request);
+    SetRequestTargetYPath(&rpcRequest->Header(), path);
+    return rpcRequest;
 }
 
 TColumnFilter RemapColumnFilter(
@@ -204,6 +231,26 @@ TColumnFilter RemapColumnFilter(
         index = idMapping[index];
     }
     return TColumnFilter(std::move(remappedFilterIndexes));
+}
+
+void ValidateVersionedLookupColumnFilter(
+    const TColumnFilter& columnFilter,
+    int keyColumnCount)
+{
+    if (columnFilter.IsUniversal()) {
+        return;
+    }
+
+    bool valueColumnSeen = false;
+    for (int index : columnFilter.GetIndexes()) {
+        if (index >= keyColumnCount) {
+            valueColumnSeen = true;
+        } else if (valueColumnSeen) {
+            THROW_ERROR_EXCEPTION("Key columns must precede value columns in versioned lookup column filter")
+                .With("column_filter", columnFilter.GetIndexes())
+                .With("key_column_id", index);
+        }
+    }
 }
 
 std::vector<std::string> GetLookupColumns(const TColumnFilter& columnFilter, const TTableSchema& schema)
@@ -410,6 +457,13 @@ std::vector<TTabletInfo> GetChaosTabletInfosImpl(
             resultTabletInfo.TotalRowCount = std::min(
                 resultTabletInfo.TotalRowCount,
                 patchTabletInfo.TotalRowCount);
+            if (resultTabletInfo.FlushedRowCount && patchTabletInfo.FlushedRowCount) {
+                resultTabletInfo.FlushedRowCount = std::min(
+                    *resultTabletInfo.FlushedRowCount,
+                    *patchTabletInfo.FlushedRowCount);
+            } else {
+                resultTabletInfo.FlushedRowCount.reset();
+            }
         }
     }
 
@@ -535,6 +589,43 @@ private:
         };
     }
 };
+
+////////////////////////////////////////////////////////////////////////////////
+
+std::pair<i128, i128> GetUniformReshardColumnBounds(const TColumnSchema& column)
+{
+    auto type = column.CastToV1Type();
+    bool isSigned = IsIntegralTypeSigned(type);
+    i128 size = static_cast<i128>(1) << GetIntegralTypeBitWidth(type);
+    i128 lower = isSigned ? -size / 2 : 0;
+    i128 upper = lower + size - 1;
+
+    if (column.Expression()) {
+        auto parsed = ParseSource(*column.Expression(), EParseMode::Expression);
+        auto* binaryExpression = std::get<NAst::TExpressionPtr>(parsed->AstHead.Ast)->As<NAst::TBinaryOpExpression>();
+        if (binaryExpression && binaryExpression->Opcode == EBinaryOp::Modulo &&
+            binaryExpression->Rhs.size() == 1)
+        {
+            auto* literal = binaryExpression->Rhs.front()->As<NAst::TLiteralExpression>();
+            if (literal && IsIntegralType(GetType(literal->Value))) {
+                auto value = GetValue(literal->Value);
+                i128 modulo = value.Type == EValueType::Int64
+                    ? static_cast<i128>(value.Data.Int64)
+                    : static_cast<i128>(value.Data.Uint64);
+                if (modulo == 0) {
+                    THROW_ERROR_EXCEPTION("Cannot pick uniform pivot keys for a modulo expression with zero divisor")
+                        .With("column", column.Name());
+                }
+                if (modulo > 0) {
+                    lower = std::max(lower, isSigned ? -modulo + 1 : static_cast<i128>(0));
+                    upper = std::min(upper, modulo - 1);
+                }
+            }
+        }
+    }
+
+    return {lower, upper};
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -673,6 +764,7 @@ std::vector<TTabletInfo> TClient::DoGetTabletInfosImpl(
 
                 result.TotalRowCount = tabletInfo.total_row_count();
                 result.TrimmedRowCount = tabletInfo.trimmed_row_count();
+                result.FlushedRowCount = YT_OPTIONAL_FROM_PROTO(tabletInfo, flushed_row_count);
                 result.DelayedLocklessRowCount = tabletInfo.delayed_lockless_row_count();
                 result.BarrierTimestamp = FromProto<NTransactionClient::TTimestamp>(tabletInfo.barrier_timestamp());
                 result.LastWriteTimestamp = FromProto<NTransactionClient::TTimestamp>(tabletInfo.last_write_timestamp());
@@ -1085,6 +1177,12 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
     auto idMapping = BuildColumnIdMapping(*schema, nameTable, options.AllowMissingKeyColumns);
 
     auto remappedColumnFilter = RemapColumnFilter(options.ColumnFilter, idMapping, nameTable);
+    if constexpr (std::same_as<TRow, TVersionedRow>) {
+        ValidateVersionedLookupColumnFilter(
+            remappedColumnFilter,
+            schema->GetKeyColumnCount());
+    }
+
     auto resultSchema = schema->Filter(remappedColumnFilter, true);
     auto resultSchemaData = IWireProtocolReader::GetSchemaData(*schema, remappedColumnFilter);
 
@@ -1171,12 +1269,15 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
                     /*allKeys*/ false,
                     connectionConfig->EnableReadFromInSyncAsyncReplicas
                         ? options.Timestamp
-                        : SyncLastCommittedTimestamp);
+                        : SyncLastCommittedTimestamp,
+                    Logger);
 
                 YT_TLOG_DEBUG("Picked in-sync replicas for lookup")
+                    .With("TablePath", tableInfo->Path)
                     .With("ReplicaIds", replicaIds)
                     .With("Timestamp", options.Timestamp)
-                    .With("ReplicationCard", *replicationCard)
+                    .With("ReplicationCardEra", replicationCard->Era)
+                    .With("ReplicationCardCurrentTimestamp", replicationCard->CurrentTimestamp)
                     .With("EnableReadFromInSyncAsyncReplicas", connectionConfig->EnableReadFromInSyncAsyncReplicas);
 
                 TTableReplicaInfoPtrList inSyncReplicas;
@@ -1505,25 +1606,37 @@ TLookupRowsResult<IRowset> TClient::DoLookupRowsOnce(
                 options.DetailedProfilingInfo->WastedSubrequestCount += std::ssize(results) - failedSubrequestCount;
             }
 
-            // If any subrequest failed with TabletServantIsNotActive and partial result is not
-            // requested, collect all such errors and throw them as a single combined error so
-            // that the mount cache can patch all affected tablets in one shot.
-            std::vector<TError> servantNotActiveErrors;
+            // If all failed subrequests contain redirection errors and partial result is not
+            // requested, throw them as a single combined error so that the mount cache can patch
+            // all affected tablets in one shot. Otherwise, prioritize a non-redirection error so
+            // that regular mount cache invalidation is performed.
+            std::vector<TError> redirectionErrors;
+            std::optional<TError> nonRedirectionError;
             for (const auto& result : results) {
-                if (!result.IsOK()) {
-                    if (result.FindMatching(NTabletClient::EErrorCode::TabletServantIsNotActive)) {
-                        servantNotActiveErrors.push_back(result);
-                    }
+                if (result.IsOK()) {
+                    continue;
+                }
+
+                if (result.FindMatching(NTabletClient::EErrorCode::TabletServantIsNotActive) ||
+                    result.FindMatching(NTabletClient::EErrorCode::TabletResharded))
+                {
+                    redirectionErrors.push_back(result);
+                } else if (!nonRedirectionError) {
+                    nonRedirectionError = result;
                 }
             }
 
-            if (!servantNotActiveErrors.empty()) {
-                if (servantNotActiveErrors.size() == 1) {
-                    servantNotActiveErrors[0].ThrowOnError();
+            if (!redirectionErrors.empty() && !nonRedirectionError) {
+                if (redirectionErrors.size() == 1) {
+                    redirectionErrors[0].ThrowOnError();
                 } else {
-                    THROW_ERROR_EXCEPTION("Some lookup subrequests failed because tablet servants are not active")
-                        .With(servantNotActiveErrors);
+                    THROW_ERROR_EXCEPTION("Some lookup subrequests failed because tablet metadata changed")
+                        .With(redirectionErrors);
                 }
+            }
+
+            if (nonRedirectionError) {
+                nonRedirectionError->ThrowOnError();
             }
         }
     }
@@ -1647,6 +1760,10 @@ TDuration TClient::CheckPermissionsForQuery(
     std::function<void(const TPlanFragment&)> grabTablesFromQueryForPermissionCheck = [&] (const TPlanFragment& fragment) {
         if (fragment.SubqueryFragment) {
             grabTablesFromQueryForPermissionCheck(*fragment.SubqueryFragment);
+        } else if (fragment.UnionAllQuery) {
+            for (const auto& fragment : fragment.UnionAllQuery->SubqueryFragments) {
+                grabTablesFromQueryForPermissionCheck(*fragment);
+            }
         } else {
             addTableForPermissionCheck(fragment.DataSource.ObjectId, fragment.Query->Schema);
         }
@@ -1692,7 +1809,9 @@ TDuration TClient::CheckPermissionsForQuery(
 
         auto permissionOrError = WaitFor(Connection_->GetQueryPoolPermissionCache()->Get(key));
         if (!permissionOrError.IsOK() && !permissionOrError.FindMatching(NYTree::EErrorCode::ResolveError)) {
-            permissionOrError.ThrowOnError();
+            THROW_ERROR_EXCEPTION("Cannot use query pool %Qv",
+                *options.ExecutionPool)
+                .With(std::move(permissionOrError));
         }
     }
 
@@ -1805,6 +1924,9 @@ TQueryOptions GetQueryOptions(const TSelectRowsOptions& options, const TConnecti
     queryOptions.AllowReverseScanForOrderBy = queryConfig
         ? queryConfig->AllowReverseScanForOrderBy.value_or(false)
         : false;
+    if (queryConfig) {
+        queryOptions.MaxJitStackFrameSize = queryConfig->MaxJitStackFrameSize;
+    }
 
     THROW_ERROR_EXCEPTION_UNLESS(queryOptions.RowsetProcessingBatchSize > 0,
         "Expected \"rowset_processing_batch_size\" > 0, found %v",
@@ -1873,8 +1995,8 @@ bool HeavyRangeInferenceImprovesJoinSubquery(
             .ObjectId = joinClause->ForeignObjectId,
             .Ranges = MakeSharedRange(
                 TRowRanges{{
-                    buffer->CaptureRow(NTableClient::MinKey().Get()),
-                    buffer->CaptureRow(NTableClient::MaxKey().Get())
+                    buffer->CaptureRow(MinKey().Get()),
+                    buffer->CaptureRow(MaxKey().Get()),
                 }},
                 buffer),
         },
@@ -1885,8 +2007,8 @@ bool HeavyRangeInferenceImprovesJoinSubquery(
 
     for (const auto& range : inferredResult.first.Ranges) {
         bool isFullScan =
-            CompareRows(range.first, NTableClient::MinKey().Get()) <= 0 &&
-            CompareRows(range.second, NTableClient::MaxKey().Get()) == 0;
+            CompareRows(range.first, MinKey().Get()) <= 0 &&
+            CompareRows(range.second, MaxKey().Get()) == 0;
 
         if (isFullScan) {
             return false;
@@ -1973,6 +2095,11 @@ TSelectRowsResult TClient::DoSelectRowsOnce(
         options.DetailedProfilingInfo,
         options.ExpectedTableSchemas);
 
+    auto requestFeatureFlags = MostFreshFeatureFlags();
+
+    bool allowUnorderedGroupByWithLimit = requestFeatureFlags.GroupByWithLimitIsUnordered &&
+        dynamicConfig->GroupByWithLimitIsUnordered;
+
     auto fragment = PreparePlanFragment(
         queryPreparer.Get(),
         parsedQuery->Source,
@@ -1995,6 +2122,15 @@ TSelectRowsResult TClient::DoSelectRowsOnce(
             .AllowReverseScanForOrderBy = queryEngineConfig
                 ? queryEngineConfig->AllowReverseScanForOrderBy.value_or(false)
                 : false,
+            .MaxProjectionCount = queryEngineConfig
+                ? queryEngineConfig->MaxProjectionCount
+                : DefaultMaxProjectionCount,
+            // COMPAT(dtorilov): Remove after 26.2.
+            .EnableScalarSubqueryOrderByAndLimit = queryEngineConfig
+                ? queryEngineConfig->EnableScalarSubqueryOrderByAndLimit.value_or(false)
+                : false,
+            .AllowUnorderedGroupByWithLimit = allowUnorderedGroupByWithLimit,
+            .MergeVersionedRows = options.MergeVersionedRows,
         },
         HeavyRequestMemoryUsageTracker_);
 
@@ -2055,9 +2191,7 @@ TSelectRowsResult TClient::DoSelectRowsOnce(
         }
     }
 
-    auto requestFeatureFlags = MostFreshFeatureFlags();
-
-    queryOptions.AllowUnorderedGroupByWithLimit = requestFeatureFlags.GroupByWithLimitIsUnordered && dynamicConfig->GroupByWithLimitIsUnordered;
+    queryOptions.AllowUnorderedGroupByWithLimit = allowUnorderedGroupByWithLimit;
 
     IUnversionedRowsetWriterPtr writer;
     TFuture<IUnversionedRowsetPtr> asyncRowset;
@@ -2165,7 +2299,7 @@ NYson::TYsonString TClient::DoExplainQuery(
 
     auto requestFeatureFlags = MostFreshFeatureFlags();
 
-    auto allowUnorderedGroupByWithLimit = requestFeatureFlags.GroupByWithLimitIsUnordered && GetNativeConnection()
+    bool allowUnorderedGroupByWithLimit = requestFeatureFlags.GroupByWithLimitIsUnordered && GetNativeConnection()
         ->GetConfig()
         ->GroupByWithLimitIsUnordered;
 
@@ -2191,6 +2325,15 @@ NYson::TYsonString TClient::DoExplainQuery(
             .AllowReverseScanForOrderBy = queryEngineConfig
                 ? queryEngineConfig->AllowReverseScanForOrderBy.value_or(false)
                 : false,
+            .MaxProjectionCount = queryEngineConfig
+                ? queryEngineConfig->MaxProjectionCount
+                : DefaultMaxProjectionCount,
+            // COMPAT(dtorilov): Remove after 26.2.
+            .EnableScalarSubqueryOrderByAndLimit = queryEngineConfig
+                ? queryEngineConfig->EnableScalarSubqueryOrderByAndLimit.value_or(false)
+                : false,
+            .AllowUnorderedGroupByWithLimit = allowUnorderedGroupByWithLimit,
+            .MergeVersionedRows = options.MergeVersionedRows,
         },
         HeavyRequestMemoryUsageTracker_);
 
@@ -2205,77 +2348,37 @@ NYson::TYsonString TClient::DoExplainQuery(
         udfRegistryPath,
         options,
         memoryChunkProvider,
-        allowUnorderedGroupByWithLimit,
         /*allowReverseScanForOrderBy*/ queryEngineConfig
             ? queryEngineConfig->AllowReverseScanForOrderBy.value_or(false)
             : false);
 }
 
-template <class TReq>
+template <CTwoPhaseTableRequest TRequest>
 void TClient::ExecuteTabletServiceRequest(
     const TYPath& path,
     TStringBuf action,
-    TReq* req)
+    TRequest request,
+    const TMutatingOptions& options,
+    const TExecuteTabletServiceRequestOptions& executeOptions)
 {
-    TTableId tableId;
-    TCellTag externalCellTag;
-    auto tableAttributes = NTableClient::ResolveExternalTable(
-        MakeStrong(this),
-        path,
-        &tableId,
-        &externalCellTag,
-        {"tablet_cell_bundle", "path"});
-
-    if (!IsTabletOwnerType(TypeFromId(tableId))) {
-        THROW_ERROR_EXCEPTION("Object %v is not a tablet owner", path);
+    const auto& connection = GetNativeConnection();
+    if (connection->GetConfig()->UseCypressProxyForTwoPhaseTableOperations &&
+        connection->GetCypressProxyChannel())
+    {
+        auto proxy = CreateObjectServiceWriteProxy();
+        auto rpcRequest = CreateTwoPhaseTableOperationRequest(proxy, path, std::move(request));
+        SetMutationId(rpcRequest, options);
+        WaitFor(rpcRequest->Invoke())
+            .ThrowOnError();
+    } else {
+        auto client = MakeStrong(this);
+        auto target = ResolveTwoPhaseTableOperationTarget(
+            client,
+            path,
+            executeOptions.AllowSequoia,
+            executeOptions.RequiredServerFeature);
+        ExecuteTwoPhaseTableOperationViaMaster(client, target, action, &request);
     }
-
-    if (IsSequoiaId(tableId)) {
-        // COMPAT(h0pless): This is a quick and dirty fix for dynamic tables in Sequoia in 25.4.
-        auto bundle = tableAttributes->Get<std::string>("tablet_cell_bundle");
-        ValidatePermissionImpl("//sys/tablet_cell_bundles/" + ToYPathLiteral(bundle), EPermission::Use);
-        ValidatePermissionImpl(path, EPermission::Mount);
-    }
-
-    auto nativeCellTag = CellTagFromId(tableId);
-
-    auto transactionAttributes = CreateEphemeralAttributes();
-    transactionAttributes->Set(
-        "title",
-        Format("%v node %v", action, path));
-
-    TTransactionStartOptions transactionOptions;
-    transactionOptions.Attributes = std::move(transactionAttributes);
-    transactionOptions.SuppressStartTimestampGeneration = true,
-    transactionOptions.CoordinatorMasterCellTag = nativeCellTag;
-    transactionOptions.ReplicateToMasterCellTags = TCellTagList{externalCellTag};
-    transactionOptions.StartCypressTransaction = false;
-    auto asyncTransaction = StartNativeTransaction(
-        NTransactionClient::ETransactionType::Master,
-        transactionOptions);
-    auto transaction = WaitFor(asyncTransaction)
-        .ValueOrThrow();
-
-    ToProto(req->mutable_table_id(), tableId);
-
-    auto fullPath = tableAttributes->Get<TYPath>("path");
-    SetDynamicTableCypressRequestFullPath(req, fullPath);
-
-    auto actionData = MakeTransactionActionData(*req);
-
-    auto nativeCellId = GetNativeConnection()->GetMasterCellId(nativeCellTag);
-    auto externalCellId = GetNativeConnection()->GetMasterCellId(externalCellTag);
-    transaction->AddAction(nativeCellId, actionData);
-    if (nativeCellId != externalCellId) {
-        transaction->AddAction(externalCellId, actionData);
-    }
-
-    WaitFor(transaction->Commit(TTransactionCommitOptions{
-        .Force2PC = true,
-        .CoordinatorCommitMode = ETransactionCoordinatorCommitMode::Lazy,
-        .CellIdsToSyncWithBeforePrepare = {nativeCellId}
-    }))
-        .ThrowOnError();
 }
 
 void TClient::DoMountTable(
@@ -2283,12 +2386,8 @@ void TClient::DoMountTable(
     const TMountTableOptions& options)
 {
     NTabletClient::NProto::TReqMount req;
-    if (options.FirstTabletIndex) {
-        req.set_first_tablet_index(*options.FirstTabletIndex);
-    }
-    if (options.LastTabletIndex) {
-        req.set_last_tablet_index(*options.LastTabletIndex);
-    }
+    req.set_first_tablet_index(options.FirstTabletIndex.value_or(-1));
+    req.set_last_tablet_index(options.LastTabletIndex.value_or(-1));
     if (options.CellId) {
         ToProto(req.mutable_cell_id(), options.CellId);
     }
@@ -2301,7 +2400,7 @@ void TClient::DoMountTable(
         .ValueOrThrow();
     req.set_mount_timestamp(ToProto(mountTimestamp));
 
-    ExecuteTabletServiceRequest(path, "Mounting", &req);
+    ExecuteTabletServiceRequest(path, "Mounting", std::move(req), options);
 }
 
 void TClient::DoUnmountTable(
@@ -2309,15 +2408,11 @@ void TClient::DoUnmountTable(
     const TUnmountTableOptions& options)
 {
     NTabletClient::NProto::TReqUnmount req;
-    if (options.FirstTabletIndex) {
-        req.set_first_tablet_index(*options.FirstTabletIndex);
-    }
-    if (options.LastTabletIndex) {
-        req.set_last_tablet_index(*options.LastTabletIndex);
-    }
+    req.set_first_tablet_index(options.FirstTabletIndex.value_or(-1));
+    req.set_last_tablet_index(options.LastTabletIndex.value_or(-1));
     req.set_force(options.Force);
 
-    ExecuteTabletServiceRequest(path, "Unmounting", &req);
+    ExecuteTabletServiceRequest(path, "Unmounting", std::move(req), options);
 }
 
 void TClient::DoRemountTable(
@@ -2325,14 +2420,10 @@ void TClient::DoRemountTable(
     const TRemountTableOptions& options)
 {
     NTabletClient::NProto::TReqRemount req;
-    if (options.FirstTabletIndex) {
-        req.set_first_tablet_index(*options.FirstTabletIndex);
-    }
-    if (options.LastTabletIndex) {
-        req.set_last_tablet_index(*options.LastTabletIndex);
-    }
+    req.set_first_tablet_index(options.FirstTabletIndex.value_or(-1));
+    req.set_last_tablet_index(options.LastTabletIndex.value_or(-1));
 
-    ExecuteTabletServiceRequest(path, "Remounting", &req);
+    ExecuteTabletServiceRequest(path, "Remounting", std::move(req), options);
 }
 
 void TClient::DoFreezeTable(
@@ -2340,14 +2431,10 @@ void TClient::DoFreezeTable(
     const TFreezeTableOptions& options)
 {
     NTabletClient::NProto::TReqFreeze req;
-    if (options.FirstTabletIndex) {
-        req.set_first_tablet_index(*options.FirstTabletIndex);
-    }
-    if (options.LastTabletIndex) {
-        req.set_last_tablet_index(*options.LastTabletIndex);
-    }
+    req.set_first_tablet_index(options.FirstTabletIndex.value_or(-1));
+    req.set_last_tablet_index(options.LastTabletIndex.value_or(-1));
 
-    ExecuteTabletServiceRequest(path, "Freezing", &req);
+    ExecuteTabletServiceRequest(path, "Freezing", std::move(req), options);
 }
 
 void TClient::DoUnfreezeTable(
@@ -2355,15 +2442,10 @@ void TClient::DoUnfreezeTable(
     const TUnfreezeTableOptions& options)
 {
     NTabletClient::NProto::TReqUnfreeze req;
+    req.set_first_tablet_index(options.FirstTabletIndex.value_or(-1));
+    req.set_last_tablet_index(options.LastTabletIndex.value_or(-1));
 
-    if (options.FirstTabletIndex) {
-        req.set_first_tablet_index(*options.FirstTabletIndex);
-    }
-    if (options.LastTabletIndex) {
-        req.set_last_tablet_index(*options.LastTabletIndex);
-    }
-
-    ExecuteTabletServiceRequest(path, "Unfreezing", &req);
+    ExecuteTabletServiceRequest(path, "Unfreezing", std::move(req), options);
 }
 
 void TClient::DoCancelTabletTransition(
@@ -2384,31 +2466,11 @@ NTabletClient::NProto::TReqReshard TClient::MakeReshardRequest(
     const TReshardTableOptions& options)
 {
     NTabletClient::NProto::TReqReshard req;
-    if (options.FirstTabletIndex) {
-        req.set_first_tablet_index(*options.FirstTabletIndex);
-    }
-    if (options.LastTabletIndex) {
-        req.set_last_tablet_index(*options.LastTabletIndex);
-    }
+    req.set_first_tablet_index(options.FirstTabletIndex.value_or(-1));
+    req.set_last_tablet_index(options.LastTabletIndex.value_or(-1));
     ToProto(req.mutable_trimmed_row_counts(), options.TrimmedRowCounts);
     ToProto(req.mutable_cumulative_data_weights(), options.CumulativeDataWeights);
 
-    return req;
-}
-
-TTableYPathProxy::TReqReshardPtr TClient::MakeYPathReshardRequest(
-    const TYPath& path,
-    const TReshardTableOptions& options)
-{
-    auto req = TTableYPathProxy::Reshard(path);
-    SetMutationId(req, options);
-
-    if (options.FirstTabletIndex) {
-        req->set_first_tablet_index(*options.FirstTabletIndex);
-    }
-    if (options.LastTabletIndex) {
-        req->set_last_tablet_index(*options.LastTabletIndex);
-    }
     return req;
 }
 
@@ -2440,51 +2502,31 @@ std::vector<TLegacyOwningKey> TClient::PickUniformPivotKeys(
         THROW_ERROR_EXCEPTION("First key column type %Qv is too complex",
             *column.LogicalType());
     }
-
-    auto buildPivotKeys = [tabletCount] (i128 lo, i128 hi, bool isSigned)
-    {
-        TUnversionedOwningRowBuilder builder;
-        std::vector<TLegacyOwningKey> pivots;
-        pivots.push_back(builder.FinishRow());
-
-        i128 span = hi - lo + 1;
-        for (int i = 1; i < tabletCount; ++i) {
-            i128 value = lo + (span * i) / tabletCount;
-            if (isSigned) {
-                builder.AddValue(MakeUnversionedInt64Value(static_cast<i64>(value)));
-            } else {
-                builder.AddValue(MakeUnversionedUint64Value(static_cast<ui64>(value)));
-            }
-            pivots.push_back(builder.FinishRow());
-        }
-
-        return pivots;
-    };
-
-    switch (column.CastToV1Type()) {
-        case ESimpleLogicalValueType::Uint8:
-            return buildPivotKeys(0, std::numeric_limits<ui8>::max(), false);
-        case ESimpleLogicalValueType::Uint16:
-            return buildPivotKeys(0, std::numeric_limits<ui16>::max(), false);
-        case ESimpleLogicalValueType::Uint32:
-            return buildPivotKeys(0, std::numeric_limits<ui32>::max(), false);
-        case ESimpleLogicalValueType::Uint64:
-            return buildPivotKeys(0, std::numeric_limits<ui64>::max(), false);
-
-        case ESimpleLogicalValueType::Int8:
-            return buildPivotKeys(std::numeric_limits<i8>::min(), std::numeric_limits<i8>::max(), true);
-        case ESimpleLogicalValueType::Int16:
-            return buildPivotKeys(std::numeric_limits<i16>::min(), std::numeric_limits<i16>::max(), true);
-        case ESimpleLogicalValueType::Int32:
-            return buildPivotKeys(std::numeric_limits<int>::min(), std::numeric_limits<int>::max(), true);
-        case ESimpleLogicalValueType::Int64:
-            return buildPivotKeys(std::numeric_limits<i64>::min(), std::numeric_limits<i64>::max(), true);
-
-        default:
-            THROW_ERROR_EXCEPTION("First key column has improper type: expected "
-                "integral, got %Qv",
-                *column.LogicalType());
+    if (!IsIntegralType(column.CastToV1Type())) {
+        THROW_ERROR_EXCEPTION("First key column has improper type: expected integral, got %Qv",
+            *column.LogicalType());
     }
+
+    auto [lower, upper] = GetUniformReshardColumnBounds(column);
+    i128 rangeSize = upper - lower + 1;
+    bool isSigned = IsIntegralTypeSigned(column.CastToV1Type());
+    tabletCount = static_cast<int>(std::min<i128>(tabletCount, rangeSize));
+
+    TUnversionedOwningRowBuilder builder;
+    std::vector<TLegacyOwningKey> pivots;
+    pivots.push_back(builder.FinishRow());
+
+    for (int tabletIndex = 1; tabletIndex < tabletCount; ++tabletIndex) {
+        i128 value = lower + rangeSize * tabletIndex / tabletCount;
+        if (isSigned) {
+            builder.AddValue(MakeUnversionedInt64Value(static_cast<i64>(value)));
+        } else {
+            builder.AddValue(MakeUnversionedUint64Value(static_cast<ui64>(value)));
+        }
+        pivots.push_back(builder.FinishRow());
+    }
+
+    return pivots;
 }
 
 void TClient::DoReshardTableWithPivotKeys(
@@ -2496,7 +2538,7 @@ void TClient::DoReshardTableWithPivotKeys(
     ToProto(req.mutable_pivot_keys(), pivotKeys);
     req.set_tablet_count(pivotKeys.size());
 
-    ExecuteTabletServiceRequest(path, "Resharding", &req);
+    ExecuteTabletServiceRequest(path, "Resharding", std::move(req), options);
 }
 
 void TClient::DoReshardTableWithTabletCount(
@@ -2542,7 +2584,7 @@ void TClient::DoReshardTableWithTabletCount(
     auto req = MakeReshardRequest(options);
     req.set_tablet_count(tabletCount);
 
-    ExecuteTabletServiceRequest(path, "Resharding", &req);
+    ExecuteTabletServiceRequest(path, "Resharding", std::move(req), options);
 }
 
 std::vector<TTabletActionId> TClient::DoReshardTableAutomatic(
@@ -2590,6 +2632,45 @@ void TClient::DoAlterTable(
     const TYPath& path,
     const TAlterTableOptions& options)
 {
+    auto config = GetNativeConnection()->GetConfig();
+    if (options.Dynamic && config->UseTwoPhaseDynamicityAlter) {
+        if (options.TransactionId) {
+            THROW_ERROR_EXCEPTION("Cannot alter table dynamicity in transaction");
+        }
+
+        options.ValidateForTwoPhaseAlter();
+
+        NTabletClient::NProto::TReqTwoPhaseAlter req;
+        req.set_dynamic(*options.Dynamic);
+
+        try {
+            ExecuteTabletServiceRequest(
+                path,
+                "Altering",
+                std::move(req),
+                options,
+                {
+                    .AllowSequoia = false,
+                    .RequiredServerFeature = EMasterFeature::AlterTable2PC,
+                });
+            return;
+        } catch (const std::exception& ex) {
+            auto error = TError(ex);
+            if (!error.FindMatching(NRpc::EErrorCode::UnsupportedServerFeature)) {
+                throw;
+            }
+
+            YT_TLOG_DEBUG("Required master feature is unsupported")
+                .With("Feature", EMasterFeature::AlterTable2PC)
+                .With("Action", "Altering")
+                .With("Path", path)
+                .With(error);
+        }
+
+        YT_TLOG_DEBUG("Falling back to legacy table alter")
+            .With("Path", path);
+    }
+
     auto req = TTableYPathProxy::Alter(path);
     SetTransactionId(req, options, true);
     SetMutationId(req, options);
@@ -2655,30 +2736,45 @@ void TClient::DoTrimTable(
     tableInfo->ValidateDynamic();
     tableInfo->ValidateOrdered();
 
-    auto tabletInfo = tableInfo->GetTabletByIndexOrThrow(tabletIndex);
-    ValidateTabletMounted(tableInfo, tabletInfo);
+    TTabletInfoPtr tabletInfo;
+    try {
+        tabletInfo = tableInfo->GetTabletByIndexOrThrow(tabletIndex);
+        ValidateTabletMounted(tableInfo, tabletInfo);
 
-    const auto& permissionCache = Connection_->GetPermissionCache();
-    NSecurityClient::TPermissionKey permissionKey{
-        .Path = FromObjectId(tableInfo->TableId),
-        .User = Options_.GetAuthenticatedUser(),
-        .Permission = NYTree::EPermission::Write
-    };
-    WaitFor(permissionCache->Get(permissionKey))
-        .ThrowOnError();
+        const auto& permissionCache = Connection_->GetPermissionCache();
+        NSecurityClient::TPermissionKey permissionKey{
+            .Path = FromObjectId(tableInfo->TableId),
+            .User = Options_.GetAuthenticatedUser(),
+            .Permission = NYTree::EPermission::Write,
+        };
+        WaitFor(permissionCache->Get(permissionKey))
+            .ThrowOnError();
 
-    auto channel = GetCellChannelOrThrow(tabletInfo->CellId);
+        auto channel = GetCellChannelOrThrow(tabletInfo->CellId);
 
-    TTabletServiceProxy proxy(channel);
-    proxy.SetDefaultTimeout(options.Timeout.value_or(Connection_->GetConfig()->DefaultTrimTableTimeout));
+        TTabletServiceProxy proxy(channel);
+        proxy.SetDefaultTimeout(options.Timeout.value_or(Connection_->GetConfig()->DefaultTrimTableTimeout));
 
-    auto req = proxy.Trim();
-    ToProto(req->mutable_tablet_id(), tabletInfo->TabletId);
-    req->set_mount_revision(ToProto(tabletInfo->MountRevision));
-    req->set_trimmed_row_count(trimmedRowCount);
+        auto req = proxy.Trim();
+        ToProto(req->mutable_tablet_id(), tabletInfo->TabletId);
+        req->set_mount_revision(ToProto(tabletInfo->MountRevision));
+        req->set_trimmed_row_count(trimmedRowCount);
 
-    WaitFor(req->Invoke())
-        .ValueOrThrow();
+        WaitFor(req->Invoke())
+            .ValueOrThrow();
+    } catch (const std::exception& ex) {
+        auto error = TError(ex);
+        if (tabletInfo) {
+            tableMountCache->InvalidateOnError(
+                error,
+                /*forceRetry*/ true,
+                /*tabletIdHint*/ tabletInfo->TabletId);
+        } else if (error.FindMatching(NTabletClient::EErrorCode::NoSuchTablet)) {
+            // A reshard may have added tablets absent from the cached table info.
+            tableMountCache->InvalidateTable(tableInfo);
+        }
+        throw;
+    }
 }
 
 void TClient::DoAlterTableReplica(
@@ -2846,7 +2942,7 @@ void TClient::DoTransferBundleResources(
         .ThrowOnError();
 }
 
-IQueueRowsetPtr TClient::DoPullQueueImpl(
+TPullQueueResult TClient::DoPullQueueImpl(
     const NYPath::TRichYPath& queuePath,
     i64 offset,
     int partitionIndex,
@@ -2869,7 +2965,7 @@ IQueueRowsetPtr TClient::DoPullQueueImpl(
         });
 }
 
-IQueueRowsetPtr TClient::DoPullQueueImplOnce(
+TPullQueueResult TClient::DoPullQueueImplOnce(
     const NYPath::TRichYPath& queuePath,
     i64 offset,
     int partitionIndex,
@@ -2958,7 +3054,7 @@ IQueueRowsetPtr TClient::DoPullQueueImplOnce(
             ? connectionConfig->ReplicaFallbackRetryCount
             : 0;
 
-        TErrorOr<IQueueRowsetPtr> resultOrError;
+        TErrorOr<TPullQueueResult> resultOrError;
 
         THashMap<TReplicaId, TError> triedReplicaIds;
         for (int retryCount = 0; retryCount <= retryCountLimit; ++retryCount) {
@@ -3043,9 +3139,9 @@ IQueueRowsetPtr TClient::DoPullQueueImplOnce(
     auto adjustedRowBatchReadOptions = rowBatchReadOptions;
     adjustedRowBatchReadOptions.MaxRowCount = ComputeRowsToRead(rowBatchReadOptions);
 
-    IUnversionedRowsetPtr rowset;
+    TPullQueueRowsetResult result;
     if (options.UseNativeTabletNodeApi) {
-        rowset = DoPullQueueViaTabletNodeApi(
+        result = DoPullQueueViaTabletNodeApi(
             queuePath,
             offset,
             partitionIndex,
@@ -3053,7 +3149,7 @@ IQueueRowsetPtr TClient::DoPullQueueImplOnce(
             options,
             checkPermissions);
     } else {
-        rowset = DoPullQueueViaSelectRows(
+        result = DoPullQueueViaSelectRows(
             queuePath,
             offset,
             partitionIndex,
@@ -3062,14 +3158,17 @@ IQueueRowsetPtr TClient::DoPullQueueImplOnce(
     }
 
     auto startOffset = offset;
-    if (!rowset->GetRows().Empty()) {
-        startOffset = GetStartOffset(rowset);
+    if (!result.Rowset->GetRows().Empty()) {
+        startOffset = GetStartOffset(result.Rowset);
     }
 
-    return CreateQueueRowset(rowset, startOffset);
+    return TPullQueueResult{
+        .Rowset = CreateQueueRowset(std::move(result.Rowset), startOffset),
+        .ResponseSizeLimitReached = result.ResponseSizeLimitReached,
+    };
 }
 
-IQueueRowsetPtr TClient::DoPullQueue(
+TPullQueueResult TClient::DoPullQueue(
     const NYPath::TRichYPath& queuePath,
     i64 offset,
     int partitionIndex,
@@ -3085,7 +3184,7 @@ IQueueRowsetPtr TClient::DoPullQueue(
         /*checkPermissions*/ true);
 }
 
-IQueueRowsetPtr TClient::DoPullQueueUnauthenticated(
+TPullQueueResult TClient::DoPullQueueUnauthenticated(
     const NYPath::TRichYPath& queuePath,
     i64 offset,
     int partitionIndex,
@@ -3101,7 +3200,7 @@ IQueueRowsetPtr TClient::DoPullQueueUnauthenticated(
         /*checkPermissions*/ false);
 }
 
-IUnversionedRowsetPtr TClient::DoPullQueueViaSelectRows(
+TClient::TPullQueueRowsetResult TClient::DoPullQueueViaSelectRows(
     const NYPath::TRichYPath& queuePath,
     i64 offset,
     int partitionIndex,
@@ -3130,10 +3229,12 @@ IUnversionedRowsetPtr TClient::DoPullQueueViaSelectRows(
             options);
     }
 
-    return readResult.Rowset;
+    return TPullQueueRowsetResult{
+        .Rowset = std::move(readResult.Rowset),
+    };
 }
 
-IUnversionedRowsetPtr TClient::DoPullQueueViaTabletNodeApi(
+TClient::TPullQueueRowsetResult TClient::DoPullQueueViaTabletNodeApi(
     const NYPath::TRichYPath& queuePath,
     i64 offset,
     int partitionIndex,
@@ -3187,12 +3288,15 @@ IUnversionedRowsetPtr TClient::DoPullQueueViaTabletNodeApi(
         rows.insert(rows.end(), batch.begin(), batch.end());
     }
 
-    return CreateRowset(
-        tableInfo->Schemas[ETableSchemaKind::Query],
-        MakeSharedRange(rows, reader->GetRowBuffer()));
+    return TPullQueueRowsetResult{
+        .Rowset = CreateRowset(
+            tableInfo->Schemas[ETableSchemaKind::Query],
+            MakeSharedRange(rows, reader->GetRowBuffer())),
+        .ResponseSizeLimitReached = YT_OPTIONAL_FROM_PROTO(*rsp, response_size_limit_reached),
+    };
 }
 
-IQueueRowsetPtr TClient::DoPullQueueConsumer(
+TPullQueueResult TClient::DoPullQueueConsumer(
     const NYPath::TRichYPath& consumerPath,
     const NYPath::TRichYPath& queuePath,
     std::optional<i64> offset,
@@ -3987,6 +4091,8 @@ TPullRowsResult TClient::DoPullRows(
         bool isSessionGood = !session->IsTrivial() && session->GetResultOrError().IsOK();
         if (isSessionGood) {
             success = true;
+        } else if (!session->GetResultOrError().IsOK()) {
+            combinedResult.SubrequestErrors.push_back(session->GetResultOrError());
         }
 
         const auto& rows = session->GetRows(maxTimestamp, outputRowBuffer);
@@ -4076,6 +4182,34 @@ IChannelPtr TClient::GetChaosChannelByCellTag(TCellTag cellTag, EPeerKind peerKi
 IChannelPtr TClient::GetChaosChannelByObjectIdOrThrow(TChaosObjectId chaosObjectId, EPeerKind peerKind)
 {
     return GetNativeConnection()->GetChaosChannelByObjectIdOrThrow(chaosObjectId, peerKind);
+}
+
+TChaosLeasePtr TClient::DoGetChaosLease(
+    TChaosLeaseId chaosLeaseId,
+    const TGetChaosLeaseOptions& options)
+{
+    if (!options.BypassCache && Connection_->GetStaticConfig()->ChaosLeaseCache) {
+        return WaitForFast(Connection_->GetChaosLeaseCache()->GetChaosLease(chaosLeaseId))
+            .ValueOrThrow();
+    }
+
+    auto channel = GetChaosChannelByObjectIdOrThrow(chaosLeaseId);
+    auto proxy = TChaosNodeServiceProxy(std::move(channel));
+    proxy.SetDefaultTimeout(options.Timeout.value_or(Connection_->GetConfig()->DefaultChaosNodeServiceTimeout));
+
+    auto req = proxy.GetChaosLease();
+    ToProto(req->mutable_chaos_lease_id(), chaosLeaseId);
+
+    auto rsp = WaitFor(req->Invoke())
+        .ValueOrThrow();
+
+    auto chaosLease = New<TChaosLease>();
+    FromProto(chaosLease.Get(), *rsp);
+
+    YT_TLOG_DEBUG("Got chaos lease")
+        .With("ChaosLeaseId", chaosLeaseId);
+
+    return chaosLease;
 }
 
 TReplicationCardPtr TClient::DoGetReplicationCard(
@@ -4277,7 +4411,6 @@ IPrerequisitePtr TClient::DoAttachChaosLease(
     TChaosLeaseId chaosLeaseId,
     const TChaosLeaseAttachOptions& options)
 {
-    auto channel = GetChaosChannelByObjectIdOrThrow(chaosLeaseId);
     auto timeoutPath = Format("%v/@timeout", FromObjectId(chaosLeaseId));
     auto timeoutNode = WaitFor(GetNode(timeoutPath, {}))
         .ValueOrThrow();
@@ -4285,7 +4418,6 @@ IPrerequisitePtr TClient::DoAttachChaosLease(
 
     auto chaosLease = CreateChaosLease(
         this,
-        std::move(channel),
         chaosLeaseId,
         timeout,
         options.PingAncestors,
@@ -4303,6 +4435,22 @@ IPrerequisitePtr TClient::DoStartChaosLease(
     const TChaosLeaseStartOptions& /*options*/)
 {
     THROW_ERROR_EXCEPTION("Use CreateNode to start chaos leases");
+}
+
+void TClient::DoPingChaosLease(
+    TChaosLeaseId chaosLeaseId,
+    const TChaosLeasePingOptions& options)
+{
+    auto channel = GetChaosChannelByObjectIdOrThrow(chaosLeaseId);
+    auto proxy = TChaosNodeServiceProxy(std::move(channel));
+
+    auto req = proxy.PingChaosLease();
+    req->SetTimeout(options.Timeout.value_or(Connection_->GetConfig()->DefaultChaosNodeServiceTimeout));
+    ToProto(req->mutable_chaos_lease_id(), chaosLeaseId);
+    req->set_ping_ancestors(options.PingAncestors);
+
+    WaitFor(req->Invoke())
+        .ThrowOnError();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

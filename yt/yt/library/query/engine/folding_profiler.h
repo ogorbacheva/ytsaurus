@@ -39,9 +39,8 @@ struct TQueryFoldingProfilerOptions
     bool UseCanonicalNullRelations = false;
     NCodegen::EExecutionBackend ExecutionBackend = NCodegen::EExecutionBackend::Native;
     NCodegen::EOptimizationLevel OptimizationLevel = NCodegen::EOptimizationLevel::Default;
-    bool AllowObjectCodeLinkage = false;
-    bool AllowUnorderedGroupByWithLimit = true;
     i64 MaxJoinBatchSize = DefaultMaxJoinBatchSize;
+    std::optional<int> MaxJitStackFrameSize;
 };
 
 TCGQueryGenerator Profile(
@@ -49,7 +48,7 @@ TCGQueryGenerator Profile(
     llvm::FoldingSetNodeID* id,
     TCGVariables* variables,
     const TJoinProfilerRegistry& joinProfilerRegistry,
-    TQueryFoldingProfilerOptions options = {},
+    const TQueryFoldingProfilerOptions& options = {},
     const TConstFunctionProfilerMapPtr& functionProfilers = GetBuiltinFunctionProfilers().Get(),
     const TConstAggregateProfilerMapPtr& aggregateProfilers = GetBuiltinAggregateProfilers().Get(),
     const NWebAssembly::TModuleBytecode& sdk = NWebAssembly::GetBuiltinSdk());

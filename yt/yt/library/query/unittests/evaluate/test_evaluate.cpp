@@ -121,8 +121,11 @@ TQueryStatistics DoExecuteQuery(
 
     ssize_t batchSize = maxBatchSize;
 
-    if ((query->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true) != EScanOrder::Unordered) && query->Offset + query->Limit < batchSize) {
-        batchSize = query->Offset + query->Limit;
+    if (query->Limit &&
+        (query->ScanOrder != EScanOrder::Unordered) &&
+        query->Offset + *query->Limit < batchSize)
+    {
+        batchSize = query->Offset + *query->Limit;
     }
 
     bool isFirstRead = true;
@@ -134,8 +137,8 @@ TQueryStatistics DoExecuteQuery(
             owningSourceRows[index] = TOwningRow();
         }
 
-        if (isFirstRead && query->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true) != EScanOrder::Unordered) {
-            EXPECT_EQ(options.MaxRowsPerRead, std::min(DefaultRowsetProcessingBatchSize, query->Offset + query->Limit));
+        if (isFirstRead && query->ScanOrder != EScanOrder::Unordered) {
+            EXPECT_EQ(options.MaxRowsPerRead, std::min(DefaultRowsetProcessingBatchSize, query->Offset + query->Limit.value_or(std::numeric_limits<i64>::max())));
             isFirstRead = false;
         }
 
@@ -150,7 +153,7 @@ TQueryStatistics DoExecuteQuery(
 
     auto readerMock = New<NiceMock<TReaderMock>>();
     EXPECT_CALL(*readerMock, Read(_))
-        .WillRepeatedly(Invoke(readRows));
+        .WillRepeatedly(readRows);
     ON_CALL(*readerMock, GetReadyEvent())
         .WillByDefault(Return(OKFuture));
 
@@ -598,7 +601,17 @@ std::pair<TQueryPtr, TQueryStatistics> TQueryEvaluateTest::DoEvaluate(
         return {};
     }
 
-    auto primaryQuery = Prepare(query, dataSplits, evaluateOptions.PlaceholderValues, TPreparePlanFragmentOptions{.SyntaxVersion = evaluateOptions.SyntaxVersion, .BuilderVersion = DefaultExpressionBuilderVersion});
+    auto primaryQuery = Prepare(
+        query,
+        dataSplits,
+        evaluateOptions.PlaceholderValues,
+        TPreparePlanFragmentOptions{
+            .SyntaxVersion = evaluateOptions.SyntaxVersion,
+            .BuilderVersion = DefaultExpressionBuilderVersion,
+            // COMPAT(dtorilov): Remove after 26.2.
+            .EnableScalarSubqueryOrderByAndLimit = evaluateOptions.EnableScalarSubqueryOrderByAndLimit,
+            .AllowUnorderedGroupByWithLimit = evaluateOptions.AllowUnorderedGroupByWithLimit,
+        });
 
     TQueryOptions options;
     options.InputRowLimit = evaluateOptions.InputRowLimit;
@@ -607,6 +620,7 @@ std::pair<TQueryPtr, TQueryStatistics> TQueryEvaluateTest::DoEvaluate(
     options.ExecutionBackend = evaluateOptions.ExecutionBackend;
     options.AllowUnorderedGroupByWithLimit = evaluateOptions.AllowUnorderedGroupByWithLimit;
     options.MaxJoinBatchSize = evaluateOptions.MaxJoinBatchSize;
+    options.MaxJitStackFrameSize = evaluateOptions.MaxJitStackFrameSize;
 
     auto aggregatedStatistics = TQueryStatistics();
 
@@ -683,8 +697,7 @@ std::pair<TQueryPtr, TQueryStatistics> TQueryEvaluateTest::DoEvaluate(
             if (ShouldPrefetchJoinSource(
                 primaryQuery,
                 *joinClause,
-                evaluateOptions.MinKeyWidth,
-                primaryQuery->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true) != EScanOrder::Unordered))
+                evaluateOptions.MinKeyWidth))
             {
                 auto buffer = New<TRowBuffer>();
                 TRowRanges universalRange{{
@@ -810,7 +823,7 @@ TEvaluateCoordinatedGroupByResult TQueryEvaluateTest::EvaluateCoordinatedGroupBy
 
         auto readerMock = New<NiceMock<TReaderMock>>();
         EXPECT_CALL(*readerMock, Read(_))
-            .WillRepeatedly(Invoke(readRows));
+            .WillRepeatedly(readRows);
         ON_CALL(*readerMock, GetReadyEvent())
             .WillByDefault(Return(OKFuture));
 
@@ -831,7 +844,7 @@ TEvaluateCoordinatedGroupByResult TQueryEvaluateTest::EvaluateCoordinatedGroupBy
         return pipe->GetReader();
     };
 
-    auto frontReader = (frontQuery->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true) != EScanOrder::Unordered)
+    auto frontReader = (frontQuery->ScanOrder != EScanOrder::Unordered)
         ? CreateFullPrefetchingOrderedSchemafulReader(getNextReader)
         : CreateFullPrefetchingShufflingSchemafulReader(getNextReader);
 
@@ -904,7 +917,7 @@ ISchemafulPipePtr TQueryEvaluateTest::RunOnNodeThread(
 
     auto readerMock = New<NiceMock<TReaderMock>>();
     EXPECT_CALL(*readerMock, Read(_))
-        .WillRepeatedly(Invoke(readRows));
+        .WillRepeatedly(readRows);
     ON_CALL(*readerMock, GetReadyEvent())
         .WillByDefault(Return(OKFuture));
 
@@ -952,7 +965,7 @@ ISchemafulPipePtr TQueryEvaluateTest::RunOnNode(
         return pipe->GetReader();
     };
 
-    auto reader = (query->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true) != EScanOrder::Unordered)
+    auto reader = (query->ScanOrder != EScanOrder::Unordered)
         ? CreateFullPrefetchingOrderedSchemafulReader(nextReader)
         : CreateFullPrefetchingShufflingSchemafulReader(nextReader);
 
@@ -992,9 +1005,9 @@ TRunOnCoordinatorResult TQueryEvaluateTest::RunOnCoordinator(
         NLogging::TLogger("Test"));
 
     TConstQueryPtr effectiveQuery = primary;
-    if (coordinatedQuery->IsReverseScan && !primary->IsReverseScan) {
+    if (coordinatedQuery->ScanOrder == EScanOrder::Reversed && primary->ScanOrder != EScanOrder::Reversed) {
         auto upgraded = New<TQuery>(*primary);
-        upgraded->IsReverseScan = true;
+        upgraded->ScanOrder = EScanOrder::Reversed;
         effectiveQuery = upgraded;
     }
 
@@ -1002,7 +1015,7 @@ TRunOnCoordinatorResult TQueryEvaluateTest::RunOnCoordinator(
 
     std::vector<int> tabletOrder(tabletCount);
     std::iota(tabletOrder.begin(), tabletOrder.end(), 0);
-    if (frontQuery->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true) == EScanOrder::Reversed) {
+    if (frontQuery->ScanOrder == EScanOrder::Reversed) {
         std::reverse(tabletOrder.begin(), tabletOrder.end());
     }
 
@@ -1024,7 +1037,7 @@ TRunOnCoordinatorResult TQueryEvaluateTest::RunOnCoordinator(
 
     // Use a lazy ordered reader for reversed scans so the front query can stop
     // early once LIMIT rows are collected, without opening all tablet readers.
-    auto scanOrder = frontQuery->GetScanOrder(/*allowUnorderedGroupByWithLimit*/ true);
+    auto scanOrder = frontQuery->ScanOrder;
     ISchemafulUnversionedReaderPtr reader;
     switch (scanOrder) {
         case EScanOrder::Reversed:

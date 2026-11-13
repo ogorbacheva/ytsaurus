@@ -11,8 +11,6 @@
 #include <yql/essentials/public/issue/yql_issue_message.h>
 #include <yql/essentials/utils/log/log.h>
 
-#include <contrib/ydb/public/lib/yson_value/ydb_yson_value.h>
-
 #include <contrib/ydb/public/sdk/cpp/src/library/grpc/client/grpc_client_low.h>
 
 #include <library/cpp/yson/node/node_io.h>
@@ -151,6 +149,23 @@ public:
     }
 };
 
+template<typename TResponse>
+TOperationStatistics MakeOperationStatistics(const TResponse& resp) {
+    TOperationStatistics statistics;
+    statistics.Entries.reserve(resp.GetMetric().size());
+    for (const auto& metric : resp.GetMetric()) {
+        YQL_CLOG(TRACE, ProviderDq) << "Counter: " << metric.GetName() << " : " << metric.GetSum() << " : " << metric.GetCount();
+        statistics.Entries.emplace_back(
+            metric.GetName(),
+            metric.GetSum(),
+            metric.GetMax(),
+            metric.GetMin(),
+            metric.GetAvg(),
+            metric.GetCount());
+    }
+    return statistics;
+}
+
 class TDqGatewaySession: public std::enable_shared_from_this<TDqGatewaySession> {
 public:
     using TResult = IDqGateway::TResult;
@@ -184,21 +199,7 @@ public:
 
             result.Truncated = resp.GetTruncated();
 
-            TOperationStatistics statistics;
-
-            for (const auto& t : resp.GetMetric()) {
-                YQL_CLOG(TRACE, ProviderDq) << "Counter: " << t.GetName() << " : " << t.GetSum() << " : " << t.GetCount();
-                TOperationStatistics::TEntry entry(
-                    t.GetName(),
-                    t.GetSum(),
-                    t.GetMax(),
-                    t.GetMin(),
-                    t.GetAvg(),
-                    t.GetCount());
-                statistics.Entries.push_back(entry);
-            }
-
-            result.Statistics = statistics;
+            result.Statistics = MakeOperationStatistics(resp);
 
             NYql::TIssues issues;
             auto operation = resp.operation();
@@ -313,16 +314,33 @@ public:
         const auto alwaysFallback = EFallbackPolicy::Always == fallbackPolicy;
         auto self = weak_from_this();
         auto callback = [self, promise, sessionId = SessionId, alwaysFallback, resultFormatSettings, modulesMapping](
-            NYdbGrpc::TGrpcStatus&& status, TResponse&& resp) mutable {
-            auto this_ = self.lock();
-            if (!this_) {
-                YQL_CLOG(DEBUG, ProviderDq) << "Session was closed: " << sessionId;
-                promise.SetException("Session was closed");
-                return;
-            }
+            NYdbGrpc::TGrpcStatus&& status, TResponse&& resp) mutable noexcept {
+            try {
+                auto this_ = self.lock();
+                if (!this_) {
+                    YQL_CLOG(DEBUG, ProviderDq) << "Session was closed: " << sessionId;
+                    promise.SetException("Session was closed");
+                    return;
+                }
 
-            this_->OnResponse(std::move(promise), std::move(status), std::move(resp), resultFormatSettings,
-                modulesMapping, alwaysFallback);
+                // Keep our promise handle valid: SetValue runs subscribers inline,
+                // and a subscriber is allowed to throw after the promise is set.
+                this_->OnResponse(promise, std::move(status), std::move(resp), resultFormatSettings,
+                    modulesMapping, alwaysFallback);
+            } catch (...) {
+                auto exception = std::current_exception();
+                YQL_CLOG(ERROR, ProviderDq) << "Unhandled exception in ExecuteGraph callback: "
+                    << CurrentExceptionMessage();
+                try {
+                    // If OnResponse failed before completing the promise, propagate
+                    // the error. If a subscriber threw after completion, this is a
+                    // no-op; either way no exception escapes into the gRPC thread.
+                    promise.TrySetException(exception);
+                } catch (...) {
+                    YQL_CLOG(ERROR, ProviderDq) << "Exception while completing ExecuteGraph promise: "
+                        << CurrentExceptionMessage();
+                }
+            }
         };
 
         Service.DoRequest<TRequest, TResponse>(queryPB, callback, stub);
@@ -380,6 +398,8 @@ public:
             }
         }
         queryPB.SetExecutionTimeout(executionTimeout);
+        queryPB.SetUploadPrefix(plan.UploadPrefix);
+        queryPB.SetUploadClusterAddress(plan.UploadClusterAddress);
         queryPB.SetSession(SessionId);
         queryPB.SetResultType(plan.ResultType);
         queryPB.SetSourceId(plan.SourceID.NodeId()-1);
@@ -472,43 +492,6 @@ public:
         }
     }
 
-    static std::unordered_map<ui64, IDqGateway::TStageStats> ExtractStats(const Yql::DqsProto::QueryStatusResponse& resp) {
-        std::unordered_map<ui64, IDqGateway::TStageStats> ret;
-        for (const auto& metric : resp.GetMetric()) {
-            auto longName = metric.GetName();
-            TString prefix;
-            TString name;
-            std::map<TString, TString> labels;
-            if (!NYql::NCommon::ParseCounterName(&prefix, &labels, &name, longName)) {
-                continue;
-            }
-
-            auto maybeStage = labels.find("Stage");
-            if (maybeStage == labels.end()) {
-                continue;
-            }
-            auto stageId = atoi(maybeStage->second.data());
-            if (!stageId) {
-                continue;
-            }
-            auto& stage = ret[stageId];
-
-            if (name == "OutputRows") {
-                stage.OutputRows += metric.GetSum();
-            }
-            if (name == "InputRows") {
-                stage.InputRows += metric.GetSum();
-            }
-            if (name == "OutputBytes") {
-                stage.OutputBytes += metric.GetSum();
-            }
-            if (name == "InputBytes") {
-                stage.InputBytes += metric.GetSum();
-            }
-        }
-        return ret;
-    }
-
     void RequestQueryStatus(const TDqProgressWriter& progressWriter, uint64_t querySeqNo) {
         Yql::DqsProto::QueryStatusRequest request;
         request.SetSession(SessionId);
@@ -520,7 +503,11 @@ public:
                 return;
             }
 
-            this_->OnRequestQueryStatus(progressWriter, std::move(IDqGateway::TProgressWriterState{resp.GetStatus(), std::move(ExtractStats(resp))}), status.Ok(), querySeqNo);
+            this_->OnRequestQueryStatus(
+                progressWriter,
+                IDqGateway::TProgressWriterState{resp.GetStatus(), ExtractDqStagesStats(MakeOperationStatistics(resp))},
+                status.Ok(),
+                querySeqNo);
         };
 
         Service.DoRequest<Yql::DqsProto::QueryStatusRequest, Yql::DqsProto::QueryStatusResponse>(

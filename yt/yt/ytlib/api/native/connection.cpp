@@ -18,6 +18,7 @@
 #include <yt/yt/ytlib/chaos_client/chaos_cell_directory_synchronizer.h>
 #include <yt/yt/ytlib/chaos_client/chaos_cell_channel_factory.h>
 #include <yt/yt/ytlib/chaos_client/config.h>
+#include <yt/yt/ytlib/chaos_client/native_chaos_lease_cache.h>
 #include <yt/yt/ytlib/chaos_client/native_replication_card_cache_detail.h>
 #include <yt/yt/ytlib/chaos_client/chaos_object_channel_factory.h>
 #include <yt/yt/ytlib/chaos_client/chaos_residency_cache.h>
@@ -125,7 +126,7 @@
 #include <yt/yt/core/misc/lazy_ptr.h>
 #include <yt/yt/core/misc/memory_usage_tracker.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <library/cpp/iterator/enumerate.h>
 
@@ -373,15 +374,19 @@ public:
             GetCellDirectorySynchronizerSourceOfTruthCellIds(),
             Logger);
 
-        ChaosCellDirectorySynchronizer_ = CreateChaosCellDirectorySynchronizer(
-            StaticConfig_->ChaosCellDirectorySynchronizer,
-            CellDirectory_,
-            this,
-            GetCellDirectorySynchronizerSourceOfTruthCellIds(),
-            Logger);
+        if (Options_.CreateChaosCellDirectorySynchronizer) {
+            ChaosCellDirectorySynchronizer_ = CreateChaosCellDirectorySynchronizer(
+                StaticConfig_->ChaosCellDirectorySynchronizer,
+                CellDirectory_,
+                this,
+                GetCellDirectorySynchronizerSourceOfTruthCellIds(),
+                Logger);
 
-        if (StaticConfig_->ReplicationCardCache || StaticConfig_->ChaosCellDirectorySynchronizer->SyncAllChaosCells) {
-            ChaosCellDirectorySynchronizer_->Start();
+            if (StaticConfig_->ReplicationCardCache || StaticConfig_->ChaosCellDirectorySynchronizer->SyncAllChaosCells) {
+                ChaosCellDirectorySynchronizer_->Start();
+            }
+        } else {
+            ChaosCellDirectorySynchronizer_ = CreateDummyChaosCellDirectorySynchronizer();
         }
 
         ChaosResidencyCache_ = CreateChaosResidencyCache(
@@ -434,6 +439,13 @@ public:
         if (const auto& replicationCardCacheConfig = StaticConfig_->ReplicationCardCache) {
             ReplicationCardCache_ = CreateNativeReplicationCardCache(
                 replicationCardCacheConfig,
+                this,
+                Logger);
+        }
+
+        if (const auto& chaosLeaseCacheConfig = StaticConfig_->ChaosLeaseCache) {
+            ChaosLeaseCache_ = CreateNativeChaosLeaseCache(
+                chaosLeaseCacheConfig,
                 this,
                 Logger);
         }
@@ -516,6 +528,14 @@ public:
             THROW_ERROR_EXCEPTION("Replication card cache is not configured");
         }
         return ReplicationCardCache_;
+    }
+
+    const IChaosLeaseCachePtr& GetChaosLeaseCache() override
+    {
+        if (!ChaosLeaseCache_) {
+            THROW_ERROR_EXCEPTION("Chaos lease cache is not configured");
+        }
+        return ChaosLeaseCache_;
     }
 
     const ITimestampProviderPtr& GetTimestampProvider() override
@@ -673,19 +693,17 @@ public:
         EMasterChannelKind kind,
         TCellTag cellTag = PrimaryMasterCellTagSentinel) override
     {
-        auto effectiveKind = GetEffectiveMasterChannelKind(kind);
+        return CreateCypressChannelOrThrow(CypressProxyChannel_, kind, cellTag);
+    }
 
-        auto effectiveCellTag = cellTag == PrimaryMasterCellTagSentinel
-            ? GetPrimaryMasterCellTag()
-            : cellTag;
-
-        auto canUseCypressProxy =
-            effectiveKind == EMasterChannelKind::Leader ||
-            effectiveKind == EMasterChannelKind::Follower;
-
-        return canUseCypressProxy && CypressProxyChannel_
-            ? New<TTargetMasterPeerInjectingChannel>(CypressProxyChannel_, effectiveCellTag, effectiveKind)
-            : GetMasterChannelOrThrow(effectiveKind, effectiveCellTag);
+    IChannelPtr WrapAsCypressChannelOrThrow(
+        const IChannelPtr& localChannel,
+        EMasterChannelKind kind,
+        TCellTag cellTag = PrimaryMasterCellTagSentinel) override
+    {
+        YT_VERIFY(localChannel);
+        YT_VERIFY(localChannel->GetEndpointAttributes().Get<bool>("local", false));
+        return CreateCypressChannelOrThrow(localChannel, kind, cellTag);
     }
 
     EMasterChannelKind GetEffectiveMasterChannelKind(EMasterChannelKind kind) const
@@ -997,6 +1015,9 @@ public:
         if (ReplicationCardCache_) {
             ReplicationCardCache_->Clear();
         }
+        if (ChaosLeaseCache_) {
+            ChaosLeaseCache_->Clear();
+        }
     }
 
     bool IsTerminated() const override
@@ -1052,6 +1073,9 @@ public:
         ChaosResidencyCache_->Reconfigure(StaticConfig_->ChaosResidencyCache->ApplyDynamic(dynamicConfig->ChaosResidencyCache));
         if (ReplicationCardCache_ && dynamicConfig->ReplicationCardCache) {
             ReplicationCardCache_->Reconfigure(StaticConfig_->ReplicationCardCache->ApplyDynamic(dynamicConfig->ReplicationCardCache));
+        }
+        if (ChaosLeaseCache_ && dynamicConfig->ChaosLeaseCache) {
+            ChaosLeaseCache_->Reconfigure(StaticConfig_->ChaosLeaseCache->ApplyDynamic(dynamicConfig->ChaosLeaseCache));
         }
 
         SequoiaConnection_->Reconfigure(dynamicConfig->SequoiaConnection);
@@ -1117,6 +1141,7 @@ private:
     IClientChunkMetaCachePtr ChunkMetaCache_;
     ITableMountCachePtr TableMountCache_;
     IReplicationCardCachePtr ReplicationCardCache_;
+    IChaosLeaseCachePtr ChaosLeaseCache_;
     IChannelPtr TimestampProviderChannel_;
     ITimestampProviderPtr TimestampProvider_;
     IClockManagerPtr ClockManager_;
@@ -1162,6 +1187,25 @@ private:
     NSequoiaClient::ISequoiaConnectionPtr SequoiaConnection_;
 
     std::atomic<bool> Terminated_ = false;
+
+    IChannelPtr CreateCypressChannelOrThrow(
+        const IChannelPtr& cypressProxyChannel,
+        EMasterChannelKind kind,
+        TCellTag cellTag)
+    {
+        auto effectiveKind = GetEffectiveMasterChannelKind(kind);
+        auto effectiveCellTag = cellTag == PrimaryMasterCellTagSentinel
+            ? GetPrimaryMasterCellTag()
+            : cellTag;
+
+        auto canUseCypressProxy =
+            effectiveKind == EMasterChannelKind::Leader ||
+            effectiveKind == EMasterChannelKind::Follower;
+
+        return canUseCypressProxy && cypressProxyChannel
+            ? New<TTargetMasterPeerInjectingChannel>(cypressProxyChannel, effectiveCellTag, effectiveKind)
+            : GetMasterChannelOrThrow(effectiveKind, effectiveCellTag);
+    }
 
     void ConfigureMasterCells()
     {
@@ -1263,6 +1307,9 @@ private:
         // NB(apachee): We only use queue consumer registration manager from the bootstrapped connection (exception are multi proxies).
         // TODO(apachee): Fix this for multi proxies.
         clusterDirectoryOptions.CreateQueueConsumerRegistrationManager = false;
+
+        // Alien cluster connections should always use RPC calls to the masters of the alien cluster.
+        clusterDirectoryOptions.CreateChaosCellDirectorySynchronizer = true;
 
         ClusterDirectory_ = New<TClusterDirectory>(std::move(clusterDirectoryOptions));
 

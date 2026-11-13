@@ -14,11 +14,41 @@
 
 #include <yt/yt/library/tvm/service/public.h>
 
+#include <yt/yt/core/rpc/public.h>
+
 #include <library/cpp/yt/misc/static_initializer.h>
 
 #include <yt/yt/core/ytree/yson_struct.h>
 
 namespace NYT::NFlow {
+
+////////////////////////////////////////////////////////////////////////////////
+
+DEFINE_ENUM(EPipelineAuthenticationMethod,
+    ((OAuth) (0) ("oauth"))
+    ((Tvm)   (1) ("tvm"))
+);
+
+DEFINE_ENUM(EPipelineAuthenticationSubjectType,
+    ((User) (0) ("user"))
+    ((Tvm)  (1) ("tvm"))
+);
+
+struct TPipelineAuthenticationDescription
+    : public NYTree::TYsonStruct
+{
+    EPipelineAuthenticationMethod Method{};
+    EPipelineAuthenticationSubjectType SubjectType{};
+    std::optional<std::string> Subject;
+    std::string DisplayName;
+
+    REGISTER_YSON_STRUCT(TPipelineAuthenticationDescription);
+
+    static void Register(TRegistrar registrar);
+};
+
+DECLARE_REFCOUNTED_TYPE(TPipelineAuthenticationDescription);
+DEFINE_REFCOUNTED_TYPE(TPipelineAuthenticationDescription);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -61,11 +91,11 @@ struct IPipelineAuthenticator
     //! Returns authenticator for services processing internal Flow pipeline requests.
     virtual NRpc::IAuthenticatorPtr CreateSelfRpcAuthenticator() = 0;
 
-    //! Returns authenticator for controller service to authenticate requests from YT.
+    //! Returns authenticator for controller service to authenticate requests from YT:
+    //! forwarded by the RPC proxy, or sent directly by a runner with its own credentials.
     virtual NRpc::IAuthenticatorPtr CreateYTControllerRpcAuthenticator() = 0;
 
-    //! Returns human-readable text with description of used auth method.
-    virtual std::string GetAuthDescription() = 0;
+    virtual TPipelineAuthenticationDescriptionPtr GetPipelineAuthenticationDescription() = 0;
 };
 
 IPipelineAuthenticatorPtr CreatePipelineAuthenticator(
@@ -77,6 +107,11 @@ IPipelineAuthenticatorPtr CreatePipelineAuthenticator(
     TNodeInfoPtr nodeInfo,
     NClient::NCache::TClientsCacheConfigPtr clientsCacheConfig);
 
+////////////////////////////////////////////////////////////////////////////////
+
+//! Authenticates a request by the YT credentials it carries: asks the cluster whom they belong to.
+//! Authorization is left to the caller, which knows the command being executed.
+NRpc::IAuthenticatorPtr CreateClientCredentialsAuthenticator(NApi::IConnectionPtr connection);
 
 ////////////////////////////////////////////////////////////////////////////////
 

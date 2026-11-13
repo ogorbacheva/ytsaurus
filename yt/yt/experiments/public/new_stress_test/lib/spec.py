@@ -256,21 +256,34 @@ spec_template = {
         "mount_hunk_storage_tablet_probability": 0.2,
         "change_hunk_storage_probability": 0.8,
         "unlink_hunk_storage_probability": 0.2,
-        # Replicated queues (replicated_table + replica tables). When creating a queue, this
-        # is the chance it is created as a replicated queue instead of a plain one. Each
-        # replica gets a mode (sync/async) and independently may have hunks (its own linked
-        # hunk storage). Phase 1: replicated queues do create/write/read/remove only — the
-        # heavier operations (copy/move/alter/sort/merge/relink/mount-chaos) skip them.
+        # Chance to create a replicated queue (replicated_table plus replica tables).
+        # The source and each replica independently choose whether to use their own hunk
+        # storage. Each replica also independently chooses sync/async mode.
+        # Replicated queues support trims, replica addition/transitions, operations,
+        # flushing and private storage relinking; queue-level copy/move/alter
+        # and queue mount chaos skip them.
         "create_replicated_probability": 0.3,
         "replicated_min_replicas": 1,
+        # Also caps the replica count after additions during the run.
         "replicated_max_replicas": 3,
+        "replicated_table_hunks_probability": 0.5,
         "replica_sync_probability": 0.5,
         "replica_hunks_probability": 0.5,
+        "add_replica_probability": 0.1,
+        "change_replica_mode_probability": 0.1,
+        "replica_timestamp_probability": 0.5,
         "create_probability": 0.2,
+        # Bound live queues and static tables together; shadows and replicas belong
+        # to their queue. Moves and conversions do not consume additional slots.
+        "max_table_count": 100,
         "copy_probability": 0.3,
         "move_probability": 0.3,
         "remove_probability": 0.2,
         "flush_probability": 0.5,
+        # Applied once at the end: choose one queue retaining its final row from the last
+        # write phase, unmount it and its hunk storages, then check sealed-hunk statistics.
+        "check_hunk_statistics_probability": 1.0,
+        "trim_probability": 0.1,
         "run_map_probability": 0.2,
         "run_sort_probability": 0.2,
         "run_map_reduce_probability": 0.2,
@@ -282,10 +295,14 @@ spec_template = {
         "move_static_table_probability": 0.1,
         "remove_static_table_probability": 0.1,
         "write_probability": 0.3,
+        # Chance to combine two queues selected for writing into one transaction.
+        "multi_queue_write_probability": 0.2,
         "read_probability": 0.3,
         "write_min_batch_size": 1,
         "write_max_batch_size": 100,
-        "write_min_row_size": 512,
+        # Hunk-enabled writes force the final value of each write above
+        # the inline threshold, even if the configured size range is smaller.
+        "write_min_row_size": 0,
         "write_max_row_size": 2048,
         # Retry only brief transient write failures. When mount-chaos deliberately leaves a
         # queue or its hunk storage unmounted, the test makes exactly one attempt and handles
@@ -728,6 +745,9 @@ class Spec():
         if self.size.bundle_node_count is not None:
             return self.size.bundle_node_count * self.read_user_slots_per_node
         return None
+
+    def get(self, key, default_value=None):
+        return self.dct.get(key, default_value)
 
 ##################################################################
 

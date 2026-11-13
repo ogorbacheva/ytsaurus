@@ -22,7 +22,8 @@ struct TNbdSession
         TSessionOptions options,
         TStoreLocationPtr storeLocation,
         NConcurrency::TLease lease,
-        NNode::TLockedChunkGuard lockedChunkGuard);
+        NNode::TLockedChunkGuard lockedChunkGuard,
+        TWriteSessionStartCountersPtr startCounters);
 
     // NBD specific calls.
 
@@ -121,10 +122,14 @@ private:
     IBootstrap* Bootstrap_;
     const TSessionId Id_;
     const TSessionOptions Options_;
+    const IInvokerPtr StorageHeavyInvoker_;
     const TStoreLocationPtr StoreLocation_;
     const NConcurrency::TLease Lease_;
     NNode::TLockedChunkGuard LockedChunkGuard_;
     const TInstant StartTime_;
+
+    const TWriteSessionStartCountersPtr StartCounters_;
+
     TPromise<void> UnregisteredEvent_ = NewPromise<void>();
     TError Error_;
 

@@ -44,19 +44,17 @@ void TSchedulerMutations::Log(const TLogger& Logger) const
         return doFormatValue(value, doFormatValue);
     };
 
-    auto onIndexedEntries = [&] (TStringBuf prefix, const auto& entries) {
+    auto onIndexedEntries = [&] (TStringBuf mutation, const auto& entries) {
         for (const auto& [key, value] : entries) {
-            YT_TLOG_DEBUG("Mutation")
-                .With("Mutation", prefix)
+            YT_TLOG_DEBUG(Format("Mutation: %v", mutation))
                 .With("Key", key)
                 .With("Value", formatValue(value));
         }
     };
 
-    auto onSet = [&] (TStringBuf prefix, const auto& entries) {
+    auto onSet = [&] (TStringBuf mutation, const auto& entries) {
         for (const auto& entry : entries) {
-            YT_TLOG_DEBUG("Mutation")
-                .With("Mutation", prefix)
+            YT_TLOG_DEBUG(Format("Mutation: %v", mutation))
                 .With("Value", formatValue(entry));
         }
     };
@@ -141,6 +139,38 @@ int TSchedulerMutations::GetMutationCount() const
         (ChangedRootSystemAccountLimit ? 1 : 0) +
         ssize(NodeConfigUpdateRequests) +
         0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TSchedulerMutations::SetNodeDecommissioned(
+    const std::string& nodeAddress,
+    bool decommissioned,
+    std::string comment)
+{
+    ChangedDecommissionedFlag[nodeAddress] = WrapMutation(decommissioned);
+    if (decommissioned) {
+        YT_VERIFY(!comment.empty());
+        NodeDecommissionMaintenanceComments[nodeAddress] = std::move(comment);
+    } else {
+        YT_VERIFY(comment.empty());
+        NodeDecommissionMaintenanceComments.erase(nodeAddress);
+    }
+}
+
+void TSchedulerMutations::SetNodeBanned(
+    const std::string& nodeAddress,
+    bool banned,
+    std::string comment)
+{
+    ChangedBannedFlag[nodeAddress] = WrapMutation(banned);
+    if (banned) {
+        YT_VERIFY(!comment.empty());
+        NodeBanMaintenanceComments[nodeAddress] = std::move(comment);
+    } else {
+        YT_VERIFY(comment.empty());
+        NodeBanMaintenanceComments.erase(nodeAddress);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -436,6 +436,42 @@ class TestSequoiaInternals(YTEnvSetup):
             "//tmp/dst/d",
         ]
 
+    @authors("aleksandra-zh")
+    @pytest.mark.parametrize("finish_tx", [commit_transaction, abort_transaction])
+    def test_force_move_from_descendant_with_snapshot_lock(self, finish_tx):
+        create("map_node", "//tmp/d/a", recursive=True)
+        source_id = create("table", "//tmp/d/a/c")
+        content = [{"x": 42}]
+        write_table("//tmp/d/a/c", content)
+        create("map_node", "//tmp/d/a-b")
+
+        tx = start_transaction()
+        lock("//tmp/d/a/c", mode="snapshot", tx=tx)
+
+        move("//tmp/d/a/c", "//tmp/d", force=True)
+
+        assert read_table("//tmp/d") == content
+        assert read_table(f"#{source_id}", tx=tx) == content
+        assert select_paths_from_ground() == ["//tmp", "//tmp/d"]
+
+        finish_tx(tx)
+
+        assert read_table("//tmp/d") == content
+
+    @authors("aleksandra-zh")
+    def test_force_move_from_similar_path(self):
+        create("map_node", "//tmp/d/z", recursive=True)
+        source_path = "//tmp/d-x"
+        create("table", source_path)
+        content = [{"x": 42}]
+        write_table(source_path, content)
+
+        move(source_path, "//tmp/d", force=True)
+
+        assert not exists(source_path)
+        assert read_table("//tmp/d") == content
+        assert select_paths_from_ground() == ["//tmp", "//tmp/d"]
+
     @authors("kvk1920")
     @pytest.mark.parametrize("copy_mode", ["copy", "move"])
     def test_copy_force_overlapping_2(self, copy_mode):
@@ -754,6 +790,23 @@ class TestSequoiaInternals(YTEnvSetup):
         c_attr = get("//tmp/a/b/c", attributes=["recursive_resource_usage", "annotation"]).attributes
         assert c_attr["recursive_resource_usage"]["node_count"] == 1
         assert c_attr["annotation"] == annotation
+
+    @authors("danilalexeev")
+    def test_list_recursive_resource_usage_with_limit(self):
+        set("//tmp/m", {
+            "a": {"x": 1},
+            "b": {"nested": {"y": 2}},
+            "c": {"nested": {"z": 3, "w": 4}},
+        })
+        expected_node_counts = {"a": 2, "b": 3, "c": 4}
+
+        for max_size in (0, 1, 2, 3):
+            items = ls("//tmp/m", attributes=["resource_usage", "recursive_resource_usage"], max_size=max_size)
+            assert [str(item) for item in items] == ["a", "b", "c"][:max_size]
+            assert items.attributes.get("incomplete", False) == (max_size < 3)
+            for item in items:
+                assert item.attributes["resource_usage"]["node_count"] == 1
+                assert item.attributes["recursive_resource_usage"]["node_count"] == expected_node_counts[str(item)]
 
     @authors("danilalexeev")
     def test_recursive_attributes_heavy(self):

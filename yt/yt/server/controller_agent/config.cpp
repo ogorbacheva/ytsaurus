@@ -10,11 +10,17 @@
 
 #include <yt/yt/ytlib/api/native/config.h>
 
+#include <yt/yt/ytlib/distributed_chunk_session_client/config.h>
+
 #include <yt/yt/ytlib/event_log/config.h>
 
 #include <yt/yt/ytlib/node_tracker_client/config.h>
 
+#include <yt/yt/ytlib/push_based_shuffle_client/config.h>
+
 #include <yt/yt/ytlib/scheduler/job_resources_helpers.h>
+
+#include <yt/yt/client/api/config.h>
 
 #include <yt/yt/library/re2/re2.h>
 
@@ -45,9 +51,6 @@ void TTestingOptions::Register(TRegistrar registrar)
     registrar.Parameter("enable_snapshot_cycle_after_materialization", &TThis::EnableSnapshotCycleAfterMaterialization)
         .Default(false);
 
-    registrar.Parameter("rootfs_test_layers", &TThis::RootfsTestLayers)
-        .Default();
-
     registrar.Parameter("delay_in_unregistration", &TThis::DelayInUnregistration)
         .Default();
 
@@ -60,6 +63,9 @@ void TTestingOptions::Register(TRegistrar registrar)
         .Default(false);
 
     registrar.Parameter("enable_events_on_fs", &TThis::EnableEventsOnFs)
+        .Default(false);
+
+    registrar.Parameter("enable_cypress_sleep_state", &TThis::EnableCypressSleepState)
         .Default(false);
 }
 
@@ -324,10 +330,22 @@ void TDataBalancerOptions::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TJournalNbdOptions::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enable", &TThis::Enable)
+        .Default(false);
+    registrar.Parameter("block_size", &TThis::BlockSize)
+        .Default();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TUserJobOptions::Register(TRegistrar registrar)
 {
     registrar.Parameter("thread_limit_formula", &TThis::ThreadLimitFormula)
         .DefaultCtor([] { return MakeArithmeticFormula("250000"); });
+    registrar.Parameter("journal_nbd", &TThis::JournalNbd)
+        .DefaultNew();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -475,6 +493,13 @@ void TSimpleOperationOptions::Register(TRegistrar registrar)
 
 void TMapOperationOptions::Register(TRegistrar registrar)
 {
+    registrar.Parameter("enable_map_job_size_adjustment", &TThis::EnableMapJobSizeAdjustment)
+        .Default(true);
+    registrar.Parameter(
+        "enable_ordered_map_job_size_adjustment",
+        &TThis::EnableOrderedMapJobSizeAdjustment)
+        .Default(false);
+
     registrar.Preprocessor([&] (TMapOperationOptions* options) {
         options->DataWeightPerJob = 128_MB;
         options->JobSizeAdjuster = New<TJobSizeAdjusterConfig>();
@@ -530,6 +555,48 @@ void TEraseOperationOptions::Register(TRegistrar /*registrar*/)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TPushBasedShuffleOptions::Register(TRegistrar registrar)
+{
+    registrar.Parameter("seal_fallback_compression_ratio", &TThis::SealFallbackCompressionRatio)
+        .GreaterThan(0.0)
+        .LessThanOrEqual(1.0)
+        .Default(1.0 / 3.0);
+    registrar.Parameter("seal_fallback_row_count_per_record", &TThis::SealFallbackRowCountPerRecord)
+        .GreaterThan(0)
+        .Default(1);
+    registrar.Parameter("per_partition_metadata_estimate", &TThis::PerPartitionMetadataEstimate)
+        .GreaterThan(0)
+        .Default(5_KB / 2);
+    registrar.Parameter("per_sequencer_connection_estimate", &TThis::PerSequencerConnectionEstimate)
+        .GreaterThan(0)
+        .Default(64_KB);
+    registrar.Parameter("target_uncompressed_record_size", &TThis::TargetUncompressedRecordSize)
+        .GreaterThan(0)
+        .Default(256_KB);
+
+    registrar.Parameter("shuffle_writer_config", &TThis::ShuffleWriterConfig)
+        .DefaultCtor([] {
+            auto config = New<NPushBasedShuffleClient::TShuffleWriterConfig>();
+            config->BuildersBudgetFraction = 0.3;
+            return config;
+        });
+    registrar.Parameter("partition_reader_config", &TThis::PartitionReaderConfig)
+        .DefaultNew();
+    registrar.Parameter("sort_reader_config", &TThis::SortReaderConfig)
+        .DefaultNew();
+    registrar.Parameter("sort_thread_count", &TThis::SortThreadCount)
+        .GreaterThan(0)
+        .Default(1);
+    registrar.Parameter("journal_writer_config", &TThis::JournalWriterConfig)
+        .DefaultNew();
+    registrar.Parameter("session_pool_config", &TThis::SessionPoolConfig)
+        .DefaultNew();
+    registrar.Parameter("session_controller_config", &TThis::SessionControllerConfig)
+        .DefaultNew();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TSortOperationOptionsBase::Register(TRegistrar registrar)
 {
     registrar.Parameter("max_partition_job_count", &TThis::MaxPartitionJobCount)
@@ -574,6 +641,21 @@ void TSortOperationOptionsBase::Register(TRegistrar registrar)
     registrar.Parameter("sorted_merge_job_size_adjuster", &TThis::SortedMergeJobSizeAdjuster)
         .DefaultNew();
 
+    // By default we disable job size adjustment for partition maps,
+    // since it may lead to partition data skew between nodes.
+    registrar.Parameter(
+        "enable_partition_map_job_size_adjustment",
+        &TThis::EnablePartitionMapJobSizeAdjustment)
+        .Default(false);
+    registrar.Parameter(
+        "enable_ordered_partition_map_job_size_adjustment",
+        &TThis::EnableOrderedPartitionMapJobSizeAdjustment)
+        .Default(false);
+    registrar.Parameter(
+        "enable_sorted_merge_in_sort_job_size_adjustment",
+        &TThis::EnableSortedMergeInSortJobSizeAdjustment)
+        .Default(false);
+
     registrar.Parameter("data_balancer", &TThis::DataBalancer)
         .DefaultNew();
 
@@ -583,6 +665,9 @@ void TSortOperationOptionsBase::Register(TRegistrar registrar)
 
     registrar.Parameter("enable_final_partitions_merging_by_default", &TThis::EnableFinalPartitionsMergingByDefault)
         .Default(true);
+
+    registrar.Parameter("push_based_shuffle", &TThis::PushBasedShuffle)
+        .DefaultNew();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -748,6 +833,18 @@ void TJobTrackerConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TPushBasedShuffleConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("thread_count", &TThis::ThreadCount)
+        .Default(2)
+        .GreaterThan(0);
+
+    registrar.Parameter("seal_monitor", &TThis::SealMonitor)
+        .DefaultNew();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TDockerRegistryConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("internal_registry_address", &TThis::InternalRegistryAddress)
@@ -820,6 +917,8 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .GreaterThan(1.0);
     registrar.Parameter("desired_chunk_lists_per_release", &TThis::DesiredChunkListsPerRelease)
         .Default(10'000);
+    registrar.Parameter("enable_unstage_chunk_trees_batching", &TThis::EnableUnstageChunkTreesBatching)
+        .Default(false);
     registrar.Parameter("intermediate_output_master_cell_count", &TThis::IntermediateOutputMasterCellCount)
         .GreaterThanOrEqual(1)
         .Default(4);
@@ -1094,10 +1193,6 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
     registrar.Parameter("udf_registry_path", &TThis::UdfRegistryPath)
         .Default();
 
-    registrar.Parameter("enable_map_job_size_adjustment", &TThis::EnableMapJobSizeAdjustment)
-        .Default(true);
-    registrar.Parameter("enable_ordered_map_job_size_adjustment", &TThis::EnableOrderedMapJobSizeAdjustment)
-        .Default(true);
     registrar.Parameter("enable_job_splitting", &TThis::EnableJobSplitting)
         .Default(true);
     registrar.Parameter("enable_job_interrupts", &TThis::EnableJobInterrupts)
@@ -1112,15 +1207,6 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
     registrar.Parameter("heavy_job_spec_slice_count_threshold", &TThis::HeavyJobSpecSliceCountThreshold)
         .Default(1'000)
         .GreaterThan(0);
-
-    //! By default we disable job size adjustment for partition maps,
-    //! since it may lead to partition data skew between nodes.
-    registrar.Parameter("enable_partition_map_job_size_adjustment", &TThis::EnablePartitionMapJobSizeAdjustment)
-        .Default(false);
-    registrar.Parameter("enable_ordered_partition_map_job_size_adjustment", &TThis::EnableOrderedPartitionMapJobSizeAdjustment)
-        .Default(false);
-    registrar.Parameter("enable_sorted_merge_in_sort_job_size_adjustment", &TThis::EnableSortedMergeInSortJobSizeAdjustment)
-        .Default(false);
 
     registrar.Parameter("user_job_memory_digest_precision", &TThis::UserJobMemoryDigestPrecision)
         .Default(0.01)
@@ -1294,6 +1380,8 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .Default(true);
     registrar.Parameter("enable_compression_dictionary_remote_copy", &TThis::EnableCompressionDictionaryRemoteCopy)
         .Default(true);
+    registrar.Parameter("enable_hunk_chunk_replica_prefetch", &TThis::EnableHunkChunkReplicaPrefetch)
+        .Default(true);
 
     registrar.Parameter("default_enable_porto", &TThis::DefaultEnablePorto)
         .Default(NScheduler::EEnablePorto::None);
@@ -1373,6 +1461,9 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
     registrar.Parameter("job_tracker", &TThis::JobTracker)
         .DefaultNew();
 
+    registrar.Parameter("push_based_shuffle", &TThis::PushBasedShuffle)
+        .DefaultNew();
+
     registrar.Parameter("fast_intermediate_medium", &TThis::FastIntermediateMedium)
         .Default("ssd_blobs");
     registrar.Parameter("fast_intermediate_medium_limit", &TThis::FastIntermediateMediumLimit)
@@ -1416,10 +1507,10 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
         .GreaterThan(0);
 
     registrar.Parameter("register_lockable_dynamic_tables", &TThis::RegisterLockableDynamicTables)
-        .Default(false);
+        .Default(true);
 
     registrar.Parameter("allow_bulk_insert_under_user_transaction", &TThis::AllowBulkInsertUnderUserTransaction)
-        .Default(false);
+        .Default(true);
 
     registrar.Parameter("max_unversioned_dynamic_table_output_chunk_size", &TThis::MaxUnversionedDynamicTableOutputChunkSize)
         .GreaterThan(0)
@@ -1440,6 +1531,9 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("forbid_operations_on_offshore_media", &TThis::ForbidOperationsOnOffshoreMedia)
         .Default(true);
+
+    registrar.Parameter("use_lazy_transaction_externalization", &TThis::UseLazyTransactionExternalization)
+        .Default(false);
 
     registrar.Preprocessor([&] (TControllerAgentConfig* config) {
         config->ChunkLocationThrottler->Limit = 10'000;
@@ -1499,6 +1593,10 @@ void TControllerAgentConfig::Register(TRegistrar registrar)
                 config->CudaProfilerEnvironment->PathEnvironmentVariableName,
                 config->CudaProfilerEnvironment->PathEnvironmentVariableValue);
         }
+
+        THROW_ERROR_EXCEPTION_IF(
+            config->AllowBulkInsertUnderUserTransaction && !config->RegisterLockableDynamicTables,
+            "\"allow_bulk_insert_under_user_transaction\" can not be enabled if \"register_lockable_dynamic_tables\" is disabled");
 
 #if defined(_tsan_enabled_)
         // TODO(pogorelov): Implement building snapshots without fork to improve compatibility with tsan (YT-27927).

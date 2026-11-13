@@ -29,6 +29,8 @@ void TSyncSinkParameters::Register(TRegistrar registrar)
         .Default(false);
     registrar.Parameter("require_sync_replica", &TThis::RequireSyncReplica)
         .Default(true);
+    registrar.Parameter("allow_missing_key_columns", &TThis::AllowMissingKeyColumns)
+        .Default(false);
 }
 
 DEFINE_REFCOUNTED_TYPE(TSyncSinkParameters);
@@ -39,6 +41,42 @@ void TDynamicSyncSinkParameters::Register(TRegistrar /*registrar*/)
 { }
 
 DEFINE_REFCOUNTED_TYPE(TDynamicSyncSinkParameters);
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TAsyncSinkParameters::Register(TRegistrar registrar)
+{
+    registrar.Parameter("column_filter", &TThis::ColumnFilter)
+        .Default();
+    registrar.Parameter("aggregate_columns", &TThis::AggregateColumns)
+        .Default();
+    registrar.Parameter("delete_rows", &TThis::DeleteRows)
+        .Default(false);
+    registrar.Parameter("require_sync_replica", &TThis::RequireSyncReplica)
+        .Default(true);
+    registrar.Parameter("allow_missing_key_columns", &TThis::AllowMissingKeyColumns)
+        .Default(false);
+
+    registrar.Postprocessor([] (TThis* parameters) {
+        THROW_ERROR_EXCEPTION_IF(
+            parameters->AggregateColumns && !parameters->AggregateColumns->empty(),
+            "Parameter \"aggregate_columns\" is not supported by async sorted dynamic table sink: "
+            "retries are not safe for non-idempotent aggregates; use a sync sink");
+    });
+}
+
+DEFINE_REFCOUNTED_TYPE(TAsyncSinkParameters);
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TDynamicAsyncSinkParameters::Register(TRegistrar registrar)
+{
+    registrar.Parameter("backoff_duration", &TThis::BackoffDuration)
+        .Default(TDuration::Seconds(3))
+        .GreaterThan(TDuration::Zero());
+}
+
+DEFINE_REFCOUNTED_TYPE(TDynamicAsyncSinkParameters);
 
 ////////////////////////////////////////////////////////////////////////////////
 

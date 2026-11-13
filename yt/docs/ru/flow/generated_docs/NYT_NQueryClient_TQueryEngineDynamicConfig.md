@@ -16,6 +16,9 @@
  ||
 || `expression_builder_version` | **Тип**: `std::optional<int>`
  ||
+|| `max_projection_count` | **Тип**: `int`
+**Значение по умолчанию**: `1024`
+ ||
 || `codegen_optimization_level` | **Тип**: `std::optional<`[NYT::NCodegen::EOptimizationLevel](./all_yson_structs#NYT_NCodegen_EOptimizationLevel)`>`
  ||
 || `allow_udf_object_code_cache` | **Тип**: `std::optional<bool>`
@@ -27,6 +30,8 @@
 || `truncated_query_length_for_tracing` | **Тип**: `std::optional<int>`
  ||
 || `allow_reverse_scan_for_order_by` | **Тип**: `std::optional<bool>`
+ ||
+|| `enable_scalar_subquery_order_by_and_limit` | **Тип**: `std::optional<bool>`
  ||
 || `allow_heavy_range_inference_in_joins` | **Тип**: `std::optional<bool>`
  ||

@@ -58,6 +58,7 @@ namespace NYT::NControllerAgent::NControllers {
 
 DEFINE_ENUM(ETransactionType,
     (Async)
+    (JournalNbd)
     (Input)
     (Output)
     (Debug)
@@ -327,6 +328,9 @@ public:
         const std::vector<TUserFile>& files,
         const std::string& debugArtifactsAccount) override;
     const std::vector<TUserFile>& GetUserFiles(const NScheduler::TUserJobSpecPtr& userJobSpec) const override;
+    bool IsJournalNbdEnabled() const override;
+    const THashMap<std::string, TJournalNbdSpec>& GetJournalNbdSpecs(
+        const NScheduler::TUserJobSpecPtr& userJobSpec) const override;
 
     void CustomizeJobSpec(const TJobletPtr& joblet, NControllerAgent::NProto::TJobSpec* jobSpec) const override;
     void CustomizeJoblet(const TJobletPtr& joblet, const TAllocation& allocation) override;
@@ -361,6 +365,7 @@ public:
     NChunkClient::TChunkListId ExtractOutputChunkList(NObjectClient::TCellTag cellTag) override;
     NChunkClient::TChunkListId ExtractOutputHunkChunkList(NObjectClient::TCellTag cellTag) override;
     NChunkClient::TChunkListId ExtractDebugChunkList(NObjectClient::TCellTag cellTag) override;
+    NChunkClient::TChunkListId ExtractJournalNbdChunkList() override;
     void ReleaseChunkTrees(
         const std::vector<NChunkClient::TChunkListId>& chunkTreeIds,
         bool unstageRecursively,
@@ -445,7 +450,7 @@ public:
     void AsyncAbortJob(TJobId jobId, EAbortReason abortReason) override;
     void AbortJob(TJobId jobId, EAbortReason abortReason) override;
 
-    bool CanInterruptJobs() const override;
+    bool CanInterruptJobs() const final;
     void InterruptJob(TJobId jobId, EInterruptionReason reason) override;
 
     void OnCompetitiveJobScheduled(const TJobletPtr& joblet, EJobCompetitionType competitionType) override;
@@ -519,7 +524,7 @@ protected:
     const NLogging::TLogger Logger;
     const std::vector<std::string> CoreNotes_;
 
-    NThreading::TAtomicObject<NScheduler::TAccessControlRule> AccessControlRule_;
+    TAtomicObject<NScheduler::TAccessControlRule> AccessControlRule_;
 
     // Intentionally transient.
     const NScheduler::TControllerEpoch ControllerEpoch_;
@@ -562,12 +567,13 @@ protected:
     // NB: Transaction objects are ephemeral and should not be saved to snapshot.
     TInputTransactionManagerPtr InputTransactions_;
     NApi::ITransactionPtr AsyncTransaction_;
+    NApi::ITransactionPtr JournalNbdTransaction_;
     // NB: OutputTransaction_ may be read from the ControlThread (GetIntermediateMediumTransaction)
     // while being written from the controller invoker (StartTransactions/InitializeReviving).
     // NB: SwitchedToSlowIntermediateMedium_ and SwitchIntermediateMediumScheduled_ (sort
     // controller) are also protected by this lock since they are read from the ControlThread
     // and written from the controller invoker.
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, OutputTransactionLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, OutputTransactionLock_);
     NApi::ITransactionPtr OutputTransaction_;
     NApi::ITransactionPtr DebugTransaction_;
     NApi::NNative::ITransactionPtr OutputCompletionTransaction_;
@@ -602,6 +608,8 @@ protected:
     TIntermediateTablePtr IntermediateTable_ = New<TIntermediateTable>();
 
     THashMap<NScheduler::TUserJobSpecPtr, std::vector<TUserFile>> UserJobFiles_;
+
+    THashMap<NScheduler::TUserJobSpecPtr, THashMap<std::string, TJournalNbdSpec>> JournalNbdSpecs_;
 
     std::optional<NScheduler::TInputQuerySpec> InputQuerySpec_;
 
@@ -649,6 +657,8 @@ protected:
     i64 CompletedRowCount_ = 0;
 
     virtual void OnJobStarted(const TJobletPtr& joblet);
+
+    TFuture<NObjectClient::TCellTag> PickChunkHostCellTag(const NApi::NNative::IClientPtr& client) const;
 
     TFuture<NApi::NNative::ITransactionPtr> StartTransaction(
         ETransactionType type,
@@ -724,6 +734,7 @@ protected:
     void InitUpdatingTables();
     void PrepareInputTables();
     bool HasDiskRequestsWithSpecifiedAccount() const;
+    bool HasJournalNbdDiskRequests() const;
     void InitAccountResourceUsageLeases();
     void ValidateCollectiveOptions() const;
     void ValidateSecureVault() const;
@@ -995,15 +1006,15 @@ protected:
         NChunkPools::TChunkStripeKey key,
         int tableIndex) override;
 
-    bool HasEnoughChunkLists(bool isWritingStderrTable, bool isWritingCoreTable);
+    bool HasEnoughChunkLists(bool isWritingStderrTable, bool isWritingCoreTable, bool isUsingJournalNbd);
 
-    std::vector<NChunkClient::TLegacyDataSlicePtr> CollectPrimaryVersionedDataSlices(i64 sliceSize);
+    std::vector<NChunkClient::TDataSlicePtr> CollectPrimaryVersionedDataSlices(i64 sliceSize);
 
     //! Returns the list of all input data slices collected from all primary input tables.
-    std::vector<NChunkClient::TLegacyDataSlicePtr> CollectPrimaryInputDataSlices(i64 versionedSliceSize);
+    std::vector<NChunkClient::TDataSlicePtr> CollectPrimaryInputDataSlices(i64 versionedSliceSize);
 
     //! Returns the list of lists of all input chunks collected from all foreign input tables.
-    std::vector<std::deque<NChunkClient::TLegacyDataSlicePtr>> CollectForeignInputDataSlices(int foreignKeyColumnCount) const;
+    std::vector<std::deque<NChunkClient::TDataSlicePtr>> CollectForeignInputDataSlices(int foreignKeyColumnCount) const;
 
     virtual void InitUserJobSpec(
         NControllerAgent::NProto::TUserJobSpec* jobSpec,
@@ -1086,6 +1097,7 @@ protected:
     NYson::TYsonString ConvertToYsonStringNestingLimited(const T& value) const;
 
     i64 GetFastIntermediateMediumLimit() const;
+    bool IsFastIntermediateMediumEnabled() const;
 
     void DoFailOperation(const TError& error, bool flush = true, bool abortAllJoblets = true);
 
@@ -1126,20 +1138,21 @@ private:
     TChunkListPoolPtr OutputChunkListPool_;
     TChunkListPoolPtr OutputHunkChunkListPool_;
     TChunkListPoolPtr DebugChunkListPool_;
+    TChunkListPoolPtr JournalNbdChunkListPool_;
     THashMap<NObjectClient::TCellTag, int> CellTagToRequiredOutputChunkListCount_;
     THashMap<NObjectClient::TCellTag, int> CellTagToRequiredOutputHunkChunkListCount_;
     THashMap<NObjectClient::TCellTag, int> CellTagToRequiredDebugChunkListCount_;
 
-    NThreading::TAtomicObject<TCompositePendingJobCount> CachedPendingJobCount_;
+    TAtomicObject<TCompositePendingJobCount> CachedPendingJobCount_;
     int CachedTotalJobCount_ = 0;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, OverrunWriteBufferMemoryPerJobLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, OverrunWriteBufferMemoryPerJobLock_);
     std::set<TOverrunTableWriteBufferMemoryInfo> OverrunWriteBufferMemoryPerJob_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, CachedNeededResourcesLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, CachedNeededResourcesLock_);
     NScheduler::TCompositeNeededResources CachedNeededResources_;
 
-    NThreading::TAtomicObject<NScheduler::TAllocationGroupResourcesMap> CachedGroupedNeededResources_;
+    TAtomicObject<NScheduler::TAllocationGroupResourcesMap> CachedGroupedNeededResources_;
 
     NScheduler::TAllocationGroupResourcesMap InitialGroupedNeededResources_;
 
@@ -1168,7 +1181,7 @@ private:
     NYson::TYsonString DoBuildJobsYson();
 
     NYson::TYsonString CachedSuspiciousJobsYson_ = NYson::TYsonString(TStringBuf(), NYson::EYsonType::MapFragment);
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, CachedSuspiciousJobsYsonLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, CachedSuspiciousJobsYsonLock_);
     NConcurrency::TPeriodicExecutorPtr SuspiciousJobsYsonUpdater_;
 
     //! Maps an intermediate chunk id to its originating completed job.
@@ -1195,7 +1208,7 @@ private:
     //! Records peak memory usage.
     i64 PeakMemoryUsage_ = 0;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, JobMetricsDeltaPerTreeLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, JobMetricsDeltaPerTreeLock_);
     //! Delta of job metrics that was not reported to scheduler.
     THashMap<std::string, NScheduler::TJobMetrics> JobMetricsDeltaPerTree_;
     std::atomic<TDuration> CachedJobMetricsReportPeriodCpuDuration_;
@@ -1254,7 +1267,7 @@ private:
 
     std::vector<TOutputStreamDescriptorPtr> StandardStreamDescriptors_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ProgressLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ProgressLock_);
     const NConcurrency::TPeriodicExecutorPtr ProgressBuildExecutor_;
 
     const NConcurrency::TPeriodicExecutorPtr CheckTentativeTreeEligibilityExecutor_;
@@ -1318,7 +1331,7 @@ private:
 
     THashSet<NNodeTrackerClient::TNodeId> BannedNodeIds_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, AlertsLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, AlertsLock_);
     TOperationAlertMap Alerts_;
 
     bool IsLegacyLivePreviewSuppressed_ = false;
@@ -1574,7 +1587,6 @@ private:
     void BuildJobsYson(NYTree::TFluentMap fluent) const;
     void BuildRetainedFinishedJobsYson(NYTree::TFluentMap fluent) const;
 
-    PHOENIX_DECLARE_FRIEND();
     PHOENIX_DECLARE_POLYMORPHIC_TYPE(TOperationControllerBase, 0x6715254c);
 };
 

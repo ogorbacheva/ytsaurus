@@ -7,12 +7,12 @@ Use stateful processing to handle events with read-modify-write operations on st
 You access state inside a [computation](../../../flow/concepts/glossary.md#stream-and-computation) through three components:
 
 - **State** — user data tied to a [key](../../../flow/concepts/glossary.md#key) and stored in a {{product-name}} dynamic table.
-- **State client** — a type-specific object (`Client<TState>`) that the computation creates one for each named state and initializes in `DoInit`. You access the state by key through the client. It can be **read-write** (works with both [internal](#internal-state) and [external](#external-state) states) or **read-only** ([joiner](#external-state-joiner) for external state).
+- **State client** — a type-specific object (`Client<TState>`) that the process function creates for each named state and initializes in `Init`. You access state by key through the client. It can be **read-write** (works with both [internal](#internal-state) and [external](#external-state) states) or **read-only** ([joiner](#external-state-joiner) for external state).
 - **State accessor** — what the client returns for a specific key (based on an input message, timer, or explicit key): a representation of the state of the same type `TState`. The accessor behaves like a smart pointer to the state: a read-write accessor lets you read, modify, and clear the state; a read-only accessor lets you only read it.
 
 {% note warning %}
 
-The accessor is valid only within the current [epoch](../../../flow/concepts/glossary.md#epoch). Don't store it in computation fields or reuse it across epochs — you must get the state through the client again in each epoch.
+The accessor is valid only within the current [epoch](../../../flow/concepts/glossary.md#epoch). Don't store it in process-function fields or reuse it across epochs — get the state through the client again in each epoch.
 
 {% endnote %}
 
@@ -96,9 +96,11 @@ Flow provides a shared two-level (uncompressed + compressed) LRU cache for state
 - **C++**: the client `TMutableStateKeyClient<TState>` (read-write) or `TJoinedStateKeyClient<TState>` (read-only) returns the accessor `TStateAccessor<TState>` / `TConstStateAccessor<TState>`; the same key client works with both internal and external states. [Learn more →](../../../flow/cpp/state.md)
 - **Java**: YsonStateAccessor, ProtoStateAccessor, ExternalStateAccessor. [Learn more →](../../../flow/java/state.md)
 - **Python**: ctx.state(), ctx.external_state(), ctx.proto_state(). [Learn more →](../../../flow/python/state.md)
+- **Go**: `flow.OpenYSONState`, `flow.OpenProtoState`, `flow.OpenExternalState`, and `flow.OpenJoinedExternalState` open a keyed state accessor. [Learn more →](../../../flow/go/state.md)
 
 ## See also
 
 - [Working with states (C++)](../../../flow/cpp/state.md)
 - [Working with states (Java)](../../../flow/java/state.md)
 - [Working with states (Python)](../../../flow/python/state.md)
+- [Working with states (Go)](../../../flow/go/state.md)

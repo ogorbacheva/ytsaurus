@@ -8,6 +8,8 @@
 
 namespace NYT::NJobProxy {
 
+static constexpr auto DefaultIOConsumedReportWindow = TDuration::Minutes(1);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 void TJobProxyTestingConfig::Register(TRegistrar registrar)
@@ -198,7 +200,8 @@ void TJobThrashingDetectorConfig::Register(TRegistrar registrar)
 void TJobEnvironmentConfigBase::Register(TRegistrar registrar)
 {
     registrar.Parameter("start_uid", &TThis::StartUid)
-        .Default(10000);
+        .Default(10000)
+        .GreaterThan(0);
 
     registrar.Parameter("memory_watchdog_period", &TThis::MemoryWatchdogPeriod)
         .Default(TDuration::Seconds(1));
@@ -343,6 +346,14 @@ void TJobProxyInternalConfig::Register(TRegistrar registrar)
     registrar.Parameter("input_pipe_blinker_period", &TThis::InputPipeBlinkerPeriod)
         .Default(TDuration::Seconds(1));
 
+    registrar.Parameter("enable_job_io_statistics", &TThis::EnableJobIoStatistics)
+        .Default(false);
+
+    registrar.Parameter("io_consumed_report_window", &TThis::IOConsumedReportWindow)
+        .Default(DefaultIOConsumedReportWindow)
+        .GreaterThan(TDuration::Zero())
+        .DontSerializeDefault();
+
     registrar.Parameter("job_io_meter_max_history_duration", &TThis::JobIoMeterMaxHistoryDuration)
         .Default(TDuration::Hours(1));
 
@@ -362,9 +373,6 @@ void TJobProxyInternalConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("ahead_memory_reserve", &TThis::AheadMemoryReserve)
         .Default(100_MB);
-
-    registrar.Parameter("test_root_fs", &TThis::TestRootFS)
-        .Default(false);
 
     registrar.Parameter("always_abort_on_memory_reserve_overdraft", &TThis::AlwaysAbortOnMemoryReserveOverdraft)
         .Default(false);
@@ -442,7 +450,8 @@ void TJobProxyInternalConfig::Register(TRegistrar registrar)
         .DefaultNew();
 
     registrar.Parameter("statistics_output_table_count_limit", &TThis::StatisticsOutputTableCountLimit)
-        .Default();
+        .Default()
+        .GreaterThanOrEqual(0);
 
     registrar.Parameter("dns_over_rpc_resolver", &TThis::DnsOverRpcResolver)
         .Default();
@@ -491,7 +500,7 @@ void TJobProxyInternalConfig::Register(TRegistrar registrar)
         .GreaterThan(0);
 
     registrar.Parameter("oom_score_adj_on_exceeded_memory_reserve", &TThis::OomScoreAdjOnExceededMemoryReserve)
-        .Default()
+        .Default(800)
         .GreaterThanOrEqual(-1000)
         .LessThanOrEqual(1000);
 
@@ -510,9 +519,12 @@ void TJobProxyInternalConfig::Register(TRegistrar registrar)
         .Default(false);
 
     registrar.Parameter("enable_grpc_server", &TThis::EnableGrpcServer)
-        .Default(false);
+        .Default(true);
     registrar.Parameter("enable_http_server", &TThis::EnableHttpServer)
-        .Default(false);
+        .Default(true);
+
+    registrar.Parameter("private_bus_server", &TThis::PrivateBusServer)
+        .DefaultNew();
 
     registrar.Parameter("grpc_server", &TThis::GrpcServer)
         .DefaultNew();
@@ -545,6 +557,14 @@ void TJobProxyDynamicConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("jaeger", &TThis::Jaeger)
         .DefaultNew();
+
+    registrar.Parameter("enable_job_io_statistics", &TThis::EnableJobIoStatistics)
+        .Default(false);
+
+    registrar.Parameter("io_consumed_report_window", &TThis::IOConsumedReportWindow)
+        .Default(DefaultIOConsumedReportWindow)
+        .GreaterThan(TDuration::Zero())
+        .DontSerializeDefault();
 
     registrar.Parameter("enable_job_shell_seccomp", &TThis::EnableJobShellSeccopm)
         .Default(true);
@@ -592,7 +612,7 @@ void TJobProxyDynamicConfig::Register(TRegistrar registrar)
         .GreaterThan(0);
 
     registrar.Parameter("oom_score_adj_on_exceeded_memory_reserve", &TThis::OomScoreAdjOnExceededMemoryReserve)
-        .Default()
+        .Default(800)
         .GreaterThanOrEqual(-1000)
         .LessThanOrEqual(1000);
 
@@ -618,9 +638,9 @@ void TJobProxyDynamicConfig::Register(TRegistrar registrar)
         .Default(false);
 
     registrar.Parameter("enable_grpc_server", &TThis::EnableGrpcServer)
-        .Default(false);
+        .Default(true);
     registrar.Parameter("enable_http_server", &TThis::EnableHttpServer)
-        .Default(false);
+        .Default(true);
 
     registrar.Parameter("job_proxy_peak_memory_profiler", &TThis::JobProxyPeakMemoryProfiler)
         .DefaultNew();

@@ -102,8 +102,15 @@ struct TDynamicSequoiaManagerConfig
 
     bool WrapObjectServiceExecuteIntoSequoiaTransaction;
 
+    // COMPAT(shakurov)
+    bool ReplicateCypressTransactionsViaSeparateSequoiaTransactionPerCoordinator;
+
     // NB: don't use it directly. Use ShouldUseSequoiaRevisions() instead.
     bool EnableSequoiaRevisions;
+
+    // COMPAT(h0pless): coarse-grained tags can be removed once fine-grained are stable.
+    bool UseCoarseGrainedOrderingTags;
+    bool UseFineGrainedOrderingTags;
 
     bool ShouldUseSequoiaRevisions() const noexcept;
 

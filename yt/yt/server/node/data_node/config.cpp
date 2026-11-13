@@ -111,6 +111,9 @@ void TChunkLocationConfig::ApplyDynamicInplace(const TChunkLocationDynamicConfig
         UpdateYsonStructField(FairShareWorkloadCategoryWeights[category], dynamicConfig.FairShareWorkloadCategoryWeights[category]);
     }
 
+    UpdateYsonStructField(FairShareSystemWeight, dynamicConfig.FairShareSystemWeight);
+    UpdateYsonStructField(FairShareUserWeight, dynamicConfig.FairShareUserWeight);
+
     UpdateYsonStructField(WeightedRequestWeight, dynamicConfig.WeightedRequestWeight);
     UpdateYsonStructField(UnweightedRequestWeight, dynamicConfig.UnweightedRequestWeight);
 
@@ -130,6 +133,13 @@ void TChunkLocationConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("fair_share_workload_category_weights", &TThis::FairShareWorkloadCategoryWeights)
         .Default();
+
+    registrar.Parameter("fair_share_system_weight", &TThis::FairShareSystemWeight)
+        .GreaterThan(0.0)
+        .Optional();
+    registrar.Parameter("fair_share_user_weight", &TThis::FairShareUserWeight)
+        .GreaterThan(0.0)
+        .Optional();
 
     registrar.Parameter("weighted_request_weight", &TThis::WeightedRequestWeight)
         .GreaterThanOrEqual(0.0)
@@ -186,6 +196,13 @@ void TChunkLocationDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("fair_share_workload_category_weights", &TThis::FairShareWorkloadCategoryWeights)
         .Default();
+
+    registrar.Parameter("fair_share_system_weight", &TThis::FairShareSystemWeight)
+        .GreaterThan(0.0)
+        .Optional();
+    registrar.Parameter("fair_share_user_weight", &TThis::FairShareUserWeight)
+        .GreaterThan(0.0)
+        .Optional();
 
     registrar.Parameter("weighted_request_weight", &TThis::WeightedRequestWeight)
         .GreaterThanOrEqual(0.0)
@@ -363,6 +380,19 @@ void TMultiplexedChangelogConfig::Register(TRegistrar registrar)
 
 void TArtifactCacheReaderConfig::Register(TRegistrar registrar)
 {
+    // NB: Parallel file chunk fetching itself is not specific to the artifact cache.
+    // TODO(yuryalekseev): consider generalizing it (e.g. a windowed TFileMultiChunkReader)
+    // so that other users of file readers (native client file_reader / read_file,
+    // operation snapshots, etc.) can benefit from it as well.
+    registrar.Parameter("max_parallel_download_chunks", &TThis::MaxParallelDownloadChunks)
+        .GreaterThan(0)
+        .Default(1);
+
+    // Null disables incremental writeback.
+    registrar.Parameter("writeback_batch_size", &TThis::WritebackBatchSize)
+        .GreaterThan(0)
+        .Default(64_MB);
+
     registrar.Preprocessor([] (TThis* config) {
         config->WorkloadDescriptor = TWorkloadDescriptor(EWorkloadCategory::SystemArtifactCacheDownload);
     });
@@ -384,6 +414,11 @@ void TLayerLocationConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("resides_on_tmpfs", &TThis::ResidesOnTmpfs)
         .Default(false);
+
+    registrar.Parameter("layer_import_location_concurrency", &TThis::LayerImportLocationConcurrency)
+        .Default(1)
+        .GreaterThan(0)
+        .LessThanOrEqual(16);
 
     registrar.Parameter("disk_health_checker", &TThis::DiskHealthChecker)
         .DefaultNew();
@@ -584,6 +619,9 @@ void TDataNodeTestingOptions::Register(TRegistrar registrar)
 
     registrar.Parameter("min_epoch_to_start_heartbeats", &TThis::MinEpochToStartHeartbeats)
         .Default();
+
+    registrar.Parameter("omit_heartbeat_registration_revision", &TThis::OmitHeartbeatRegistrationRevision)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -733,6 +771,11 @@ void TRepairChunkJobDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("window_size", &TThis::WindowSize)
         .Default(256_MBs);
 
+    registrar.Parameter(
+        "enable_adaptive_repair_for_striped_erasure_chunks",
+        &TThis::EnableAdaptiveRepairForStripedErasureChunks)
+        .Default(false);
+
     registrar.Preprocessor([] (TThis* config) {
         // Disable target allocation from master.
         config->Writer->UploadReplicationFactor = 1;
@@ -811,7 +854,6 @@ void TJournalManagerConfig::Register(TRegistrar registrar)
             // Assumes journal placement on a fast medium (SSD, NVME), consider changing
             // these settings if you use HDD.
             auto multiplexedChangelog = New<TMultiplexedChangelogConfig>();
-            multiplexedChangelog->FlushQuantum = TDuration::MilliSeconds(1);
             multiplexedChangelog->FlushPeriod = TDuration::MilliSeconds(1);
 
             return multiplexedChangelog;
@@ -1159,6 +1201,13 @@ void TDataNodeDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("long_live_read_session_threshold", &TThis::LongLiveReadSessionThreshold)
         .Optional();
+    registrar.Parameter("session_block_reorder_timeout", &TThis::SessionBlockReorderTimeout)
+        .GreaterThan(TDuration::Zero())
+        .Optional();
+    registrar.Parameter("max_out_of_turn_sessions", &TThis::MaxOutOfTurnSessions)
+        .GreaterThanOrEqual(0)
+        .LessThan(64)
+        .Optional();
 
     registrar.Parameter("chunk_reader_retention_timeout", &TThis::ChunkReaderRetentionTimeout)
         .Default(TDuration::Minutes(1));
@@ -1199,6 +1248,12 @@ void TDataNodeDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("p2p", &TThis::P2P)
         .Optional();
 
+    registrar.Parameter("max_blocks_per_read", &TThis::MaxBlocksPerRead)
+        .GreaterThan(0)
+        .Optional();
+    registrar.Parameter("max_bytes_per_read", &TThis::MaxBytesPerRead)
+        .GreaterThan(0)
+        .Optional();
     registrar.Parameter("bytes_per_write", &TThis::BytesPerWrite)
         .GreaterThan(0)
         .Default();
@@ -1245,6 +1300,9 @@ void TDataNodeDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("net_out_throttling_limit", &TThis::NetOutThrottlingLimit)
         .Default();
+    registrar.Parameter("net_out_throttling_duration", &TThis::NetOutThrottlingDuration)
+        .GreaterThan(TDuration::Zero())
+        .Optional();
 
     registrar.Parameter("net_in_throttling_limit", &TThis::NetInThrottlingLimit)
         .Default();

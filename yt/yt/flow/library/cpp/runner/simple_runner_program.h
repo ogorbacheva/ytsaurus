@@ -6,6 +6,8 @@
 #include <yt/yt/flow/library/cpp/common/spec.h>
 #include <yt/yt/flow/library/cpp/common/yson_message.h>
 
+#include <yt/yt/flow/library/cpp/pipeline_helpers/flow_execute/public.h>
+
 #include <yt/yt/client/cache/config.h>
 
 #include <yt/yt/library/program/config.h>
@@ -40,6 +42,9 @@ struct TSimpleRunnerConfig
     //! a YT vanilla operation hosting the controller/worker federation for this pipeline.
     TVanillaConfigPtr Vanilla;
 
+    //! Send pipeline commands straight to the leader controller instead of through the RPC proxy.
+    TDirectControllerCommandsConfigPtr DirectControllerCommands;
+
     REGISTER_YSON_STRUCT(TSimpleRunnerConfig);
 
     static void Register(TRegistrar registrar);
@@ -56,6 +61,8 @@ class TSimpleRunnerProgram
     , public TProgramConfigMixin<TSimpleRunnerConfig>
 {
 public:
+    //! Prepares specs in memory before validation, including with --validate-only.
+    //! Must not cause external side effects.
     using TPrepareSpecCallback = std::function<void(const TPipelineSpecPtr& spec, const TDynamicPipelineSpecPtr& dynamicSpec)>;
 
     TSimpleRunnerProgram();

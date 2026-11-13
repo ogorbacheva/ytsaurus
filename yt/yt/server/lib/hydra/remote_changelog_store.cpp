@@ -28,7 +28,7 @@
 
 #include <yt/yt/core/ytree/helpers.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 namespace NYT::NHydra {
 
@@ -55,12 +55,13 @@ class TRemoteChangelogStoreConfigWrapper
 {
 public:
     explicit TRemoteChangelogStoreConfigWrapper(TRemoteChangelogStoreConfigPtr config)
-        : Config_(std::move(config))
+        : StaticConfig_(std::move(config))
+        , Config_(StaticConfig_)
     { }
 
-    void Set(TRemoteChangelogStoreConfigPtr config)
+    void Reconfigure(const TDynamicRemoteChangelogStoreConfigPtr& dynamicConfig)
     {
-        Config_.Store(config);
+        Config_.Store(StaticConfig_->ApplyDynamic(dynamicConfig));
     }
 
     TRemoteChangelogStoreConfigPtr Get() const
@@ -69,6 +70,7 @@ public:
     }
 
 private:
+    const TRemoteChangelogStoreConfigPtr StaticConfig_;
     TAtomicIntrusivePtr<TRemoteChangelogStoreConfig> Config_;
 };
 
@@ -262,8 +264,8 @@ private:
     const std::optional<TElectionPriority> ElectionPriority_;
     const TJournalWriterPerformanceCounters Counters_;
 
-    NThreading::TAtomicObject<std::optional<int>> Term_;
-    NThreading::TAtomicObject<std::optional<int>> LatestChangelogId_;
+    TAtomicObject<std::optional<int>> Term_;
+    TAtomicObject<std::optional<int>> LatestChangelogId_;
 
 
     void DoSetTerm(int term)
@@ -654,7 +656,7 @@ private:
         const TLogger Logger;
 
         //! Protects #Writer_, #WriterOpened_ and #PendingRecords_.
-        YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, WriterLock_);
+        YT_DECLARE_SPIN_LOCK(TSpinLock, WriterLock_);
 
         IJournalWriterPtr Writer_;
         TFuture<void> WriterOpenFuture_;
@@ -767,8 +769,7 @@ public:
 
     void Reconfigure(const TDynamicRemoteChangelogStoreConfigPtr& dynamicConfig) override
     {
-        auto newConfig = Config_->Get()->ApplyDynamic(dynamicConfig);
-        Config_->Set(newConfig);
+        Config_->Reconfigure(dynamicConfig);
     }
 
 private:

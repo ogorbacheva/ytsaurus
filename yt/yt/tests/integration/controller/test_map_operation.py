@@ -8,10 +8,11 @@ from yt_commands import (
     authors, events_on_fs, print_debug, raises_yt_error, remove, set_nodes_banned, wait, wait_breakpoint, release_breakpoint, with_breakpoint, create,
     ls, get, sorted_dicts, check_permission,
     set, exists, create_user, make_ace, alter_table, write_file, read_table, write_table,
-    map, merge, sort, interrupt_job, get_first_chunk_id, abort_job, get_job,
+    map, merge, sort, interrupt_job, get_first_chunk_id, abort_job, get_job, get_operation,
     get_singular_chunk_id, check_all_stderrs, make_random_string,
-    create_test_tables, assert_statistics, extract_statistic_v2,
-    set_node_banned, update_inplace, update_controller_agent_config, update_nodes_dynamic_config, get_table_columnar_statistics)
+    create_test_tables, assert_statistics, extract_statistic_v2, sync_create_cells,
+    set_node_banned, update_inplace, update_controller_agent_config, update_nodes_dynamic_config, get_table_columnar_statistics,
+    update_scheduler_config)
 
 from yt_type_helpers import make_schema, normalize_schema, make_column, list_type, tuple_type, optional_type
 
@@ -19,9 +20,10 @@ from yt_helpers import skip_if_component_old, skip_if_old, skip_if_delivery_fenc
 
 from yt_sequoia_helpers import not_implemented_in_sequoia
 
+import yt.environment.init_operations_archive as init_operations_archive
 import yt.yson as yson
 from yt.test_helpers import assert_items_equal
-from yt.common import YtError
+from yt.common import YtError, date_string_to_datetime
 
 from flaky import flaky
 
@@ -32,6 +34,24 @@ import pytest
 import random
 import string
 import time
+
+##################################################################
+
+
+def get_job_phase_durations(events):
+    phase_events = sorted(
+        (event for event in events if "phase" in event),
+        key=lambda event: date_string_to_datetime(event["time"]),
+    )
+    durations = {}
+    for event, next_event in zip(phase_events, phase_events[1:]):
+        duration = (date_string_to_datetime(next_event["time"])
+                    - date_string_to_datetime(event["time"]))
+        phase = event["phase"]
+        assert phase not in durations
+        durations[phase] = duration
+    return durations
+
 
 ##################################################################
 
@@ -255,6 +275,31 @@ class TestSchedulerMapCommands(YTEnvSetup):
 
         wait(lambda: assert_statistics(op, "data.output.0.row_count", lambda row_count: row_count == 5))
         wait(lambda: assert_statistics(op, "data.output.1.row_count", lambda row_count: row_count == 1))
+
+    @authors("pogorelov")
+    def test_job_statistics_wire_mode_1(self):
+        update_nodes_dynamic_config({
+            "exec_node": {
+                "controller_agent_connector": {
+                    "omit_data_statistics_from_yson": True,
+                },
+            },
+        })
+
+        create("table", "//tmp/wire_input")
+        create("table", "//tmp/wire_output_0")
+        create("table", "//tmp/wire_output_1")
+        write_table("//tmp/wire_input", [{"key": 1}, {"key": 2}])
+
+        op = map(
+            command="cat; echo {key=3} >&4",
+            in_="//tmp/wire_input",
+            out=["//tmp/wire_output_0", "//tmp/wire_output_1"],
+        )
+
+        wait(lambda: assert_statistics(op, "data.input.row_count", lambda count: count == 2))
+        wait(lambda: assert_statistics(op, "data.output.0.row_count", lambda count: count == 2))
+        wait(lambda: assert_statistics(op, "data.output.1.row_count", lambda count: count == 1))
 
     @authors("renadeen")
     def test_codec_statistics(self):
@@ -720,7 +765,7 @@ print(row + table_index)
             out="//tmp/t2",
             spec={"data_size_per_job": 1},
         )
-        jobs = wait_breakpoint(job_count=2)
+        jobs = wait_breakpoint(op, job_count=2)
 
         operation_path = op.get_path()
         async_transaction_id = get(operation_path + "/@async_scheduler_transaction_id")
@@ -763,7 +808,7 @@ print(row + table_index)
             spec={"data_size_per_job": 1},
         )
 
-        jobs = wait_breakpoint(job_count=2)
+        jobs = wait_breakpoint(op, job_count=2)
         operation_path = op.get_path()
         for job_id in jobs[:2]:
             release_breakpoint(job_id=job_id)
@@ -865,7 +910,7 @@ print(row + table_index)
             ordered=ordered,
             spec={"data_size_per_job": 1, "max_failed_job_count": 1},
         )
-        jobs = wait_breakpoint(job_count=5)
+        jobs = wait_breakpoint(op, job_count=5)
         assert len(jobs) == 5
 
         for job_id in jobs[:3]:
@@ -888,7 +933,7 @@ print(row + table_index)
             command=with_breakpoint("cat && BREAKPOINT"),
             spec={"data_size_per_job": 1, "max_failed_job_count": 1},
         )
-        wait_breakpoint(job_count=5)
+        wait_breakpoint(op, job_count=5)
 
         nodes_with_flavors = get("//sys/cluster_nodes", attributes=["flavors"])
 
@@ -929,7 +974,7 @@ print(row + table_index)
             spec={"data_size_per_job": 1, "max_failed_job_count": 1},
         )
 
-        jobs = wait_breakpoint(job_count=5)
+        jobs = wait_breakpoint(op, job_count=5)
         for job_id in jobs[:3]:
             release_breakpoint(job_id=job_id)
 
@@ -942,7 +987,7 @@ print(row + table_index)
         create("table", "//tmp/input")
         create("table", "//tmp/out_1")
         create("table", "//tmp/out_2")
-        with raises_yt_error("Only one output table with \"row_count_limit\" is supported"):
+        with raises_yt_error("Only one output table with (\"row_count_limit\"|row_count_limit) is supported"):
             map(
                 in_="//tmp/input",
                 out=[
@@ -1069,7 +1114,7 @@ print(row + table_index)
         # Set weak schema
         sort(in_="//tmp/tin", out="//tmp/tin", sort_by="a")
 
-        with raises_yt_error("Duplicate column .* in unversioned row"):
+        with raises_yt_error("Duplicate (column .*|.* column) in unversioned row"):
             map(in_="<rename_columns={a=b}>//tmp/tin", out="//tmp/tout", command="cat")
 
     @authors("dakovalkov")
@@ -1419,7 +1464,7 @@ print(json.dumps(input))
         )
 
         try:
-            jobs = wait_breakpoint()
+            jobs = wait_breakpoint(op)
 
             op.interrupt_job(jobs[0])
 
@@ -1428,6 +1473,40 @@ print(json.dumps(input))
             op.track()
 
         return op
+
+    @authors("pavook")
+    def test_map_job_interrupts_disabled_by_operation_spec(self):
+        skip_if_component_old(self.Env, (26, 2), "controller-agent")
+
+        rows = [{"key": index} for index in range(3)]
+        create("table", "//tmp/t_in")
+        write_table("//tmp/t_in", rows)
+        create("table", "//tmp/t_out")
+
+        op = map(
+            track=False,
+            in_="//tmp/t_in",
+            out="//tmp/t_out",
+            command=with_breakpoint('read ROW; echo "$ROW"; BREAKPOINT; cat'),
+            spec={
+                "mapper": {"format": "json"},
+                "enable_job_interrupts": False,
+                "enable_job_splitting": False,
+                "job_io": {
+                    "buffer_row_count": 1,
+                },
+            },
+        )
+
+        job_id, = wait_breakpoint(op)
+        try:
+            with raises_yt_error("Error interrupting job"):
+                interrupt_job(job_id)
+        finally:
+            release_breakpoint()
+            op.track()
+
+        assert read_table("//tmp/t_out") == rows
 
     @authors("klyachin")
     @pytest.mark.parametrize("ordered", [False, True])
@@ -1472,6 +1551,9 @@ print(json.dumps(input))
             job_type=job_type))
 
     @authors("arkady-e1ppa")
+    # Exhausting the per-user pipe page limit can make F_SETPIPE_SZ fail with EPERM
+    # before the mapper reaches the interruption breakpoint.
+    @pytest.mark.skip(reason="Flaky: setting pipe capacity may fail with EPERM in CI")
     @pytest.mark.parametrize("ordered", [False, True])
     @pytest.mark.parametrize("small_pipe", [False, True])
     @pytest.mark.ignore_in_opensource_ci
@@ -1598,7 +1680,7 @@ print(json.dumps(input))
             },
         )
 
-        jobs = wait_breakpoint()
+        jobs = wait_breakpoint(op)
         op.interrupt_job(jobs[0])
 
         release_breakpoint()
@@ -1678,7 +1760,7 @@ print(json.dumps(input))
             },
         )
 
-        (job_id, ) = wait_breakpoint()
+        (job_id, ) = wait_breakpoint(op)
 
         buffer_row_count = -1
 
@@ -1719,7 +1801,15 @@ print(json.dumps(input))
             track=False,
             in_=input_table,
             out=output,
-            command=with_breakpoint("""read row; echo $row; BREAKPOINT; while read row; do echo $row; sleep 1; done"""),
+            command=with_breakpoint("""read row; echo $row; BREAKPOINT; python3 -c '
+import sys
+import time
+
+for row in sys.stdin.buffer:
+    sys.stdout.buffer.write(row)
+    sys.stdout.buffer.flush()
+    time.sleep(1)
+'"""),
             spec={
                 "force_allow_job_interruption": True,
                 "job_count": job_count,
@@ -1730,7 +1820,7 @@ print(json.dumps(input))
             },
         )
 
-        jobs = wait_breakpoint()
+        jobs = wait_breakpoint(op)
         interrupt_job(jobs[0])
         release_breakpoint()
         op.track()
@@ -1759,7 +1849,7 @@ print(json.dumps(input))
             },
         )
 
-        jobs = wait_breakpoint()
+        jobs = wait_breakpoint(op)
         interrupt_job(jobs[0])
         op.track()
 
@@ -1962,9 +2052,9 @@ print(json.dumps(input))
             command=with_breakpoint("""if [ "$YT_COLLECTIVE_MEMBER_RANK" == 0 ]; then cat; fi; BREAKPOINT;"""),
             spec={"mapper": {"collective_options": {"size": 2}}},
         )
-        wait_breakpoint(job_count=2)
+        wait_breakpoint(op, job_count=2)
 
-        abort_job(get_job(op.id, wait_breakpoint(job_count=2)[0], attributes=["collective_id"])["collective_id"])
+        abort_job(get_job(op.id, wait_breakpoint(op, job_count=2)[0], attributes=["collective_id"])["collective_id"])
 
         wait(lambda: op.get_job_count("aborted") == 2)
         release_breakpoint()
@@ -1983,7 +2073,7 @@ print(json.dumps(input))
             command=with_breakpoint("""if [ "$YT_COLLECTIVE_MEMBER_RANK" == 0 ]; then read row; echo $row; fi; BREAKPOINT; if [ "$YT_COLLECTIVE_MEMBER_RANK" == 0 ]; then cat; fi"""),
             spec={"mapper": {"collective_options": {"size": 2}}},
         )
-        job_ids = wait_breakpoint(job_count=2)
+        job_ids = wait_breakpoint(op, job_count=2)
         print_debug("Fetched jobs: ", get_job(op.id, job_ids[0]))
         # collective_id equals master job id.
         collective_id = get_job(op.id, job_ids[0], attributes=["collective_id"])["collective_id"]
@@ -2008,12 +2098,12 @@ print(json.dumps(input))
             spec={"mapper": {"collective_options": {"size": 2}}, "max_failed_job_count": 2},
             track=False,
         )
-        first_incarnation = wait_breakpoint(job_count=2)
+        first_incarnation = wait_breakpoint(op, job_count=2)
         collective_id = get_job(op.id, first_incarnation[0], attributes=["collective_id"])["collective_id"]
         secondary_job_id, = {*first_incarnation} - {collective_id}
         release_breakpoint(job_id=secondary_job_id)
         wait(lambda: get_job(op.id, secondary_job_id)["state"] == "failed", ignore_exceptions=True)
-        wait_breakpoint(job_count=2)
+        wait_breakpoint(op, job_count=2)
         release_breakpoint()
         op.track()
         assert read_table("//tmp/t2") == [{"a": "b"}]
@@ -2037,7 +2127,7 @@ print(json.dumps(input))
                 },
             },
         )
-        job_ids = wait_breakpoint(job_count=2)
+        job_ids = wait_breakpoint(op, job_count=2)
         collective_id = get_job(op.id, job_ids[0], attributes=["collective_id"])["collective_id"]
         secondary_job_id, = {*job_ids} - {collective_id}
 
@@ -2071,7 +2161,7 @@ print(json.dumps(input))
                 },
             },
         )
-        job_ids = wait_breakpoint(job_count=2)
+        job_ids = wait_breakpoint(op, job_count=2)
         collective_id = get_job(op.id, job_ids[0], attributes=["collective_id"])["collective_id"]
         secondary_job_id, = {*job_ids} - {collective_id}
 
@@ -2104,7 +2194,7 @@ print(json.dumps(input))
                 "max_failed_job_count": 2,
             },
         )
-        job_ids = wait_breakpoint(job_count=2)
+        job_ids = wait_breakpoint(op, job_count=2)
         collective_id = get_job(op.id, job_ids[0], attributes=["collective_id"])["collective_id"]
         secondary_job_id, = {*job_ids} - {collective_id}
 
@@ -2136,7 +2226,7 @@ print(json.dumps(input))
                 },
             },
         )
-        first_incarnation = wait_breakpoint(job_count=2)
+        first_incarnation = wait_breakpoint(op, job_count=2)
         collective_id = get_job(op.id, first_incarnation[0], attributes=["collective_id"])["collective_id"]
         secondary_job_id, = {*first_incarnation} - {collective_id}
 
@@ -2146,7 +2236,7 @@ print(json.dumps(input))
         release_breakpoint(job_id=collective_id)
         release_breakpoint(job_id=secondary_job_id)
 
-        wait_breakpoint(job_count=2)
+        wait_breakpoint(op, job_count=2)
         release_breakpoint()
         op.track()
 
@@ -2172,7 +2262,7 @@ print(json.dumps(input))
                 "max_failed_job_count": 2,
             },
         )
-        first_incarnation = wait_breakpoint(job_count=2)
+        first_incarnation = wait_breakpoint(op, job_count=2)
         collective_id = get_job(op.id, first_incarnation[0], attributes=["collective_id"])["collective_id"]
         secondary_job_id, = {*first_incarnation} - {collective_id}
 
@@ -2181,7 +2271,7 @@ print(json.dumps(input))
 
         release_breakpoint(job_id=collective_id)
 
-        wait_breakpoint(job_count=2)
+        wait_breakpoint(op, job_count=2)
         release_breakpoint()
         op.track()
 
@@ -2501,7 +2591,7 @@ print(json.dumps(input))
                 track=False,
             )
 
-            jobs = wait_breakpoint()
+            jobs = wait_breakpoint(op)
             interrupt_job(jobs[0])
             release_breakpoint()
             op.track()
@@ -2542,7 +2632,7 @@ print(json.dumps(input))
         op.resume()
 
         # orchid does not outlive operation, so we need to inspect it in the middle of the operation
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         assert get(
             op.get_path() + "/controller_orchid/progress/schedule_job_statistics/failed/not_enough_chunk_lists"
@@ -2702,67 +2792,6 @@ print(json.dumps(input))
         ])
 
         assert first_read <= first_written <= chunk_reader_spent_time
-
-    @authors("coteeq")
-    def test_writer_timing_statistics(self):
-        skip_if_component_old(self.Env, (26, 1), "node")
-        create("table", "//tmp/t1")
-        create("table", "//tmp/t_out0", attributes={"chunk_writer": {"testing_delay_before_chunk_close": 100}})
-        create("table", "//tmp/t_out1", attributes={"chunk_writer": {"testing_delay_before_chunk_close": 100}})
-        create("table", "//tmp/t_out2", attributes={"chunk_writer": {"testing_delay_before_chunk_close": 100}})
-
-        write_table("//tmp/t1", [{"key": i, "value": "val_{i}"} for i in range(10000)])
-        op = map(
-            in_=["//tmp/t1"],
-            out=["//tmp/t_out0", "//tmp/t_out1", "//tmp/t_out2"],
-            command="sleep 1 && tee /proc/self/fd/4 | (sleep 1 && cat)",
-            spec={
-                "job_io": {
-                    # Try really hard to write as slow as possible
-                    "table_writer": {
-                        "block_size": 1,
-                        "desired_chunk_size": 1,
-                    }
-                }
-            }
-        )
-
-        statistics = get(op.get_path() + "/@progress/job_statistics_v2")
-        chunk_count = len(get("//tmp/t_out0/@chunk_ids"))
-
-        assert op.get_job_count("completed") == 1
-        job_time_ms = extract_statistic_v2(statistics, "time.exec")
-
-        eps_ms = 20
-        # The empty writer's Close() shares the single-threaded ChunkWriter queue with the two
-        # writers closing real chunks, so its overhead over the injected delay is not tiny.
-        close_eps_ms = 1000
-
-        def assert_total_time(total_time):
-            # Not very precise :(.
-            assert abs(job_time_ms - total_time) < 1000
-
-        for table_index in [0, 1]:
-            wait_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.wait_time")
-            write_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.write_time")
-            idle_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.idle_time")
-            close_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.close_time")
-
-            assert wait_time > eps_ms
-            assert write_time > eps_ms
-            assert close_time >= 100 * chunk_count
-            assert_total_time(idle_time + wait_time + write_time + close_time)
-
-        for table_index in [2]:
-            wait_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.wait_time")
-            write_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.write_time")
-            idle_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.idle_time")
-            close_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.close_time")
-
-            assert wait_time == 0
-            assert write_time == 0
-            assert 100 <= close_time < 100 + close_eps_ms  # testing_delay_before_chunk_close + eps.
-            assert_total_time(idle_time + wait_time + write_time + close_time)
 
     @authors("apollo1321")
     def test_job_count_with_skewed_row_sizes(self):
@@ -2996,7 +3025,7 @@ print(json.dumps(input))
             },
         )
 
-        jobs = wait_breakpoint(job_count=1)
+        jobs = wait_breakpoint(op, job_count=1)
 
         op.interrupt_job(jobs[0])
 
@@ -3006,6 +3035,7 @@ print(json.dumps(input))
 
     @authors("apollo1321")
     def test_interruption_does_not_increase_compressed_data_size(self):
+        skip_if_component_old(self.Env, (26, 2), "controller-agent")
         create("table", "//tmp/t_in", attributes={
             "schema": make_schema([
                 {"name": "selected", "type": "string"},
@@ -3042,20 +3072,13 @@ print(json.dumps(input))
             },
         )
 
-        job_id, = wait_breakpoint(job_count=1)
+        job_id, = wait_breakpoint(op, job_count=1)
         op.interrupt_job(job_id)
         release_breakpoint()
         op.track()
 
     @authors("apollo1321")
     def test_fail_tactics_with_chunk_scraper(self):
-        """
-        This test ensures that unavailable input chunk is not added to chunk scraper if
-        unavailable_chunk_tactics is set to fail. Otherwise internal invariants may be
-        violated, because when this chunk is found, `Resume` is called without preceding
-        `Suspend` call.
-        """
-
         create("table", "//tmp/t_in")
         set("//tmp/t_in/@replication_factor", 1)
 
@@ -3100,6 +3123,47 @@ print(json.dumps(input))
         time.sleep(5)
 
         set_nodes_banned(replicas, False)
+
+        with raises_yt_error(f"Input chunk {chunk_id} is unavailable"):
+            op.track()
+
+    @authors("apollo1321")
+    def test_fail_tactics_with_chunk_available_again(self):
+        skip_if_component_old(self.Env, (27, 1), "controller-agent")
+
+        update_scheduler_config(
+            "testing_options/finish_operation_transition_delay",
+            {"duration": 20000, "type": "async"})
+
+        create("table", "//tmp/t_in", attributes={"replication_factor": 1})
+
+        write_table("<append=%true>//tmp/t_in", [{"col": "1"}])
+        skipped_chunk_id = get_first_chunk_id("//tmp/t_in")
+        set_nodes_banned(get(f"#{skipped_chunk_id}/@stored_replicas"), True)
+
+        write_table("<append=%true>//tmp/t_in", [{"col": "2"}])
+        chunk_id = get("//tmp/t_in/@chunk_ids/1")
+        replicas = get(f"#{chunk_id}/@stored_replicas")
+
+        op = map(
+            in_="//tmp/t_in",
+            out="<create=true>//tmp/t_out",
+            command=with_breakpoint("BREAKPOINT ; cat"),
+            spec={
+                "unavailable_chunk_strategy": "skip",
+                "unavailable_chunk_tactics": "fail",
+            },
+            track=False,
+        )
+        wait_breakpoint(op)
+
+        unavailable_chunks_path = op.get_orchid_path() + "/unavailable_input_chunks/<local>"
+
+        set_nodes_banned(replicas, True)
+        wait(lambda: op.get_state() == "failing")
+
+        set_nodes_banned(replicas, False)
+        wait(lambda: get(unavailable_chunks_path) == [skipped_chunk_id])
 
         with raises_yt_error(f"Input chunk {chunk_id} is unavailable"):
             op.track()
@@ -3192,6 +3256,110 @@ class TestSchedulerMapCommandsSysOperationsRootstock(TestSchedulerMapCommandsSha
 class TestSchedulerMapCommandsSequoia(TestSchedulerMapCommandsSysOperationsRootstock):
     ENABLE_MULTIDAEMON = True
     ENABLE_TMP_ROOTSTOCK = True
+
+
+##################################################################
+
+
+class TestWriterTimingStatistics(YTEnvSetup):
+    ENABLE_MULTIDAEMON = True
+    NUM_MASTERS = 1
+    NUM_NODES = 3
+    NUM_SCHEDULERS = 1
+    USE_DYNAMIC_TABLES = True
+
+    DELTA_DYNAMIC_NODE_CONFIG = {
+        "%true": {
+            "exec_node": {
+                "job_reporter": {
+                    "min_repeat_delay": 1000,
+                    "max_repeat_delay": 5000,
+                },
+            },
+        },
+    }
+
+    DELTA_CONTROLLER_AGENT_CONFIG = {
+        "controller_agent": {
+            "job_reporter": {
+                "min_repeat_delay": 1000,
+                "max_repeat_delay": 5000,
+            },
+        },
+    }
+
+    def setup_method(self, method):
+        super().setup_method(method)
+        sync_create_cells(1)
+        init_operations_archive.create_tables_latest_version(
+            self.Env.create_native_client(), override_tablet_cell_bundle="default"
+        )
+
+    @authors("coteeq")
+    def test_writer_timing_statistics(self):
+        skip_if_component_old(self.Env, (26, 2), "node")
+        create("table", "//tmp/t1")
+        create("table", "//tmp/t_out0", attributes={"chunk_writer": {"testing_delay_before_chunk_close": 100}})
+        create("table", "//tmp/t_out1", attributes={"chunk_writer": {"testing_delay_before_chunk_close": 100}})
+        create("table", "//tmp/t_out2", attributes={"chunk_writer": {"testing_delay_before_chunk_close": 100}})
+
+        write_table("//tmp/t1", [{"key": i, "value": "val_{i}"} for i in range(10000)])
+        op = map(
+            in_=["//tmp/t1"],
+            out=["//tmp/t_out0", "//tmp/t_out1", "//tmp/t_out2"],
+            command="sleep 1 && tee /proc/self/fd/4 | (sleep 1 && cat)",
+            spec={
+                "job_io": {
+                    # Try really hard to write as slow as possible
+                    "table_writer": {
+                        "block_size": 1,
+                        "desired_chunk_size": 1,
+                    }
+                }
+            }
+        )
+
+        progress = get_operation(op.id, attributes=["progress"])["progress"]
+        statistics = progress["job_statistics_v2"]
+        chunk_count = len(get("//tmp/t_out0/@chunk_ids"))
+
+        assert progress["jobs"]["completed"]["total"] == 1
+        wait(lambda: len(op.list_jobs()) == 1)
+        job_id, = op.list_jobs()
+        wait(lambda: "running" in get_job_phase_durations(get_job(op.id, job_id).get("events", [])))
+        phase_durations = get_job_phase_durations(get_job(op.id, job_id)["events"])
+        running_time_ms = phase_durations["running"].total_seconds() * 1000
+
+        eps_ms = 20
+        # The empty writer's Close() shares the single-threaded ChunkWriter queue with the two
+        # writers closing real chunks, so its overhead over the injected delay is not tiny.
+        close_eps_ms = 1000
+
+        def assert_total_time(total_time):
+            # Not very precise :(.
+            assert abs(running_time_ms - total_time) < 1000
+
+        for table_index in [0, 1]:
+            wait_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.wait_time")
+            write_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.write_time")
+            idle_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.idle_time")
+            close_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.close_time")
+
+            assert wait_time > eps_ms
+            assert write_time > eps_ms
+            assert close_time >= 100 * chunk_count
+            assert_total_time(idle_time + wait_time + write_time + close_time)
+
+        for table_index in [2]:
+            wait_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.wait_time")
+            write_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.write_time")
+            idle_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.idle_time")
+            close_time = extract_statistic_v2(statistics, f"chunk_writer_statistics.{table_index}.close_time")
+
+            assert wait_time == 0
+            assert write_time == 0
+            assert 100 <= close_time < 100 + close_eps_ms  # testing_delay_before_chunk_close + eps.
+            assert_total_time(idle_time + wait_time + write_time + close_time)
 
 
 ##################################################################
@@ -3306,7 +3474,14 @@ class TestJobSizeAdjuster(YTEnvSetup):
     NUM_NODES = 5
     NUM_SCHEDULERS = 1
 
-    DELTA_CONTROLLER_AGENT_CONFIG = {"controller_agent": {"map_operation_options": {"data_size_per_job": 1}}}
+    DELTA_CONTROLLER_AGENT_CONFIG = {
+        "controller_agent": {
+            "map_operation_options": {
+                "data_size_per_job": 1,
+                "enable_ordered_map_job_size_adjustment": True,
+            },
+        },
+    }
 
     @authors("max42")
     def test_map_job_size_adjuster_boost(self):
@@ -3942,7 +4117,7 @@ class TestNestingLevelLimitOperations(YTEnvSetup):
 ##################################################################
 
 
-class TestSchedulerMapCommands(YTEnvSetup):
+class TestJobDataLocality(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
     NUM_MASTERS = 1
     NUM_SCHEDULERS = 1
@@ -3975,7 +4150,7 @@ class TestSchedulerMapCommands(YTEnvSetup):
                 "min_locality_input_data_weight": 0
             },
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         now = datetime.now()
         wait(lambda: get(op.get_path() + "/@progress/schedule_job_statistics/failed/task_delayed") > 0)
@@ -3995,7 +4170,7 @@ class TestSchedulerMapCommands(YTEnvSetup):
                 "min_locality_input_data_weight": 0
             },
         )
-        wait_breakpoint()
+        wait_breakpoint(op)
         time.sleep(elapsed)
         wait(lambda: exists(op.get_path() + "/@progress/schedule_job_statistics/failed/task_delayed"))
         assert get(op.get_path() + "/@progress/schedule_job_statistics/failed/task_delayed") == 0

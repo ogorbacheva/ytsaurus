@@ -215,9 +215,9 @@ TFetchedArtifactKey FetchLayerArtifactKeyIfRevisionChanged(
     ValidateCompatibility(accessMethod, filesystem);
 
     // Create artifact key.
-    TArtifactKey layerKey;
-    ToProto(layerKey.mutable_chunk_specs(), chunkSpecs);
-    layerKey.mutable_data_source()->set_type(ToProto(EDataSourceType::File));
+    auto layerKey = TArtifactKey(
+        EDataSourceType::File,
+        std::move(chunkSpecs));
     layerKey.mutable_data_source()->set_path(path);
     layerKey.set_access_method(ToProto(accessMethod));
     layerKey.set_filesystem(ToProto(filesystem));
@@ -374,8 +374,24 @@ void FromProto(TSandboxNbdRootVolumeSpec* nbd, const NScheduler::NProto::TNbdDis
             break;
         }
 
+        case NScheduler::NProto::TNbdDiskRequest::kJournalNbd: {
+            const auto& protoJournalNbd = protoNbd.journal_nbd();
+            nbd->BackendSpec = TJournalNbdVolumeSpec{
+                .Config = NYson::TYsonString(protoJournalNbd.config()),
+                .DeviceSize = protoJournalNbd.device_size(),
+                .BlockSize = protoJournalNbd.block_size(),
+                .MediumName = protoNbd.disk_request().medium_name(),
+                .Account = protoJournalNbd.account(),
+                .TransactionId = FromProto<TTransactionId>(protoJournalNbd.transaction_id()),
+                .ChunkListId = FromProto<TChunkListId>(protoJournalNbd.chunk_list_id()),
+            };
+            break;
+        }
+
         case NScheduler::NProto::TNbdDiskRequest::BACKEND_NOT_SET:
-            THROW_ERROR_EXCEPTION("NBD disk request specifies no backend");
+            THROW_ERROR_EXCEPTION(
+                NExecNode::EErrorCode::InvalidNbdDiskRequest,
+                "NBD disk request specifies no backend");
     }
 }
 

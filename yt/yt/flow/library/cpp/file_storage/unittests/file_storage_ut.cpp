@@ -5,9 +5,12 @@
 
 #include <yt/yt/core/concurrency/action_queue.h>
 #include <yt/yt/core/concurrency/scheduler.h>
+#include <yt/yt/core/misc/finally.h>
 #include <yt/yt/core/ytree/convert.h>
 
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
+
+#include <yt/yt/library/process/process.h>
 
 #include <util/folder/path.h>
 #include <util/folder/tempdir.h>
@@ -229,6 +232,30 @@ TEST(TFileStorageTest, RejectsConcurrentOwnerAndReusesLockAfterExit)
     EXPECT_EQ(ReadPayload(restarted), "payload");
 }
 
+TEST(TFileStorageTest, SpawnedChildDoesNotInheritRootLock)
+{
+    TStorageFixture fixture;
+    auto firstStorage = fixture.MakeStorage();
+
+    // The child outlives the storage, as a companion may outlive a failed worker.
+    auto child = New<TSimpleProcess>("/bin/sleep");
+    child->AddArgument("600");
+    auto childExited = child->Spawn();
+    auto cleanup = Finally([&] {
+        child->Kill(SIGKILL);
+        YT_UNUSED_FUTURE(WaitFor(childExited));
+    });
+
+    // Let the first cleanup pass drop its reference, so the storage is destroyed right away.
+    auto noop = [] {
+    };
+    WaitFor(BIND(noop).AsyncVia(fixture.Queue->GetInvoker()).Run())
+        .ThrowOnError();
+    firstStorage.Reset();
+    EXPECT_NO_THROW(fixture.MakeStorage());
+    EXPECT_FALSE(child->IsFinished());
+}
+
 TEST(TFileStorageTest, ObjectDoesNotKeepStorageAlive)
 {
     TStorageFixture fixture;
@@ -345,7 +372,7 @@ TEST(TFileStorageTest, EvictsLeastRecentlyUsedUnpinnedObject)
     EXPECT_EQ(ReadPayload(refilled), "1");
 }
 
-TEST(TFileStorageTest, PublishesPermissionPreservingReadOnlyPayload)
+TEST(TFileStorageTest, PreservesPayloadPermissions)
 {
     TStorageFixture fixture;
     auto storage = fixture.MakeStorage();
@@ -365,10 +392,12 @@ TEST(TFileStorageTest, PublishesPermissionPreservingReadOnlyPayload)
         .ValueOrThrow();
 
     TFileStat stat(TFsPath(object->GetPath()) / "data", /*nofollow*/ true);
-    EXPECT_EQ(stat.Mode & 0777, 0440);
+    EXPECT_EQ(stat.Mode & 0777, 0640);
+    TFileStat directoryStat(TFsPath(object->GetPath()), /*nofollow*/ true);
+    EXPECT_NE(directoryStat.Mode & S_IWUSR, 0);
 }
 
-TEST(TFileStorageTest, WritableCorruptionIsDeletedAndRefilled)
+TEST(TFileStorageTest, SizeCorruptionIsDeletedAndRefilled)
 {
     TStorageFixture fixture;
     int fillCount = 0;
@@ -379,11 +408,10 @@ TEST(TFileStorageTest, WritableCorruptionIsDeletedAndRefilled)
     object.Reset();
     storage.Reset();
 
-    TFileStat stat(file, /*nofollow*/ true);
-    THROW_ERROR_EXCEPTION_UNLESS(
-        Chmod(file.GetPath().c_str(), stat.Mode | S_IWUSR) == 0,
-        "Failed to corrupt test file permissions")
-        .With(TError::FromSystem());
+    {
+        TOFStream output(file.GetPath());
+        output << "corrupt";
+    }
     storage = fixture.MakeStorage();
     auto repaired = WaitFor(storage->GetOrCreate(id, MakeFiller("new", &fillCount))).ValueOrThrow();
     EXPECT_EQ(fillCount, 2);

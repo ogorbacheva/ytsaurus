@@ -438,6 +438,22 @@ class YtClient(ClientState):
             client=self
         )
 
+    def cancel_pipeline_dynamic_spec_patch(
+        self,
+        pipeline_path, patch, expected_version
+    ):
+        """
+        Cancel a DynamicSpec patch.
+
+        :param pipeline_path: path to pipeline.
+        :param patch: ID of the patch to cancel.
+        :param expected_version: required current dynamic spec state version.
+        """
+        return client_api.cancel_pipeline_dynamic_spec_patch(
+            pipeline_path, patch, expected_version,
+            client=self
+        )
+
     def check_cluster_liveness(
         self,
         check_cypress_root: bool = True, check_secondary_master_cells: bool = True, check_tablet_cell_bundle: Optional[str] = None
@@ -1385,18 +1401,38 @@ class YtClient(ClientState):
     def get_pipeline_dynamic_spec(
         self,
         pipeline_path,
-        spec_path=None, format=None
+        spec_path=None, format=None, view="effective", blame=False
     ):
         """
         Get YT Flow pipeline dynamic spec.
 
         :param pipeline_path: path to pipeline.
         :param spec_path: path inside pipeline dynamic spec yson struct, starting with /.
+        :param view: effective or base.
+        :param blame: include patch provenance for changed fields.
         """
         return client_api.get_pipeline_dynamic_spec(
             pipeline_path,
             client=self,
-            spec_path=spec_path, format=format
+            spec_path=spec_path, format=format, view=view, blame=blame
+        )
+
+    def get_pipeline_dynamic_spec_patches(
+        self,
+        pipeline_path,
+        patch=None, format=None
+    ):
+        """
+        Get active DynamicSpec patches and the current state version.
+
+        :param pipeline_path: path to pipeline.
+        :param patch: optional ID of a single active patch.
+        :param format: optional serialized output format.
+        """
+        return client_api.get_pipeline_dynamic_spec_patches(
+            pipeline_path,
+            client=self,
+            patch=patch, format=format
         )
 
     def get_pipeline_spec(
@@ -2003,7 +2039,7 @@ class YtClient(ClientState):
         table, input_stream,
         timestamp=None, column_names=None, keep_missing_rows=None, enable_partial_result=None, use_lookup_cache=None,
         format=None, raw=None, versioned=None, retention_timestamp=None, versioned_read_options=None,
-        with_timestamps=None, read_from=None
+        with_timestamps=None, read_from=None, replica_consistency=None
     ):
         """
         Lookups rows in dynamic table.
@@ -2014,6 +2050,8 @@ class YtClient(ClientState):
         :type format: str or descendant of :class:`Format <yt.wrapper.format.Format>`
         :param bool raw: don't parse response to rows.
         :param bool versioned: return all versions of the requested rows.
+        :param replica_consistency: requested read consistency for chaos replicas.
+        :type replica_consistency: EReplicaConsistency
         """
         return client_api.lookup_rows(
             table, input_stream,
@@ -2021,7 +2059,7 @@ class YtClient(ClientState):
             timestamp=timestamp, column_names=column_names, keep_missing_rows=keep_missing_rows,
             enable_partial_result=enable_partial_result, use_lookup_cache=use_lookup_cache, format=format,
             raw=raw, versioned=versioned, retention_timestamp=retention_timestamp, versioned_read_options=versioned_read_options,
-            with_timestamps=with_timestamps, read_from=read_from
+            with_timestamps=with_timestamps, read_from=read_from, replica_consistency=replica_consistency
         )
 
     def mkdir(
@@ -2160,6 +2198,29 @@ class YtClient(ClientState):
         return client_api.patch_operation_spec(
             client=self,
             operation_id=operation_id, patches=patches, operation_alias=operation_alias
+        )
+
+    def patch_pipeline_dynamic_spec(
+        self,
+        pipeline_path,
+        set=None, patch=None, comment=None, expected_version=None, format=None, set_changes=None
+    ):
+        """
+        Create or update a durable DynamicSpec patch.
+
+        :param pipeline_path: path to pipeline.
+        :param set: pair of a DynamicSpec path and its new value.
+        :param set_changes: sequence of path/value pairs to set in one patch.
+        :param patch: optional ID of an existing patch to update.
+        :param comment: reason for the change.
+        :param expected_version: required current state version.
+        :param format: input format for a serialized set value.
+        """
+        return client_api.patch_pipeline_dynamic_spec(
+            pipeline_path,
+            client=self,
+            set=set, patch=patch, comment=comment, expected_version=expected_version, format=format,
+            set_changes=set_changes
         )
 
     def pause_pipeline(
@@ -2733,6 +2794,21 @@ class YtClient(ClientState):
             format=format
         )
 
+    def reset_pipeline_dynamic_spec(
+        self,
+        pipeline_path, expected_version
+    ):
+        """
+        Cancel all DynamicSpec patches and inherit the release base.
+
+        :param pipeline_path: path to pipeline.
+        :param expected_version: current dynamic spec expected version.
+        """
+        return client_api.reset_pipeline_dynamic_spec(
+            pipeline_path, expected_version,
+            client=self
+        )
+
     def reshard_table(
         self,
         path,
@@ -2751,8 +2827,9 @@ class YtClient(ClientState):
         desired tablet count used by the system to determine pivot keys
         automatically.
         :param bool uniform:
-        pick pivot keys uniformly for given tablet_count. First key column
-        must have integral type.
+        pick pivot keys uniformly over the first key column's integer range.
+        The column must be ascending and integral. A top-level modulo with a
+        positive integer literal divisor narrows the range.
         :param bool enable_slicing:
         use more precise algorithm for picking pivot keys when tablet_count
         is specified.
@@ -3374,7 +3451,7 @@ class YtClient(ClientState):
         raw=None, execution_pool=None, response_parameters=None, retention_timestamp=None, placeholder_values=None,
         use_canonical_null_relations=None, merge_versioned_rows=None, syntax_version=None, versioned_read_options=None,
         with_timestamps=None, udf_registry_path=None, use_lookup_cache=None, execution_backend=None,
-        expression_builder_version=None, read_from=None
+        expression_builder_version=None, read_from=None, replica_consistency=None
     ):
         """
         Executes a SQL-like query on dynamic table.
@@ -3386,6 +3463,8 @@ class YtClient(ClientState):
         :param format: output format.
         :type format: str or descendant of :class:`Format <yt.wrapper.format.Format>`
         :param bool raw: don't parse response to rows.
+        :param replica_consistency: requested read consistency for chaos replicas.
+        :type replica_consistency: EReplicaConsistency
         """
         return client_api.select_rows(
             query,
@@ -3399,7 +3478,7 @@ class YtClient(ClientState):
             merge_versioned_rows=merge_versioned_rows, syntax_version=syntax_version, versioned_read_options=versioned_read_options,
             with_timestamps=with_timestamps, udf_registry_path=udf_registry_path, use_lookup_cache=use_lookup_cache,
             execution_backend=execution_backend, expression_builder_version=expression_builder_version,
-            read_from=read_from
+            read_from=read_from, replica_consistency=replica_consistency
         )
 
     def set(

@@ -50,6 +50,10 @@ TConstExpressionPtr CreateCoercion(EValueType type, TConstExpressionPtr operand)
         castName = "uint64";
     } else if (type == EValueType::Double) {
         castName = "double";
+    } else if (type == EValueType::Boolean) {
+        castName = "boolean";
+    } else if (type == EValueType::String) {
+        castName = "string";
     } else if (type == EValueType::Any) {
         castName = "to_any";
     } else {
@@ -73,6 +77,7 @@ struct TAliasResolver
 
     bool AfterGroupBy = false;
     bool NeedSubstitute = false;
+    ETotalsMode TotalsMode = ETotalsMode::None;
 
     const TNamedItemList* GroupItems = nullptr;
     TAggregateItemList* AggregateItems = nullptr;
@@ -84,7 +89,7 @@ struct TAliasResolver
     { }
 };
 
-struct TExpressionBuilderV2
+class TExpressionBuilderV2
     : public TExpressionBuilder
 {
 public:
@@ -150,7 +155,7 @@ public:
         return InferColumnName(expressionsAst);
     }
 
-    void SetGroupData(const TNamedItemList* groupItems, TAggregateItemList* aggregateItems) override
+    void SetGroupData(const TNamedItemList* groupItems, TAggregateItemList* aggregateItems, ETotalsMode totalsMode) override
     {
         auto* aliasResolver = AliasResolvers_.back().get();
 
@@ -159,6 +164,7 @@ public:
         aliasResolver->GroupItems = groupItems;
         aliasResolver->AggregateItems = aggregateItems;
         aliasResolver->AfterGroupBy = true;
+        aliasResolver->TotalsMode = totalsMode;
     }
 
 private:
@@ -364,7 +370,6 @@ TExpressionBuilderV2::ResolveNestedTypesResult TExpressionBuilderV2::ResolveNest
             });
     }
 
-    auto intermediateType = current;
     auto resultType = current;
 
     if (reference.CompositeTypeAccessor.DictOrListItemAccessor) {
@@ -393,7 +398,7 @@ TExpressionBuilderV2::ResolveNestedTypesResult TExpressionBuilderV2::ResolveNest
         resultType = MakeOptionalIfNot(std::move(resultType));
     }
 
-    return {std::move(nestedStructOrTupleItemAccessor), std::move(intermediateType), std::move(resultType)};
+    return {std::move(nestedStructOrTupleItemAccessor), std::move(current), std::move(resultType)};
 }
 
 TConstExpressionPtr TExpressionBuilderV2::UnwrapListOrDictItemAccessor(
@@ -448,7 +453,11 @@ TConstExpressionPtr TExpressionBuilderV2::OnColumnReference(const NAst::TColumnR
             for (const auto& [expression, name] : *groupItems) {
                 // TODO(lukyan): InferColumnName(reference) instead of reference.ColumnName?
                 if (name == reference.ColumnName) {
-                    return New<TReferenceExpression>(expression->LogicalType, reference.ColumnName);
+                    auto type = expression->LogicalType;
+                    if (aliasResolver->TotalsMode != ETotalsMode::None) {
+                        type = MakeOptionalIfNot(type);
+                    }
+                    return New<TReferenceExpression>(type, reference.ColumnName);
                 }
             }
         }
@@ -1043,6 +1052,12 @@ TConstExpressionPtr TExpressionBuilderV2::OnTransformOp(
 
 TConstExpressionPtr TExpressionBuilderV2::OnCaseOp(const NAst::TCaseExpression* caseExpr)
 {
+    if (std::ssize(caseExpr->WhenThenExpressions) > MaxWhenThenExpressionCount) {
+        THROW_ERROR_EXCEPTION("Maximum WHEN/THEN expression count exceeded")
+            .With("when_then_expression_count", std::ssize(caseExpr->WhenThenExpressions))
+            .With("max_when_then_expression_count", MaxWhenThenExpressionCount);
+    }
+
     auto source = caseExpr->GetSource(Source_);
 
     TConstExpressionPtr typedOptionalOperand;
@@ -1132,6 +1147,12 @@ TConstExpressionPtr TExpressionBuilderV2::OnCaseOp(const NAst::TCaseExpression* 
         if (resultType != thenResultType) {
             typedWhenThen->Result = CreateCoercion(TypingCtx_.GetWireType(resultType), typedWhenThen->Result);
         }
+    }
+
+    if (typedDefaultExpression &&
+        resultType != TypingCtx_.GetTypeId(typedDefaultExpression->GetWireType()))
+    {
+        typedDefaultExpression = CreateCoercion(TypingCtx_.GetWireType(resultType), typedDefaultExpression);
     }
 
     return New<TCaseExpression>(
@@ -1229,13 +1250,21 @@ TGroupClausePtr BuildGroupClause(
 
     builder->SetGroupData(
         &groupClause->GroupItems,
-        &groupClause->AggregateItems);
+        &groupClause->AggregateItems,
+        totalsMode);
 
     return groupClause;
 }
 
 TConstExpressionPtr TExpressionBuilderV2::OnQueryOp(const NAst::TQueryExpression* queryExpr)
 {
+    // COMPAT(dtorilov): Remove after 26.2.
+    if (!Context_.Options.EnableScalarSubqueryOrderByAndLimit &&
+        (!queryExpr->Query.OrderExpressions.empty() || queryExpr->Query.Offset || queryExpr->Query.Limit))
+    {
+        THROW_ERROR_EXCEPTION("ORDER BY, OFFSET and LIMIT are disabled in scalar subqueries");
+    }
+
     NAst::TExpressionList fromExpressions;
 
     Visit(queryExpr->Query.FromClause,
@@ -1247,26 +1276,20 @@ TConstExpressionPtr TExpressionBuilderV2::OnQueryOp(const NAst::TQueryExpression
         },
         [&] (const NAst::TExpressionList& expressions) {
             fromExpressions = expressions;
+        },
+        [&] (const NAst::TUnionAllClause& /*unionAll*/) {
+            THROW_ERROR_EXCEPTION("UNION ALL in scalar subquery expression is not supported");
         });
 
     if (queryExpr->Query.WithIndex) {
         THROW_ERROR_EXCEPTION("WITH INDEX clause is not supported in subqueries");
     }
 
+    ValidateOrderByOffsetAndLimit(queryExpr->Query);
+    ValidateHaving(queryExpr->Query, /*hasOrderBy*/ !queryExpr->Query.OrderExpressions.empty());
+
     if (queryExpr->Query.HavingPredicate) {
         THROW_ERROR_EXCEPTION("HAVING clause is not supported in subqueries");
-    }
-
-    if (!queryExpr->Query.OrderExpressions.empty()) {
-        THROW_ERROR_EXCEPTION("ORDER BY clause is not supported in subqueries");
-    }
-
-    if (queryExpr->Query.Offset) {
-        THROW_ERROR_EXCEPTION("OFFSET clause is not supported in subqueries");
-    }
-
-    if (queryExpr->Query.Limit) {
-        THROW_ERROR_EXCEPTION("LIMIT clause is not supported in subqueries");
     }
 
     TNamedItemList typedFromExpressions;
@@ -1343,6 +1366,17 @@ TConstExpressionPtr TExpressionBuilderV2::OnQueryOp(const NAst::TQueryExpression
         groupClause = BuildGroupClause(*queryExpr->Query.GroupExprs, queryExpr->Query.TotalsMode, this);
     }
 
+    TOrderClausePtr orderClause;
+    if (!queryExpr->Query.OrderExpressions.empty()) {
+        orderClause = New<TOrderClause>();
+        for (const auto& orderExpression : queryExpr->Query.OrderExpressions) {
+            for (const auto& expressionAst : orderExpression.Expressions) {
+                auto typedExpression = ApplyRewriters(BuildTypedExpression(expressionAst, {}));
+                orderClause->OrderItems.push_back({typedExpression, orderExpression.Descending});
+            }
+        }
+    }
+
     TProjectClausePtr projectClause;
     if (queryExpr->Query.SelectExprs) {
         projectClause = New<TProjectClause>();
@@ -1379,6 +1413,9 @@ TConstExpressionPtr TExpressionBuilderV2::OnQueryOp(const NAst::TQueryExpression
     result->WhereClause = whereClause;
     result->GroupClause = groupClause;
     result->ProjectClause = projectClause;
+    result->OrderClause = orderClause;
+    result->Offset = queryExpr->Query.Offset.value_or(0);
+    result->Limit = queryExpr->Query.Limit;
 
     return result;
 }

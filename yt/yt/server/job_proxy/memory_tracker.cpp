@@ -13,7 +13,7 @@
 
 #include <library/cpp/yt/string/string.h>
 
-#include <library/cpp/yt/threading/traceless_guard.h>
+#include <library/cpp/yt/system/traceless_guard.h>
 
 #include <util/stream/file.h>
 
@@ -21,7 +21,9 @@ namespace NYT::NJobProxy {
 
 const static NLogging::TLogger Logger("MemoryTracker");
 
+#ifdef _linux_
 const int CommandLineMaxLength = 1_KB;
+#endif
 
 using namespace NTools;
 using namespace NStatisticPath;
@@ -74,7 +76,7 @@ i64 TMemoryTracker::GetMemoryUsage()
 
 TJobMemoryStatisticsPtr TMemoryTracker::GetMemoryStatistics()
 {
-    auto guard = NThreading::TracelessGuard(MemoryStatisticsLock_);
+    auto guard = TracelessGuard(MemoryStatisticsLock_);
 
     auto now = TInstant::Now();
 

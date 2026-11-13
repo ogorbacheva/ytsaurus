@@ -4,13 +4,14 @@ import os
 import typing
 
 from mcp.server.fastmcp import FastMCP, Context
-from mcp.types import TextContent
+from mcp.types import TextContent, ToolAnnotations
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
 from pydantic import Field, create_model
 from pydantic.fields import _Unset
 from typing import Annotated, Optional, Union, List, Dict, Any
 
 import yt.wrapper as yt
+from yt.wrapper.response_stream import EmptyResponseStream, ResponseStream
 
 import yt.mcp as yt_mcp
 
@@ -120,6 +121,8 @@ class YTToolRunnerMCP:
     def return_structured(self, data):
         if isinstance(data, yt.format.RowsIterator):
             data = list(data)
+        elif isinstance(data, (ResponseStream, EmptyResponseStream)):
+            data = data.read().decode("utf-8", errors="replace")
         return TextContent(type="text", text=json.dumps(self._simplify_structured(data)))
 
     def _add_tool_to_mcp(self, mcp: FastMCP, tool: "yt.mcp.lib.tools.helpers.YTToolBase"):
@@ -150,8 +153,14 @@ class YTToolRunnerMCP:
             **args_fields
         )
 
-        mcp._tool_manager.get_tool(tool_description.name).fn_metadata.arg_model = args_model
-        mcp._tool_manager.get_tool(tool_description.name).parameters = args_model.model_json_schema()
+        mcp_tool = mcp._tool_manager.get_tool(tool_description.name)
+        mcp_tool.fn_metadata.arg_model = args_model
+        mcp_tool.parameters = args_model.model_json_schema()
+
+        if tool._is_mutable():
+            mcp_tool.annotations = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+        else:
+            mcp_tool.annotations = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 
     def start(self, transport="stdio"):
         mcp = FastMCP(self._name, log_level="ERROR")

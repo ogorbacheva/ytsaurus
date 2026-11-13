@@ -4,6 +4,8 @@
 
 #include <library/cpp/yt/memory/ref_counted.h>
 
+#include <util/generic/size_literals.h>
+
 namespace NYT::NPushBasedShuffleClient {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -18,7 +20,9 @@ DECLARE_REFCOUNTED_STRUCT(TPartitionReaderConfig)
 DECLARE_REFCOUNTED_STRUCT(ISortReader)
 DECLARE_REFCOUNTED_STRUCT(TSortReaderConfig)
 
-DECLARE_REFCOUNTED_STRUCT(TPushShuffleConfig)
+////////////////////////////////////////////////////////////////////////////////
+
+constexpr i64 MinShuffleWriterMemoryBudget = 1_MB;
 
 ////////////////////////////////////////////////////////////////////////////////
 

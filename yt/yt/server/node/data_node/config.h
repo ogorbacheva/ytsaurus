@@ -110,6 +110,10 @@ struct TChunkLocationConfig
 
     TEnumIndexedArray<EWorkloadCategory, std::optional<double>> FairShareWorkloadCategoryWeights;
 
+    //! When absent, categories of the corresponding group remain directly under the root.
+    std::optional<double> FairShareSystemWeight;
+    std::optional<double> FairShareUserWeight;
+
     double WeightedRequestWeight;
     double UnweightedRequestWeight;
 
@@ -137,6 +141,9 @@ struct TChunkLocationDynamicConfig
     std::optional<i64> CoalescedReadMaxGapSize;
 
     TEnumIndexedArray<EWorkloadCategory, std::optional<double>> FairShareWorkloadCategoryWeights;
+
+    std::optional<double> FairShareSystemWeight;
+    std::optional<double> FairShareUserWeight;
 
     std::optional<double> WeightedRequestWeight;
     std::optional<double> UnweightedRequestWeight;
@@ -260,7 +267,6 @@ DEFINE_REFCOUNTED_TYPE(TCacheLocationDynamicConfig);
 
 struct TMultiplexedChangelogConfig
     : public NHydra::TFileChangelogConfig
-    , public NHydra::TFileChangelogDispatcherConfig
 {
     static constexpr bool EnableHazard = true;
 
@@ -307,6 +313,9 @@ struct TArtifactCacheReaderConfig
     , public virtual NTableClient::TTableReaderConfig
     , public virtual NApi::TFileReaderConfig
 {
+    int MaxParallelDownloadChunks;
+    std::optional<i64> WritebackBatchSize;
+
     REGISTER_YSON_STRUCT(TArtifactCacheReaderConfig);
 
     static void Register(TRegistrar registrar);
@@ -329,6 +338,13 @@ struct TLayerLocationConfig
     bool LocationIsAbsolute;
 
     bool ResidesOnTmpfs;
+
+    //! Number of concurrent layer imports served by this location's dedicated Porto
+    //! executor; 1 means sequential imports.
+    //! The total across locations is additionally bounded by the node-wide dynamic
+    //! option "layer_import_concurrency"
+    //! (see #NExecNode::TLayerCacheDynamicConfig::LayerImportConcurrency).
+    int LayerImportLocationConcurrency;
 
     NServer::TDiskHealthCheckerConfigPtr DiskHealthChecker;
 
@@ -568,6 +584,9 @@ struct TDataNodeTestingOptions
     // To simulate node registration retries.
     std::optional<int> MinEpochToStartHeartbeats;
 
+    //! Simulate old nodes that do not send registration revisions in heartbeats.
+    bool OmitHeartbeatRegistrationRevision;
+
     REGISTER_YSON_STRUCT(TDataNodeTestingOptions);
 
     static void Register(TRegistrar registrar);
@@ -743,6 +762,10 @@ struct TRepairChunkJobDynamicConfig
     NChunkClient::TReplicationWriterConfigPtr Writer;
 
     i64 WindowSize;
+
+    //! Enables retries with a different set of source parts when striped erasure repair
+    //! encounters a failed or slow reader.
+    bool EnableAdaptiveRepairForStripedErasureChunks;
 
     REGISTER_YSON_STRUCT(TRepairChunkJobDynamicConfig);
 
@@ -1153,6 +1176,9 @@ struct TDataNodeDynamicConfig
     //! After that time alert about long live read sessions will be sent.
     std::optional<TDuration> LongLiveReadSessionThreshold;
 
+    std::optional<TDuration> SessionBlockReorderTimeout;
+    std::optional<int> MaxOutOfTurnSessions;
+
     //! Prepared chunk readers are kept open during this period of time after the last use.
     TDuration ChunkReaderRetentionTimeout;
 
@@ -1179,6 +1205,9 @@ struct TDataNodeDynamicConfig
 
     TP2PConfigPtr P2P;
 
+    std::optional<int> MaxBlocksPerRead;
+    std::optional<i64> MaxBytesPerRead;
+
     //! Desired number of bytes per disk write in a blob chunks.
     std::optional<i64> BytesPerWrite;
 
@@ -1204,6 +1233,8 @@ struct TDataNodeDynamicConfig
     TCacheLocationDynamicConfigPtr CacheLocation;
 
     std::optional<i64> NetOutThrottlingLimit;
+
+    std::optional<TDuration> NetOutThrottlingDuration;
 
     std::optional<i64> NetInThrottlingLimit;
 

@@ -7,6 +7,7 @@
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/interned_attributes.h>
 #include <yt/yt/core/ytree/ypath_client.h>
+#include <yt/yt/core/ytree/exception_helpers.h>
 
 #include <yt/yt/server/lib/misc/interned_attributes.h>
 
@@ -14,7 +15,8 @@
 #include <yt/yt/library/discovery_client/public.h>
 
 #include <library/cpp/yt/logging/logger.h>
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <stack>
 
@@ -451,9 +453,7 @@ public:
                 internedKey == EInternedAttributeKey::Type ||
                 internedKey == EInternedAttributeKey::MemberCount)
             {
-                THROW_ERROR_EXCEPTION(
-                    NRpc::EErrorCode::NoSuchMethod,
-                    "Method List is not supported");
+                NYTree::ThrowMethodNotSupported("List");
             } else {
                 THROW_ERROR_EXCEPTION(
                     NYTree::EErrorCode::ResolveError,
@@ -515,7 +515,7 @@ public:
             memberAttributeKey == LastAttributesUpdateTimeAttribute)
         {
             THROW_ERROR_EXCEPTION(
-                NRpc::EErrorCode::NoSuchMethod,
+                NYTree::EErrorCode::NoSuchYPathMethod,
                 "Attribute %Qv is not listable",
                 memberAttributeKey);
         }
@@ -956,7 +956,7 @@ private:
     const TGroupNodePtr Root_;
     const NLogging::TLogger Logger;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, Lock_);
     THashMap<TGroupId, TGroupNodePtr> IdToNode_;
 
     std::pair<TGroupNodePtr, TYPath> ResolvePath(const TYPath& path)

@@ -4,6 +4,7 @@ from yt_env_setup import (
     SCHEDULERS_SERVICE,
     NODES_SERVICE,
     is_asan_build,
+    ROOTFS_LAYER_PATH,
 )
 
 
@@ -21,7 +22,8 @@ from yt_commands import (
     update_nodes_dynamic_config, set_node_banned, check_all_stderrs,
     assert_statistics, assert_statistics_v2, extract_statistic_v2,
     heal_exec_node,
-    make_random_string, raises_yt_error, update_controller_agent_config, update_scheduler_config,
+    make_random_string, raises_yt_error, update_controller_agent_config,
+    remove_default_layer_path, update_scheduler_config,
     get_supported_erasure_codecs)
 
 from yt_operations_archive_helpers import get_job_from_archive
@@ -84,27 +86,16 @@ class TestSandboxPath(YTEnvSetup):
         }
     }
 
-    DELTA_NODE_CONFIG = {
-        "exec_node": {
-            "job_proxy": {
-                "test_root_fs": False,
-            },
-        },
-    }
-
-    def setup_files(self):
-        create("file", "//tmp/exec.tar.gz", attributes={"replication_factor": 1})
-        write_file("//tmp/exec.tar.gz", open("rootfs/exec.tar.gz", "rb").read())
-        create("file", "//tmp/rootfs.tar.gz", attributes={"replication_factor": 1})
-        write_file("//tmp/rootfs.tar.gz", open("rootfs/rootfs.tar.gz", "rb").read())
-
     @authors("krasovav")
     @pytest.mark.parametrize("has_root_fs", [False, True])
     def test_sandbox_path(self, has_root_fs):
-        self.setup_files()
         create("table", "//tmp/t_input")
         create("table", "//tmp/t_output")
         write_table("//tmp/t_input", {"foo": "bar"})
+
+        if not has_root_fs:
+            # TODO(pogorelov): Remove rootless cases once every job has a root volume.
+            remove_default_layer_path()
 
         op = map(
             command="[ -d tmpfs ] && findmnt -o FSTYPE -T tmpfs | grep tmpfs >&2",
@@ -114,7 +105,6 @@ class TestSandboxPath(YTEnvSetup):
                 "mapper": {
                     "tmpfs_size": 1024 * 1024,
                     "tmpfs_path": "tmpfs",
-                    "layer_paths": ["//tmp/exec.tar.gz", "//tmp/rootfs.tar.gz"] if has_root_fs else [],
                 },
                 "max_failed_job_count": 1,
             },
@@ -132,6 +122,7 @@ class TestSandboxPath(YTEnvSetup):
 
 
 class TestSandboxTmpfs(YTEnvSetup):
+    NUM_TEST_PARTITIONS = 2
     NUM_MASTERS = 1
     NUM_NODES = 1
     NUM_SCHEDULERS = 1
@@ -211,7 +202,7 @@ class TestSandboxTmpfs(YTEnvSetup):
             track=False,
         )
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         full_spec = get_operation(op.id, attributes=["full_spec"])["full_spec"]
         task_spec = full_spec["tasks"]["task"]
@@ -273,7 +264,7 @@ class TestSandboxTmpfs(YTEnvSetup):
             track=False,
         )
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         @wait_no_assert
         def check():
@@ -828,15 +819,14 @@ time.sleep(10)
         assert ["file", "content_1", "file", "content_2"] == words
 
     @authors("ignat")
-    @pytest.mark.timeout(150)
     def test_vanilla(self):
         vanilla(
             spec={
                 "tasks": {
-                    "a": {"job_count": 2, "command": "sleep 5", "tmpfs_volumes": []},
+                    "a": {"job_count": 2, "command": "sleep 1", "tmpfs_volumes": []},
                     "b": {
                         "job_count": 1,
-                        "command": "sleep 10",
+                        "command": "sleep 1",
                         "tmpfs_volumes": [
                             {
                                 "path": "tmpfs",
@@ -846,7 +836,7 @@ time.sleep(10)
                     },
                     "c": {
                         "job_count": 3,
-                        "command": "sleep 15",
+                        "command": "sleep 1",
                         "tmpfs_volumes": [
                             {
                                 "path": "tmpfs",
@@ -960,7 +950,8 @@ class TestSandboxDiskUsage(YTEnvSetup):
     }
 
     @authors("abodrov")
-    def test_error_message(self):
+    @pytest.mark.parametrize("delay_before_report_result", [0, 5000])
+    def test_error_message(self, delay_before_report_result):
         update_nodes_dynamic_config({
             "exec_node": {
                 "slot_manager": {
@@ -969,19 +960,27 @@ class TestSandboxDiskUsage(YTEnvSetup):
             },
         })
 
-        with raises_yt_error("Disk usage overdraft occurred"):
-            run_test_vanilla(
-                track=True,
-                command=" ; ".join([
-                    "dd if=/dev/zero of=local_file  bs=2M  count=1; sleep 5",
-                ]),
-                task_patch={
-                    "disk_request": {
-                        "disk_space": 1000 ** 2,
-                    },
+        op = run_test_vanilla(
+            command=with_breakpoint("dd if=/dev/zero of=local_file bs=2M count=1; BREAKPOINT"),
+            task_patch={
+                "disk_request": {
+                    "disk_space": 1000 ** 2,
                 },
-                spec={"max_failed_job_count": 1},
-            )
+            },
+            spec={
+                "max_failed_job_count": 1,
+                "job_testing_options": {
+                    "delay_before_report_result": delay_before_report_result,
+                },
+            },
+        )
+        wait(lambda: op.get_job_count("failed") > 0 or op.get_job_count("aborted") > 0)
+        assert op.get_job_count("aborted") == 0
+
+        with raises_yt_error("Disk usage overdraft occurred"):
+            op.track()
+
+        assert op.get_job_count("failed") == 1
 
 ##################################################################
 
@@ -1065,7 +1064,7 @@ class TestSandboxTmpfsOverflow(YTEnvSetup):
 
         op.ensure_running()
 
-        jobs = wait_breakpoint(timeout=datetime.timedelta(seconds=300))
+        jobs = wait_breakpoint(op, timeout=datetime.timedelta(seconds=300))
         assert len(jobs) == 1
         job = jobs[0]
 
@@ -1398,24 +1397,17 @@ class TestArtifactCacheBypass(YTEnvSetup):
         # The operation should fail with rootfs overflow.
         root_volume_size = file_size // 2
 
-        layers = []
-        if has_root_volume:
-            create("file", "//tmp/exec.tar.gz")
-            write_file("//tmp/exec.tar.gz", open("rootfs/exec.tar.gz", "rb").read())
-            create("file", "//tmp/rootfs.tar.gz")
-            write_file("//tmp/rootfs.tar.gz", open("rootfs/rootfs.tar.gz", "rb").read())
-
-            layers = [{"path": "//tmp/rootfs.tar.gz"}, {"path": "//tmp/exec.tar.gz"}]
-
         volumes = {
             "root": {
                 "disk_request": {
                     "type": "local_disk",
                     "disk_space": root_volume_size,
                 },
-                "layers": layers,
             },
         }
+
+        if not has_root_volume:
+            remove_default_layer_path()
 
         with raises_yt_error('Failed to build file "large_file" in sandbox "user": disk space limit is too small'):
             map(
@@ -1468,8 +1460,6 @@ class TestArtifactCacheBypass(YTEnvSetup):
         # The operation should fail with VolumeSizeLimitExceeded error.
         non_root_volume_size = file_size // 2
 
-        non_root_path = "/slot/sandbox" if has_root_volume else "/sandbox"
-
         volumes = {
             "non-root": {
                 "disk_request": {
@@ -1479,16 +1469,14 @@ class TestArtifactCacheBypass(YTEnvSetup):
             },
         }
 
+        non_root_path = "/slot/sandbox" if has_root_volume else "/sandbox"
         job_volume_mounts = [{"volume_id": "non-root", "mount_path": non_root_path}]
 
         if has_root_volume:
-            create("file", "//tmp/exec.tar.gz")
-            write_file("//tmp/exec.tar.gz", open("rootfs/exec.tar.gz", "rb").read())
-            create("file", "//tmp/rootfs.tar.gz")
-            write_file("//tmp/rootfs.tar.gz", open("rootfs/rootfs.tar.gz", "rb").read())
-
-            volumes["root"] = {"layers": [{"path": "//tmp/rootfs.tar.gz"}, {"path": "//tmp/exec.tar.gz"}]}
+            volumes["root"] = {}
             job_volume_mounts.append({"volume_id": "root", "mount_path": "/"})
+        else:
+            remove_default_layer_path()
 
         with raises_yt_error(code=yt_error_codes.VolumeSizeLimitExceeded):
             map(
@@ -1628,7 +1616,7 @@ assert hashlib.sha256(data.encode()).hexdigest() == '{hash_}'
                         },
                     },
                     "job_common": {
-                        "job_prepare_time_limit": 5000,
+                        "job_prepare_time_limit": 30000,
                     },
                 },
             },
@@ -1639,7 +1627,7 @@ assert hashlib.sha256(data.encode()).hexdigest() == '{hash_}'
 
         from_barrier = self.write_log_barrier(self.get_node_address())
 
-        with raises_yt_error("Failed to prepare job within timeout"):
+        with raises_yt_error("Failed to prepare job within timeout") as errors:
             vanilla(
                 spec={
                     "tasks": {
@@ -1651,6 +1639,11 @@ assert hashlib.sha256(data.encode()).hexdigest() == '{hash_}'
                     },
                 },
             )
+
+        timeout_error = errors[0].find_matching_error(
+            predicate=lambda error: error.message == "Failed to prepare job within timeout",
+        )
+        assert timeout_error.attributes["job_phase"] == "preparing_artifacts"
 
         raw_events = self.wait_for_raw_events(
             count=2,
@@ -1721,13 +1714,10 @@ class TestUserJobIsolation(YTEnvSetup):
             authenticated_user="u1",
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
         network_project_id, hostname, _ = get_job_stderr(op.id, job_id).split(b"\n")
         assert network_project_id == str(int("0xDEADBEEF", base=16)).encode("ascii")
-        hostname_prefix = b"slot_"
-        if self.Env.get_component_version("ytserver-job-proxy").abi > (25, 1):
-            hostname_prefix = b"slot-"
-        assert hostname.startswith(hostname_prefix)
+        assert re.match(rb"s\d+\.", hostname)
         release_breakpoint()
         op.track()
 
@@ -1745,7 +1735,7 @@ class TestUserJobIsolation(YTEnvSetup):
 
         # ip6tnl0 is some kind of technical interface used by porto.
         pattern = re.compile(b".: (lo|ip6tnl0)")
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
         interfaces = get_job_stderr(op.id, job_id)
         for line in interfaces.split(b'\n'):
             if line:
@@ -1769,7 +1759,7 @@ class TestUserJobIsolation(YTEnvSetup):
             task_patch={"network_project": "n"},
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
         assert b"dead:beef" in get_job_stderr(op.id, job_id)
 
         release_breakpoint()
@@ -1850,7 +1840,7 @@ class TestUserJobIsolation(YTEnvSetup):
             task_patch={"enable_porto": "isolate", "restrict_porto_place": restrict_porto_place},
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
 
         # Make sure that container fails to start.
         assert b"Cannot start container: LayerNotFound:(nonexistent_layer)" in get_job_stderr(op.id, job_id)
@@ -1862,15 +1852,15 @@ class TestUserJobIsolation(YTEnvSetup):
     @pytest.mark.parametrize("restrict_porto_place", [False, True])
     def test_create_container_with_explicit_place(self, restrict_porto_place):
         op = run_test_vanilla(
-            # Here default place (no place) is used.
-            command=with_breakpoint("portoctl exec -L 'nonexistent_layer' container command='ls' place='/nonexistent' 1>&2; BREAKPOINT"),
+            # Use an existing place so that unrestricted creation reaches layer lookup.
+            command=with_breakpoint("portoctl exec -L 'nonexistent_layer' container command='ls' place='/home/slot' 1>&2; BREAKPOINT"),
             task_patch={"enable_porto": "isolate", "restrict_porto_place": restrict_porto_place},
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
 
         if restrict_porto_place:
-            assert b"Cannot start container: Permission:(Place /nonexistent is not permitted)\n" in get_job_stderr(op.id, job_id)
+            assert b"Cannot start container: Permission:(Place /home/slot is not permitted)\n" in get_job_stderr(op.id, job_id)
         else:
             assert b"Cannot start container: LayerNotFound:(nonexistent_layer)" in get_job_stderr(op.id, job_id)
 
@@ -1886,7 +1876,7 @@ class TestUserJobIsolation(YTEnvSetup):
             task_patch={"enable_porto": "isolate", "restrict_porto_place": restrict_porto_place},
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
 
         assert b"porto" in get_job_stderr(op.id, job_id)
         assert b"volume" in get_job_stderr(op.id, job_id)
@@ -1903,7 +1893,7 @@ class TestUserJobIsolation(YTEnvSetup):
             task_patch={"enable_porto": "isolate", "restrict_porto_place": restrict_porto_place},
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
 
         if restrict_porto_place:
             assert b"Can't create volume: Permission:(Place /home/slot is not permitted)\n" in get_job_stderr(op.id, job_id)
@@ -1997,14 +1987,11 @@ class TestFixedUser(YTEnvSetup):
     DELTA_NODE_CONFIG = {
         "exec_node": {
             "slot_manager": {
+                "do_not_set_user_id": False,
                 "job_environment": {
                     "type": "porto",
-                    "do_not_set_user_id": False,
                     "start_uid": 19500,
                 },
-            },
-            "job_proxy": {
-                "test_root_fs": True,
             },
         },
         "job_resource_manager": {
@@ -2026,10 +2013,10 @@ class TestFixedUser(YTEnvSetup):
             job_count=2,
             task_patch={
                 "enable_fixed_user_id": True,
-                "layer_paths": ["//tmp/base_layer"],
+                "layer_paths": ["//tmp/base_layer", ROOTFS_LAYER_PATH],
             })
 
-        job_ids = wait_breakpoint(job_count=2)
+        job_ids = wait_breakpoint(op, job_count=2)
         assert len(job_ids) == 2
 
         for job_id in job_ids:
@@ -2078,8 +2065,8 @@ class TestJobProxyContainer(YTEnvSetup):
 
     @authors("ignat")
     def test_job_proxy_cpu_weight(self):
-        run_test_vanilla(command=with_breakpoint("BREAKPOINT"))
-        wait_breakpoint()
+        op = run_test_vanilla(command=with_breakpoint("BREAKPOINT"))
+        wait_breakpoint(op)
 
         assert self.get_job_proxy_container_property("cpu_weight") == "42"
 
@@ -2669,7 +2656,7 @@ class TestSecureVault(YTEnvSetup):
         cypress_info = str(op.get_path() + "/@")
         scheduler_info = str(get("//sys/scheduler/orchid/scheduler/operations/{0}".format(op.id)))
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         jobs = list(op.get_running_jobs())
         assert len(jobs) == 1
@@ -2700,7 +2687,7 @@ class TestSecureVault(YTEnvSetup):
     @authors("ignat")
     def test_secure_vault_with_revive(self):
         op = self.run_map_with_secure_vault()
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         with Restarter(self.Env, SCHEDULERS_SERVICE):
             pass
@@ -2862,7 +2849,7 @@ class TestTemporaryTokens(YTEnvSetup):
         op = run_test_vanilla(spec={"max_failed_job_count": 1, "issue_temporary_token": True}, command=command, authenticated_user="alice")
         op_path = op.get_path()
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         token_node_id = get(op_path + "/@temporary_token_node_id")
         token_hash = get(f"#{token_node_id}/@key")
@@ -2937,7 +2924,7 @@ class TestTemporaryTokens(YTEnvSetup):
 
         op = run_test_vanilla(spec={"max_failed_job_count": 1, "issue_temporary_token": True}, command=command, authenticated_user="alice")
 
-        wait_breakpoint("first_breakpoint")
+        wait_breakpoint(op, "first_breakpoint")
 
         assert len(list_user_tokens("alice")) == 1
 
@@ -2945,7 +2932,7 @@ class TestTemporaryTokens(YTEnvSetup):
             time.sleep(2)
 
         release_breakpoint("first_breakpoint")
-        wait_breakpoint("second_breakpoint")
+        wait_breakpoint(op, "second_breakpoint")
 
         # No new token should be created, value should still be in secure vault.
         assert len(list_user_tokens("alice")) == 1
@@ -3006,6 +2993,7 @@ class TestTemporaryTokens(YTEnvSetup):
 
 class TestUserJobMonitoring(YTEnvSetup):
     USE_DYNAMIC_TABLES = True
+    NUM_TEST_PARTITIONS = 2
     NUM_MASTERS = 1
     NUM_NODES = 3
     NUM_SCHEDULERS = 1
@@ -3091,7 +3079,7 @@ class TestUserJobMonitoring(YTEnvSetup):
                 "enable_gpu_layers": False,
             },
         )
-        job_id, = wait_breakpoint()
+        job_id, = wait_breakpoint(op)
         release_breakpoint()
 
         wait(lambda: "monitoring_descriptor" in get_job(op.id, job_id))
@@ -3149,7 +3137,7 @@ class TestUserJobMonitoring(YTEnvSetup):
             track=False,
             command=with_breakpoint("BREAKPOINT; for (( c=1; c>0; c++ )); do : ; done"),
         )
-        job_id, = wait_breakpoint()
+        job_id, = wait_breakpoint(op)
         release_breakpoint()
 
         wait(lambda: "monitoring_descriptor" in get_job(op.id, job_id))
@@ -3244,7 +3232,7 @@ class TestUserJobMonitoring(YTEnvSetup):
                     },
                 },
             )
-            wait_breakpoint(breakpoint_name=breakpoint_name, job_count=job_count)
+            wait_breakpoint(op, breakpoint_name=breakpoint_name, job_count=job_count)
             op.breakpoint_name = breakpoint_name
             return op
 
@@ -3299,7 +3287,7 @@ class TestUserJobMonitoring(YTEnvSetup):
 
         for job in list_jobs(next_op.id)["jobs"]:
             abort_job(job["id"])
-        wait_breakpoint(breakpoint_name=next_op.breakpoint_name, job_count=2)
+        wait_breakpoint(next_op, breakpoint_name=next_op.breakpoint_name, job_count=2)
 
         @wait_no_assert  # noqa: F811
         def no_alerts():  # noqa: F811
@@ -3358,7 +3346,7 @@ class TestUserJobMonitoring(YTEnvSetup):
             },
         )
 
-        job_id, = wait_breakpoint()
+        job_id, = wait_breakpoint(op)
 
         job_info = get_job(op.id, job_id)
         node = job_info["address"]
@@ -3379,7 +3367,7 @@ class TestUserJobMonitoring(YTEnvSetup):
                 },
             },
         )
-        job1_id, = wait_breakpoint()
+        job1_id, = wait_breakpoint(op)
 
         wait(lambda: "monitoring_descriptor" in get_job(op.id, job1_id))
 
@@ -3388,7 +3376,7 @@ class TestUserJobMonitoring(YTEnvSetup):
 
         abort_job(job1_id)
 
-        job1_id, = wait_breakpoint()
+        job1_id, = wait_breakpoint(op)
 
         wait(lambda: "monitoring_descriptor" in get_job(op.id, job1_id))
 
@@ -3412,7 +3400,7 @@ class TestUserJobMonitoring(YTEnvSetup):
             },
         )
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         with Restarter(self.Env, SCHEDULERS_SERVICE):
             pass
@@ -3437,7 +3425,7 @@ class TestUserJobMonitoring(YTEnvSetup):
             },
         )
 
-        job_id, = wait_breakpoint()
+        job_id, = wait_breakpoint(op)
 
         wait(lambda: "monitoring_descriptor" in get_job(op.id, job_id))
 
@@ -3973,9 +3961,6 @@ class TestConsecutiveJobAbortsPorto(YTEnvSetup):
                     "test_gpu_count": 1,
                 },
             },
-            "job_proxy": {
-                "test_root_fs": True,
-            },
             "slot_manager": {
                 "job_environment": {
                     "type": "porto",
@@ -4115,7 +4100,7 @@ class TestIdleSlots(YTEnvSetup):
 
             all_operations_info += [(op, job_id, expected_cpu_policy)]
 
-            wait_breakpoint()
+            wait_breakpoint([info[0] for info in all_operations_info])
 
             wait(lambda: self._check_slot_count(node, common_used, idle_used))
 
@@ -4131,15 +4116,17 @@ class TestIdleSlots(YTEnvSetup):
         self._update_cpu_fraction(fraction=0.1)
         op = self._run_idle_operation(cpu_limit=1, breakpoint_id="1")
 
-        wait_breakpoint("1")
-        job_id, _ = self._get_job_info(op)
+        wait_breakpoint(op, "1")
+        job_id, node = self._get_job_info(op)
         release_breakpoint("1")
         op.track()
         assert self._get_actual_cpu_policy(op, job_id) == "idle"
 
         self._update_cpu_fraction(fraction=0.04)
+        # Applied dynamic config does not imply the job environment has recomputed its idle CPU limit.
+        wait(lambda: get(f"//sys/cluster_nodes/{node}/orchid/exec_node/slot_manager/idle_cpu_limit") < 1)
         op = self._run_idle_operation(cpu_limit=1, breakpoint_id="2")
-        wait_breakpoint("2")
+        wait_breakpoint(op, "2")
         job_id, _ = self._get_job_info(op)
         release_breakpoint("2")
         op.track()
@@ -4156,7 +4143,7 @@ class TestIdleSlots(YTEnvSetup):
 
         job_id, node = self._get_job_info(op)
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         self._check_slot_count(node, 1, 0)
 
@@ -4179,7 +4166,7 @@ class TestIdleSlots(YTEnvSetup):
         )
 
         job_id, node = self._get_job_info(op)
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: self._check_slot_count(node, 0, 1))
 
@@ -4285,7 +4272,7 @@ class TestCpuSet(YTEnvSetup):
 
             all_operations_info += [(op, job_id, expected_cpu_set)]
 
-            wait_breakpoint()
+            wait_breakpoint([info[0] for info in all_operations_info])
             if numa_node_id is not None:
                 wait(lambda: self._get_numa_node_free_cpu_count(node, numa_node_id) == free_cpu_count_after)
 
@@ -4311,7 +4298,7 @@ class TestCpuSet(YTEnvSetup):
 
         job_id_with_numa_node, node_with_numa_node = self._get_job_info(op_with_numa_node)
 
-        wait_breakpoint("1")
+        wait_breakpoint(op_with_numa_node, "1")
         wait(lambda: self._get_numa_node_free_cpu_count(node_with_numa_node, 0) == 0.0)
         wait(lambda: self._get_numa_node_free_cpu_count(node_with_numa_node, 1) == 3.0)
 
@@ -4323,7 +4310,7 @@ class TestCpuSet(YTEnvSetup):
 
         job_id_without_numa_node, node_without_numa_node = self._get_job_info(op_without_numa_node)
 
-        wait_breakpoint("2")
+        wait_breakpoint(op_without_numa_node, "2")
 
         wait(lambda: self._get_numa_node_free_cpu_count(node_with_numa_node, 0) == 0.0)
         wait(lambda: self._get_numa_node_free_cpu_count(node_with_numa_node, 1) == 3.0)
@@ -4348,7 +4335,7 @@ class TestCpuSet(YTEnvSetup):
         )
 
         job_id_with_numa_node, node_with_numa_node = self._get_job_info(op_with_numa_node)
-        wait_breakpoint("3")
+        wait_breakpoint(op_with_numa_node, "3")
 
         wait(lambda: self._get_numa_node_free_cpu_count(node_with_numa_node, 0) == 0.0)
         wait(lambda: self._get_numa_node_free_cpu_count(node_with_numa_node, 1) == 3.0)
@@ -4367,7 +4354,7 @@ class TestCpuSet(YTEnvSetup):
         )
 
         job_id, node = self._get_job_info(op)
-        wait_breakpoint()
+        wait_breakpoint(op)
         release_breakpoint()
         op.track()
 
@@ -4442,6 +4429,96 @@ class TestCpuSetCri(YTEnvSetup):
             assert actual_cpu_set == expected_cpu_set
 
 
+class TestJobCleanup(YTEnvSetup):
+    NUM_MASTERS = 1
+    NUM_NODES = 1
+    NUM_SCHEDULERS = 1
+    USE_PORTO = True
+
+    DELTA_DYNAMIC_NODE_CONFIG = {
+        "%true": {
+            "exec_node": {
+                "slot_manager": {
+                    "abort_on_jobs_disabled": False,
+                },
+            },
+        },
+    }
+
+    DELTA_NODE_CONFIG = {
+        "job_resource_manager": {
+            "resource_limits": {
+                "cpu": 2,
+                "user_slots": 2,
+            },
+        },
+    }
+
+    @authors("dann239")
+    @pytest.mark.parametrize("job_phase", ["running", "preparing_artifacts"])
+    def test_job_cleanup_with_disabled_environment(self, job_phase):
+        from porto import Connection
+
+        update_nodes_dynamic_config(
+            {
+                "slot_manager": {
+                    "enable_job_environment_resurrection": False,
+                },
+                "job_controller": {
+                    "job_proxy": {
+                        "testing_config": {
+                            "halt_when_materializing_artifact": job_phase == "preparing_artifacts",
+                        },
+                    },
+                },
+            },
+            path="exec_node",
+        )
+
+        create("file", "//tmp/artifact", attributes={"replication_factor": 1})
+        write_file("//tmp/artifact", b"artifact")
+        op = run_test_vanilla(
+            with_breakpoint("BREAKPOINT"),
+            task_patch={"file_paths": ["<copy_file=%true>//tmp/artifact"]},
+        )
+        wait(lambda: op.list_jobs())
+        job_id, = op.list_jobs()
+        wait(lambda: op.get_job_phase(job_id) == job_phase, ignore_exceptions=True)
+
+        proxy_container, = [
+            container for container in self.Env.list_node_subcontainers(0)
+            if container.endswith("/jp")
+        ]
+        node = ls("//sys/cluster_nodes")[0]
+
+        try:
+            other_op = run_test_vanilla(
+                with_breakpoint("BREAKPOINT", breakpoint_name="disable_environment"),
+                spec={"max_failed_job_count": 1},
+            )
+            wait_breakpoint(other_op, breakpoint_name="disable_environment")
+
+            other_proxy_container, = [
+                container for container in self.Env.list_node_subcontainers(0)
+                if container.endswith("/jp") and container != proxy_container
+            ]
+            assert proxy_container in self.Env.list_node_subcontainers(0)
+
+            # Removing the slot container makes cleanup fail, causing the job environment to disable itself.
+            Connection().Destroy(other_proxy_container.rsplit("/", 1)[0])
+
+            wait(lambda: any(
+                alert["message"] == "Job environment is disabled"
+                for alert in get(f"//sys/cluster_nodes/{node}/@alerts")
+            ))
+
+            op.abort()
+            wait(lambda: proxy_container not in self.Env.list_node_subcontainers(0))
+        finally:
+            with Restarter(self.Env, NODES_SERVICE):
+                pass
+
+
 class TestSlotManagerResurrect(YTEnvSetup):
     NUM_MASTERS = 1
     NUM_NODES = 1
@@ -4470,13 +4547,7 @@ class TestSlotManagerResurrect(YTEnvSetup):
             "slot_manager": {
                 "job_environment": {
                     "type": "porto",
-                    "porto_executor": {
-                        "api_timeout": 1000
-                    },
                 },
-            },
-            "job_proxy": {
-                "test_root_fs": True,
             },
         },
     }
@@ -4509,9 +4580,6 @@ class TestSlotManagerResurrect(YTEnvSetup):
             "enable_job_environment_resurrection": True,
             "job_environment": {
                 "type": "porto",
-                "porto_executor": {
-                    "api_timeout": 1000
-                },
             },
         }, path="exec_node/slot_manager")
 
@@ -4531,7 +4599,7 @@ class TestSlotManagerResurrect(YTEnvSetup):
                 command="sleep {}".format(time),
                 task_patch={
                     "max_failed_job_count": 1,
-                    "layer_paths": ["//tmp/layer"]
+                    "layer_paths": ["//tmp/layer", ROOTFS_LAYER_PATH]
                 }
             )
 
@@ -4781,15 +4849,15 @@ class TestPortoFuseDevice(YTEnvSetup):
     @authors("ignat")
     def test_fuse_device(self):
         op = run_test_vanilla(
-            command=with_breakpoint("stat /dev/fuse >&2; BREAKPOINT"),
+            command=with_breakpoint("test -c /dev/fuse && echo FUSE_DEVICE_AVAILABLE >&2; BREAKPOINT"),
             task_patch={
                 "enable_fuse": True,
             },
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
 
-        assert b"File: /dev/fuse" in get_job_stderr(op.id, job_id)
+        assert b"FUSE_DEVICE_AVAILABLE" in get_job_stderr(op.id, job_id)
 
 
 ##################################################################
@@ -5247,12 +5315,12 @@ class TestUserJobDebugOptions(YTEnvSetup):
         command = with_breakpoint("BREAKPOINT; echo here are debug options:")
         task_patch = {"enable_debug_command_line_arguments": enable} if enable is not None else {}
 
-        run_test_vanilla(
+        op = run_test_vanilla(
             command=command,
             task_patch=task_patch
         )
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         output = subprocess.check_output(["ps", "aux"]).decode("utf-8")
 
@@ -5322,7 +5390,7 @@ class TestStatisticsReportingPeriod(YTEnvSetup):
         op = run_test_vanilla(
             with_breakpoint("BREAKPOINT"),
         )
-        (job_id,) = wait_breakpoint()
+        (job_id,) = wait_breakpoint(op)
 
         wait(lambda: get_job_from_archive(op.id, job_id) is not None)
 
@@ -5364,7 +5432,7 @@ class TestStatisticsReportingPeriod(YTEnvSetup):
             with_breakpoint("BREAKPOINT"),
         )
 
-        (job_id,) = wait_breakpoint()
+        (job_id,) = wait_breakpoint(op)
         wait(lambda: get_job_from_archive(op.id, job_id) is not None)
         initial_job = get_job_from_archive(op.id, job_id)
         initial_statistics = initial_job.get("statistics")
@@ -5450,7 +5518,7 @@ class TestDeletingConfigFile(YTEnvSetup):
             command=with_breakpoint("echo \"$HOME\" >&2; BREAKPOINT"),
         )
 
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
         sandbox_path = op.read_stderr(job_id).decode("utf-8").strip()
         slot_path = os.path.dirname(sandbox_path)
         print_debug(f"Looking for config files in {slot_path}...")

@@ -4,6 +4,8 @@
 
 #include <yt/yt/ytlib/scheduler/job_resources_helpers.h>
 
+#include <yt/yt/core/actions/new_with_offloaded_dtor.h>
+
 namespace NYT::NScheduler {
 
 using namespace NNodeTrackerClient;
@@ -41,7 +43,29 @@ bool TExecNode::CanSchedule(const TSchedulingTagFilter& filter) const
 
 TExecNodeDescriptorPtr TExecNode::BuildExecDescriptor() const
 {
-    return New<TExecNodeDescriptor>(
+    return DoBuildExecDescriptor(/*backgroundInvoker*/ nullptr);
+}
+
+TExecNodeDescriptorPtr TExecNode::BuildExecDescriptorWithOffloadedDtor(IInvokerPtr backgroundInvoker) const
+{
+    YT_VERIFY(backgroundInvoker);
+
+    return DoBuildExecDescriptor(std::move(backgroundInvoker));
+}
+
+TExecNodeDescriptorPtr TExecNode::DoBuildExecDescriptor(IInvokerPtr backgroundInvoker) const
+{
+    auto createDescriptor = [&backgroundInvoker] (auto&&... args) {
+        if (backgroundInvoker) {
+            return NewWithOffloadedDtor<TExecNodeDescriptor>(
+                std::move(backgroundInvoker),
+                std::forward<decltype(args)>(args)...);
+        }
+
+        return New<TExecNodeDescriptor>(std::forward<decltype(args)>(args)...);
+    };
+
+    return createDescriptor(
         Id_,
         GetAddresses(),
         NodeDescriptor_.GetDataCenter(),
@@ -93,4 +117,3 @@ void TExecNode::BuildAttributes(TFluentMap fluent)
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace NYT::NScheduler
-

@@ -433,6 +433,9 @@ struct TClusterNodeDynamicConfig
     //! Node resource limits.
     TResourceLimitsDynamicConfigPtr ResourceLimits;
 
+    //! Hot swap manager configuration.
+    NDiskManager::THotswapManagerDynamicConfigPtr HotswapManager;
+
     //! Data node configuration part.
     NDataNode::TDataNodeDynamicConfigPtr DataNode;
 
@@ -508,6 +511,8 @@ struct TClusterNodeDynamicConfig
     std::optional<int> AuxPollerThreadCount;
 
     NProfiling::TSolomonExporterDynamicConfigPtr SolomonExporter;
+
+    std::optional<int> ConnectionThreadPoolSize;
 
     REGISTER_YSON_STRUCT(TClusterNodeDynamicConfig);
 

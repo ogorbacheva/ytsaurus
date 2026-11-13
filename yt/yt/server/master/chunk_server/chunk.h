@@ -1,10 +1,10 @@
 #pragma once
 
-#include "public.h"
-#include "chunk_requisition.h"
+#include "private.h"
+
 #include "chunk_replica.h"
+#include "chunk_requisition.h"
 #include "chunk_tree.h"
-#include "incumbency_epoch.h"
 #include "stored_chunk_replica.h"
 
 #include <yt/yt/server/master/cell_master/public.h>
@@ -19,8 +19,8 @@
 
 #include <library/cpp/yt/containers/intrusive_linked_list.h>
 
-#include <library/cpp/yt/compact_containers/compact_vector.h>
 #include <library/cpp/yt/compact_containers/compact_flat_map.h>
+#include <library/cpp/yt/compact_containers/compact_vector.h>
 
 #include <library/cpp/yt/memory/ref_tracked.h>
 
@@ -71,8 +71,8 @@ struct TChunkDynamicData
     //! This is used to check whether chunk state in replicator is actual.
     TIncumbencyEpoch LastRefreshIncumbencyEpoch = NullIncumbencyEpoch;
 
-    //! For each medium, contains a valid iterator for those chunks belonging to the repair queue
-    //! and null (default iterator value) for others.
+    //! Maps encoded (mediumIndex, priority) keys to valid iterators for the repair queues containing this chunk.
+    //! Queues that do not contain this chunk have no entry.
     TRepairQueueIteratorMap RepairQueueIterators;
 
     //! Set of jobs that are currently scheduled for this chunk.
@@ -174,6 +174,7 @@ public:
     //! For non-erasure chunks, contains a FIFO queue of seen replicas; its tail position is kept in #CurrentLastSeenReplicaIndex_.
     //! For erasure chunks, this array is directly addressed by replica indexes; at most one replica is kept per part.
     TRange<TNodeId> LastSeenReplicas() const;
+    void ClearLastSeenReplicas();
 
     void AddReplica(
         TAugmentedStoredChunkReplicaPtr replica,
@@ -213,7 +214,7 @@ public:
 
     TChunkRepairQueueIterator GetRepairQueueIterator(int mediumIndex, int priority) const;
     void SetRepairQueueIterator(int mediumIndex, int priority, TChunkRepairQueueIterator value);
-    const TChunkDynamicData::TRepairQueueIteratorMap& SelectRepairQueueIteratorMap() const;
+    const TChunkDynamicData::TRepairQueueIteratorMap& GetRepairQueueIterators() const;
 
     const TChunkDynamicData::TJobSet& GetJobs() const;
 
@@ -231,10 +232,12 @@ public:
         const NObjectServer::IObjectManagerPtr& objectManager) const;
 
     TChunkRequisitionIndex GetLocalRequisitionIndex() const;
+    // COMPAT(theevilbird): Get rid of |force| after removing requisitions for chunk_wise_accounting_migration.
     void SetLocalRequisitionIndex(
         TChunkRequisitionIndex requisitionIndex,
         TChunkRequisitionRegistry* registry,
-        const NObjectServer::IObjectManagerPtr& objectManager);
+        const NObjectServer::IObjectManagerPtr& objectManager,
+        bool forceAggregatedRequisitionUpdate = false);
 
     //! Prerequisite: IsExportedToCell(cellTag).
     TChunkRequisitionIndex GetExternalRequisitionIndex(NObjectServer::TCellTag cellTag) const;
@@ -481,9 +484,11 @@ private:
     const TReplicasDataBase& ReplicasData() const;
     TReplicasDataBase* MutableReplicasData();
 
+    // COMPAT(theevilbird): Get rid of |force| after removing requisitions for chunk_wise_accounting_migration.
     void UpdateAggregatedRequisitionIndex(
         TChunkRequisitionRegistry* registry,
-        const NObjectServer::IObjectManagerPtr& objectManager);
+        const NObjectServer::IObjectManagerPtr& objectManager,
+        bool forceAggregatedRequisitionUpdate = false);
 
     void MaybeResetObsoleteEpochData();
 

@@ -3,6 +3,7 @@
 #include <yql/essentials/utils/log/log_component.h>
 
 #include <library/cpp/testing/unittest/registar.h>
+#include <util/system/tempfile.h>
 
 
 using namespace NYql;
@@ -18,9 +19,11 @@ Y_UNIT_TEST_SUITE(TConfigTest)
             "w.Executor.LoadUdfsDir=/some/path/to/udfs",
             "w.Executor.LoadUdfFiles=udf1,udf2",
             "w.Executor.LoadUdfFiles=udf3",
+            "w.Executor.SparkParserPort=31725",
 
             "fs.MaxFiles=300",
             "fs.MaxSizeMb=512",
+            "fs.DownloadBandwidthLimitBytes=100",
 
             "g.Yt.MrJobBin=",
         };
@@ -53,16 +56,35 @@ Y_UNIT_TEST_SUITE(TConfigTest)
         UNIT_ASSERT_STRINGS_EQUAL(udfsPaths.Get(0), "udf1");
         UNIT_ASSERT_STRINGS_EQUAL(udfsPaths.Get(1), "udf2");
         UNIT_ASSERT_STRINGS_EQUAL(udfsPaths.Get(2), "udf3");
+        UNIT_ASSERT_EQUAL(w.GetExecutor().GetSparkParserPort(), 31725);
 
         // (2) file storage config
         const auto& fs = config.FileStorage;
         UNIT_ASSERT_EQUAL(fs.GetMaxFiles(), 300);
         UNIT_ASSERT_EQUAL(fs.GetMaxSizeMb(), 512);
+        UNIT_ASSERT_VALUES_EQUAL(fs.GetDownloadBandwidthLimitBytes(), 100);
 
         // (3) gateways config
         const auto& g = config.Gateways;
 
         UNIT_ASSERT_STRINGS_EQUAL(g.GetYt().GetMrJobBin(), "");
+    }
+
+    Y_UNIT_TEST(WorkerAndResolverIdentitySurviveQtConfigParsing) {
+        TTempFileHandle file;
+        TMainConfig config(true);
+        const char* args[] = {"worker", "--cfg", file.Name().c_str(), "--role", "forker",
+            "w.User=yqlworker", "w.Group=yqlworker",
+            "w.Executor.UdfResolverUser=udfresolver",
+            "w.Executor.UdfResolverGroup=udfresolver", nullptr};
+        config.ParseFromCommandLineArgs(std::size(args) - 1, args);
+        for (int parse = 0; parse < 2; ++parse) {
+            UNIT_ASSERT_VALUES_EQUAL(config.Worker.GetUser(), "yqlworker");
+            UNIT_ASSERT_VALUES_EQUAL(config.Worker.GetGroup(), "yqlworker");
+            UNIT_ASSERT_VALUES_EQUAL(config.Worker.GetExecutor().GetUdfResolverUser(), "udfresolver");
+            UNIT_ASSERT_VALUES_EQUAL(config.Worker.GetExecutor().GetUdfResolverGroup(), "udfresolver");
+            config.ParseAgain();
+        }
     }
 
     Y_UNIT_TEST(Components) {

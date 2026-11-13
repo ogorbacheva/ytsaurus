@@ -28,6 +28,10 @@ common:
       to: /api/python/start.md
       type: redirect
 
+    - from: /flow/kotlin/index.md
+      to: /flow/kotlin/getting-started.md
+      type: redirect
+
     - from: /user-guide/data-processing/index.md
       to: /user-guide/data-processing/overview.md
       type: redirect
@@ -175,6 +179,10 @@ common:
       to: /user-guide/dynamic-tables/overview.md
       type: redirect
 ru:
+    - from: /concepts/computation.md
+      to: /flow/concepts/computation.md
+      type: redirect
+
     - from: /api/c\+\+/c\+\+_api.md
       to: /api/cpp/description.md
       type: redirect
@@ -982,6 +990,10 @@ ru:
       to: /flow/extensions/grut-watchlog.md
       type: redirect
 
+    - from: /flow/connectors/http.md
+      to: /flow/extensions/http.md
+      type: redirect
+
     # Redirects for Cluster Access article
 
     - from: /admin-guide/cluster-access-proxy.md#how-to-resolve
@@ -1030,6 +1042,14 @@ ru:
 
     - from: /flow/extensions/solomon.md
       to: /flow/extensions/monium.md
+      type: redirect
+
+    - from: /flow/file-providers/sandbox.md
+      to: /flow/extensions/sandbox.md
+      type: redirect
+
+    - from: /flow/file-providers/model-service.md
+      to: /flow/extensions/model-service.md
       type: redirect
 
     - from: /flow/release/launch-vanilla.md
@@ -1090,4 +1110,70 @@ ru:
 
     - from: /flow/yandex/(.*)
       to: /flow/$1
+      type: redirect
+
+    # ORM docs reorg
+    - from: /orm/description/api.md
+      to: /orm/api/object-service.md
+      type: redirect
+
+    - from: /orm/description/index.md
+      to: /orm/common/overview.md
+      type: redirect
+
+    - from: /orm/admin/index.md
+      to: /orm/admin/ops.md
+      type: redirect
+
+    - from: /orm/user-guide/index.md
+      to: /orm/user-guide/idm-integration-setup.md
+      type: redirect
+
+    - from: /orm/other/index.md
+      to: /orm/other/video.md
+      type: redirect
+
+en:
+    - from: /concepts/computation.md
+      to: /flow/concepts/computation.md
+      type: redirect
+
+    - from: /flow/release/auth.md
+      to: /flow/devops/vanilla/security.md
+      type: redirect
+
+    - from: /flow/release/basic-rules.md
+      to: /flow/devops/vanilla/releases.md#release-and-configure-basic-rules
+      type: redirect
+
+    - from: /flow/release/cli.md
+      to: /flow/tools/cli.md
+      type: redirect
+
+    - from: /flow/release/flow-core-target.md
+      to: /flow/devops/vanilla/releases.md#flow-core-target
+      type: redirect
+
+    - from: /flow/release/launch-vanilla.md
+      to: /flow/devops/vanilla/initial-deploy.md
+      type: redirect
+
+    - from: /flow/release/logs.md
+      to: /flow/devops/vanilla/diagnostics/logs.md
+      type: redirect
+
+    - from: /flow/release/pipeline-operations.md
+      to: /flow/devops/vanilla/pipeline-operations.md
+      type: redirect
+
+    - from: /flow/release/releases.md
+      to: /flow/devops/vanilla/releases.md
+      type: redirect
+
+    - from: /flow/release/security.md
+      to: /flow/devops/vanilla/security.md
+      type: redirect
+
+    - from: /flow/release/yt-sync-rules.md
+      to: /flow/devops/vanilla/releases.md#yt-sync
       type: redirect

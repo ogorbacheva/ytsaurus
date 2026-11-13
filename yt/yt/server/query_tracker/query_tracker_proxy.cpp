@@ -31,6 +31,7 @@
 
 #include <yt/yt/core/logging/log.h>
 
+#include <yt/yt/core/rpc/response_keeper.h>
 #include <yt/yt/core/rpc/roaming_channel.h>
 
 #include <yt/yt/core/ytree/convert.h>
@@ -65,7 +66,6 @@ namespace NDetail {
 constexpr int MaxAccessControlObjectsPerQuery = 10;
 
 static const TYsonString EmptyMap = TYsonString(TString("{}"));
-static const std::string CompressedEmptyMap = Compress(EmptyMap.ToString(), MaxDyntableStringSize);
 
 //! Lookup one of query tracker state tables by query id.
 template <class TRecordDescriptor>
@@ -116,13 +116,19 @@ ESecurityAction CheckQueryAccessControl(
     const std::optional<TYsonString>& accessControlObjects,
     const std::string& queryAuthor,
     const IClientPtr& client,
-    EPermission permission)
+    EPermission permission,
+    const std::optional<std::string>& adminsGroup)
 {
     if (user == queryAuthor) {
         return ESecurityAction::Allow;
     }
 
-    return CheckAccessControl(user, accessControlObjects, client, permission);
+    return CheckAccessControl(
+        user,
+        accessControlObjects,
+        client,
+        permission,
+        adminsGroup);
 }
 
 void ThrowAccessDeniedException(
@@ -146,10 +152,23 @@ TQuery LookupQuery(
     TQueryId queryId,
     const IClientPtr& client,
     const NYPath::TYPath& root,
-    const std::optional<std::vector<std::string>>& lookupKeys,
+    std::optional<std::vector<std::string>> lookupKeys,
     TTimestamp timestamp,
-    const TLogger& logger)
+    const TLogger& logger,
+    const IMapNodePtr& progressOptions = nullptr)
 {
+    bool progressRequested = !lookupKeys ||
+        std::find(lookupKeys->begin(), lookupKeys->end(), "progress") != lookupKeys->end();
+    bool clearEngine = false;
+
+    if (progressRequested &&
+        lookupKeys &&
+        std::find(lookupKeys->begin(), lookupKeys->end(), "engine") == lookupKeys->end())
+    {
+        lookupKeys->emplace_back("engine");
+        clearEngine = true;
+    }
+
     auto asyncActiveRecord = LookupQueryTrackerRecord<TActiveQueryDescriptor>(
         queryId,
         client,
@@ -181,11 +200,40 @@ TQuery LookupQuery(
             .With("QueryId", queryId)
             .With("Timestamp", timestamp);
     }
+
+    TQuery query;
     if (isActive) {
-        return PartialRecordToQuery(asyncActiveRecord.GetOrCrash().Value());
+        query = PartialRecordToQuery(asyncActiveRecord.GetOrCrash().Value());
     } else {
-        return PartialRecordToQuery(asyncFinishedRecord.GetOrCrash().Value());
+        query = PartialRecordToQuery(asyncFinishedRecord.GetOrCrash().Value());
     }
+
+    {
+        if (progressRequested &&
+            query.Progress == EmptyMap &&
+            query.Engine && *query.Engine == EQueryEngine::Yql)
+        {
+            auto getYqlProgressFromParts = isActive
+                ? GetYqlProgressFromParts<true>
+                : GetYqlProgressFromParts<false>;
+            query.Progress = getYqlProgressFromParts(
+                queryId,
+                client,
+                root,
+                timestamp,
+                progressOptions);
+        } else if (progressRequested && progressOptions && progressOptions->GetChildCount() > 0) {
+            THROW_ERROR_EXCEPTION(
+                "Query %v stores progress in compact form; progress_options are not supported for it",
+                queryId);
+        }
+    }
+
+    if (clearEngine) {
+        query.Engine.reset();
+    }
+
+    return query;
 }
 
 void ValidateQueryPermissions(
@@ -195,6 +243,7 @@ void ValidateQueryPermissions(
     const std::string& user,
     const IClientPtr& client,
     EPermission permission,
+    const std::optional<std::string>& adminsGroup,
     const TLogger& logger)
 {
     static const std::vector<std::string> lookupKeys{
@@ -202,7 +251,15 @@ void ValidateQueryPermissions(
         "access_control_objects",
     };
     auto query = LookupQuery(queryId, client, root, lookupKeys, timestamp, logger);
-    if (CheckQueryAccessControl(user, query.AccessControlObjects, *query.User, client, permission) == ESecurityAction::Deny) {
+    auto securityAction = CheckQueryAccessControl(
+        user,
+        query.AccessControlObjects,
+        *query.User,
+        client,
+        permission,
+        adminsGroup);
+
+    if (securityAction == ESecurityAction::Deny) {
         ThrowAccessDeniedException(queryId, permission, user, query.AccessControlObjects, *query.User);
     }
 }
@@ -293,6 +350,38 @@ std::optional<std::vector<std::string>> ValidateAccessControlObjects(
     return accessControlObjects;
 }
 
+TQueryId FindQueryStartedByMutation(
+    const IClientPtr& client,
+    const TYPath& root,
+    const std::string& user,
+    const TStartQueryOptions& options,
+    TTimestamp timestamp)
+{
+    auto rowBuffer = New<TRowBuffer>();
+    TLookupRowsOptions lookupOptions;
+    lookupOptions.Timestamp = timestamp;
+    lookupOptions.KeepMissingRows = true;
+    std::vector keys{
+        TQueryByUserAndMutationIdKey{.User = user, .MutationId = options.MutationId}.ToKey(rowBuffer),
+    };
+    auto asyncLookupResult = client->LookupRows(
+        root + "/queries_by_user_and_mutation_id",
+        TQueryByUserAndMutationIdDescriptor::Get()->GetNameTable(),
+        MakeSharedRange(std::move(keys), rowBuffer),
+        lookupOptions);
+    auto rowset = WaitFor(asyncLookupResult)
+        .ValueOrThrow()
+        .Rowset;
+    auto optionalRecords = ToOptionalRecords<TQueryByUserAndMutationId>(rowset);
+    YT_VERIFY(optionalRecords.size() == 1);
+    if (!optionalRecords[0]) {
+        return {};
+    }
+
+    NRpc::ValidateRetry(options.MutationId, options.Retry);
+    return optionalRecords[0]->QueryId;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace NDetail
@@ -306,14 +395,16 @@ TQueryTrackerProxy::TQueryTrackerProxy(
     TYPath stateRoot,
     TQueryTrackerDynamicConfigPtr config,
     std::unordered_map<EQueryEngine, IProxyEngineProviderPtr> engineProviders,
-    int expectedTablesVersion)
+    int expectedTablesVersion,
+    std::optional<std::string> adminsGroup)
     : StateClient_(std::move(stateClient))
     , StateRoot_(std::move(stateRoot))
+    , AdminsGroup_(std::move(adminsGroup))
     , DynamicConfig_(std::move(config))
     , EngineProviders_(std::move(engineProviders))
     , ExpectedTablesVersion_(expectedTablesVersion)
-    , TimeBasedIndex_(CreateTimeBasedIndex(StateClient_, StateRoot_))
-    , TokenBasedIndex_(CreateTokenBasedIndex(StateClient_, StateRoot_))
+    , TimeBasedIndex_(CreateTimeBasedIndex(StateClient_, StateRoot_, AdminsGroup_))
+    , TokenBasedIndex_(CreateTokenBasedIndex(StateClient_, StateRoot_, AdminsGroup_))
 { }
 
 void TQueryTrackerProxy::Reconfigure(const TQueryTrackerDynamicConfigPtr& config)
@@ -321,7 +412,7 @@ void TQueryTrackerProxy::Reconfigure(const TQueryTrackerDynamicConfigPtr& config
     DynamicConfig_ = config;
 }
 
-void TQueryTrackerProxy::StartQuery(
+TQueryId TQueryTrackerProxy::StartQuery(
     const TQueryId queryId,
     const EQueryEngine engine,
     const std::string& query,
@@ -356,12 +447,35 @@ void TQueryTrackerProxy::StartQuery(
 
     YT_TLOG_DEBUG("Starting query")
         .With("QueryId", queryId)
+        .With("MutationId", options.MutationId)
         .With("Draft", options.Draft)
         .With("IsIndexed", isIndexed);
 
     auto rowBuffer = New<TRowBuffer>();
     auto transaction = WaitFor(StateClient_->StartTransaction(ETransactionType::Tablet, {}))
         .ValueOrThrow();
+
+    if (options.MutationId) {
+        if (auto startedQueryId = FindQueryStartedByMutation(StateClient_, StateRoot_, user, options, transaction->GetStartTimestamp())) {
+            YT_TLOG_DEBUG("Query is already started by this mutation")
+                .With("QueryId", startedQueryId)
+                .With("MutationId", options.MutationId);
+            return startedQueryId;
+        }
+
+        TQueryByUserAndMutationIdPartial mutationRecord{
+            .Key = {.User = user, .MutationId = options.MutationId},
+            .QueryId = queryId,
+            .Ttl = DynamicConfig_->ProxyConfig->QueriesByMutationIdTtl.MilliSeconds(),
+        };
+        std::vector mutationRows{
+            mutationRecord.ToUnversionedRow(rowBuffer, TQueryByUserAndMutationIdDescriptor::Get()->GetPartialIdMapping()),
+        };
+        transaction->WriteRows(
+            StateRoot_ + "/queries_by_user_and_mutation_id",
+            TQueryByUserAndMutationIdDescriptor::Get()->GetNameTable(),
+            MakeSharedRange(std::move(mutationRows), rowBuffer));
+    }
 
     auto accessControlObjects = ValidateAccessControlObjects(options.AccessControlObject, options.AccessControlObjects).value_or(std::vector<std::string>{});
     VerifyAllAccessControlObjectsExist(accessControlObjects, StateClient_);
@@ -377,10 +491,10 @@ void TQueryTrackerProxy::StartQuery(
     if (options.Annotations) {
         auto annotationsMap = options.Annotations->AsMap();
         if (annotationsMap->GetChildValueOrDefault("is_tutorial", false)) {
-            if (!GetUserSubjects(user, StateClient_).contains(SuperusersGroupName)) {
-                YT_TLOG_DEBUG("Attempt to create a tutorial failed; user is not a superuser")
+            if (!HasQueryTrackerAdminAccess(GetUserSubjects(user, StateClient_), AdminsGroup_)) {
+                YT_TLOG_DEBUG("Attempt to create a tutorial failed; user has no Query Tracker admin access")
                     .With("User", user);
-                THROW_ERROR_EXCEPTION("Non-superusers cannot create tutorial queries. To create one contact your cluster administrator");
+                THROW_ERROR_EXCEPTION("Users without Query Tracker admin access cannot create tutorial queries. To create one contact your cluster administrator");
             }
             if (!options.Draft) {
                 THROW_ERROR_EXCEPTION("Tutorials should be in draft state");
@@ -476,8 +590,15 @@ void TQueryTrackerProxy::StartQuery(
         .Force2PC = true,
     };
 
-    WaitFor(transaction->Commit(commitOptions))
-        .ThrowOnError();
+    auto commitError = WaitFor(transaction->Commit(commitOptions));
+    if (options.MutationId && commitError.FindMatching(NTabletClient::EErrorCode::TransactionLockConflict)) {
+        if (auto startedQueryId = FindQueryStartedByMutation(StateClient_, StateRoot_, user, options, SyncLastCommittedTimestamp)) {
+            return startedQueryId;
+        }
+    }
+    commitError.ThrowOnError();
+
+    return queryId;
 }
 
 void TQueryTrackerProxy::AbortQuery(
@@ -503,7 +624,15 @@ void TQueryTrackerProxy::AbortQuery(
     auto transaction = WaitFor(StateClient_->StartTransaction(ETransactionType::Tablet, {}))
         .ValueOrThrow();
 
-    ValidateQueryPermissions(queryId, StateRoot_, transaction->GetStartTimestamp(), user, StateClient_, EPermission::Administer, Logger);
+    ValidateQueryPermissions(
+        queryId,
+        StateRoot_,
+        transaction->GetStartTimestamp(),
+        user,
+        StateClient_,
+        EPermission::Administer,
+        AdminsGroup_,
+        Logger);
 
     YT_TLOG_DEBUG("Aborting query")
         .With("QueryId", queryId)
@@ -592,7 +721,15 @@ TQueryResult TQueryTrackerProxy::GetQueryResult(
         TLookupRowsOptions options;
         options.KeepMissingRows = true;
 
-        ValidateQueryPermissions(queryId, StateRoot_, timestamp, user, StateClient_, EPermission::Read, Logger);
+        ValidateQueryPermissions(
+            queryId,
+            StateRoot_,
+            timestamp,
+            user,
+            StateClient_,
+            EPermission::Read,
+            AdminsGroup_,
+            Logger);
 
         TFinishedQueryResultKey key{.QueryId = queryId, .Index = resultIndex};
         std::vector keys{
@@ -652,7 +789,15 @@ IUnversionedRowsetPtr TQueryTrackerProxy::ReadQueryResult(
         TLookupRowsOptions options;
         options.KeepMissingRows = true;
 
-        ValidateQueryPermissions(queryId, StateRoot_, timestamp, user, StateClient_, EPermission::Read, Logger);
+        ValidateQueryPermissions(
+            queryId,
+            StateRoot_,
+            timestamp,
+            user,
+            StateClient_,
+            EPermission::Read,
+            AdminsGroup_,
+            Logger);
 
         TFinishedQueryResultKey key{.QueryId = queryId, .Index = resultIndex};
         std::vector keys{
@@ -723,15 +868,37 @@ TQuery TQueryTrackerProxy::GetQuery(
     YT_TLOG_DEBUG("Getting query")
         .With("QueryId", queryId)
         .With("Timestamp", timestamp)
-        .With("Attributes", options.Attributes);
+        .With("Attributes", options.Attributes)
+        .With("ProgressOptions", ConvertToYsonString(options.ProgressOptions));
 
     options.Attributes.ValidateKeysOnly();
 
-    ValidateQueryPermissions(queryId, StateRoot_, timestamp, user, StateClient_, EPermission::Use, Logger);
+    ValidateQueryPermissions(
+        queryId,
+        StateRoot_,
+        timestamp,
+        user,
+        StateClient_,
+        EPermission::Use,
+        AdminsGroup_,
+        Logger);
 
     auto lookupKeys = options.Attributes ? std::make_optional(options.Attributes.Keys()) : std::nullopt;
+    bool hasProgressOptions = options.ProgressOptions && options.ProgressOptions->GetChildCount() > 0;
+    if (hasProgressOptions && !options.Attributes.AdmitsKeySlow("progress")) {
+        THROW_ERROR_EXCEPTION(
+            "Non-empty progress_options require the %Qv attribute to be requested",
+            "progress");
+    }
 
-    auto query = LookupQuery(queryId, StateClient_, StateRoot_, lookupKeys, timestamp, Logger);
+    auto query = LookupQuery(
+        queryId,
+        StateClient_,
+        StateRoot_,
+        lookupKeys,
+        timestamp,
+        Logger,
+        options.ProgressOptions);
 
     if (!lookupKeys || std::find(lookupKeys->begin(), lookupKeys->end(), "access_control_object") != lookupKeys->end()) {
         ConvertAcoToOldFormat(query);
@@ -776,7 +943,15 @@ void TQueryTrackerProxy::AlterQuery(
 
     auto timestamp = transaction->GetStartTimestamp();
 
-    ValidateQueryPermissions(queryId, StateRoot_, timestamp, user, StateClient_, EPermission::Administer, Logger);
+    ValidateQueryPermissions(
+        queryId,
+        StateRoot_,
+        timestamp,
+        user,
+        StateClient_,
+        EPermission::Administer,
+        AdminsGroup_,
+        Logger);
 
     static const std::vector<std::string> lookupKeys{
         "query_id",
@@ -803,8 +978,8 @@ void TQueryTrackerProxy::AlterQuery(
     if (options.Annotations) {
         auto annotationsMap = options.Annotations->AsMap();
         if (annotationsMap->GetChildValueOrDefault("is_tutorial", false) != isTutorial) {
-            if (!GetUserSubjects(user, StateClient_).contains(SuperusersGroupName)) {
-                THROW_ERROR_EXCEPTION("Non-superusers cannot change tutorial flag. To change one contact your cluster administrator");
+            if (!HasQueryTrackerAdminAccess(GetUserSubjects(user, StateClient_), AdminsGroup_)) {
+                THROW_ERROR_EXCEPTION("Users without Query Tracker admin access cannot change tutorial flag. To change one contact your cluster administrator");
             }
             if (*query.State != EQueryState::Draft) {
                 THROW_ERROR_EXCEPTION("Tutorials should be in draft state");
@@ -993,6 +1168,7 @@ TGetQueryTrackerInfoResult TQueryTrackerProxy::GetQueryTrackerInfo(
                 .Item("not_indexing").Value(true)
                 .Item("declare_params").Value(true)
                 .Item("tutorials").Value(true)
+                .Item("progress_v2").Value(true)
             .EndMap();
     }
 
@@ -1074,14 +1250,16 @@ TQueryTrackerProxyPtr CreateQueryTrackerProxy(
     TYPath stateRoot,
     TQueryTrackerDynamicConfigPtr config,
     std::unordered_map<EQueryEngine, IProxyEngineProviderPtr> engineProviders,
-    int expectedTablesVersion)
+    int expectedTablesVersion,
+    std::optional<std::string> adminsGroup)
 {
     return New<TQueryTrackerProxy>(
         std::move(stateClient),
         std::move(stateRoot),
         std::move(config),
         std::move(engineProviders),
-        expectedTablesVersion);
+        expectedTablesVersion,
+        std::move(adminsGroup));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -218,6 +218,8 @@ struct TConnectionStaticConfig
     //! Visible in profiling as tag `connection_name`.
     std::string ConnectionName;
 
+    std::optional<std::string> Datacenter;
+
     //! Region defines geographical location, largest tier in cloud hierarchy.
     std::optional<std::string> Region;
 
@@ -269,6 +271,7 @@ struct TConnectionDynamicConfig
     NChunkClient::TClientChunkMetaCacheConfigPtr ChunkMetaCache;
     NChunkClient::TChunkReplicaCacheDynamicConfigPtr ChunkReplicaCache;
     NChaosClient::TReplicationCardCacheDynamicConfigPtr ReplicationCardCache;
+    NChaosClient::TChaosLeaseCacheDynamicConfigPtr ChaosLeaseCache;
     NHiveClient::TClusterDirectorySynchronizerConfigPtr ClusterDirectorySynchronizer;
     NChunkClient::TMediumDirectorySynchronizerConfigPtr MediumDirectorySynchronizer;
     NNodeTrackerClient::TNodeDirectorySynchronizerConfigPtr NodeDirectorySynchronizer;
@@ -279,6 +282,11 @@ struct TConnectionDynamicConfig
     bool EnableNodeDirectorySynchronizationOnTableRead;
     //! Minimum interval between successful one-off syncs triggered by EnableNodeDirectorySynchronizationOnTableRead.
     TDuration NodeDirectorySynchronizationOnTableReadStalenessThreshold;
+
+    //! Limits the number of ranges accepted by a single PartitionFile call.
+    int MaxFilePartitionCount;
+    //! Limits the number of chunk specs packed into a single file partition cookie.
+    int MaxChunkSpecsPerFilePartition;
 
     NQueryClient::TExecutorConfigPtr QueryEvaluator;
     NQueryClient::TColumnEvaluatorCacheConfigPtr ColumnEvaluatorCache;
@@ -410,6 +418,8 @@ struct TConnectionDynamicConfig
 
     NTransactionClient::TDynamicClockManagerConfigPtr ClockManager;
 
+    int ReplicationCardRetryCount;
+    TDuration ReplicationCardRetrySlackPeriod;
     int ReplicaFallbackRetryCount;
 
     int LocalTabletWriteRetryCount;
@@ -445,6 +455,8 @@ struct TConnectionDynamicConfig
 
     bool EnableReshardWithSlicingByDefault;
 
+    bool UseCypressProxyForTwoPhaseTableOperations;
+
     i64 GetJobTraceBatchSize;
 
     //! Enable base ACO check when validating operation access.
@@ -453,6 +465,12 @@ struct TConnectionDynamicConfig
 
     // COMPAT(atalmenev)
     bool UseUniformPrepareSignatures;
+
+    // COMPAT(ifsmirnov)
+    bool UseTwoPhaseDynamicityAlter;
+
+    // COMPAT(shamteev)
+    bool EnableChaosLeaseTransactionParticipants;
 
     REGISTER_YSON_STRUCT(TConnectionDynamicConfig);
 

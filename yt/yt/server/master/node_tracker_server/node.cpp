@@ -82,7 +82,7 @@ TIncrementalHeartbeatCounters::TIncrementalHeartbeatCounters(const TProfiler& pr
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TNode::TCellSlot::Persist(const NCellMaster::TPersistenceContext& context)
+void TCellSlot::Persist(const NCellMaster::TPersistenceContext& context)
 {
     using NYT::Persist;
     Persist(context, Cell);
@@ -689,7 +689,7 @@ void TNode::Save(NCellMaster::TSaveContext& context) const
     Save(context, ResourceLimitsOverrides_);
     Save(context, Host_);
     Save(context, LeaseTransaction_);
-    Save(context, LastSeenLeaseTransactionTimeout_);
+    Save(context, LeaseTransactionTimeoutBeforeExtension_);
     Save(context, Cellars_);
     Save(context, Annotations_);
     Save(context, Version_);
@@ -701,6 +701,7 @@ void TNode::Save(NCellMaster::TSaveContext& context) const
     Save(context, LastGossipState_);
     Save(context, NextValidationFullHeartbeatTime_);
     Save(context, LastCellAggregatedStateReliability_);
+    Save(context, RegistrationRevision_);
 }
 
 namespace {
@@ -747,7 +748,13 @@ void TNode::Load(NCellMaster::TLoadContext& context)
     Load(context, ResourceLimitsOverrides_);
     Load(context, Host_);
     Load(context, LeaseTransaction_);
-    Load(context, LastSeenLeaseTransactionTimeout_);
+    Load(context, LeaseTransactionTimeoutBeforeExtension_);
+    // COMPAT(danilalexeev)
+    if (context.GetVersion() < EMasterReign::PersistNodeLeaseTimeoutBeforeExtension &&
+        !IsPendingRestart())
+    {
+        LeaseTransactionTimeoutBeforeExtension_.reset();
+    }
     Load(context, Cellars_);
     Load(context, Annotations_);
     Load(context, Version_);
@@ -766,6 +773,9 @@ void TNode::Load(NCellMaster::TLoadContext& context)
         context.GetVersion() >= EMasterReign::PersistLastCellAggregatedStateReliability_25_4))
     {
         Load(context, LastCellAggregatedStateReliability_);
+    }
+    if (context.GetVersion() >= EMasterReign::NodeRegistrationRevision) {
+        Load(context, RegistrationRevision_);
     }
 
     ComputeDefaultAddress();
@@ -1004,7 +1014,7 @@ int TNode::GetTotalHintedSessionCount(int chunkHostMasterCellCount) const
             TotalHintedReplicationSessionCount_);
 }
 
-TNode::TCellSlot* TNode::FindCellSlot(const TCellBase* cell)
+TCellSlot* TNode::FindCellSlot(const TCellBase* cell)
 {
     if (auto* cellar = FindCellar(cell->GetCellarType())) {
         auto predicate = [cell] (const auto& slot) {
@@ -1020,7 +1030,7 @@ TNode::TCellSlot* TNode::FindCellSlot(const TCellBase* cell)
     return nullptr;
 }
 
-TNode::TCellSlot* TNode::GetCellSlot(const TCellBase* cell)
+TCellSlot* TNode::GetCellSlot(const TCellBase* cell)
 {
     auto* slot = FindCellSlot(cell);
     YT_VERIFY(slot);
@@ -1141,7 +1151,7 @@ std::optional<double> TNode::GetLoadFactor(int mediumIndex, int chunkHostMasterC
     // NB: Avoid division by zero.
     return GetOrDefault(SessionCount_, mediumIndex)
         ? std::optional(
-            static_cast<double>(GetHintedSessionCount(mediumIndex, chunkHostMasterCellCount)) /
+            (static_cast<double>(GetHintedSessionCount(mediumIndex, chunkHostMasterCellCount)) + 1.0) /
             std::max(GetOrDefault(IOWeights_, mediumIndex), 1e-9))
         : std::nullopt;
 }
@@ -1431,7 +1441,7 @@ i64 TNode::ComputeTotalReplicaCount(int mediumIndex) const
         });
 }
 
-bool TNode::TCellSlot::IsWarmedUp() const
+bool TCellSlot::IsWarmedUp() const
 {
     return
         PreloadPendingStoreCount == 0 &&

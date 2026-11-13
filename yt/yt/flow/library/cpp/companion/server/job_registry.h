@@ -4,7 +4,7 @@
 
 #include "job.h"
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 namespace NYT::NFlow::NCompanionServer {
 
@@ -46,6 +46,8 @@ public:
     //! Ids of every registered job, including those whose removal is deferred
     //! behind an active lease.
     std::vector<TJobId> ListJobIds();
+    //! Number of registered jobs.
+    int GetJobCount();
 
 private:
     struct TEntry
@@ -58,7 +60,7 @@ private:
 
     const IInvokerPtr Invoker_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     THashMap<TJobId, TEntry> Jobs_;
 };
 

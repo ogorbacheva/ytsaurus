@@ -5,12 +5,61 @@
 #include "message.h"
 #include "timer.h"
 
+#include <yt/yt/core/misc/error.h>
+
 #include <library/cpp/yt/memory/ref_counted.h>
 
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace NYT::NFlow {
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Selects how a Swift computation identifies sibling output messages.
+class TOutputMessageIdSuffix
+{
+public:
+    enum class EMode
+    {
+        SequenceNumber,
+        PayloadHash,
+        UserDefined,
+    };
+
+    static TOutputMessageIdSuffix FromSequenceNumber();
+    static TOutputMessageIdSuffix FromPayloadHash();
+    static TOutputMessageIdSuffix FromUserDefined(std::string suffix);
+
+    EMode GetMode() const;
+    const std::string& GetValue() const;
+    std::string Resolve(const TMessage& message, i64 sequenceNumber) const;
+
+    bool operator==(const TOutputMessageIdSuffix&) const = default;
+
+private:
+    EMode Mode_;
+    std::string Value_;
+
+    explicit TOutputMessageIdSuffix(EMode mode, std::string value = {});
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TAddMessageOptions
+{
+    bool Distribute = true;
+    TOutputMessageIdSuffix MessageIdSuffix = TOutputMessageIdSuffix::FromSequenceNumber();
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TFailedMessage
+{
+    TInputMessageConstPtr Message;
+    TError Reason;
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -25,14 +74,24 @@ struct IOutputCollector
         const std::vector<TInputMessageConstPtr>& messages,
         const std::vector<TInputTimerConstPtr>& timers,
         const std::vector<TInputVisitConstPtr>& visits = {}) = 0;
-    //! Adds an output message. For a source computation, |distribute| = false keeps the
-    //! message out of the downstream output while still letting it advance the watermark; for
-    //! other computations, |distribute| = false simply drops the message (it is not emitted).
-    virtual void AddMessage(TMessage&& message, bool distribute = true) = 0;
+    //! Adds an output message.
+    void AddMessage(TMessage&& message, TAddMessageOptions options = {});
+    void AddMessage(TMessage&& message, bool distribute);
+
+    //! Saves the selected input message and its failure in the current epoch.
+    //! Requires an enabled failure handler and a native transform computation host.
+    //! Does not undo previously emitted output, timers, or state changes.
+    void AddFailedMessage(const TInputMessageConstPtr& message, const TError& reason);
 
     virtual void AddTimer(TSystemTimestamp triggerTimestamp, std::optional<TSystemTimestamp> eventTimestamp = {}) = 0;
     virtual void AddTimer(const TStreamId& streamId, TSystemTimestamp triggerTimestamp, std::optional<TSystemTimestamp> eventTimestamp = {}) = 0;
     virtual void AddTimer(TTimer&& timer) = 0;
+
+private:
+    //! For a source computation, |options.Distribute| = false keeps the message out of the
+    //! downstream output while still letting it advance the watermark. Other computations drop it.
+    virtual void DoAddMessage(TMessage&& message, TAddMessageOptions options) = 0;
+    virtual void DoAddFailedMessage(const TInputMessageConstPtr& message, const TError& reason);
 };
 
 DEFINE_REFCOUNTED_TYPE(IOutputCollector);

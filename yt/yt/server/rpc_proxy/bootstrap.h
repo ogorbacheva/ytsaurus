@@ -21,6 +21,7 @@
 #include <yt/yt/library/signature/components/public.h>
 
 #include <yt/yt/core/bus/public.h>
+#include <yt/yt/core/bus/tcp/public.h>
 
 #include <yt/yt/core/concurrency/public.h>
 
@@ -32,7 +33,7 @@
 
 #include <yt/yt/core/ytree/public.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 namespace NYT::NRpcProxy {
 

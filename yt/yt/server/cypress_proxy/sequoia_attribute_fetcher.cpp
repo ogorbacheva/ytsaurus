@@ -4,7 +4,7 @@
 #include "sequoia_session.h"
 #include "sequoia_tree_visitor.h"
 
-#include <yt/yt/server/master/security_server/detailed_master_memory.h>
+#include <yt/yt/server/lib/security_server/detailed_master_memory.h>
 
 #include <yt/yt/server/lib/security_server/helpers.h>
 
@@ -166,6 +166,11 @@ private:
             return true;
         }
 
+        // A limited list request may omit some child subtrees.
+        if (RequestedNodeStack_.empty()) {
+            return false;
+        }
+
         const auto& node = GetOrCrash(*FetchedAttributes_, descriptor.Id);
         return !std::holds_alternative<TMissingNodeTag>(node);
     }
@@ -177,6 +182,7 @@ private:
             return;
         }
 
+        YT_VERIFY(!RequestedNodeStack_.empty());
         auto& resourceUsage = RequestedNodeStack_.back();
         if (!resourceUsage) {
             resourceUsage.emplace();
@@ -196,6 +202,7 @@ private:
             return;
         }
 
+        YT_VERIFY(!RequestedNodeStack_.empty());
         if (auto& resourceUsage = RequestedNodeStack_.back()) {
             EmplaceOrCrash(*FrontierNodesResourceUsage_, descriptor.Id, std::move(*resourceUsage));
         }
@@ -809,7 +816,7 @@ public:
         if (auto* req = std::get_if<TReqGetComposite>(&Request_);
             !AttributeRequest_.ShouldFetchAttributes() &&
             !std::holds_alternative<TReqGet>(Request_) &&
-            (!req || req->ScalarNodeIds_->empty()))
+            (!req || req->ScalarNodeIds->empty()))
         {
             return MakeFuture<TNodeIdToAttributes>({});
         }
@@ -887,7 +894,7 @@ private:
     struct TReqGetComposite
     {
         const TNodeIdToChildDescriptors* NodeIdToChildren = nullptr;
-        const std::vector<TNodeId>* ScalarNodeIds_ = nullptr;
+        const std::vector<TNodeId>* ScalarNodeIds = nullptr;
     };
 
     using TRequest = std::variant<TReqGetAttributes, TReqGet, TReqList, TReqGetComposite>;
@@ -919,7 +926,7 @@ private:
     {
         for (auto nodeId : nodeIdsToValidateNotMissing) {
             const auto& rspOrError = GetOrCrash(nodeIdToRspOrError, nodeId);
-            if (rspOrError.IsOK()) {
+            if (!rspOrError.IsOK()) {
                 if (auto error = WrapRetriableResolveError(rspOrError, nodeId); !error.IsOK()) {
                     // A race on the target node should be retried.
                     THROW_ERROR error;
@@ -1067,7 +1074,7 @@ private:
                 return rootNodeHolder;
             },
             [&] (const TReqGetComposite& req) -> TRange<TNodeId> {
-                return *(req.ScalarNodeIds_);
+                return *(req.ScalarNodeIds);
             },
             [&] <class TReq>(const TReq&) -> TRange<TNodeId>
                 requires std::same_as<TReq, TReqGetAttributes> || std::same_as<TReq, TReqList>

@@ -9,6 +9,8 @@
 #include <yt/yt/flow/library/cpp/common/state.h>
 #include <yt/yt/flow/library/cpp/common/state_client.h>
 
+#include <library/cpp/yt/error/error.h>
+
 namespace NYT::NFlow {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -60,6 +62,8 @@ public:
 protected:
     const NLogging::TLogger Logger;
 
+    std::deque<TMessageId> GetPendingBatchBoundsSnapshot();
+
 private:
     using TBatch = std::vector<TOutputMessageConstPtr>;
 
@@ -75,9 +79,10 @@ private:
     TMessageId LastMessageId_ = {};
     i64 LastSeqNo_ = 0;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     std::deque<TMessageId> OldBounds_;
     TRequest Request_;
+    TError DistributeError_;
 
     std::deque<TRequest> RegisteredRequests_;
     std::deque<TRequest> DistributedRequests_;

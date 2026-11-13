@@ -34,15 +34,19 @@
 #include "virtual.h"
 
 #include <yt/yt/server/master/cell_master/bootstrap.h>
+#include <yt/yt/server/master/cell_master/config.h>
 #include <yt/yt/server/master/cell_master/config_manager.h>
-#include <yt/yt/server/master/cell_server/cypress_integration.h>
+#include <yt/yt/server/master/cell_master/cypress_integration.h>
 #include <yt/yt/server/master/cell_master/hydra_facade.h>
 #include <yt/yt/server/master/cell_master/multicell_manager.h>
 
 #include <yt/yt/server/master/cell_server/cell_map_type_handler.h>
+#include <yt/yt/server/master/cell_server/cypress_integration.h>
 
 #include <yt/yt/server/master/chunk_server/chunk_manager.h>
 #include <yt/yt/server/master/chunk_server/cypress_integration.h>
+
+#include <yt/yt/server/master/cypress_server/proto/cypress_manager.pb.h>
 
 #include <yt/yt/server/master/file_server/file_node_type_handler.h>
 
@@ -54,9 +58,12 @@
 
 #include <yt/yt/server/master/object_server/cypress_integration.h>
 #include <yt/yt/server/master/object_server/garbage_collector.h>
+#include <yt/yt/server/master/object_server/helpers.h>
 #include <yt/yt/server/master/object_server/object_detail.h>
 #include <yt/yt/server/master/object_server/sys_node_type_handler.h>
 #include <yt/yt/server/master/object_server/type_handler_detail.h>
+
+#include <yt/yt/server/master/object_server/proto/object_manager.pb.h>
 
 #include <yt/yt/server/master/orchid_server/cypress_integration.h>
 
@@ -69,6 +76,7 @@
 #include <yt/yt/server/master/security_server/security_manager.h>
 #include <yt/yt/server/master/security_server/user.h>
 
+#include <yt/yt/server/master/sequoia_server/config.h>
 #include <yt/yt/server/master/sequoia_server/context.h>
 #include <yt/yt/server/master/sequoia_server/prelock_tracker.h>
 
@@ -92,6 +100,7 @@
 #include <yt/yt/server/lib/cellar_agent/helpers.h>
 
 #include <yt/yt/server/lib/hydra/hydra_context.h>
+#include <yt/yt/server/lib/hydra/mutation.h>
 
 #include <yt/yt/server/lib/misc/interned_attributes.h>
 
@@ -228,6 +237,8 @@ public:
                 *rootstock.ExplicitAttributes);
         }
 
+        CloneIndices();
+
         const auto& multicellManager = Bootstrap_->GetMulticellManager();
         for (const auto& clone : ClonedExternalNodes_) {
             NProto::TReqCloneForeignNode protoRequest;
@@ -261,6 +272,14 @@ public:
             ToProto(protoRequest.mutable_account_id(), externalNode.AccountId);
             protoRequest.set_native_content_revision(ToProto(externalNode.NativeContentRevision));
             multicellManager->PostToMaster(protoRequest, externalNode.ExternalCellTag);
+        }
+
+        for (const auto& externalObject : CreatedExternalObjects_) {
+            NObjectServer::NProto::TReqCreateForeignObject replicationRequest;
+            ToProto(replicationRequest.mutable_object_id(), externalObject.ObjectId);
+            replicationRequest.set_type(ToProto(externalObject.ObjectType));
+            ToProto(replicationRequest.mutable_object_attributes(), *externalObject.Attributes);
+            multicellManager->PostToMasters(replicationRequest, externalObject.ExternalCellTags);
         }
 
         // It's OK to unref nodes here, because nodes also have ref from the parent node or
@@ -708,6 +727,60 @@ public:
         return clonedNode;
     }
 
+    void RegisterMovedIndex(TSecondaryIndex* source, TTableNode* clonedTrunkNode, bool isIndexTable) override
+    {
+        auto [it, inserted] = ClonedSecondaryIndices_.emplace(source, TClonedSecondaryIndexState{});
+
+        if (isIndexTable) {
+            it->second.ClonedIndexTable = clonedTrunkNode;
+        } else {
+            it->second.ClonedIndexedTable = clonedTrunkNode;
+        }
+
+        if (inserted) {
+            it->second.SourceIndexedTable = Bootstrap_->GetTableManager()->GetTableNodeOrThrow(source->GetTableId());
+            it->second.SourceIndexTable = Bootstrap_->GetTableManager()->GetTableNodeOrThrow(source->GetIndexTableId());
+        }
+    }
+
+    void ValidateCloneIndices() override
+    {
+        if (ClonedSecondaryIndices_.empty()) {
+            return;
+        }
+
+        const auto& securityManager = Bootstrap_->GetSecurityManager();
+        const auto& objectManager = Bootstrap_->GetObjectManager();
+        const auto& tableManager = Bootstrap_->GetTableManager();
+
+        auto* user = securityManager->GetAuthenticatedUser();
+        if (auto* schema = objectManager->FindSchema(EObjectType::SecondaryIndex)) {
+            securityManager->ValidatePermission(schema, user, EPermission::Create);
+        }
+
+        for (auto it : GetIteratorsSortedByKey(ClonedSecondaryIndices_)) {
+            const auto& [sourceSecondaryIndex, state] = *it;
+            YT_TLOG_ALERT_AND_THROW_UNLESS(
+                state.SourceIndexedTable,
+                "Source indexed table missing during index move validation")
+                .With("SecondaryIndexId", sourceSecondaryIndex->GetId());
+
+            YT_TLOG_ALERT_AND_THROW_UNLESS(
+                state.SourceIndexTable,
+                "Source index table missing during index move validation")
+                .With("SecondaryIndexId", sourceSecondaryIndex->GetId());
+
+            tableManager->ValidateSecondaryIndexCreationAndGetTables(
+                sourceSecondaryIndex->GetKind(),
+                state.ClonedIndexedTable ? state.ClonedIndexedTable->GetId() : state.SourceIndexedTable->GetId(),
+                state.ClonedIndexTable ? state.ClonedIndexTable->GetId() : state.SourceIndexTable->GetId(),
+                sourceSecondaryIndex->Predicate(),
+                sourceSecondaryIndex->UnfoldedColumns(),
+                sourceSecondaryIndex->EvaluatedColumnsSchema(),
+                /*skipIsAlreadyIndexCheck*/ true);
+        }
+    }
+
 private:
     NCellMaster::TBootstrap* const Bootstrap_;
     TCypressShard* const Shard_;
@@ -761,6 +834,23 @@ private:
     };
     std::vector<TCreatedExternalNode> CreatedExternalNodes_;
 
+    struct TClonedSecondaryIndexState
+    {
+        TTableNode* ClonedIndexedTable = nullptr;
+        TTableNode* ClonedIndexTable = nullptr;
+        TTableNode* SourceIndexedTable = nullptr;
+        TTableNode* SourceIndexTable = nullptr;
+    };
+    THashMap<TSecondaryIndex*, TClonedSecondaryIndexState> ClonedSecondaryIndices_;
+
+    struct TCreatedExternalObject
+    {
+        TObjectId ObjectId;
+        EObjectType ObjectType;
+        IAttributeDictionaryPtr Attributes;
+        TCellTagSet ExternalCellTags;
+    };
+    std::vector<TCreatedExternalObject> CreatedExternalObjects_;
 
     void RegisterCreatedNode(TCypressNode* trunkNode)
     {
@@ -819,6 +909,100 @@ private:
     {
         const auto& configManager = Bootstrap_->GetConfigManager();
         return configManager->GetConfig()->CypressManager;
+    }
+
+    void CloneIndices() noexcept
+    {
+        if (ClonedSecondaryIndices_.empty()) {
+            return;
+        }
+
+        const auto& tableManager = Bootstrap_->GetTableManager();
+        const auto& objectManager = Bootstrap_->GetObjectManager();
+        const auto& securityManager = Bootstrap_->GetSecurityManager();
+
+        const auto& handler = objectManager->GetHandler(EObjectType::SecondaryIndex);
+        auto* user = securityManager->GetAuthenticatedUser();
+
+        for (auto it : GetIteratorsSortedByKey(ClonedSecondaryIndices_)) {
+            const auto& [sourceSecondaryIndex, state] = *it;
+            YT_VERIFY(state.SourceIndexedTable);
+            YT_VERIFY(state.SourceIndexTable);
+
+            auto* newTable = state.ClonedIndexedTable
+                ? state.ClonedIndexedTable
+                : state.SourceIndexedTable;
+            auto* newIndexTable = state.ClonedIndexTable
+                ? state.ClonedIndexTable
+                : state.SourceIndexTable;
+
+            // Cleanup old links to tables that did not move.
+            if (!state.ClonedIndexTable) {
+                state.SourceIndexTable->SetIndexTo(nullptr);
+                sourceSecondaryIndex->SetIndexTableId(NullObjectId);
+            }
+            if (!state.ClonedIndexedTable) {
+                state.SourceIndexedTable->MutableSecondaryIndices().erase(
+                    sourceSecondaryIndex);
+                sourceSecondaryIndex->SetTableId(NullObjectId);
+            }
+
+            auto* newSecondaryIndex = tableManager->CreateSecondaryIndex(
+                /*hintId*/ NullObjectId,
+                sourceSecondaryIndex->GetKind(),
+                newTable,
+                newIndexTable,
+                newIndexTable->GetId(),
+                sourceSecondaryIndex->Predicate(),
+                sourceSecondaryIndex->UnfoldedColumns(),
+                sourceSecondaryIndex->EvaluatedColumnsSchema());
+            newSecondaryIndex->SetTableToIndexCorrespondence(
+                sourceSecondaryIndex->GetTableToIndexCorrespondence());
+
+            if (auto acd = handler->FindAcd(newSecondaryIndex)) {
+                acd.AsMutable()->SetOwner(user);
+            }
+
+            auto replicatedAttributes = CreateEphemeralAttributes();
+            replicatedAttributes->Set(
+                EInternedAttributeKey::Kind.Unintern(),
+                sourceSecondaryIndex->GetKind());
+            replicatedAttributes->Set(
+                EInternedAttributeKey::TableId.Unintern(),
+                newTable->GetId());
+            replicatedAttributes->Set(
+                EInternedAttributeKey::IndexTableId.Unintern(),
+                newIndexTable->GetId());
+            replicatedAttributes->Set(
+                EInternedAttributeKey::TableToIndexCorrespondence.Unintern(),
+                sourceSecondaryIndex->GetTableToIndexCorrespondence());
+            if (const auto& unfoldedColumns = sourceSecondaryIndex->UnfoldedColumns()) {
+                replicatedAttributes->Set("unfolded_table_column", unfoldedColumns->TableColumn);
+                replicatedAttributes->Set("unfolded_index_column", unfoldedColumns->IndexColumn);
+            }
+            if (const auto& evaluatedSchema = sourceSecondaryIndex->EvaluatedColumnsSchema()) {
+                replicatedAttributes->Set(
+                    EInternedAttributeKey::EvaluatedColumnsSchema.Unintern(),
+                    evaluatedSchema);
+            }
+
+            if (const auto* userAttributes = sourceSecondaryIndex->GetAttributes()) {
+                auto* mutableAttributes = newSecondaryIndex->GetMutableAttributes();
+                for (const auto& [key, value] : userAttributes->Attributes()) {
+                    mutableAttributes->Set(key, value);
+                    replicatedAttributes->Set(key, value);
+                }
+            }
+
+            objectManager->UnrefObject(sourceSecondaryIndex);
+
+            CreatedExternalObjects_.push_back(TCreatedExternalObject{
+                .ObjectId = newSecondaryIndex->GetId(),
+                .ObjectType = EObjectType::SecondaryIndex,
+                .Attributes = std::move(replicatedAttributes),
+                .ExternalCellTags = handler->GetReplicationCellTags(newSecondaryIndex),
+            });
+        }
     }
 };
 
@@ -1161,6 +1345,7 @@ public:
         RegisterHandler(CreateTabletMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateTabletActionMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateAreaMapTypeHandler(Bootstrap_));
+        RegisterHandler(CreateMasterCellGroupMapTypeHandler(Bootstrap_));
         RegisterHandler(CreateHunkStorageTypeHandler(Bootstrap_));
         RegisterHandler(CreateCellOrchidTypeHandler(Bootstrap_));
         RegisterHandler(CreateEstimatedCreationTimeMapTypeHandler(Bootstrap_));
@@ -1193,6 +1378,7 @@ public:
 
         RegisterMethod(BIND_NO_PROPAGATE(&TCypressManager::HydraUpdateAccessStatistics, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TCypressManager::HydraTouchNodes, Unretained(this)));
+        RegisterMethod(BIND_NO_PROPAGATE(&TCypressManager::HydraEnqueueSymlinksToSequoia, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TCypressManager::HydraCreateForeignNode, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TCypressManager::HydraCloneForeignNode, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TCypressManager::HydraLockForeignNode, Unretained(this)));
@@ -1867,6 +2053,12 @@ public:
             }
         }
 
+        // Local unbranching may release the last reference and post foreign object removal.
+        // Post the foreign unlock first so that the foreign snapshot reference is released before removal.
+        if (trunkNode->IsExternal()) {
+            PostUnlockForeignNodeRequest(trunkNode, transaction, explicitOnly);
+        }
+
         // Again, the order is crucial: first unbranch (or update) nodes, then destroy locks.
 
         if (strongestLockModeBefore != strongestLockModeAfter) {
@@ -1874,10 +2066,6 @@ public:
         }
 
         RemoveTransactionNodeLocks(trunkNode, transaction, explicitOnly);
-
-        if (trunkNode->IsExternal()) {
-            PostUnlockForeignNodeRequest(trunkNode, transaction, explicitOnly);
-        }
 
         YT_TLOG_DEBUG("Node explicitly unlocked")
             .With("NodeId", trunkNode->GetId())
@@ -2179,13 +2367,40 @@ public:
         YT_VERIFY(transaction);
         YT_VERIFY(request.Mode != ELockMode::None);
 
-        if (waitable && !transaction) {
-            THROW_ERROR_EXCEPTION("Waitable lock requires a transaction");
-        }
+        // COMPAT(shakurov)
+        if (GetDynamicConfig()->EnableSequoiaNodeStateValidationInCreateLock) {
+            TCypressNode* originatingNode = nullptr;
+            for (auto* t = transaction; !originatingNode; t = t->GetParent()) {
+                originatingNode = FindNode(trunkNode, t);
+                if (!t) {
+                    break;
+                }
+            }
+            if (originatingNode && IsNativeSequoiaNode(originatingNode) && originatingNode->MutableSequoiaProperties()) {
+                // TODO(shakurov): consider turning this into an alert after protecting from this via a ground table lock.
+                // (Snapshot-locking a node should probably take a shared-read lock on the (nodeId, progenitorTransactionId) row in TNodeIdToPath.)
+                if (originatingNode->MutableSequoiaProperties()->Tombstone) {
+                    YT_TLOG_DEBUG("Attempted to lock a tombstoned Sequoia node")
+                        .With("NodeId", GetObjectId(trunkNode).ObjectId)
+                        .With("TransactionId", GetObjectId(transaction));
+                    THROW_ERROR_EXCEPTION(
+                        NSequoiaClient::EErrorCode::SequoiaRetriableError,
+                        "Attempted to lock a tombstoned Sequoia node")
+                        .With("node_id", GetObjectId(trunkNode).ObjectId)
+                        .With("transaction_id", GetObjectId(transaction));
+                }
 
-        if (request.Mode == ELockMode::Snapshot && !transaction) {
-            THROW_ERROR_EXCEPTION("%Qlv lock requires a transaction",
-                request.Mode);
+                if (originatingNode->MutableSequoiaProperties()->BeingCreated) {
+                    YT_TLOG_DEBUG("Attempted to lock a Sequoia node that is being created")
+                        .With("NodeId", GetObjectId(trunkNode).ObjectId)
+                        .With("TransactionId", GetObjectId(transaction));
+                    THROW_ERROR_EXCEPTION(
+                        NSequoiaClient::EErrorCode::SequoiaRetriableError,
+                        "Attempted to lock a Sequoia node that is being created")
+                        .With("node_id", GetObjectId(trunkNode).ObjectId)
+                        .With("transaction_id", GetObjectId(transaction));
+                }
+            }
         }
 
         // Try to lock without waiting in the queue.
@@ -3225,18 +3440,6 @@ private:
                 Bootstrap_->GetExpirationTracker()->OnNodeExpirationTimeUpdated(node);
             }
 
-            // COMPAT(shakurov)
-            if (node->TryGetExpirationTimeoutProperties()) {
-                if (node->IsTrunk() && !node->GetTouchTime()) {
-                    const auto* hydraContext = GetCurrentHydraContext();
-                    node->SetTouchTime(hydraContext->GetTimestamp());
-                } else if (!node->IsTrunk() && node->GetTouchTime(/*branchIsOk*/ true)) {
-                    node->SetTouchTime(TInstant::Zero(), /*branchIsOk*/ true);
-                }
-            } else {
-                node->SetTouchTime(TInstant::Zero(), /*branchIsOk*/ true);
-            }
-
             if (node->IsTrunk() && node->TryGetExpirationTimeoutProperties()) {
                 Bootstrap_->GetExpirationTracker()->OnNodeExpirationTimeoutUpdated(node);
             }
@@ -3353,10 +3556,11 @@ private:
                         .With("NodeId", nodeId)
                         .With("UpdateMode", updateMode);
 
-                    YT_LOG_ALERT_UNLESS(securityTagsUpdateMode == ESecurityTagsUpdateMode::None,
-                        "Trunk node with non-trivial security tags update mode was found (NodeId: %v, SecurityTagsUpdateMode: %v)",
-                        nodeId,
-                        updateMode);
+                    YT_TLOG_ALERT_UNLESS(
+                        securityTagsUpdateMode == ESecurityTagsUpdateMode::None,
+                        "Trunk node with non-trivial security tags update mode was found")
+                        .With("NodeId", nodeId)
+                        .With("SecurityTagsUpdateMode", securityTagsUpdateMode);
                 }
             }
 
@@ -3609,10 +3813,10 @@ private:
                 .With("Type", node->GetType())
                 .With("ExternalCellTag", node->GetExternalCellTag());
         } else {
-            YT_LOG_DEBUG("%v node registered (NodeId: %v, Type: %v)",
-                node->IsForeign() ? "Foreign" : "Local",
-                node->GetId(),
-                node->GetType());
+            YT_TLOG_DEBUG("Node registered")
+                .With("Foreign", node->IsForeign())
+                .With("NodeId", node->GetId())
+                .With("Type", node->GetType());
         }
 
         return node;
@@ -3795,7 +3999,8 @@ private:
         Visit(error,
             [&] (const TCheckLockSuccess&) { },
             [&] (const auto& error) {
-                YT_LOG_ALERT_IF(error.Error.IsOK(), "CheckLock failed with %v, but the TError inside is emtpy", TypeName(error));
+                YT_TLOG_ALERT_IF(error.Error.IsOK(), "Lock check failed but the error inside is empty")
+                    .With("ErrorType", TypeName(error));
             });
 
         return error;
@@ -4944,6 +5149,70 @@ private:
         securityManager->ValidatePermission(schema, EPermission::Create);
     }
 
+    void HydraEnqueueSymlinksToSequoia(NProto::TReqEnqueueSymlinksToSequoia* /*request*/)
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        const auto& config = GetDynamicConfig();
+        if (!config->EnableSymlinkBackfill) {
+            return;
+        }
+
+        if (!Bootstrap_->GetConfigManager()->GetConfig()->SequoiaManager->EnableGroundUpdateQueues) {
+            YT_TLOG_ALERT("Cannot backfill Cypress symlinks while ground update queues are disabled");
+            return;
+        }
+
+        std::vector<TVersionedNodeId> linkIds;
+        for (auto [nodeId, node] : NodeMap_) {
+            // Snapshot branches must not introduce path mappings for their transaction.
+            if (node->GetType() != EObjectType::Link ||
+                !IsObjectAlive(node->GetTrunkNode()) ||
+                !node->GetReachable() ||
+                node->GetLockMode() == ELockMode::Snapshot)
+            {
+                continue;
+            }
+
+            linkIds.push_back(nodeId);
+            if (std::ssize(linkIds) > config->SymlinkBackfillMaxLinkCount) {
+                YT_TLOG_ALERT("Cannot backfill Cypress symlinks: candidate link count exceeds the limit")
+                    .With("LinkCountLimit", config->SymlinkBackfillMaxLinkCount);
+                return;
+            }
+        }
+
+        std::sort(linkIds.begin(), linkIds.end());
+
+        int linkCount = 0;
+        for (auto nodeId : linkIds) {
+            auto* node = GetNode(nodeId)->As<TLinkNode>();
+            if (!node->ImmutableSequoiaProperties()) {
+                // When a reachable node is branched, it does not produce new resolve rows.
+                if (!node->IsTrunk() && node->GetOriginator()->GetReachable()) {
+                    continue;
+                }
+
+                auto pathRootType = EPathRootType::Other;
+                auto path = GetNodePath(node->GetTrunkNode(), node->GetTransaction(), &pathRootType);
+                if (pathRootType != EPathRootType::RootNode && pathRootType != EPathRootType::PortalExit) {
+                    continue;
+                }
+
+                node->ImmutableSequoiaProperties() = std::make_unique<TCypressNode::TImmutableSequoiaProperties>(
+                    NYPath::DirNameAndBaseName(path).second,
+                    path,
+                    node->GetParent()->GetId());
+            }
+
+            EnqueueCypressLinkResolveRows(Bootstrap_, node);
+            ++linkCount;
+        }
+
+        YT_TLOG_INFO("Cypress symlink resolve rows enqueued")
+            .With("LinkCount", linkCount);
+    }
+
     void HydraUpdateAccessStatistics(NProto::TReqUpdateAccessStatistics* request) noexcept
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
@@ -5462,10 +5731,21 @@ private:
         return configManager->GetConfig()->CypressManager;
     }
 
-    void OnDynamicConfigChanged(TDynamicClusterConfigPtr /*oldConfig*/)
+    void OnDynamicConfigChanged(TDynamicClusterConfigPtr oldConfig)
     {
+        const auto& config = GetDynamicConfig();
         RecursiveResourceUsageCache_->SetExpirationTimeout(
-            GetDynamicConfig()->RecursiveResourceUsageCacheExpirationTimeout);
+            config->RecursiveResourceUsageCacheExpirationTimeout);
+
+        if (IsActiveLeader() &&
+            !oldConfig->CypressManager->EnableSymlinkBackfill &&
+            config->EnableSymlinkBackfill)
+        {
+            YT_UNUSED_FUTURE(CreateMutation(
+                Bootstrap_->GetHydraFacade()->GetHydraManager(),
+                NProto::TReqEnqueueSymlinksToSequoia{})
+                ->CommitAndLog(Logger()));
+        }
     }
 };
 

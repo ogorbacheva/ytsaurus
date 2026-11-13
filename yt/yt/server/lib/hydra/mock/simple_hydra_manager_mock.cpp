@@ -108,9 +108,10 @@ void TSimpleHydraManagerMock::DoApplyUpTo(int sequenceNumber)
             /*randomSeed*/ 0,
             /*prevRandomSeed*/ 0,
             /*sequenceNumber*/ AppliedSequenceNumber_,
+            /*causalTime*/ TCausalTime(0),
             /*stateHash*/ 0,
             /*term*/ 0,
-            /*localHostNameOverride*/ TSharedRef::FromString(std::string("<mock-host>")));
+            /*localHostNameOverride*/ "<mock-host>");
 
         {
             TMutationContextGuard mutationContextGuard(&mutationContext);
@@ -186,7 +187,7 @@ void TSimpleHydraManagerMock::DoLoadSnapshot(const TSnapshot& snapshot)
         TPhysicalVersion(),
         /*timestamp*/ TInstant::Zero(),
         /*randomSeed*/ 0,
-        /*localHostNameOverride*/ TSharedRef::FromString(std::string("<mock-host>")));
+        /*localHostNameOverride*/ "<mock-host>");
     THydraContextGuard guard(&hydraContext);
 
     Automaton_->PrepareState();
@@ -244,15 +245,17 @@ TCancelableContextPtr TSimpleHydraManagerMock::GetAutomatonCancelableContext() c
     return CancelableContext;
 }
 
-TFuture<void> TSimpleHydraManagerMock::Reconfigure(TDynamicDistributedHydraManagerConfigPtr /*config*/)
-{
-    // Do nothing.
-    return OKFuture;
-}
+void TSimpleHydraManagerMock::Reconfigure(TDynamicDistributedHydraManagerConfigPtr /*config*/)
+{ }
 
 ELogLevel TSimpleHydraManagerMock::GetMutationHandlerFailureLogLevel(TStringBuf /*mutationType*/) const
 {
     return ELogLevel::Warning;
+}
+
+ELogLevel TSimpleHydraManagerMock::GetUnknownAutomatonPartsLogLevel() const
+{
+    return ELogLevel::Fatal;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

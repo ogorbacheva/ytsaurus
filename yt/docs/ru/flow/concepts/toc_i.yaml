@@ -19,8 +19,12 @@ items:
     href: key_visitor.md
   - name: Гарантии обработки
     href: guarantees.md
+  - name: Сохранение проблемных сообщений
+    href: failed-messages.md
   - name: Порядок обработки сообщений
     href: ordering.md
+  - name: Автоскейлер
+    href: autoscaler.md
   - name: Lineage
     href: lineage.md
   - name: Компаньон (Companion)

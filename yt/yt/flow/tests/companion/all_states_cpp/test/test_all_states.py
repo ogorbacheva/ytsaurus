@@ -1,16 +1,13 @@
-"""E2E test: the exactly-once state carriers of the C++ companion.
+"""E2E coverage for C++ companion state and metric export."""
 
-The companion-hosted source enriches rows from internal state and a joined
-external table. The downstream transform counts words in internal state, mirrors
-the counts into a mutable external table, joins a table keyed by "tag" (not by
-the computation's key) and emits every word once.
-"""
-
+import json
 import logging
 import random
 import string
+import time
 
 import pytest
+import requests
 
 import yatest.common
 import yt.yson as yson
@@ -51,6 +48,30 @@ def parse_state_payload(payload):
     return yson.loads(yson.get_bytes(payload))
 
 
+def fetch_merged_sensors(monitoring_port):
+    """Fetch merged node and companion sensors."""
+    response = requests.get(
+        f"http://localhost:{monitoring_port}/solomon_proxy/sensors",
+        headers={"Accept": "application/json"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return json.loads(response.text)["sensors"]
+
+
+def find_sensor(sensors, name, labels=None):
+    """Find a sensor, accepting raw and rate-converted counter names."""
+    names = {name, f"{name}.rate"}
+    for sensor in sensors:
+        sensor_labels = sensor["labels"]
+        if sensor_labels.get("sensor") not in names:
+            continue
+        if labels and any(sensor_labels.get(key) != value for key, value in labels.items()):
+            continue
+        return sensor
+    return None
+
+
 def tag_weight(tag):
     # Position-weighted, so a word and its reversed tag get different weights.
     return sum(index * ord(letter) for index, letter in enumerate(tag, start=1))
@@ -84,6 +105,7 @@ class Test(FlowTestCppCompanionBase):
         word_metadata,
         word_state,
         tag_metadata,
+        finite,
     ):
         pipeline_config = get_yson_config(PIPELINE_CONFIG_PATH)
 
@@ -92,7 +114,7 @@ class Test(FlowTestCppCompanionBase):
             {
                 "queue_path": f"<cluster={cluster}>{input_queue}",
                 "consumer_path": f"<cluster={cluster}>{input_consumer}",
-                "finite": True,
+                "finite": finite,
             }
         )
         reader = pipeline_config["spec"]["computations"]["reader"]
@@ -109,7 +131,8 @@ class Test(FlowTestCppCompanionBase):
         return self.dump_config_to_log_dir(pipeline_config, "pipeline.yson")
 
     @pytest.mark.authors(["sergeypozdeev"])
-    def test_all_states(self):
+    @pytest.mark.parametrize("finite", [True, False])
+    def test_all_states(self, finite):
         input_queue = f"{self.work_yt_path}/input_queue"
         input_consumer = f"{self.work_yt_path}/consumer"
         source_output_queue = f"{self.work_yt_path}/source_output_queue"
@@ -127,17 +150,27 @@ class Test(FlowTestCppCompanionBase):
             word_metadata,
             word_state,
             tag_metadata,
+            finite,
         )
 
         with self.start_flow_process_federation(
             pipeline_binary_args={"--config": pipeline_config_path},
             workers_count=1,
             controllers_count=1,
-        ):
+        ) as federation:
+            if not finite:
+                self._check_companion_sensors(federation)
+                self.client.stop_pipeline(self.pipeline_path)
+                self.wait_pipeline_state("stopped", timeout=240)
+                return
+
             self.wait_pipeline_state("completed", timeout=240)
             logging.info("pipeline completed")
 
-            states = list(self.client.select_rows(f"key, name, state FROM [{self.pipeline_path}/states]"))
+            stored_states = list(self.client.select_rows(f"state, compressed FROM [{self.pipeline_path}/states]"))
+            assert stored_states
+            assert all(yson.get_bytes(row["compressed"]) and not row["state"] for row in stored_states)
+            states = self.read_internal_key_states("reader") + self.read_internal_key_states("counter")
 
             # Ordered-source state is keyed by source partition and drives every output row.
             source_counts = sorted(
@@ -176,3 +209,55 @@ class Test(FlowTestCppCompanionBase):
             assert self._expected_counts.keys() == set(output_words)
             assert all(row["tag_weight"] == tag_weight(row["word"][::-1]) for row in output_rows)
             logging.info("check completed")
+
+    def _check_companion_sensors(self, federation):
+        """Check that the merged endpoint contains companion and node sensors."""
+        worker = federation.workers[0]
+
+        # Wait for the companion exporter's next collection.
+        sensors = self._wait_for_sensor(
+            worker.monitoring_port,
+            "yt.flow.worker.computation.processed_message_count",
+            {"computation_id": "counter", "flow_process": "companion"},
+        )
+
+        labels = {"computation_id": "counter", "request_type": "process_batch", "flow_process": "companion"}
+        for item in ("message", "timer", "visit"):
+            name = f"yt.flow.companion.request.{item}_count.max"
+            sensors = self._wait_for_sensor(worker.monitoring_port, name, labels)
+            assert find_sensor(sensors, name, labels)["value"] >= 0
+
+        state_labels = dict(labels, direction="response", state_type="internal", state_name="word-state")
+        name = "yt.flow.companion.state.item_count.max"
+        sensors = self._wait_for_sensor(worker.monitoring_port, name, state_labels)
+        assert find_sensor(sensors, name, state_labels)["value"] >= 0
+
+        # Node sensors remain present and untagged as companion.
+        node_sensor = find_sensor(sensors, "yt.flow.worker.job_count", {"computation_id": "counter"})
+        assert node_sensor is not None, "node sensors are missing from the merged endpoint"
+        assert node_sensor["labels"].get("flow_process") is None
+
+    def _wait_for_sensor(self, monitoring_port, name, labels, timeout=90, period=2):
+        deadline = time.monotonic() + timeout
+        while True:
+            last_error = None
+            try:
+                sensors = fetch_merged_sensors(monitoring_port)
+            except requests.RequestException as error:
+                last_error = error
+                sensors = []
+            if find_sensor(sensors, name, labels) is not None:
+                return sensors
+            if time.monotonic() >= deadline:
+                companion_sensors = sorted(
+                    {
+                        sensor["labels"]["sensor"]
+                        for sensor in sensors
+                        if sensor["labels"].get("flow_process") == "companion"
+                    }
+                )
+                raise AssertionError(
+                    f"sensor {name} with {labels} is missing from the merged endpoint; "
+                    f"companion sensors seen: {companion_sensors}"
+                ) from last_error
+            time.sleep(period)

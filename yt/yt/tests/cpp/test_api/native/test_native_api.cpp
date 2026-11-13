@@ -4,6 +4,7 @@
 #include <yt/yt/tests/cpp/test_api/common/modify_rows_test.h>
 
 #include <yt/yt/client/api/rowset.h>
+#include <yt/yt/client/api/table_reader.h>
 #include <yt/yt/client/api/transaction.h>
 #include <yt/yt/client/api/table_writer.h>
 
@@ -1794,31 +1795,19 @@ class TSignatureComponentsTest
 {
 public:
     NNative::IConnectionPtr NativeConnection = DynamicPointerCast<NApi::NNative::IConnection>(Connection_);
-    TCypressKeyReaderConfigPtr CypressKeyReaderConfig = New<TCypressKeyReaderConfig>();
-    TCypressKeyWriterConfigPtr CypressKeyWriterConfig = New<TCypressKeyWriterConfig>();
-    TKeyRotatorConfigPtr KeyRotatorConfig = New<TKeyRotatorConfig>();
-    TSignatureGeneratorConfigPtr GeneratorConfig = New<TSignatureGeneratorConfig>();
-    TSignatureGenerationConfigPtr GenerationConfig = New<TSignatureGenerationConfig>();
-    TSignatureValidationConfigPtr ValidationConfig = New<TSignatureValidationConfig>();
     TSignatureComponentsConfigPtr Config = New<TSignatureComponentsConfig>();
     TActionQueuePtr ActionQueue = New<TActionQueue>();
     IInvokerPtr RotateInvoker = ActionQueue->GetInvoker();
     TSignatureComponentsPtr Components;
     const TOwnerId OwnerId = TOwnerId("test");
-
-    TSignatureComponentsTest()
-    {
-        GenerationConfig->CypressKeyWriter = CypressKeyWriterConfig;
-        GenerationConfig->KeyRotator = KeyRotatorConfig;
-        GenerationConfig->Generator = GeneratorConfig;
-        ValidationConfig->CypressKeyReader = CypressKeyReaderConfig;
-    }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TEST_F(TSignatureComponentsTest, EmptyInit)
+TEST_F(TSignatureComponentsTest, DisabledInit)
 {
+    Config->Generation->Enabled = false;
+    Config->Validation->Enabled = false;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto startRotationFuture = Components->StartRotation();
     auto stopRotationFuture = Components->StopRotation();
@@ -1833,9 +1822,38 @@ TEST_F(TSignatureComponentsTest, EmptyInit)
     EXPECT_THROW_WITH_SUBSTRING(YT_UNUSED_FUTURE(validator->Validate(signature)), "unsupported");
 }
 
+TEST_F(TSignatureComponentsTest, NullInit)
+{
+    Config->Generation.Reset();
+    Config->Validation.Reset();
+    Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
+
+    EXPECT_THROW_WITH_SUBSTRING(
+        YT_UNUSED_FUTURE(Components->GetSignatureGenerator()->Sign("test")),
+        "unsupported");
+    EXPECT_THROW_WITH_SUBSTRING(
+        YT_UNUSED_FUTURE(Components->GetSignatureValidator()->Validate(New<TSignature>())),
+        "unsupported");
+}
+
+TEST_F(TSignatureComponentsTest, DefaultInit)
+{
+    Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
+
+    WaitFor(Components->StartRotation())
+        .ThrowOnError();
+
+    auto signature = Components->GetSignatureGenerator()->Sign("test");
+    EXPECT_TRUE(WaitFor(Components->GetSignatureValidator()->Validate(signature))
+        .ValueOrThrow());
+
+    WaitFor(Components->StopRotation())
+        .ThrowOnError();
+}
+
 TEST_F(TSignatureComponentsTest, Generation)
 {
-    Config->Generation = GenerationConfig;
+    Config->Validation->Enabled = false;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
 
     WaitFor(Components->StartRotation())
@@ -1852,7 +1870,7 @@ TEST_F(TSignatureComponentsTest, Generation)
 
 TEST_F(TSignatureComponentsTest, Validation)
 {
-    Config->Validation = ValidationConfig;
+    Config->Generation->Enabled = false;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
 
     auto validator = Components->GetSignatureValidator();
@@ -1864,9 +1882,7 @@ TEST_F(TSignatureComponentsTest, Validation)
 
 TEST_F(TSignatureComponentsTest, DontCrashOnCypressFailure)
 {
-    Config->Generation = GenerationConfig;
     Config->Generation->KeyRotator->KeyRotationOptions.Period = TDuration::MilliSeconds(200);
-    Config->Validation = ValidationConfig;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
 
     WaitFor(Components->StartRotation())
@@ -1896,13 +1912,13 @@ TEST_F(TSignatureComponentsTest, DontCrashOnCypressFailure)
 
 TEST_F(TSignatureComponentsTest, ReconfigureEnableGeneration)
 {
-    // Start with empty config.
+    Config->Generation->Enabled = false;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto generator = Components->GetSignatureGenerator();
 
     EXPECT_THROW_WITH_SUBSTRING(YT_UNUSED_FUTURE(generator->Sign("test")), "unsupported");
 
-    Config->Generation = GenerationConfig;
+    Config->Generation->Enabled = true;
     WaitFor(Components->Reconfigure(Config))
         .ThrowOnError();
 
@@ -1917,7 +1933,6 @@ TEST_F(TSignatureComponentsTest, ReconfigureEnableGeneration)
 
 TEST_F(TSignatureComponentsTest, ReconfigureDisableGeneration)
 {
-    Config->Generation = GenerationConfig;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto generator = Components->GetSignatureGenerator();
 
@@ -1926,7 +1941,7 @@ TEST_F(TSignatureComponentsTest, ReconfigureDisableGeneration)
 
     EXPECT_EQ(generator->Sign("test")->Payload(), "test");
 
-    Config->Generation = nullptr;
+    Config->Generation->Enabled = false;
     // It should be disabled immediately, so we don't wait for the rotation stop.
     YT_UNUSED_FUTURE(Components->Reconfigure(Config));
     EXPECT_THROW_WITH_SUBSTRING(YT_UNUSED_FUTURE(generator->Sign("test")), "unsupported");
@@ -1938,14 +1953,14 @@ TEST_F(TSignatureComponentsTest, ReconfigureDisableGeneration)
 
 TEST_F(TSignatureComponentsTest, ReconfigureEnableValidation)
 {
-    // Start with an empty config.
+    Config->Validation->Enabled = false;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto validator = Components->GetSignatureValidator();
 
     auto signature = New<TSignature>();
     EXPECT_THROW_WITH_SUBSTRING(YT_UNUSED_FUTURE(validator->Validate(signature)), "unsupported");
 
-    Config->Validation = ValidationConfig;
+    Config->Validation->Enabled = true;
     YT_UNUSED_FUTURE(Components->Reconfigure(Config));
 
     auto validationResult = WaitFor(validator->Validate(signature))
@@ -1956,7 +1971,6 @@ TEST_F(TSignatureComponentsTest, ReconfigureEnableValidation)
 
 TEST_F(TSignatureComponentsTest, ReconfigureDisableValidation)
 {
-    Config->Validation = ValidationConfig;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto validator = Components->GetSignatureValidator();
 
@@ -1965,7 +1979,7 @@ TEST_F(TSignatureComponentsTest, ReconfigureDisableValidation)
         .ValueOrThrow();
     EXPECT_FALSE(validationResult);
 
-    Config->Validation = nullptr;
+    Config->Validation->Enabled = false;
     YT_UNUSED_FUTURE(Components->Reconfigure(Config));
 
     // Should be an always-throwing now.
@@ -1974,13 +1988,14 @@ TEST_F(TSignatureComponentsTest, ReconfigureDisableValidation)
 
 TEST_F(TSignatureComponentsTest, ReconfigureEnableBoth)
 {
-    // Start with empty config.
+    Config->Generation->Enabled = false;
+    Config->Validation->Enabled = false;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto generator = Components->GetSignatureGenerator();
     auto validator = Components->GetSignatureValidator();
 
-    Config->Generation = GenerationConfig;
-    Config->Validation = ValidationConfig;
+    Config->Generation->Enabled = true;
+    Config->Validation->Enabled = true;
     WaitFor(Components->Reconfigure(Config))
         .ThrowOnError();
 
@@ -1994,26 +2009,28 @@ TEST_F(TSignatureComponentsTest, ReconfigureEnableBoth)
 
 TEST_F(TSignatureComponentsTest, ReconfigureMultipleTimes)
 {
+    Config->Generation->Enabled = false;
+    Config->Validation->Enabled = false;
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto generator = Components->GetSignatureGenerator();
     auto validator = Components->GetSignatureValidator();
 
     // First reconfigure: enable generation.
-    Config->Generation = GenerationConfig;
+    Config->Generation->Enabled = true;
     WaitFor(Components->Reconfigure(Config))
         .ThrowOnError();
     auto signature = generator->Sign("test");
     EXPECT_TRUE(signature);
 
     // Second reconfigure: enable validation too.
-    Config->Validation = ValidationConfig;
+    Config->Validation->Enabled = true;
     YT_UNUSED_FUTURE(Components->Reconfigure(Config));
 
     auto testSignature = New<TSignature>();
     EXPECT_NO_THROW(WaitFor(validator->Validate(testSignature)).ValueOrThrow());
 
     // Third reconfigure: disable generation.
-    Config->Generation = nullptr;
+    Config->Generation->Enabled = false;
     YT_UNUSED_FUTURE(Components->Reconfigure(Config));
 
     EXPECT_THROW_WITH_SUBSTRING(YT_UNUSED_FUTURE(generator->Sign("test")), "unsupported");
@@ -2022,7 +2039,7 @@ TEST_F(TSignatureComponentsTest, ReconfigureMultipleTimes)
     EXPECT_NO_THROW(WaitFor(validator->Validate(testSignature)).ValueOrThrow());
 
     // Fourth reconfigure: disable validation too.
-    Config->Validation = nullptr;
+    Config->Validation->Enabled = false;
     YT_UNUSED_FUTURE(Components->Reconfigure(Config));
     EXPECT_THROW_WITH_SUBSTRING(YT_UNUSED_FUTURE(validator->Validate(testSignature)), "unsupported");
 }
@@ -2030,8 +2047,7 @@ TEST_F(TSignatureComponentsTest, ReconfigureMultipleTimes)
 TEST_F(TSignatureComponentsTest, ReconfigureWhileRotating)
 {
     // Start with fast rotation.
-    GenerationConfig->KeyRotator->KeyRotationOptions.Period= TDuration::MilliSeconds(10);
-    Config->Generation = GenerationConfig;
+    Config->Generation->KeyRotator->KeyRotationOptions.Period = TDuration::MilliSeconds(10);
     Components = New<TSignatureComponents>(Config, OwnerId, NativeConnection, RotateInvoker);
     auto generator = Components->GetSignatureGenerator();
 
@@ -2055,7 +2071,7 @@ TEST_F(TSignatureComponentsTest, ReconfigureWhileRotating)
     }
 
     // Disable generation at all.
-    Config->Generation = nullptr;
+    Config->Generation->Enabled = false;
     YT_UNUSED_FUTURE(Components->Reconfigure(Config));
 
     EXPECT_THROW_WITH_SUBSTRING(Y_UNUSED(generator->Sign("payload")), "unsupported");
@@ -2134,6 +2150,56 @@ TEST_F(TCheckPermissionByAclTest, PendingRemovalSubjects)
     EXPECT_EQ(0, std::ssize(checkPermissionResult.MissingSubjects));
     EXPECT_EQ(1, std::ssize(checkPermissionResult.PendingRemovalSubjects));
     EXPECT_EQ("buba", checkPermissionResult.PendingRemovalSubjects.back());
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TTableReaderTimingStatisticsTest
+    : public TApiTestBase
+{ };
+
+TEST_F(TTableReaderTimingStatisticsTest, StaticTableRead)
+{
+    NYPath::TYPath path = "//tmp/table_reader_timing_statistics";
+    WaitFor(Client_->CreateNode(path, EObjectType::Table))
+        .ThrowOnError();
+
+    auto rowBuffer = New<TRowBuffer>();
+    {
+        auto writer = WaitFor(Client_->CreateTableWriter(path))
+            .ValueOrThrow();
+        auto valueId = writer->GetNameTable()->GetIdOrRegisterName("value");
+        std::vector<TUnversionedRow> rows;
+        for (int index = 0; index < 1000; ++index) {
+            TUnversionedRowBuilder builder;
+            builder.AddValue(MakeUnversionedInt64Value(index, valueId));
+            rows.push_back(rowBuffer->CaptureRow(builder.GetRow()));
+        }
+        if (!writer->Write(rows)) {
+            WaitFor(writer->GetReadyEvent())
+                .ThrowOnError();
+        }
+        WaitFor(writer->Close())
+            .ThrowOnError();
+    }
+
+    auto reader = WaitFor(Client_->CreateTableReader(path))
+        .ValueOrThrow();
+    while (auto batch = reader->Read()) {
+        if (batch->IsEmpty()) {
+            WaitFor(reader->GetReadyEvent())
+                .ThrowOnError();
+        }
+    }
+
+    auto statistics = reader->GetTimingStatistics();
+    ASSERT_TRUE(statistics.MasterFetchTime.has_value());
+    ASSERT_TRUE(statistics.DataReadTiming.has_value());
+    EXPECT_GT(*statistics.MasterFetchTime, TDuration::Zero());
+    EXPECT_GT(statistics.DataReadTiming->ReadTime, TDuration::Zero());
+    EXPECT_GE(
+        statistics.TotalTime,
+        *statistics.MasterFetchTime + statistics.DataReadTiming->WaitTime + statistics.DataReadTiming->ReadTime + statistics.DataReadTiming->IdleTime);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

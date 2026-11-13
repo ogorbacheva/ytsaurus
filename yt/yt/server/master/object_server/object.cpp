@@ -9,6 +9,7 @@
 #include <yt/yt/server/master/cell_master/serialize.h>
 #include <yt/yt/server/master/cell_master/bootstrap.h>
 #include <yt/yt/server/master/cell_master/hydra_facade.h>
+#include <yt/yt/server/master/cell_master/multicell_manager.h>
 
 #include <yt/yt/server/master/cypress_server/node.h>
 
@@ -155,7 +156,7 @@ void OnObjectDestroyed(TObject* object)
 
 struct TEpochRefCounterShard
 {
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock);
 };
 
 constexpr int EpochRefCounterShardCount = 256;

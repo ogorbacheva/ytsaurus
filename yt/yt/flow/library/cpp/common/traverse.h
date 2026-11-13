@@ -1,6 +1,8 @@
 #pragma once
 #include "public.h"
 
+#include "computation_statistics.h"
+
 #include <yt/yt/core/ytree/yson_struct.h>
 
 namespace NYT::NFlow {
@@ -60,6 +62,15 @@ struct TStreamTraverseData
     // Approximate. Information about current inflight. So even with State == Active, InflightMetrics->Count could be equal 0.
     TInflightMetricsPtr InflightMetrics;
 
+    //! Minimum trigger timestamp over unprocessed timers of a timer stream.
+    std::optional<TSystemTimestamp> MinTriggerTimestamp;
+
+    //! Earliest instant at which some unprocessed message of the stream became ready for processing.
+    //! Resolved by the controller; unset with #ReadyWatermarkUnknown when it cannot be resolved,
+    //! unset without it when it was never resolved (#SystemWatermark applies then).
+    std::optional<TSystemTimestamp> ReadyWatermark;
+    bool ReadyWatermarkUnknown{};
+
     REGISTER_YSON_STRUCT(TStreamTraverseData);
 
     static void Register(TRegistrar registrar);
@@ -67,11 +78,51 @@ struct TStreamTraverseData
 
 DEFINE_REFCOUNTED_TYPE(TStreamTraverseData);
 
+struct TWeightedRatio
+    : public NYTree::TYsonStructLite
+{
+    double Ratio = 0;
+    double Weight = 0;
+
+    REGISTER_YSON_STRUCT_LITE(TWeightedRatio);
+
+    static void Register(TRegistrar registrar);
+};
+
+struct TLineageRatio
+    : public NYTree::TYsonStructLite
+{
+    std::optional<TWeightedRatio> Count;
+    std::optional<TWeightedRatio> ByteSize;
+
+    REGISTER_YSON_STRUCT_LITE(TLineageRatio);
+
+    static void Register(TRegistrar registrar);
+};
+
+struct TLineageDeltaValue
+{
+    double Count{};
+    double ByteSize{};
+    double InputCount{};
+    double InputByteSize{};
+};
+
+//! Paired input totals and attributed output totals per completed processing observation, keyed by computation-local streams.
+using TLineageDelta = THashMap<TStreamId, THashMap<TStreamId, TLineageDeltaValue>>;
+
+//! Output/input ratios weighted by decayed input observations, keyed by pipeline-global streams.
+using TLineageRatios = THashMap<TStreamId, THashMap<TStreamId, TLineageRatio>>;
+
+constexpr auto LineageDecayTime = TDuration::Minutes(5);
+constexpr auto LineageRetentionTime = TDuration::Minutes(50);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 TStreamTraverseDataPtr MakeCompletedStreamTraverseData(
     i64 epoch,
-    TSystemTimestamp timestamp);
+    TSystemTimestamp systemWatermark,
+    TSystemTimestamp eventWatermark);
 
 TStreamTraverseDataPtr MergeStreamTraverseData(
     const std::vector<TStreamTraverseDataPtr>& streams,
@@ -96,6 +147,7 @@ struct TInflightStreamTraverseData
 
     std::optional<TSystemTimestamp> MinSystemTimestamp;
     std::optional<TSystemTimestamp> MinEventTimestamp;
+    std::optional<TSystemTimestamp> MinTriggerTimestamp;
 
     // Approximate inflight metrics
     TInflightMetricsPtr InflightMetrics;
@@ -114,7 +166,8 @@ TStreamTraverseDataPtr ApplyInflightTraverseData(
     const TInflightStreamTraverseDataPtr& inflight);
 
 TInflightStreamTraverseDataPtr MergeInflightTraverseData(
-    const std::vector<TInflightStreamTraverseDataPtr>& inflights);
+    const std::vector<TInflightStreamTraverseDataPtr>& inflights,
+    bool allowPartial = false);
 
 ////////////////////////////////////////////////////////////////////////////////
 

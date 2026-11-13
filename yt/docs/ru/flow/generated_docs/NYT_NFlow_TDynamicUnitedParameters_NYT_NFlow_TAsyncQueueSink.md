@@ -7,7 +7,7 @@
 || **Параметр** | **Описание** ||
 || `at_most_once_strategy` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NFlow::TAtMostOnceStrategyDynamicParameters](./all_yson_structs#NYT_NFlow_TAtMostOnceStrategyDynamicParameters)`>`
 **Значение по умолчанию**: `{}`
- ||
+Настройки доставки at-most-once. ||
 |#
 
 
@@ -23,10 +23,10 @@
  ||
 || `max_rows_per_write` | **Тип**: `long`
 **Значение по умолчанию**: `1000`
- ||
+Мягкий лимит физических строк в одной записи. Атомарная группа маршрутизированных строк не разбивается и может превысить этот лимит. ||
 || `max_bytes_per_write` | **Тип**: `long`
 **Значение по умолчанию**: `1048576`
- ||
+Мягкий лимит байтов в одной записи. Атомарная группа маршрутизированных строк не разбивается и может превысить этот лимит. ||
 || `backoff_duration` | **Тип**: [TDuration](./all_yson_structs#TDuration)
 **Значение по умолчанию**: `1s`
  ||

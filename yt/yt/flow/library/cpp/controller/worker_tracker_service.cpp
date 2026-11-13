@@ -97,19 +97,18 @@ private:
             EmplaceOrCrash(workerCapabilities, capability.key(), capability.value());
         }
 
-        context->SetRequestInfo("WorkerIdentifyingString: %v, WorkerBuildVersion: %v, WorkerGroups: %v, WorkerCapabilities: %v",
-            workerNodeInfo.GetIdentifyingString(),
-            workerNodeInfo.BuildVersion,
-            workerGroups,
-            workerCapabilities);
+        context->AnnotateRequest()
+            .With("WorkerIdentifyingString", workerNodeInfo.GetIdentifyingString())
+            .With("WorkerBuildVersion", workerNodeInfo.BuildVersion)
+            .With("WorkerGroups", workerGroups)
+            .With("WorkerCapabilities", workerCapabilities);
 
         CheckWorkerNodeIncarnationId(workerNodeInfo);
 
         const auto workerInfo = WorkerTracker_->RegisterWorker(workerNodeInfo, std::move(workerGroups), std::move(workerCapabilities));
 
-        context->SetResponseInfo(
-            "ConnectionIncarnationId: %v",
-            workerInfo.ConnectionIncarnationId);
+        context->AnnotateResponse()
+            .With("ConnectionIncarnationId", workerInfo.ConnectionIncarnationId);
 
         ToProto(response->mutable_connection_incarnation_id(), workerInfo.ConnectionIncarnationId);
 
@@ -124,9 +123,9 @@ private:
         const auto connectionIncarnationId = FromProto<NWorker::TIncarnationId>(request->connection_incarnation_id());
         const auto& heartbeatSeqNo = request->heartbeat_seq_no();
 
-        context->SetRequestInfo("Worker: %v, ConnectionIncarnationId: %v",
-            workerAddress,
-            connectionIncarnationId);
+        context->AnnotateRequest()
+            .With("Worker", workerAddress)
+            .With("ConnectionIncarnationId", connectionIncarnationId);
 
         const auto workerInfo = WorkerTracker_->HandleWorkerHeartbeat(workerAddress, connectionIncarnationId, heartbeatSeqNo);
 
@@ -155,7 +154,18 @@ private:
         if (auto flowWorker = GetOrDefault(flowView->State->Workers, workerAddress, nullptr); flowWorker && flowWorker->IncarnationId == workerInfo.IncarnationId) {
             TInstant collectSpecUpdateStart = TInstant::Now();
             auto executionSpecVersions = ConvertTo<TExecutionSpecVersionsPtr>(TYsonStringBuf(request->execution_spec_versions()));
-            auto [executionSpecUpdate, stateUpdate] = PrepareExecutionSpecUpdate(flowView->State->ExecutionSpec, executionSpecVersions);
+            TExecutionSpecPtr executionSpecUpdate;
+            std::vector<TPersistedStateStorageRow<std::string>> stateUpdate;
+            try {
+                std::tie(executionSpecUpdate, stateUpdate) = PrepareExecutionSpecUpdate(flowView->State->ExecutionSpec, executionSpecVersions);
+            } catch (const std::exception& ex) {
+                if (TError(ex).FindMatching(NFlow::EErrorCode::PersistedStateSnapshotOutdated)) {
+                    context->Reply(TError(NRpc::EErrorCode::Unavailable, "Flow view changed while preparing heartbeat")
+                            .With(ex));
+                    return;
+                }
+                throw;
+            }
             // TODO(mikari): filter job leases?
             response->set_execution_spec(ToProto(ConvertToYsonString(executionSpecUpdate)));
             for (const auto& src : stateUpdate) {
@@ -200,6 +210,24 @@ private:
                         jobDynamicComputationPartitionSpec->set_spec(ToProto(ConvertToYsonString((*partitionState)->DynamicPartitionSpec)));
                     }
                 }
+            }
+            const auto& executionSpec = flowView->State->ExecutionSpec;
+            for (const auto& [instanceId, instance] : executionSpec->Layout->ResourceInstances) {
+                if (instance->WorkerAddress != workerAddress || instance->WorkerIncarnationId != workerInfo.IncarnationId) {
+                    continue;
+                }
+                auto spec = New<TResourceInstanceDynamicSpec>();
+                spec->DynamicResourceSpec = GetOrDefault(
+                    executionSpec->DynamicPipelineSpec->GetValue()->Resources,
+                    instance->ResourceId,
+                    New<TDynamicResourceSpec>());
+                spec->TargetRevision = GetOrDefault(executionSpec->ResourceTargetRevisions->GetValue(), instance->ResourceId);
+                if (auto workerSpec = executionSpec->Layout->WorkerSpecs.FindPtr(workerAddress)) {
+                    spec->Preload = (*workerSpec)->PreloadResources.contains(instance->ResourceId);
+                }
+                auto* item = response->add_resources_dynamic_specs();
+                ToProto(item->mutable_resource_instance_id(), instanceId);
+                item->set_spec(ToProto(ConvertToYsonString(spec)));
             }
             TDuration setDynamicSpecDuration = TInstant::Now() - setDynamicSpec;
 

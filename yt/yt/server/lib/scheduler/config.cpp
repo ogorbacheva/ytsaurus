@@ -299,6 +299,12 @@ void TGpuSchedulingPolicyConfig::Register(TRegistrar registrar)
     registrar.Parameter("plan_update_period", &TThis::PlanUpdatePeriod)
         .Default(TDuration::Seconds(10));
 
+    registrar.Parameter("enable_overreserved_module_repair", &TThis::EnableOverreservedModuleRepair)
+        .Default(false);
+
+    registrar.Parameter("overreserved_module_repair_timeout", &TThis::OverreservedModuleRepairTimeout)
+        .Default(TDuration::Minutes(1));
+
     registrar.Parameter("module_reconsideration_timeout", &TThis::ModuleReconsiderationTimeout)
         .Default(TDuration::Minutes(20));
 
@@ -641,6 +647,14 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_event_log_operation_batch_size", &TThis::MaxEventLogOperationBatchSize)
         .Default(1000);
 
+    registrar.Parameter("max_accumulated_usage_log_pool_batch_size", &TThis::MaxAccumulatedUsageLogPoolBatchSize)
+        .Default(1'000'000)
+        .GreaterThan(0);
+
+    registrar.Parameter("max_accumulated_usage_log_operation_batch_size", &TThis::MaxAccumulatedUsageLogOperationBatchSize)
+        .Default(1'000'000)
+        .GreaterThan(0);
+
     registrar.Parameter("accumulated_resource_distribution_update_period", &TThis::AccumulatedResourceDistributionUpdatePeriod)
         .Alias("accumulated_resource_usage_update_period")
         .Default(TDuration::Seconds(1));
@@ -688,6 +702,8 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("enable_step_function_for_gang_operations", &TThis::EnableStepFunctionForGangOperations)
         .Default(false);
+    registrar.Parameter("enable_fifo_children_reordering_for_guarantee_utilization", &TThis::EnableFifoChildrenReorderingForGuaranteeUtilization)
+        .Default(false);
     registrar.Parameter("enable_improved_fair_share_by_fit_factor_computation", &TThis::EnableImprovedFairShareByFitFactorComputation)
         .Default(false);
     registrar.Parameter("enable_improved_fair_share_by_fit_factor_computation_distribution_gap", &TThis::EnableImprovedFairShareByFitFactorComputationDistributionGap)
@@ -726,6 +742,9 @@ void TStrategyTreeConfig::Register(TRegistrar registrar)
         .Default(false);
 
     registrar.Parameter("enable_detailed_logs_for_single_allocation_vanilla_operations", &TThis::EnableDetailedLogsForSingleAllocationVanillaOperations)
+        .Default(false);
+
+    registrar.Parameter("enable_scheduling_status_logging", &TThis::EnableSchedulingStatusLogging)
         .Default(false);
 
     registrar.Parameter("consider_single_allocation_vanilla_operations_as_gang", &TThis::ConsiderSingleAllocationVanillaOperationsAsGang)
@@ -980,11 +999,15 @@ void TTestingOptions::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("node_heartbeat_processing_delay", &TThis::NodeHeartbeatProcessingDelay)
         .Default();
+    registrar.Parameter("operation_scheduling_suspension_delay", &TThis::OperationSchedulingSuspensionDelay)
+        .Default();
     registrar.Parameter("handle_nodes_attributes_delay", &TThis::HandleNodesAttributesDelay)
         .Default();
     registrar.Parameter("operation_node_creation_delay", &TThis::OperationNodeCreationDelay)
         .Default();
     registrar.Parameter("secure_vault_creation_delay", &TThis::SecureVaultCreationDelay)
+        .Default();
+    registrar.Parameter("operations_cleaner_fetch_delay", &TThis::OperationsCleanerFetchDelay)
         .Default();
 }
 
@@ -1421,7 +1444,7 @@ void TSchedulerConfig::Register(TRegistrar registrar)
         .Default(true);
 
     registrar.Parameter("min_required_archive_version", &TThis::MinRequiredArchiveVersion)
-        .Default(68);
+        .Default(69);
 
     registrar.Parameter("rpc_server", &TThis::RpcServer)
         .DefaultNew();

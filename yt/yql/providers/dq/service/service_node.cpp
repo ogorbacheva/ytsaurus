@@ -5,6 +5,8 @@
 #include <yql/essentials/utils/yql_panic.h>
 
 #include <contrib/ydb/library/yql/providers/dq/actors/execution_helpers.h>
+#include <contrib/ydb/library/yql/providers/dq/actors/actor_helpers.h>
+#include <contrib/ydb/library/yql/providers/dq/worker_manager/interface/events.h>
 
 #include <contrib/ydb/library/grpc/server/actors/logger.h>
 
@@ -84,12 +86,16 @@ namespace NYql {
         , Threads(threads)
         , MetricsRegistry(std::move(metricsRegistry))
     {
+        TVector<ui32> poolThreads(EExecutorPoolType::TotalCount);
+        poolThreads[EExecutorPoolType::Main] = Threads;
+        poolThreads[EExecutorPoolType::FullResultWriter] = 8;
+        poolThreads[EExecutorPoolType::GraphEvents] = 8;
         std::tie(Setup, LogSettings) = BuildActorSetup(
             Config.NodeId,
             Config.InterconnectAddress,
             Config.Port,
             Config.Socket,
-            {Threads, 8},
+            std::move(poolThreads),
             MetricsRegistry->GetSensors(),
             Config.NameserverFactory,
             Config.MaxNodeId,
@@ -150,15 +156,28 @@ namespace NYql {
                            .SetLogger(CreateActorSystemLogger(*ActorSystem, 413)); // 413 - NKikimrServices::GRPC_SERVER
 
         Server = MakeHolder<TGRpcServer>(options);
-        Service = TIntrusivePtr<IGRpcService>(new TDqsGrpcService(*ActorSystem, MetricsRegistry->GetSensors(), dqTaskPreprocessorFactories));
+        const auto workerManagerActorId = Config.WorkerManagerActorId
+            ? Config.WorkerManagerActorId
+            : NDqs::MakeWorkerManagerActorID(Config.NodeId);
+        YQL_CLOG(DEBUG, ProviderDq) << "gRPC service config"
+            << " serviceNodeId=" << Config.NodeId
+            << " grpcPort=" << Config.GrpcPort
+            << " interconnectPort=" << Config.Port
+            << " targetWorkerManagerActorId=" << workerManagerActorId
+            << " usesGlobalWorkerManager=" << static_cast<bool>(Config.WorkerManagerActorId);
+        Service = TIntrusivePtr<IGRpcService>(new TDqsGrpcService(*ActorSystem, MetricsRegistry->GetSensors(), dqTaskPreprocessorFactories, workerManagerActorId));
         Server->AddService(Service);
         Server->Start();
     }
 
     void TServiceNode::Stop(TDuration timeout) {
-        (static_cast<TDqsGrpcService*>(Service.Get()))->Stop().Wait(timeout);
+        if (Service) {
+            (static_cast<TDqsGrpcService*>(Service.Get()))->Stop().Wait(timeout);
+        }
 
-        Server->Stop();
+        if (Server) {
+            Server->Stop();
+        }
         for (auto id : ActorIds) {
             ActorSystem->Send(id, new NActors::TEvents::TEvPoison);
         }

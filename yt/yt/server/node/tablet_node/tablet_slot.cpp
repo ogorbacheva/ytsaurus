@@ -81,7 +81,7 @@
 #include <yt/yt/core/ytree/virtual.h>
 #include <yt/yt/core/ytree/helpers.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 namespace NYT::NTabletNode {
 
@@ -352,6 +352,11 @@ public:
     const ILeaseManagerPtr& GetLeaseManager() override
     {
         return Occupant_->GetLeaseManager();
+    }
+
+    const INodeMemoryTrackerPtr& GetNodeMemoryUsageTracker() override
+    {
+        return Bootstrap_->GetNodeMemoryUsageTracker();
     }
 
     const ITabletManagerPtr& GetTabletManager() override

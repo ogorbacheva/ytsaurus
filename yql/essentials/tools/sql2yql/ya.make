@@ -3,7 +3,6 @@ IF (NOT EXPORT_CMAKE OR NOT OPENSOURCE OR OPENSOURCE_PROJECT != "yt")
 PROGRAM(sql2yql)
 
 PEERDIR(
-    contrib/libs/antlr3_cpp_runtime
     library/cpp/getopt
     library/cpp/testing/unittest
     yql/essentials/parser/lexer_common
@@ -19,6 +18,7 @@ PEERDIR(
     yql/essentials/sql/v1/lexer/antlr4_ansi
     yql/essentials/sql/v1/proto_parser/antlr4
     yql/essentials/sql/v1/proto_parser/antlr4_ansi
+    yql/essentials/sql/v1/proto_parser/check
     yql/essentials/sql/v1/translation
     yql/essentials/utils
     yql/essentials/core/pg_ext
@@ -26,10 +26,6 @@ PEERDIR(
 )
 
 ALLOCATOR(J)
-
-ADDINCL(
-    GLOBAL contrib/libs/antlr3_cpp_runtime/include
-)
 
 SRCS(
     sql2yql.cpp

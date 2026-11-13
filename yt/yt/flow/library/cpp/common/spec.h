@@ -1,9 +1,12 @@
 #pragma once
 
+#include "dynamic_spec.h"
+#include "file_provider.h"
 #include "public.h"
 #include "yt_path_option.h"
 
 #include <yt/yt/flow/library/cpp/misc/retryable_client_spec.h>
+#include <yt/yt/flow/library/cpp/source_read_delay/public.h>
 
 #include <yt/yt/client/table_client/schema.h>
 #include <yt/yt/core/concurrency/public.h>
@@ -16,6 +19,8 @@
 
 #include <yt/yt/core/ytree/size.h>
 #include <yt/yt/core/ytree/yson_struct.h>
+
+#include <mutex>
 
 namespace NYT::NFlow {
 
@@ -67,14 +72,13 @@ struct TResourceSpec
 {
     std::string ResourceClassName;
     NYTree::IMapNodePtr Parameters;
+    THashMap<TFileProviderId, TFileProviderSpecPtr> FileProviders;
     THashMap<TResourceId, TResourceDescriptionPtr> Dependencies;
     THashMap<std::string, ssize_t> RequiredCapabilities;
     bool PreloadRequired{};
-    //! When true, the resource is loaded eagerly at unit startup and kept resident for the unit's
-    //! whole lifetime (never deallocated), rather than lazily on first use. It is loaded only on the
-    //! units where some computation requires it (see TResourceDescription::Worker / ::Controller):
-    //! a resource required only on the worker is not loaded on the controller, and a resource that
-    //! no computation requires is not loaded at all. Mutually exclusive with preload_required.
+    //! Loads the resource eagerly on units where a computation requires it. Worker instances
+    //! remain resident while assigned in the layout and are released after pipeline jobs stop.
+    //! Controller instances retain their existing lifetime. Mutually exclusive with preload_required.
     bool AlwaysOn{};
 
     REGISTER_YSON_STRUCT(TResourceSpec);
@@ -274,18 +278,29 @@ DEFINE_REFCOUNTED_TYPE(TTimerSpec);
 struct TKeyVisitorStreamSpec
     : public NYTree::TYsonStruct
 {
-    // Internal state names to visit. If both Names and ExternalNames are unset, the visitor
-    // sweeps all internal names and all external state managers; otherwise only the listed ones.
+    // Internal state names to visit.
+    // Null means all internal states when ExternalNames is null too (the scan-all mode) and nothing
+    // otherwise; empty means nothing.
     std::optional<THashSet<std::string>> Names;
     // External-state-manager and joiner names to visit. A joiner is swept only when explicitly
-    // listed here; the unset scan-all mode never sweeps joiners.
-    // A visitor-driven joiner may be listed in at most one key-visitor stream.
+    // listed here. A visitor-driven joiner may be listed in at most one key-visitor stream.
+    // Null means all external state managers, but no joiners, when Names is null too (the scan-all
+    // mode) and nothing otherwise; empty means nothing.
     std::optional<THashSet<std::string>> ExternalNames;
 
+    // Visitor-driven joiners swept alongside the stream without contributing keys: each is listed
+    // over the same key ranges as the stream's own sources, so its rows are available to the
+    // visit handler, but a key present only in the joiner produces no visit — a weak (left) join
+    // against the keys of Names/ExternalNames. Disjoint with ExternalNames; the one-stream rule
+    // above counts both lists.
+    // Null means nothing, the same as empty.
+    std::optional<THashSet<std::string>> WeakExternalNames;
+
     // Input and source streams whose completion the visitor waits for before it may finalize.
-    // Unset — every input and source stream of the computation. Narrowing lets a visitor
-    // retire once the streams it actually feeds on are done, ignoring the ones that outlive
-    // it; an explicit empty set waits for nothing, so the visitor may finalize right away.
+    // Narrowing lets a visitor retire once the streams it actually feeds on are done, ignoring
+    // the ones that outlive it.
+    // Null means all: every input and source stream of the computation; empty means nothing, so
+    // the visitor may finalize right away.
     std::optional<THashSet<TStreamId>> UpstreamStreams;
 
     // Static — changing it invalidates persisted coverage intervals.
@@ -410,6 +425,10 @@ struct TExternalStateManagerSpec
     : public NYTree::TYsonStruct
 {
     std::string ExternalStateManagerClassName;
+    //! When ``true`` (default), the framework preloads every message, timer and visit key of the
+    //! epoch before each #DoProcess(); when ``false``, the computation preloads the keys it needs
+    //! itself.
+    bool AutoPreload{};
     NYTree::IMapNodePtr Parameters;
 
     REGISTER_YSON_STRUCT(TExternalStateManagerSpec);
@@ -539,10 +558,90 @@ DEFINE_REFCOUNTED_TYPE(TDynamicStateJoinerSpec);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TKeyCountPartitioningSpec
+    : public NYTree::TYsonStruct
+{
+    bool Enable = false;
+    i64 MaxKeysPerPartition = 1;
+
+    REGISTER_YSON_STRUCT(TKeyCountPartitioningSpec);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TKeyCountPartitioningSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TPartitioningSpec
+    : public virtual NYTree::TYsonStruct
+{
+    TKeyCountPartitioningSpecPtr KeyCountPartitioning;
+
+    REGISTER_YSON_STRUCT(TPartitioningSpec);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TPartitioningSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TDynamicKeyCountPartitioningSpec
+    : public NYTree::TYsonStruct
+{
+    TDuration KeyRetentionPeriod;
+    TDuration RebalancePeriod;
+
+    REGISTER_YSON_STRUCT(TDynamicKeyCountPartitioningSpec);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDynamicKeyCountPartitioningSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TDynamicPartitioningSpec
+    : public virtual NYTree::TYsonStruct
+{
+    static constexpr int DefaultMinPartitionCount = 3;
+    static constexpr int DefaultMaxPartitionCount = 20'000;
+    TDynamicKeyCountPartitioningSpecPtr KeyCountPartitioning;
+
+    std::optional<int> DesiredPartitionCount;
+    std::optional<int> MinPartitionCount;
+    std::optional<int> MaxPartitionCount;
+    std::optional<int> SinkChannelMultiplier;
+    std::optional<double> DesiredAveragePartitionCpuLoad;
+    std::optional<double> DesiredAveragePartitionMemoryUsed;
+    std::optional<double> DesiredAveragePartitionMessagesPerSecond;
+    std::optional<double> DesiredAveragePartitionBytesPerSecond;
+    std::optional<double> DesiredAveragePartitionTimerCount;
+    std::optional<double> AllowedPartitionCountDeviation;
+    std::optional<TDuration> PartitionCountDoubleDelay;
+    std::optional<TDuration> PartitionCountHalfDelay;
+    std::optional<TDuration> ThroughputWarmupPeriod;
+    double ThroughputMaxExplorationFactor{};
+
+    std::pair<i64, i64> GetPartitionCountBounds() const;
+
+    REGISTER_YSON_STRUCT(TDynamicPartitioningSpec);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDynamicPartitioningSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TComputationSpec
     : public NYTree::TYsonStruct
 {
     static constexpr bool ExperimentalEnableNonUintKeyDefault = false;
+    static constexpr ETimerStoreBackend DefaultTimerStoreBackend = ETimerStoreBackend::InMemory;
+    static constexpr i64 DefaultTimerPageSize = 4096;
+    static constexpr i64 MinTimerPageSize = 16;
 
     std::string ComputationClassName;
 
@@ -551,6 +650,9 @@ struct TComputationSpec
     //! Ignored by computations that are not process-function adapters.
     std::optional<std::string> ProcessingFunction;
     NYTree::IMapNodePtr ProcessingFunctionParameters;
+
+    //! Process functions connected by stream IDs; replaced with the generated fields by #ResolveProcessFunctionGraphs().
+    TProcessFunctionGraphSpecPtr ProcessFunctionGraph;
 
     NTableClient::TTableSchemaPtr GroupBySchema;
     std::optional<bool> ExperimentalEnableNonUintKey;
@@ -578,6 +680,7 @@ struct TComputationSpec
     //! Read-only joiners over other computations' internal state, bound to client names.
     THashMap<std::string, TStateJoinerSpecPtr> StateJoiners;
 
+
     THeavyHittersSpec HeavyHitters;
     TPivotFinderSpec PivotFinder;
 
@@ -589,6 +692,11 @@ struct TComputationSpec
 
     bool AllowTimerSelfDependency{};
     std::optional<bool> UseCompactInputMessages;
+
+    //! Timer store backend and page size. A backend change is applied by a conversion at
+    //! the next job start; pages are split and merged gradually to approach the configured page size.
+    ETimerStoreBackend TimerStoreBackend{};
+    NYTree::TSize TimerPageSize;
 
     REGISTER_YSON_STRUCT(TComputationSpec);
 
@@ -615,11 +723,31 @@ THashSet<TStreamId> ComputeKeyVisitorUpstreamStreams(
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! Whether the computation keeps the event ordering of its timers, which only a percentile
+//! watermark needs; meaningful for the paged backend only.
+bool ResolveTimerEventOrdering(const TComputationSpecPtr& spec);
+
+////////////////////////////////////////////////////////////////////////////////
+
 //! Resolves the effective ``use_compact_input_messages`` decision for a computation.
 //! An explicit spec value wins; otherwise compact deduplication is enabled whenever
 //! ``experimental_enable_non_uint_key`` is not set, i.e. partitioning is exclusively by
 //! the required uint64 hash column.
 bool ResolveUseCompactInputMessages(const TComputationSpecPtr& spec);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TFailureHandlerSpec
+    : public NYTree::TYsonStruct
+{
+    bool Enabled = false;
+
+    REGISTER_YSON_STRUCT(TFailureHandlerSpec);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TFailureHandlerSpec);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -634,6 +762,8 @@ struct TPipelineSpec
     THashMap<TComputationId, TComputationSpecPtr> Computations;
     THashMap<TResourceId, TResourceSpecPtr> Resources;
     THashMap<TStreamId, TStreamSpecPtr> Streams;
+
+    TFailureHandlerSpecPtr FailureHandler;
 
     REGISTER_YSON_STRUCT(TPipelineSpec);
 
@@ -783,6 +913,10 @@ struct TDynamicTimerStoreSpec
 {
     TDynamicTableRequestSpecPtr TableRequest;
 
+    // Paged backend only.
+    //! Maximum timer row writes per required insertion in one epoch.
+    double TimerWriteMultiplier{};
+
     REGISTER_YSON_STRUCT(TDynamicTimerStoreSpec);
 
     static void Register(TRegistrar registrar);
@@ -814,10 +948,12 @@ struct TMessageBatcherSettings
     // Maximum time to collect input batch.
     TDuration BatchDuration;
 
-    // Batching parameters for transformations
-    // TODO(mikari): right now this parameters applied independently to timers, inputs and sources.
+    // Existing producers apply row and byte limits independently to their own batches.
     NYTree::TSize MaxRowsPerBatch;
     NYTree::TSize MaxBytesPerBatch;
+
+    // Maximum number of distinct keys in a keyed input-message batch. Unset disables this limit.
+    std::optional<NYTree::TSize> MaxKeysPerBatch;
 
     REGISTER_YSON_STRUCT(TMessageBatcherSettings);
 
@@ -846,6 +982,8 @@ struct TDynamicComputationSpec
     : public TMessageBatcherSettings
 {
     bool Draining{};
+
+    TSourceReadDelayEstimatorSpecPtr SourceReadDelayEstimator;
 
     // TODO(mikari): revise parameters
 
@@ -887,11 +1025,6 @@ struct TDynamicComputationSpec
     // In case of too much data in memory - some computations may fail, some may suspend processing new data.
     NYTree::TSize TimerStoreCountLimit;
     NYTree::TSize TimerStoreByteSizeLimit;
-
-    // Limits for OutputStore.
-    // In case of too much data in memory - computation may suspend any processing.
-    NYTree::TSize OutputStoreCountLimit;
-    NYTree::TSize OutputStoreByteSizeLimit;
 
     //! Averaging window of the blocked-time shares reported in
     //! #TJobEntityLimitStatus::BlockedTimeShare.
@@ -947,6 +1080,17 @@ struct TDynamicResourceSpec
     : public NYTree::TYsonStruct
 {
     NYTree::IMapNodePtr Parameters;
+    THashMap<TFileProviderId, TDynamicFileProviderSpecPtr> FileProviders;
+    //! Controller-side discovery period for every named file provider.
+    TDuration FileProviderDiscoverPeriod;
+    //! Worker-side retry period for preparing a delivered file-provider target.
+    TDuration FileProviderUpdateRetryPeriod;
+    //! Minimum interval between selecting new file snapshots for this resource.
+    TDuration FileSnapshotMinCreationPeriod;
+    //! Maximum number of file snapshots retained in controller state.
+    i64 FileSnapshotCatalogMaxEntries{};
+    //! Time after which an incomplete file snapshot rollout is reported.
+    TDuration FileSnapshotRolloutWarningPeriod;
 
     REGISTER_YSON_STRUCT(TDynamicResourceSpec);
 
@@ -974,8 +1118,14 @@ DEFINE_REFCOUNTED_TYPE(TDynamicThrottlerClassSpec);
 struct TDynamicThrottlerSpec
     : public NYTree::TYsonStruct
 {
-    //! Quota emitted globally per second. Null means unlimited.
+    //! Quota emitted globally per second. Null means unlimited, unless
+    //! |UseClassWeightsAsLimit| derives the rate from the class weights.
     std::optional<double> Limit;
+
+    //! Reads the class weights as absolute rates: the global limit becomes the
+    //! sum of the declared class weights, so a backlogged class is served at
+    //! its weight in quota units per second. Mutually exclusive with |Limit|.
+    bool UseClassWeightsAsLimit{};
 
     //! Quota bucket refill window on the server.
     TDuration Period;
@@ -992,6 +1142,10 @@ struct TDynamicThrottlerSpec
     THashMap<TQuotaClassId, TDynamicThrottlerClassSpecPtr> Classes;
 
     std::optional<i64> MaxGrantAmount;
+
+    //! Quota emitted globally per second once |UseClassWeightsAsLimit| is
+    //! applied. Null means unlimited.
+    std::optional<double> GetEffectiveLimit() const;
 
     //! Server-side token bucket config.
     NConcurrency::TThroughputThrottlerConfigPtr BuildThroughputConfig() const;
@@ -1018,6 +1172,47 @@ DEFINE_ENUM(EJobBalancerType,
     (ResourceQueue)
 );
 
+//! Where the CpuAware balancer takes a partition's CPU usage from.
+DEFINE_ENUM(EBalancerMetricsSource,
+    //! The running job's status only: the 10-minute rate, or the 30-second and immediate ones until it exists.
+    (Job)
+    //! The 10-minute rate of the running job, or the partition's persisted history until it exists.
+    (Partition)
+);
+
+//! How the CpuAware balancer estimates the relative speed of workers.
+DEFINE_ENUM(EWorkerCoefMode,
+    //! From the current CPU usage of each worker's partitions against their computation averages.
+    (Legacy)
+    //! From partitions that moved between workers, see #NBalancer::TWorkerCoefEstimator.
+    (Probing)
+);
+
+//! Worker resources the CpuAware balancer can balance by.
+DEFINE_ENUM(EBalanceResource,
+    (Cpu)
+    (Memory)
+);
+
+DECLARE_REFCOUNTED_STRUCT(TEvenLoadThresholds)
+
+//! Per-resource thresholds of the even-load gate. Unset fields fall back to per-resource
+//! defaults in the balancer.
+struct TEvenLoadThresholds
+    : public NYTree::TYsonStruct
+{
+    //! Minimal max-min gap of the per-worker usage, in the resource's own units.
+    std::optional<double> Spread;
+    //! Minimal max/min ratio of the per-worker usage.
+    std::optional<double> Ratio;
+
+    REGISTER_YSON_STRUCT(TEvenLoadThresholds);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TEvenLoadThresholds);
+
 struct TDynamicJobBalancerSpec
     : public NYTree::TYsonStruct
 {
@@ -1031,14 +1226,44 @@ struct TDynamicJobBalancerSpec
     TDuration RebalanceActionMaxTime;
     TDuration RebalanceSyncPeriod;
     double RebalanceCountExceedAllowed{};
-    double RebalanceMinCpuSpread{};
-    double RebalanceMinCpuRatio{};
+    //! Even-load gate thresholds per resource; only weighted resources are consulted.
+    THashMap<EBalanceResource, TEvenLoadThresholdsPtr> RebalanceEvenLoadThresholds;
+    //! Deprecated: the CPU entry of #RebalanceEvenLoadThresholds. Kept so that live dynamic specs
+    //! setting these keys keep working; an explicit per-resource threshold takes precedence.
+    std::optional<double> RebalanceMinCpuSpread;
+    std::optional<double> RebalanceMinCpuRatio;
+    //! Relative importance of each resource for the CpuAware balancer. Provided entries merge into
+    //! the default {cpu: 1.0, memory: 0.0} per key; weights are normalized before use, so only
+    //! ratios matter. Note that rebalance_target_deviation thresholds apply to the normalized
+    //! weighted mix: weighting a second resource in proportionally shrinks the first one's
+    //! contribution, making the balancer correspondingly more tolerant to its imbalance.
+    //! The memory of a partition is its measured job memory plus the input buffer bytes its
+    //! streams hold or want.
+    THashMap<EBalanceResource, double> BalanceWeights;
+    // TODO(thenewone): Temporary switch, remove after the metrics-history balancer rollout.
+    EBalancerMetricsSource BalancerMetricsSource{};
+    //! Never move a running job whose metrics are not mature yet (see #EBalancerMetricsSource):
+    //! it is still paying for its previous move, and its weight is not known.
+    // TODO(thenewone): Temporary switch, remove after the metrics-history balancer rollout.
+    bool BalanceWarmupProtection{};
+    //! The protection is lifted while at least this share of the group's workers run no job of
+    //! the group: filling them matters more than the metrics of the jobs that would move.
+    double BalanceWarmupIdleWorkerShare{};
+    // TODO(thenewone): Temporary switch, remove after the metrics-history balancer rollout.
+    EWorkerCoefMode WorkerCoefMode{};
+    //! Parameters of the probing estimator, see #NBalancer::TWorkerCoefEstimatorConfig.
+    TDuration WorkerCoefHalfLife;
+    TDuration WorkerCoefRetention;
+    double WorkerCoefPriorWeight{};
+    double WorkerCoefMaxRatio{};
     // Test-only: when set to true, the even-load gate is bypassed and rebalancing always runs.
     std::optional<bool> DisableEvenLoadGate;
     bool AsyncBalancing{};
     bool GracefulMove{};
     TDuration ZeroQueueLatency;
     TDuration PlanningHorizon;
+    //! The resource_queue balancer does not release a preload that is still loading for this long after the request.
+    TDuration PreloadingTimeout;
 
     REGISTER_YSON_STRUCT(TDynamicJobBalancerSpec);
 
@@ -1066,6 +1291,56 @@ DEFINE_REFCOUNTED_TYPE(TDynamicJobManagerGroupSpec);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TThroughputSpec
+    : public NYTree::TYsonStruct
+{
+    TDuration WarmupPeriod;
+    double MinimumLoadShare{};
+    double MinimumBusyTimeShare{};
+    double MinimumComparablePartitionShare{};
+    double MinimumExplorationLoadShare{};
+    double MaximumOutputWaitingShare{};
+
+    TDuration CatchUpPeriod;
+    double NormalBacklogBatchCount{};
+    double MinimumGrowthFactor{};
+    double MaximumSteadyGrowthFactor{};
+    double MaximumCatchUpGrowthFactor{};
+    double CapacityChangeTolerance{};
+    double MinimumScalingEffectiveness{};
+
+    TDuration MaxRetryWarmupPeriod;
+    int RetryWarmupFactor{};
+    i64 ResetGeneration{};
+
+    double ScaleDownCapacityReserve{};
+    double ScaleDownTolerance{};
+    int MaximumScaleDownFactor{};
+    TDuration ScaleDownInterval;
+    TDuration PeakDemandWindow;
+
+    REGISTER_YSON_STRUCT(TThroughputSpec);
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TThroughputSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TDynamicPartitioningCoordinatorSpec
+    : public NYTree::TYsonStruct
+{
+    bool EnableThroughputAutoscaler{};
+    TThroughputSpecPtr Throughput;
+
+    REGISTER_YSON_STRUCT(TDynamicPartitioningCoordinatorSpec);
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDynamicPartitioningCoordinatorSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TDynamicJobManagerSpec
     : public TDynamicJobManagerGroupSpec
 {
@@ -1073,6 +1348,12 @@ struct TDynamicJobManagerSpec
     // WorkerGroupOverride itself, so the spec is not self-referential (nested overrides make no
     // sense and would make the YSON schema infinitely recursive).
     THashMap<TWorkerGroupId, TDynamicJobManagerGroupSpecPtr> WorkerGroupOverride;
+    //! Most partition histories kept in the balancer state; the lightest one goes when it is full.
+    i64 PartitionHistoryLimit{};
+    //! A merged element of a timer watermark history spans at most 1/K of its age.
+    int WatermarkHistoryThinningFactor{};
+
+    TDynamicPartitioningCoordinatorSpecPtr Partitioning;
 
     REGISTER_YSON_STRUCT(TDynamicJobManagerSpec);
 
@@ -1097,11 +1378,11 @@ struct TDynamicBufferStateManagerSpec
         THashMap<TWorkerGroupId, NYTree::TSize> WorkerGroupFairSharePoolOverrides;
         NYTree::TSize JobGuarantee;
         NYTree::TSize JobLimit;
-        //! Cap on how much buffered time a limit may represent. In the v1 formula
-        //! the limit is capped by demand × max_duration directly; in the v2
-        //! strategy it is the drain cap (demand × max_duration, raised by the
-        //! announced backlog for cold starts) and also bounds the measured
-        //! epoch-cycle estimate against mis-measured cycles.
+        //! Cap on how much buffered time a limit may represent. In v2 it also caps
+        //! the measured epoch-cycle estimate. A producing output may probe up to
+        //! its equal share of half FairSharePool because producer epochs do not
+        //! reveal the downstream acknowledgement period. JobLimit and the worker
+        //! pool remain hard bounds.
         TDuration MaxDuration;
         THashMap<TComputationId, THashMap<TStreamId, NYTree::TSize>> JobOverrides;
 
@@ -1126,9 +1407,12 @@ struct TDynamicBufferStateManagerSpec
     TOneSideBufferSpecPtr InputBuffer;
     TOneSideBufferSpecPtr OutputBuffer;
 
-    //! V2 strategy: target floor = gain_epochs × demand × epoch cycle (the
+    //! V2 strategy: target floor = v2_gain_epochs × demand × epoch cycle (the
     //! bandwidth-delay product, BDP), issued gradually (used + headroom, growth
-    //! gated on utilization), capped by demand × max_duration, Σissued ≤ pool.
+    //! gated on utilization). The demand × max_duration cap is raised by announced
+    //! input backlog or, for a producing output, by its equal share of half the
+    //! worker pool; demand-backed limits are allocated before speculative probes.
+    //! Σissued ≤ pool on both sides.
     bool EnableV2{};
     //! Target buffered time as a count of epochs (the BDP floor is this many
     //! epochs of demand): headroom for speed and latency spikes.
@@ -1194,6 +1478,12 @@ struct TDynamicJobTrackerSpec
 
     TDynamicStateCacheSpecPtr StateCache;
 
+    //! Report the job's rate counters as steady only once its first iteration with input has
+    //! completed (or once a minute has passed without input), so that the balancer reads the windowed
+    //! metrics after the initialization of the job has decayed out of them.
+    // TODO(thenewone): Temporary switch, remove after the metrics-history balancer rollout.
+    bool MarkPerformanceMetricsSteadyAfterFirstIteration{};
+
     REGISTER_YSON_STRUCT(TDynamicJobTrackerSpec);
 
     static void Register(TRegistrar registrar);
@@ -1211,6 +1501,7 @@ struct TDynamicControllerConnectorSpec
     TDuration ControllerWaitTimeout;
     TDuration ControllerDiscoverPeriod;
     TDuration ControllerHeartbeatPeriod;
+    TDuration WorkerStatisticsReportPeriod;
     TDuration ControllerHeartbeatRpcTimeout;
     TDuration ControllerHeartbeatFailureBackoff;
 
@@ -1262,6 +1553,8 @@ struct TDynamicPipelineSpec
     //! Experimental: enable the describe-pipeline mermaid diagnostic graph.
     bool EnableMermaidGraphDescribe = false;
 
+    bool EnableUnitedStreamMetrics = true;
+
     //! Codec for the compressed flow view served by the get-flow-view-v2 command.
     NCompression::ECodec FlowViewCacheCodec{};
 
@@ -1274,6 +1567,27 @@ DEFINE_REFCOUNTED_TYPE(TDynamicPipelineSpec);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TVersionedDynamicPipelineSpec
+    : public TVersionedValue<TDynamicPipelineSpecPtr>
+{
+    std::vector<TDynamicSpecPatchPtr> Patches;
+
+    const TDynamicPipelineSpecPtr& GetBaseSpec() const;
+    const TDynamicPipelineSpecPtr& GetValue() const;
+    bool TrySetValue(TDynamicPipelineSpecPtr spec, const IVersionProviderPtr& versionProvider);
+    void SetEffectiveSpec(TDynamicPipelineSpecPtr spec);
+
+    REGISTER_YSON_STRUCT(TVersionedDynamicPipelineSpec);
+
+    static void Register(TRegistrar registrar);
+
+private:
+    mutable std::mutex EffectiveSpecMutex_;
+    mutable TDynamicPipelineSpecPtr EffectiveSpec_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 DEFINE_REFCOUNTED_TYPE(TVersionedPipelineSpec);
 DEFINE_REFCOUNTED_TYPE(TVersionedExtendedPipelineSpec);
 DEFINE_REFCOUNTED_TYPE(TVersionedDynamicPipelineSpec);
@@ -1282,8 +1596,12 @@ DEFINE_REFCOUNTED_TYPE(TVersionedDynamicPipelineSpec);
 
 THashMap<TStreamId, std::vector<TStreamId>> BuildStreamGraph(const TPipelineSpecPtr& spec, bool addReadDelayEdges = false);
 void ValidateIsDirectedAcyclicGraph(const THashMap<TStreamId, std::vector<TStreamId>>& streamGraph);
-void ValidatePipelineSpec(const TPipelineSpecPtr& spec);
+//! |pipelineCluster| is the cluster of YT paths with neither `cluster` nor `clusters` in the writer-conflict check.
+void ValidatePipelineSpec(const TPipelineSpecPtr& spec, const std::optional<std::string>& pipelineCluster = std::nullopt);
 void ValidateDynamicPipelineSpec(const TDynamicPipelineSpecPtr& spec);
+
+//! Throws unless |id| is a valid ID of a user-defined entity of kind |entityKind|, such as a stream or a timer.
+void ValidateUserDefinedEntityId(TStringBuf entityKind, TStringBuf id);
 
 //! Shared quota-class invariants, used by both the pipeline spec and the
 //! distributed-throttler bucket config so the two cannot drift.

@@ -596,6 +596,7 @@ ETableReplicaMode TTableReplicaInfo::GetMode() const
 void TTableReplicaInfo::SetMode(ETableReplicaMode value)
 {
     RuntimeData_->Mode = value;
+    Counters_.SetMode(value);
 }
 
 NTransactionClient::EAtomicity TTableReplicaInfo::GetAtomicity() const
@@ -1176,6 +1177,7 @@ void TTablet::Save(TSaveContext& context) const
     Save(context, CompressionDictionaryInfos_);
     Save(context, SmoothMovementData_);
     Save(context, CustomRuntimeData_);
+    ChunkProlongator_->Save(context);
 
     HunkLockManager_->Save(context);
 
@@ -1387,12 +1389,14 @@ void TTablet::Load(TLoadContext& context)
         Load(context, CustomRuntimeData_);
     }
 
+    // COMPAT(sabdenovch)
+    if (context.GetVersion() >= ETabletReign::DynamicTableChunkProlongation) {
+        ChunkProlongator_->Load(context);
+    }
+
     HunkLockManager_->Load(context);
 
-    // COMPAT(ponasenko-rs)
-    if (context.GetVersion() >= ETabletReign::PerRowSequencer) {
-        Load(context, SerializationType_);
-    }
+    Load(context, SerializationType_);
 
     UpdateOverlappingStoreCount();
     DynamicStoreCount_ = ComputeDynamicStoreCount();
@@ -1459,11 +1463,11 @@ TCallback<void(TSaveContext&)> TTablet::AsyncSave()
                 } else {
                     Save(context, false);
                 }
-                Save(context, *providedSettings.StoreReaderConfig);
-                Save(context, *providedSettings.HunkReaderConfig);
-                Save(context, *providedSettings.StoreWriterConfig);
+                Save(context, ConvertToYsonString(providedSettings.StoreReaderConfig));
+                Save(context, ConvertToYsonString(providedSettings.HunkReaderConfig));
+                Save(context, ConvertToYsonString(providedSettings.StoreWriterConfig));
                 Save(context, *providedSettings.StoreWriterOptions);
-                Save(context, *providedSettings.HunkWriterConfig);
+                Save(context, ConvertToYsonString(providedSettings.HunkWriterConfig));
                 Save(context, *providedSettings.HunkWriterOptions);
                 Save(context, ConvertToYsonString(providedSettings.TabletBalancerConfig));
 
@@ -1514,11 +1518,31 @@ void TTablet::AsyncLoad(TLoadContext& context)
     }
 
     RawSettings_.CreateNewProvidedConfigs();
-    Load(context, *providedSettings.StoreReaderConfig);
-    Load(context, *providedSettings.HunkReaderConfig);
-    Load(context, *providedSettings.StoreWriterConfig);
+    // COMPAT(ifsmirnov)
+    if (context.GetVersion() >= ETabletReign::RawIOConfigNodes) {
+        providedSettings.StoreReaderConfig = ConvertTo<IMapNodePtr>(Load<TYsonString>(context));
+        providedSettings.HunkReaderConfig = ConvertTo<IMapNodePtr>(Load<TYsonString>(context));
+        providedSettings.StoreWriterConfig = ConvertTo<IMapNodePtr>(Load<TYsonString>(context));
+    } else {
+        auto storeReaderConfig = New<TTabletStoreReaderConfig>();
+        auto hunkReaderConfig = New<TTabletHunkReaderConfig>();
+        auto storeWriterConfig = New<TTabletStoreWriterConfig>();
+        Load(context, *storeReaderConfig);
+        Load(context, *hunkReaderConfig);
+        Load(context, *storeWriterConfig);
+        providedSettings.StoreReaderConfig = ConvertToNode(storeReaderConfig)->AsMap();
+        providedSettings.HunkReaderConfig = ConvertToNode(hunkReaderConfig)->AsMap();
+        providedSettings.StoreWriterConfig = ConvertToNode(storeWriterConfig)->AsMap();
+    }
     Load(context, *providedSettings.StoreWriterOptions);
-    Load(context, *providedSettings.HunkWriterConfig);
+    // COMPAT(ifsmirnov)
+    if (context.GetVersion() >= ETabletReign::RawIOConfigNodes) {
+        providedSettings.HunkWriterConfig = ConvertTo<IMapNodePtr>(Load<TYsonString>(context));
+    } else {
+        auto hunkWriterConfig = New<TTabletHunkWriterConfig>();
+        Load(context, *hunkWriterConfig);
+        providedSettings.HunkWriterConfig = ConvertToNode(hunkWriterConfig)->AsMap();
+    }
     Load(context, *providedSettings.HunkWriterOptions);
 
     // COMPAT(navasardianna)
@@ -1538,6 +1562,13 @@ void TTablet::AsyncLoad(TLoadContext& context)
         auto effectiveSettings = RawSettings_.BuildEffectiveSettings(&errors, nullptr);
         Settings_.MountConfig = effectiveSettings.MountConfig;
         Settings_.TabletBalancerConfig = effectiveSettings.TabletBalancerConfig;
+
+        if (!errors.empty()) {
+            auto error = TError("Errors occurred while deserializing tablet config")
+                .With("tablet_id", GetId())
+                .With(errors);
+            RuntimeData_->Errors.ConfigError.Store(std::move(error));
+        }
     }
 
     Load(context, PivotKey_);
@@ -2084,7 +2115,13 @@ i64 TTablet::GetTotalRowCount() const
 void TTablet::UpdateTotalRowCount()
 {
     if (StoreRowIndexMap_.empty()) {
-        RuntimeData_->TotalRowCount = 0;
+        // COMPAT(ifsmirnov)
+        auto reign = GetCurrentMutationEffectiveReign();
+        RuntimeData_->TotalRowCount =
+            reign >= ETabletReign::FixTotalRowCountAfterFullTrim ||
+            (reign >= ETabletReign::FixTotalRowCountAfterFullTrim_26_1 && reign < ETabletReign::Start_26_2)
+                ? GetTrimmedRowCount()
+                : 0;
     } else {
         auto it = StoreRowIndexMap_.rbegin();
         RuntimeData_->TotalRowCount = it->first + it->second->GetRowCount();
@@ -2153,7 +2190,7 @@ void TTablet::Reconfigure(const ITabletSlotPtr& slot)
     ReconfigureLocalThrottlers();
     ReconfigureDistributedThrottlers(slot);
     ReconfigureChunkFragmentReader(slot);
-    ReconfigureProfiling();
+    ReconfigureProfiling(Context_->GetDynamicConfig()->ProfilingTagExportMode);
     ReconfigureStructuredLogger();
     ReconfigureRowCache(slot);
     InvalidateChunkReaders();
@@ -2343,6 +2380,23 @@ TTabletSnapshotPtr TTablet::BuildSnapshot(
 
     snapshot->OriginatorTablets = OriginatorTablets_;
 
+    if (slot && Settings_.MountConfig->EnableChunkProlongation) {
+        if (!StoreIdMap_.empty()) {
+            std::vector<TChunkId> snapshotChunkIds;
+            snapshotChunkIds.reserve(StoreIdMap_.size());
+            for (const auto& [_, store] : StoreIdMap_) {
+                if (store->IsChunk()) {
+                    snapshotChunkIds.push_back(store->AsChunk()->GetChunkId());
+                }
+            }
+
+            snapshot->ChunkProlongationGuard = std::make_unique<TChunkProlongationGuard>(
+                ChunkProlongator_,
+                slot->GetEpochAutomatonInvoker(),
+                std::move(snapshotChunkIds));
+        }
+    }
+
     return snapshot;
 }
 
@@ -2523,10 +2577,11 @@ void TTablet::ReconfigureCompressionDictionaries()
     }
 }
 
-void TTablet::ReconfigureProfiling()
+void TTablet::ReconfigureProfiling(EProfilingTagExportMode profilingTagExportMode)
 {
     TableProfiler_ = TTabletProfilerManager::Get()->CreateTableProfiler(
         Settings_.MountConfig->ProfilingMode,
+        profilingTagExportMode,
         Context_->GetTabletCellBundleName(),
         TablePath_,
         Settings_.MountConfig->ProfilingTag,
@@ -2655,7 +2710,9 @@ std::optional<std::string> TTablet::GetPoolTagByMemoryCategory(EMemoryCategory c
 void TTablet::UpdateReplicaCounters()
 {
     for (auto& [replicaId, replica] : Replicas_) {
-        replica.SetCounters(TableProfiler_->GetReplicaCounters(replica.GetClusterName()));
+        replica.SetCounters(TableProfiler_->GetReplicaCounters(
+            replica.GetClusterName(),
+            replica.GetMode()));
     }
 }
 
@@ -2985,6 +3042,8 @@ void TTablet::PopulateReplicateTabletContentRequest(NProto::TReqReplicateTabletC
         entry->set_row_index(rowIndex);
     }
 
+    ChunkProlongator_->ToProto(request->mutable_prolonged_chunk_ids());
+
     if (auto transactionId = ChaosData()->PreparedAdvanceReplicationProgressTransactionId.Load()) {
         TError error("Tablet %v cannot be smoothy moved becase it has "
             "replication progress advance prepared by transaction %v",
@@ -3106,6 +3165,8 @@ void TTablet::LoadReplicatedContent(const NProto::TReqReplicateTabletContent* re
             entry.row_index());
     }
     ChaosData()->CurrentReplicationRowIndexes.Store(std::move(currentReplicationRowIndexes));
+
+    ChunkProlongator_->FromProto(request->prolonged_chunk_ids());
 }
 
 i64 TTablet::Lock(ETabletLockType lockType)
@@ -3117,13 +3178,13 @@ i64 TTablet::Lock(ETabletLockType lockType)
 
 i64 TTablet::Unlock(ETabletLockType lockType)
 {
-    YT_LOG_FATAL_IF(TabletLockCount_[lockType] <= 0 || TotalTabletLockCount_ <= 0,
-        "Attempted to unlock tablet with nonpositive lock count "
-        "(%v, LockType: %lv, TotalTabletLockCount: %v, LockCountPerType: %v)",
-        GetLoggingTags(),
-        lockType,
-        TotalTabletLockCount_,
-        MakeFormattableView(
+    YT_TLOG_FATAL_IF(
+        TabletLockCount_[lockType] <= 0 || TotalTabletLockCount_ <= 0,
+        "Attempted to unlock tablet with nonpositive lock count")
+        .With(GetLoggingTags())
+        .With("LockType", lockType)
+        .With("TotalTabletLockCount", TotalTabletLockCount_)
+        .With("LockCountPerType", MakeFormattableView(
             TEnumTraits<ETabletLockType>::GetDomainValues(),
             [&] (auto* builder, auto lockType) {
                 builder->AppendFormat("%lv: %v", lockType, TabletLockCount_[lockType]);
@@ -3180,10 +3241,10 @@ void TTablet::PushDynamicStoreIdToPool(
     YT_VERIFY(storeId);
     DynamicStoreIdPool_.push_back(storeId);
 
-    YT_LOG_DEBUG("Dynamic store id added to pool (%v, StoreId: %v, Reason: %lv)",
-        LoggingTags_,
-        storeId,
-        reservationReason);
+    YT_TLOG_DEBUG("Dynamic store id added to pool")
+        .With(LoggingTags_)
+        .With("StoreId", storeId)
+        .With("Reason", reservationReason);
 
     if (reservationReason) {
         ++ReservedDynamicStoreIdCount_[*reservationReason];
@@ -3201,9 +3262,9 @@ TDynamicStoreId TTablet::PopDynamicStoreIdFromPool()
 void TTablet::ReleaseReservedDynamicStoreId(
     EDynamicStoreIdReservationReason reason)
 {
-    YT_LOG_DEBUG("Reserved dynamic store id released from pool (%v, Reason: %lv)",
-        LoggingTags_,
-        reason);
+    YT_TLOG_DEBUG("Reserved dynamic store id released from pool")
+        .With(LoggingTags_)
+        .With("Reason", reason);
 
     YT_VERIFY(ReservedDynamicStoreIdCount_[reason] > 0);
     --ReservedDynamicStoreIdCount_[reason];
@@ -3583,6 +3644,10 @@ void TTablet::BuildOrchidYson(TFluentMap fluent) const
         .Item("replication_progress").Value(RuntimeData()->ReplicationProgress.Acquire())
         .Item("replication_era").Value(RuntimeData()->ReplicationEra.load())
         .Item("replication_round").Value(ChaosData()->ReplicationRound.load())
+        .Item("prepared_write_pulled_rows_transaction_id")
+            .Value(ChaosData()->PreparedWritePulledRowsTransactionId.Load())
+        .Item("prepared_advance_replication_progress_transaction_id")
+            .Value(ChaosData()->PreparedAdvanceReplicationProgressTransactionId.Load())
         .Item("write_mode").Value(RuntimeData()->WriteMode.load())
         .Item("lsm_statistics")
             .BeginMap()
@@ -3729,7 +3794,12 @@ void TTablet::BuildOrchidYson(TFluentMap fluent) const
 
             fluent
                 .Item("min_eden_timestamp").Value(minEdenTimestamp);
-        });
+        })
+        .Item("prolonged_chunk_ids").DoListFor(
+            ChunkProlongator_->ProlongedChunks(),
+            [&] (TFluentList fluent, const TChunkId& chunkId) {
+                fluent.Item().Value(chunkId);
+            });
 }
 
 void TTablet::ResetRowCache(const ITabletSlotPtr& slot)
@@ -3753,6 +3823,13 @@ void TTablet::OnDynamicConfigChanged(
         store->OnDynamicConfigChanged(oldConfig, newConfig);
     }
 
+    if (Settings_.MountConfig->ProfilingMode == EDynamicTableProfilingMode::Tag &&
+        oldConfig->ProfilingTagExportMode != newConfig->ProfilingTagExportMode)
+    {
+        ReconfigureProfiling(newConfig->ProfilingTagExportMode);
+        ReconfigureHedgingManagerRegistry();
+    }
+
     ReconfigureChunkFragmentReader(slot);
 }
 
@@ -3761,7 +3838,7 @@ NHydra::EPeerState TTablet::GetAutomatonState() const
     return Context_->GetAutomatonState();
 }
 
-IInvokerPtr TTablet::GetStorageHeavyInvoker() const
+IPrioritizedInvokerPtr TTablet::GetStorageHeavyInvoker() const
 {
     return Context_->GetStorageHeavyInvoker();
 }

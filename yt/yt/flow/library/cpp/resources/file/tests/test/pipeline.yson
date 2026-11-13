@@ -35,9 +35,9 @@
         "resources" = {
             "text" = {
                 "resource_class_name" = "NYT::NFlow::NFileResourceTest::TTestFileResource";
-                "parameters" = {
-                    "file_source" = {
-                        "file_source_class_name" = "NYT::NFlow::TYTFileSource";
+                "file_providers" = {
+                    "file" = {
+                        "file_provider_class_name" = "NYT::NFlow::TYTFileProvider";
                         "parameters" = {
                             "path" = "<cluster=primary>//path/to/file";
                         };
@@ -57,10 +57,9 @@
         };
         "resources" = {
             "text" = {
-                "parameters" = {
-                    "discover_period" = 100;
-                    "update_retry_period" = 100;
-                };
+                "file_provider_discover_period" = 100;
+                "file_provider_update_retry_period" = 100;
+                "file_snapshot_min_creation_period" = 100;
             };
         };
     };

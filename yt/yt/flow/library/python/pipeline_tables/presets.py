@@ -8,6 +8,27 @@ The shape of every dict follows yt_sync's spec language:
 * ``clusters``: per-cluster overlays.
 """
 
+from copy import deepcopy
+
+from .definitions import PIPELINE_NODES
+from .definitions import _get_pipeline_table_definitions
+
+_PIPELINE_TABLE_DEFINITIONS, _ = _get_pipeline_table_definitions()
+
+PIPELINE_NODES_PRESET = {
+    name: {
+        "$merge_presets": ["builtin:storage_preset"],
+        "type": descriptor["type"],
+        "clusters": {
+            "_all_clusters": {
+                "attributes": deepcopy(descriptor["attributes"]),
+                "propagated_attributes": set(),
+            },
+        },
+    }
+    for name, descriptor in PIPELINE_NODES.items()
+}
+
 PIPELINE_SORTED_TABLE_PRESET = {
     "$merge_presets": ["builtin:table_preset"],
     # Base attributes for all clusters.
@@ -27,6 +48,17 @@ PIPELINE_SORTED_TABLE_PRESET = {
                 "hunk_chunk_reader": {"fragment_read_hedging_delay": 50},
             },
         },
+        # Replication logs exist only under chaos, so elsewhere this block is never merged in.
+        "_all_chaos_data_clusters": {
+            # -1 asks yt_sync to size the log after its data replica. Leaving it unset is not
+            # neutral: the count reads back as 1, and a single-tablet log takes the whole write
+            # stream of its table.
+            "replication_log": {
+                "attributes": {
+                    "tablet_count": -1,
+                },
+            },
+        },
     },
 }
 
@@ -42,7 +74,65 @@ PIPELINE_FILE_PRESET = {
 }
 
 PIPELINE_TABLES_PRESET = {
+    "logs/sources_meta": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
+        "clusters": {
+            "_all_data_clusters": {
+                "attributes": deepcopy(_PIPELINE_TABLE_DEFINITIONS["logs/sources_meta"]["attributes"]),
+            },
+        },
+    },
+    "logs/logs_meta": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
+        "clusters": {
+            "_all_data_clusters": {
+                "attributes": deepcopy(_PIPELINE_TABLE_DEFINITIONS["logs/logs_meta"]["attributes"]),
+            },
+        },
+    },
+    "logs/logs": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
+        "clusters": {
+            "_all_data_clusters": {
+                "attributes": deepcopy(_PIPELINE_TABLE_DEFINITIONS["logs/logs"]["attributes"]),
+            },
+        },
+    },
+    "failed_messages": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
+        "clusters": {
+            "_all_data_clusters": {
+                "attributes": deepcopy(_PIPELINE_TABLE_DEFINITIONS["failed_messages"]["attributes"]),
+            },
+        },
+    },
     "timers": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
+        "clusters": {
+            "_all_data_clusters": {
+                "attributes": {
+                    "in_memory_mode": "none",
+                    "mount_config": {
+                        "enable_lookup_hash_table": False,
+                    },
+                },
+            },
+        },
+    },
+    "timer_pages": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
+        "clusters": {
+            "_all_data_clusters": {
+                "attributes": {
+                    "in_memory_mode": "none",
+                    "mount_config": {
+                        "enable_lookup_hash_table": False,
+                    },
+                },
+            },
+        },
+    },
+    "timer_page_meta": {
         "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
         "clusters": {
             "_all_data_clusters": {
@@ -72,9 +162,6 @@ PIPELINE_TABLES_PRESET = {
                         "auto_compaction_period": 3600000,
                         "lookup_cache_rows_ratio": 0.03,
                         "enable_key_filter_for_lookup": True,
-                        "min_data_versions": 0,
-                        "min_data_ttl": 0,
-                        "row_merger_type": "watermark",
                     },
                 },
             },
@@ -98,9 +185,6 @@ PIPELINE_TABLES_PRESET = {
                         "auto_compaction_period": 3600000,
                         "lookup_cache_rows_ratio": 0.03,
                         "enable_key_filter_for_lookup": True,
-                        "min_data_versions": 0,
-                        "min_data_ttl": 0,
-                        "row_merger_type": "watermark",
                     },
                 },
             },
@@ -187,6 +271,41 @@ PIPELINE_TABLES_PRESET = {
                     "mount_config": {
                         "enable_lookup_hash_table": True,
                     },
+                    # The table holds a handful of fixed keys, so the installation-wide tablet
+                    # count of the base preset would pin dozens of in-memory tablets for nothing.
+                    # Spreading them buys no throughput either: the hot key is a single row, and
+                    # a row lives in one tablet whatever the count. The minimum is overridden
+                    # together with the desired count, or an installation that raises it would
+                    # leave the pair contradictory and the master would reject it.
+                    "tablet_balancer_config": {
+                        "min_tablet_count": 1,
+                        "desired_tablet_count": 1,
+                    },
+                },
+            },
+        },
+    },
+    "leader_election_lock": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
+        "clusters": {
+            "_all_data_clusters": {
+                "attributes": {
+                    # A single tiny row rewritten on every lease ping.
+                    "in_memory_mode": "uncompressed",
+                    "mount_config": {
+                        "enable_lookup_hash_table": True,
+                    },
+                    # The table holds one row per election group, so the installation-wide tablet
+                    # count of the base preset would pin dozens of in-memory tablets for nothing.
+                    # The minimum is overridden together with it: an installation that raises the
+                    # minimum would otherwise leave it above the desired count, and the master
+                    # rejects that pair outright.
+                    "tablet_balancer_config": {
+                        "min_tablet_count": 1,
+                        "desired_tablet_count": 1,
+                    },
+                    "erasure_codec": "none",
+                    "compression_codec": "none",
                 },
             },
         },
@@ -227,23 +346,49 @@ PIPELINE_TABLES_PRESET = {
             },
         },
     },
-}
-
-PIPELINE_QUEUES_PRESET = {
-    "controller_logs": {
-        "$merge_presets": ["builtin:pipeline_ordered_table_preset"],
+    "leases": {
+        "$merge_presets": ["builtin:pipeline_sorted_table_preset"],
         "clusters": {
             "_all_data_clusters": {
                 "attributes": {
-                    "tablet_count": 1,
+                    # Same access profile as partition_transactions: tiny rows rewritten at a high
+                    # rate (every worker transaction touches its lease row, the controller renews
+                    # leases continuously).
+                    "in_memory_mode": "uncompressed",
                     "mount_config": {
-                        "min_data_versions": 0,
-                        "min_data_ttl": 0,
-                        "max_data_ttl": 86400000,
+                        "enable_lookup_hash_table": True,
+                        "min_partition_data_size": 100,
+                        "desired_partition_data_size": 500,
+                        "max_partition_data_size": 5000,
+                        "min_compaction_store_count": 2,
+                        "min_partitioning_data_size": 1,
                     },
+                    "chunk_writer": {
+                        "block_size": 300,
+                        "max_block_size": 500,
+                        "desired_chunk_size": 300,
+                    },
+                    "tablet_balancer_config": {
+                        "min_tablet_size": 300,
+                        "desired_tablet_size": 1000,
+                        "max_tablet_size": 3000,
+                    },
+                    "erasure_codec": "none",
+                    "compression_codec": "none",
                 },
             },
         },
+    },
+}
+
+PIPELINE_QUEUES_PRESET = {
+    "timer_page_journal": {
+        "$merge_presets": ["builtin:pipeline_ordered_table_preset"],
+        "clusters": {},
+    },
+    "controller_logs": {
+        "$merge_presets": ["builtin:pipeline_ordered_table_preset"],
+        "clusters": {},
     },
 }
 

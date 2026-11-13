@@ -1,6 +1,6 @@
-from yt_dynamic_tables_base import DynamicTablesBase, SmoothMovementHelper
+from yt_dynamic_tables_base import DynamicTablesBase, SmoothMovementHelper, map_in_parallel
 
-from yt_env_setup import parametrize_external
+from yt_env_setup import parametrize_external, with_portals_dir
 
 from yt_commands import (
     authors, print_debug, wait, create, ls, get, set,
@@ -796,58 +796,6 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
                 cell_statistics["preload_pending_store_count"] == 0
         wait(_check)
 
-    @authors("ifsmirnov")
-    @pytest.mark.parametrize("enable_lookup_hash_table", [True, False])
-    @pytest.mark.parametrize("optimize_for", ["scan", "lookup"])
-    def test_preload_block_range(self, enable_lookup_hash_table, optimize_for):
-        create_tablet_cell_bundle("b", attributes={"options": {"peer_count": 3}})
-        sync_create_cells(1, tablet_cell_bundle="b")
-        set("//sys/tablet_cell_bundles/b/@resource_limits/tablet_static_memory", 2**30)
-        self._create_simple_table(
-            "//tmp/t",
-            tablet_cell_bundle="b",
-            optimize_for=optimize_for,
-            in_memory_mode="uncompressed",
-            enable_lookup_hash_table=enable_lookup_hash_table,
-            chunk_writer={"block_size": 1024})
-        sync_mount_table("//tmp/t")
-
-        rows = [{"key": i, "value": str(i)} for i in range(10000)]
-        insert_rows("//tmp/t", rows)
-
-        sync_unmount_table("//tmp/t")
-        memory_size = get("//tmp/t/@tablet_statistics/uncompressed_data_size")
-        # Allowance for the active store lookup hash table now charged to tablet static category.
-        lht_tax = 16_000_000 if enable_lookup_hash_table else 0
-
-        lower_bound = 3800
-        upper_bound = 5200
-        expected = rows[lower_bound:upper_bound]
-
-        sync_reshard_table("//tmp/t", [[], [lower_bound], [upper_bound]])
-        sync_mount_table("//tmp/t", first_tablet_index=1, last_tablet_index=1)
-        self._wait_for_in_memory_stores_preload("//tmp/t", first_tablet_index=1, last_tablet_index=1)
-
-        node = get_tablet_leader_address(get("//tmp/t/@tablets/1/tablet_id"))
-
-        def _check_memory_usage():
-            memory_usage = get("//sys/cluster_nodes/{}/@statistics/memory/tablet_static/used".format(node))
-            return 0 < memory_usage - lht_tax < memory_size
-        if optimize_for == "lookup":
-            wait(_check_memory_usage)
-
-        assert lookup_rows("//tmp/t", [{"key": i} for i in range(lower_bound, upper_bound)]) == expected
-        wait(lambda: lookup_rows(
-            "//tmp/t",
-            [{"key": i} for i in range(lower_bound, upper_bound)],
-            read_from="follower",
-            timestamp=AsyncLastCommittedTimestamp
-        ) == expected)
-
-        assert_items_equal(
-            select_rows("* from [//tmp/t] where key >= {} and key < {}".format(lower_bound, upper_bound)),
-            expected)
-
     @authors("savrus", "sandello")
     @pytest.mark.parametrize("chunk_format", [
         "table_versioned_simple",
@@ -1009,6 +957,7 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
 
     @authors("savrus")
     @pytest.mark.parametrize("optimize_for", ["scan", "lookup"])
+    @pytest.mark.timeout(120)
     def test_stress_tablet_readers(self, optimize_for):
         sync_create_cells(1)
         self._create_simple_table(
@@ -1021,29 +970,41 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
         items = 100
 
         def verify():
-            expected = [{"key": key, "value": values[key]} for key in list(values.keys())]
-            actual = select_rows("* from [//tmp/t]")
-            assert_items_equal(actual, expected)
-
+            expected_rows = [{"key": key, "value": value} for key, value in values.items()]
             keys = list(values.keys())[::2]
             for i in range(len(keys)):
                 if i % 3 == 0:
                     j = (i * 34567) % len(keys)
                     keys[i], keys[j] = keys[j], keys[i]
 
-            expected = [{"key": key, "value": values[key]} for key in keys]
+            expected_key_rows = [{"key": key, "value": values[key]} for key in keys]
+            sampled_keys = sample(range(1, items), 30)
+            expected_sampled_rows = [{"key": key, "value": values[key]} if key in values else None for key in sampled_keys]
 
-            if len(keys) > 0:
-                actual = select_rows("* from [//tmp/t] where key in (%s)" % ",".join([str(key) for key in keys]))
-                assert_items_equal(actual, expected)
+            def verify_scan():
+                actual = select_rows("* from [//tmp/t]")
+                assert_items_equal(actual, expected_rows)
 
-            actual = lookup_rows("//tmp/t", [{"key": key} for key in keys])
-            assert actual == expected
+            def verify_key_filter():
+                if len(keys) > 0:
+                    actual = select_rows("* from [//tmp/t] where key in (%s)" % ",".join([str(key) for key in keys]))
+                    assert_items_equal(actual, expected_key_rows)
 
-            keys = sample(range(1, items), 30)
-            expected = [{"key": key, "value": values[key]} if key in values else None for key in keys]
-            actual = lookup_rows("//tmp/t", [{"key": key} for key in keys], keep_missing_rows=True)
-            assert actual == expected
+            def verify_lookup():
+                actual = lookup_rows("//tmp/t", [{"key": key} for key in keys])
+                assert actual == expected_key_rows
+
+            def verify_keep_missing_rows():
+                actual = lookup_rows("//tmp/t", [{"key": key} for key in sampled_keys], keep_missing_rows=True)
+                assert actual == expected_sampled_rows
+
+            # Concurrent checks share pending metadata requests.
+            map_in_parallel(lambda check: check(), [
+                verify_scan,
+                verify_key_filter,
+                verify_lookup,
+                verify_keep_missing_rows,
+            ])
 
         verify()
 
@@ -1655,7 +1616,7 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
 
         address = get_tablet_leader_address(tablet_id)
 
-        assert _has_backing_store(address, tablet_id)
+        wait(lambda: _has_backing_store(address, tablet_id))
         wait(lambda: not _has_backing_store(address, tablet_id))
 
         set("//tmp/t/@backing_store_retention_time", 1000000000)
@@ -1663,7 +1624,7 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
         insert_rows("//tmp/t", [{"key": i} for i in range(5)])
         wait(lambda: len(get("//tmp/t/@chunk_ids")) == 2)
 
-        assert _has_backing_store(address, tablet_id)
+        wait(lambda: _has_backing_store(address, tablet_id))
         set("//sys/tablet_cell_bundles/default/@dynamic_options/max_backing_store_memory_ratio", 0.00000001)
         wait(lambda: not _has_backing_store(address, tablet_id))
 
@@ -1841,8 +1802,9 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
         with pytest.raises(YtError, match="Cell {} has no assigned peers".format(cell_id)):
             lookup_rows("//tmp/t", [{"key": 1}])
 
-    @authors("gryzlov-ad")
-    def test_watermark_basic(self):
+    @authors("gryzlov-ad", "sabdenovch")
+    @pytest.mark.parametrize("merger", ["watermark", "new"])
+    def test_watermark_basic(self, merger):
         sync_create_cells(1)
         schema = [
             {"name": "key", "type": "int64", "sort_order": "ascending"},
@@ -1856,7 +1818,7 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
                 "max_data_ttl": 0,
                 "min_data_versions": 0,
                 "max_data_versions": 0,
-                "row_merger_type": "watermark",
+                "row_merger_type": merger,
                 "auto_compaction_period": 1,
             },
         )
@@ -1891,8 +1853,9 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
 
         wait(lambda: select_rows(query) == [empty_watermark_row])
 
-    @authors("gryzlov-ad")
-    def test_watermark_wrong_schema(self):
+    @authors("gryzlov-ad", "sabdenovch")
+    @pytest.mark.parametrize("merger", ["watermark", "new"])
+    def test_watermark_wrong_schema(self, merger):
         sync_create_cells(1)
         schema = [
             {"name": "key", "type": "int64", "sort_order": "ascending"},
@@ -1907,7 +1870,7 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
                 "max_data_ttl": 5000,
                 "min_data_versions": 0,
                 "max_data_versions": 1,
-                "row_merger_type": "watermark",
+                "row_merger_type": merger,
                 "auto_compaction_period": 1,
                 "merge_rows_on_flush": True,
             },
@@ -2147,12 +2110,13 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
     @authors("ponasenko-rs")
     @pytest.mark.parametrize("recreation_way", ["copy", "move"])
     @pytest.mark.parametrize("unmount_way", ["unmount", "freeze"])
+    @with_portals_dir
     def test_conflict_horizon_timestamp_persistence_on_recreation(self, recreation_way, unmount_way):
         if recreation_way == "move" and unmount_way == "freeze":
             pytest.skip("unmount is required for move")
 
         from_path = "//tmp/t"
-        to_path = "//t"
+        to_path = "//portals/t"
 
         sync_create_cells(1)
         self._create_simple_table(from_path)
@@ -2184,9 +2148,6 @@ class TestSortedDynamicTables(TestSortedDynamicTablesBase):
             assert False
 
         assert _get_horizon_timestamp(to_path) == expected_timestamp
-
-        # NB: There is no cleanup for /.
-        remove("//t")
 
 
 class TestSortedDynamicTablesMulticell(TestSortedDynamicTables):

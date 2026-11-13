@@ -189,7 +189,7 @@
 - `onMessages(List<ExtendedMessage> messages, OutputCollector output, RuntimeContext ctx)` — вызывается для батча сообщений.
 - `onTimers(List<Timer> timers, OutputCollector output, RuntimeContext ctx)` — вызывается для батча таймеров.
 
-Батч соответствует одному запросу воркера и может содержать сообщения с разными [ключами](../../../flow/concepts/glossary.md#key); группировка по ключам при необходимости выполняется в коде функции (см. [Companion](../../../flow/concepts/companion.md#schema)).
+Батч соответствует одному запросу воркера и может содержать сообщения с разными [ключами](../../../flow/concepts/glossary.md#key); группировка по ключам при необходимости выполняется в пользовательском коде (см. [Companion](../../../flow/concepts/companion.md#schema)).
 
 #### Пример batch-функции
 
@@ -329,10 +329,23 @@
 | Метод | Описание |
 | --- | --- |
 | `output.addMessage(message)` | Добавить выходное сообщение |
+| `output.addMessage(message, options)` | Добавить сообщение с `AddMessageOptions`, задающим публикацию и суффикс message id для Swift |
 | `output.addTimer(triggerTimestamp)` | Добавить [таймер](../../../flow/concepts/glossary.md#timer) с указанным временем срабатывания (eventTimestamp = 0) |
 | `output.addTimer(triggerTimestamp, eventTimestamp)` | Добавить таймер с указанным временем срабатывания и event-временем |
 | `output.addTimer(timerStreamId, triggerTimestamp, eventTimestamp)` | Добавить таймер для конкретного timer-стрима |
 | `output.setParentIds(parentIds)` | Задать parent ID для отслеживания [lineage](../../../flow/concepts/lineage.md) сообщений. Возвращает новый `OutputCollector` |
+
+В Swift-компьютейшене `MessageIdSuffix.payloadHash()` или `MessageIdSuffix.userDefined(value)` позволяет отвязать идентичность сообщения от порядка порождения:
+
+```java
+output.addMessage(
+        message,
+        AddMessageOptions.builder()
+                .setMessageIdSuffix(MessageIdSuffix.payloadHash())
+                .build());
+```
+
+Options по умолчанию используют порядковый номер сообщения. Хеш payload и пользовательский суффикс поддерживаются только Swift-компьютейшенами.
 
 ## Spring Boot
 

@@ -14,8 +14,8 @@
 #include "table.h"
 #include "read_range_inference.h"
 
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 #include <yt/yt/ytlib/chunk_client/data_source.h>
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk.h>
 
 #include <yt/yt_proto/yt/client/chunk_client/proto/chunk_meta.pb.h>
@@ -33,7 +33,6 @@
 #include <Analyzer/TableNode.h>
 #include <Analyzer/TableFunctionNode.h>
 #include <Analyzer/ConstantNode.h>
-#include <Analyzer/ColumnNode.h>
 #include <Analyzer/FunctionNode.h>
 #include <Analyzer/Utils.h>
 #include <Analyzer/WindowFunctionsUtils.h>
@@ -73,6 +72,7 @@
 #include <Parsers/makeASTForLogicalFunction.h>
 
 #include <Storages/buildQueryTreeForShard.h>
+#include <Storages/KeyDescription.h>
 
 #include <library/cpp/string_utils/base64/base64.h>
 #include <library/cpp/iterator/enumerate.h>
@@ -121,7 +121,8 @@ int GetUsedKeyPrefixSize(const DB::QueryTreeNodePtr& keyNode, const TTableSchema
 
     int usedPrefixSize = 0;
 
-    for (int index = 0; index < schema->GetKeyColumnCount(); ++index) {
+    int keyColumnCount = GetAscendingKeyPrefixLength(*schema);
+    for (int index = 0; index < keyColumnCount; ++index) {
         const auto& column = schema->Columns()[index];
         if (!usedColumns.contains(column.Name())) {
             break;
@@ -571,6 +572,11 @@ private:
     bool HasMinMax_ = false;
 };
 
+int ConvertSortDirectionToInt(DB::SortDirection sortDirection)
+{
+    return sortDirection == DB::SortDirection::ASCENDING ? 1 : -1;
+}
+
 } // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -978,6 +984,12 @@ void TQueryAnalyzer::InferSortedJoinKeyColumns(bool needSortedPool)
         ++matchedKeyPrefixSize;
     }
 
+    int ascendingPrefix = GetAscendingKeyPrefixLength(leftTableSchema);
+    if (TwoYTTableJoin_) {
+        ascendingPrefix = std::min(ascendingPrefix, GetAscendingKeyPrefixLength(rightTableSchema));
+    }
+    matchedKeyPrefixSize = std::min(matchedKeyPrefixSize, ascendingPrefix);
+
     if (matchedKeyPrefixSize == 0) {
         YT_TLOG_DEBUG("As a result of the inferring sorted join key columns, the key turned out to be empty")
             .With("MatchedLeftKeyNames", matchedLeftKeyNames)
@@ -1191,16 +1203,16 @@ void TQueryAnalyzer::OptimizeQueryProcessingStage()
         return;
     }
 
-    bool isSingleTable = (storage->GetTables().size() == 1);
+    bool isSingleTableWithoutRanges = (storage->GetTables().size() == 1)
+        && !storage->GetTables()[0]->Path.HasNontrivialRanges();
     int keyColumnCount = KeyColumnCount_;
 
     auto processAggregationKeyNode = [&] (const DB::QueryTreeNodePtr& keyNode) {
-        // SortedPool expects non-overlapping sorted chunks. In case of multiple
-        // tables (concatYtTablesRange), this condition is broken,
-        // so we cannot use SortedPool to optimize aggregation.
+        // Multiple tables and explicit ranges may produce overlapping or unordered slices.
+        // SortedPool requires monotonic bounds within each input stream.
         // TODO(dakovalkov): Theoretically, the optimization is still possible,
         // but we need to overthink SortedPool logic.
-        if (!isSingleTable) {
+        if (!isSingleTableWithoutRanges) {
             return false;
         }
 
@@ -1259,13 +1271,14 @@ void TQueryAnalyzer::OptimizeQueryProcessingStage()
     OptimizedQueryProcessingStage_ = DB::QueryProcessingStage::Complete;
 }
 
-void TQueryAnalyzer::InferReadInOrderMode(bool assumeNoNullKeys, bool assumeNoNanKeys)
+void TQueryAnalyzer::InferReadInOrderModeAndSortDescription(bool assumeNoNullKeys, bool assumeNoNanKeys)
 {
     auto* queryNode = QueryInfo_.query_tree->as<DB::QueryNode>();
 
     // Read in order is forbidden in JOINs and queries with aggregation.
     // It might be useful in some of these cases, but that is a question for another day.
     if (Join_ || queryNode->hasGroupBy() || queryNode->hasHaving() || queryNode->hasWindow() || queryNode->hasLimitBy()) {
+        // TODO(ivanzhukov): Support joins (at least of two sorted YT tables) and other stuff if possible.
         return;
     }
 
@@ -1278,12 +1291,32 @@ void TQueryAnalyzer::InferReadInOrderMode(bool assumeNoNullKeys, bool assumeNoNa
     // Read in order makes no sense without any limits specified.
     // The whole table will probably be read anyway.
     if (!queryNode->hasLimit() && !getContext()->getSettingsRef()[DB::Setting::limit]) {
+        // TODO(ivanzhukov): Optimize chunk readers so that reading data in order (even with no limit) has no drawbacks.
         return;
     }
 
     YT_VERIFY(Storages_.size() == 1);
-    const auto& schema = Storages_[0]->GetSchema();
+    const auto& storage = Storages_[0];
+    const auto& tables = storage->GetTables();
+    if (tables.size() > 1) {
+        // If we have multiple sorted tables with the same schema, e.g. `SELECT * FROM concatYtTables(t1, t2) ORDER BY ...`,
+        // then data from them could overlap.
+        // TODO(ivanzhukov): (CHYT-1470) If tables' chunks don't overlap (even if tables themselves overlap), we still could read in order.
+        return;
+    }
+    const auto& table = tables[0];
+    if (table->EnableDynamicStoreRead) {
+        // Since data is simultaneously read from two 'storages' (a persistent one and from RAM) we can't guarantee
+        // that the resulting stream would be sorted.
+        return;
+    }
+    if (table->Path.HasNontrivialRanges()) {
+        // Technically user-specified slices could overlap, e.g. `SELECT * FROM "//path/to/table[#1:#10, #2:#11, #3:#12]"`
+        // TODO(ivanzhukov): If row ranges don't actually overlap, still produce sort description and read-in-order mode.
+        return;
+    }
 
+    const auto& schema = storage->GetSchema();
     // If the underlying table is not sorted we cannot help in any way.
     if (!schema->IsSorted()) {
         return;
@@ -1292,10 +1325,11 @@ void TQueryAnalyzer::InferReadInOrderMode(bool assumeNoNullKeys, bool assumeNoNa
     auto commonDirection = EReadInOrderMode::None;
 
     // Columns from the ORDER BY clause must form a prefix of the table's primary key.
-    if (std::ssize(queryNode->getOrderBy().getNodes()) > schema->GetKeyColumnCount()) {
+    if (std::ssize(queryNode->getOrderBy().getNodes()) > GetAscendingKeyPrefixLength(*schema)) {
         return;
     }
 
+    DB::SortDescription sortDescription;
     for (const auto& [columnIndex, orderByElementNode] : Enumerate(queryNode->getOrderBy().getNodes())) {
         auto orderBySortNode = orderByElementNode->as<DB::SortNode>();
 
@@ -1311,6 +1345,12 @@ void TQueryAnalyzer::InferReadInOrderMode(bool assumeNoNullKeys, bool assumeNoNa
 
         // Columns from the ORDER BY clause must form a prefix of the table's primary key.
         if (orderByColumnNode->getColumnName() != schemaColumn.Name()) {
+            return;
+        }
+
+        // Column is sorted by a custom alphabet, so there's a very small chance that physical data is already sorted that way.
+        // TODO(ivanzhukov): Probability is small, but not zero. Check that data could conform to a custom collator.
+        if (orderBySortNode->getCollator()) {
             return;
         }
 
@@ -1341,10 +1381,6 @@ void TQueryAnalyzer::InferReadInOrderMode(bool assumeNoNullKeys, bool assumeNoNa
             return;
         }
 
-        if (!couldHaveNulls && !couldHaveNans) {
-            continue;
-        }
-
         // The value of nulls_direction is equal to direction for NULLS LAST and to the opposite
         // of direction for NULLS FIRST.
         auto nullsDirection = orderBySortNode->getNullsSortDirection().value_or(orderBySortNode->getSortDirection());
@@ -1360,9 +1396,60 @@ void TQueryAnalyzer::InferReadInOrderMode(bool assumeNoNullKeys, bool assumeNoNa
         if (couldHaveNans && nullsDirection != DB::SortDirection::ASCENDING) {
             return;
         }
+
+        sortDescription.emplace_back(
+            schemaColumn.Name(),
+            /*direction_*/ ConvertSortDirectionToInt(orderBySortNode->getSortDirection()),
+            /*nulls_direction_*/ ConvertSortDirectionToInt(nullsDirection));
     }
 
     ReadInOrderMode_ = commonDirection;
+    // Imagine a query such as
+    // ```
+    // SELECT a, d
+    // FROM t -- CREATE TABLE t (a UInt8, b UInt8, c UInt8, d UInt8) ENGINE=YtTable() ORDER BY (a, b, c)
+    // ORDER BY a, b, c
+    // ```
+    // This query will be executed on two different levels:
+    // - First on worker nodes, where data will be read from YT tables raw and all data transformations will be
+    //   performed by the CH's query engine. Therefore in order for CH to better optimize query execution (e.g. LIMIT)
+    //   we would, on worker nodes, return a sort description as verbose as possible. In this case {a, b, c}.
+    //   More than that, even though columns b and c are not physically read, data read on a particular host is still
+    //   physically sorted in that way, because it was stored as such by the YT storage layer. Therefore by returning
+    //   sort description {a, b, c} we're not technically lying.
+    if (ReadInOrderMode_ == EReadInOrderMode::Forward) {
+        // TODO(ivanzhukov):
+        // Right now a secondary node performs full sort for data read backwards. However, it seems like in DESC case either
+        // the YT reader itself could reverse-sort all data while reading it or it could read a block, reverse-sort it in memory,
+        // and return to a client so that a client could just merge backward-sorted blocks. Then we'd be able to propagate
+        // sort description right to secondary nodes.
+
+        // With this optimization (UseDistinctReadOptimization) rows come out in dictionary/RLE value order with NULL last,
+        // not key order (see `ReduceFilterToDistinct`, `UnwrapSimpleDistinctColumn`).
+        if (!NeedOnlyDistinct_) {
+            SubquerySortDescription_ = sortDescription;
+        }
+    }
+    // - Then on a coordinator node, when all data is already transformed on worker nodes and CH only needs to
+    //   aggregate it from all remote hosts. However, since part of data is already 'lost' (columns b and c are not selected),
+    //   there's no way for a CH engine to merge sorted streams from remote hosts so that the resulting stream still
+    //   complies to {a, b, c} sorting, only to {a}. Therefore we drop {b, c} from the coordinator's sort description.
+    //   Simply put, we keep the longest prefix of sort columns that are selected:
+    const auto& selectColumns = queryNode->getProjectionColumns();
+    for (const auto& sortColumn : sortDescription) {
+        auto isSortColumn = [&] (const auto& selectColumn) { return selectColumn.name == sortColumn.column_name; };
+        if (std::ranges::none_of(selectColumns, isSortColumn)) {
+            break;
+        }
+        CoordinatorSortDescription_.push_back(sortColumn);
+    }
+    // NB: It's okay to have a coordinator sort description without a subquery sort description.
+    // Even if a subquery doesn't have a sort description its output data will be sorted by the CH query engine. Therefore:
+    // - output data within every subquery is sorted
+    // - subqueries process boundary-sorted non-overlapping sets of chunks
+    // - coordinator concats subqueries output in the order of subquery boundaries
+    // Which means that in the read-in-order case the resulting data stream [secondary_0_out; secondary_1_out; ...]
+    // will be sorted. Hence the coordinator will (almost) always have a sort description.
 }
 
 TQueryAnalysisResult TQueryAnalyzer::Analyze() const
@@ -1436,7 +1523,13 @@ TQueryAnalysisResult TQueryAnalyzer::Analyze() const
             }
 
             DB::ActionsDAGWithInversionPushDown invertedDAG(filterActionsDAG ? filterActionsDAG->getOutputs().front() : nullptr, getContext());
-            keyCondition.emplace(invertedDAG, getContext(), schema->GetKeyColumns(), primaryKeyExpression);
+            DB::KeyDescription keyDescription;
+            keyDescription.column_names = schema->GetKeyColumns();
+            keyDescription.expression = primaryKeyExpression;
+            for (int keyIndex = 0; keyIndex < schema->GetKeyColumnCount(); ++keyIndex) {
+                keyDescription.reverse_flags.push_back(schema->Columns()[keyIndex].SortOrder() == ESortOrder::Descending);
+            }
+            keyCondition.emplace(invertedDAG, getContext(), std::move(keyDescription));
 
             bool suitableForReadRangeInferring = settings->Execution->EnableReadRangeInferring && TableExpressions_.size() == 1 && selectQuery->getWhere();
             for (int tableIndex = 0; suitableForReadRangeInferring && tableIndex < std::ssize(result.Tables.back()); ++tableIndex) {
@@ -1456,10 +1549,17 @@ TQueryAnalysisResult TQueryAnalyzer::Analyze() const
     }
 
     result.ReadInOrderMode = ReadInOrderMode_;
+    result.SubquerySortDescription = SubquerySortDescription_;
+    result.CoordinatorSortDescription = CoordinatorSortDescription_;
 
     if (ReadInOrderMode_ != EReadInOrderMode::None) {
         result.PoolKind = EPoolKind::Sorted;
-        result.KeyColumnCount = Storages_[0]->GetSchema()->GetKeyColumnCount();
+        auto prefixLen = GetAscendingKeyPrefixLength(*Storages_[0]->GetSchema());
+        // For a read-in-order query such as `SELECT DISTINCT k1, value FROM t ORDER BY k1, k2, k3` we
+        // use min(len([k1]), len([k1, k2, k3])) — which is 1 — telling the sorted chunk pool to split
+        // chunks by a key that would produce correct results (if we split by (k1, k2, k3) then the same k1 value
+        // could be distributed across multiple secondary nodes thus producing an output with k1 duplicates)
+        result.KeyColumnCount = KeyColumnCount_ == 0 ? prefixLen : std::min(KeyColumnCount_, prefixLen);
     } else {
         result.PoolKind = (KeyColumnCount_ > 0 ? EPoolKind::Sorted : EPoolKind::Unordered);
         result.KeyColumnCount = KeyColumnCount_;
@@ -1599,8 +1699,8 @@ void TQueryAnalyzer::Prepare()
     if (settings->Execution->OptimizeQueryProcessingStage) {
         OptimizeQueryProcessingStage();
     }
-    if (settings->Execution->EnableOptimizeReadInOrder) {
-        InferReadInOrderMode(settings->Execution->AssumeNoNullKeys, settings->Execution->AssumeNoNanKeys);
+    if (settings->Execution->EnableOptimizeReadInOrder && !settings->Execution->EnableInputSpecsPulling) {
+        InferReadInOrderModeAndSortDescription(settings->Execution->AssumeNoNullKeys, settings->Execution->AssumeNoNanKeys);
     }
 
     Prepared_ = true;

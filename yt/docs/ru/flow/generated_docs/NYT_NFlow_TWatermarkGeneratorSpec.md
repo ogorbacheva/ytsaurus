@@ -9,13 +9,10 @@
 **Значение по умолчанию**: `false`
 Использовать `SourceWatermark` для генерации `EventWatermark`. Эта опция полностью отключает все эвристики для определения `EventWatermark` и её нужно использовать строго в тех случаях, когда во входном потоке есть специальные маркеры с `EventWatermark`. ||
 || `out_of_orderness_bound` | **Тип**: [TDuration](./all_yson_structs#TDuration)
-**Значение по умолчанию**: `1m`
-Ограничение сверху на возможное переупорядочивание событий, используемое для оценки `EventWatermark`. ||
+**Значение по умолчанию**: `0`
+Ограничение сверху на возможное переупорядочивание событий, используемое для оценки `EventWatermark`. По умолчанию переупорядочивание не учитывается. ||
 || `idle_partitions` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NFlow::TIdlePartitionsSpec](./all_yson_structs#NYT_NFlow_TIdlePartitionsSpec)`>`
 Настройки эвристики для игнорирования партиций с нулевым потоком записи. ||
-{% if audience == "internal" %}|| `unavailable_partition_groups` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NFlow::TUnavailablePartitionGroupsSpec](./all_yson_structs#NYT_NFlow_TUnavailablePartitionGroupsSpec)`>`
-**Значение по умолчанию**: `{}`
-Настройки эвристики для игнорирования недоступных групп партиций (например, партиций в отключённом датацентре основной инсталляции `Logbroker`) ||{% endif %}
 || `late_data_partitions` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NFlow::TLateDataPartitionsSpec](./all_yson_structs#NYT_NFlow_TLateDataPartitionsSpec)`>`
  ||
 |#

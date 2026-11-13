@@ -80,6 +80,13 @@ def add_partitions_by_current_job_status_cell(row):
         **Unknown/Recovering/Has_retryable_errors** are bad statuses.
         If you constantly have jobs in these statuses, your pipeline degrades significantly.
 
+        **Failed** means that the job has finished with an error and is waiting to be dropped;
+        the partition gets a new job on one of the next scheduling iterations.
+
+        **Gracefully moving** means that the balancer is moving the partition to another worker:
+        the job has finished its epoch and is waiting to be recreated there. This is a regular
+        balancing state, not a failure.
+
         **Warming up** is semi-good status. These jobs are working, but not for a long time.
 
         **Working** is good status. If all jobs are `Working` pipeline has no problems with job deaths.
@@ -95,6 +102,8 @@ def add_partitions_by_current_job_status_cell(row):
                     job_status("working_young", "Warming up (working ≤ 5 min after recovering)"),
                     job_status("working_with_retryable_error", "Has retryable errors"),
                     job_status("preparing", "Recovering (new job is preparing)"),
+                    job_status("gracefully_moving", "Gracefully moving (balancer moves the partition)"),
+                    job_status("failed", "Failed (job finished with an error)"),
                     job_status("unknown", "Unknown"),
                     job_status("stopped", "Stopped"))
                     .min(0.8)
@@ -106,6 +115,8 @@ def add_partitions_by_current_job_status_cell(row):
                     "Warming up (working ≤ 5 min after recovering)": "#b7e500",
                     "Has retryable errors": "#cc0000",
                     "Recovering (new job is preparing)": "#ffa500",
+                    "Gracefully moving (balancer moves the partition)": "#00cccc",
+                    "Failed (job finished with an error)": "#610000",
                     "Unknown": "#11114e",
                     "Stopped": "#84c1ff",
                 },
@@ -130,6 +141,79 @@ def build_flow_layout_mutations(backend: str = "monitoring"):
             .cell("Layout mutations", layout_mutations.unit("UNIT_COUNTS_PER_SECOND"))
             .cell("Job manage mutations", job_manage_mutations.unit("UNIT_COUNTS_PER_SECOND"))
             .cell("", EmptyCell())
+    ).owner
+
+
+def build_partitioning_autoscaler():
+    """Decision telemetry for throughput and legacy partitioning policies."""
+    prefix = "yt.flow.controller.job_manager.partitioning"
+
+    def known_throughput_metric(name):
+        value = MonitoringExpr(FlowController(f"{prefix}.throughput.{name}"))
+        known = MonitoringExpr(FlowController(f"{prefix}.throughput.{name}_known")).drop_below(1)
+        return (value * known).all("computation_id")
+
+    description = dedent("""\
+        The partitioning coordinator evaluates all enabled policies on every controller pass.
+        `repartition_count` records committed count or range changes, including range rebalancing.
+        Moving a job between workers keeps the ranges intact; it is reported by the existing
+        `job_status.gracefully_moving` sensor.
+    """)
+    return (
+        Rowset()
+        .stack(False)
+        .row()
+        .cell(
+            "Partition count by state",
+            FlowController("yt.flow.controller.partition_count").all("computation_id").all("state").unit("UNIT_COUNT"),
+            description=description,
+        )
+        .cell(
+            "Proposed partition count",
+            FlowController(f"{prefix}.proposed_partition_count").all("computation_id").unit("UNIT_COUNT"),
+        )
+        .cell(
+            "Repartition decisions",
+            FlowController(f"{prefix}.repartition_count.rate")
+            .all("computation_id")
+            .all("initiator")
+            .unit("UNIT_COUNTS_PER_SECOND"),
+        )
+        .cell(
+            "Decision evaluations",
+            FlowController(f"{prefix}.decision_count.rate")
+            .all("computation_id")
+            .all("criterion")
+            .unit("UNIT_COUNTS_PER_SECOND"),
+        )
+        .row()
+        .cell(
+            "Throughput demand",
+            known_throughput_metric("demand").unit("UNIT_COUNTS_PER_SECOND"),
+        )
+        .cell(
+            "Throughput capacity",
+            known_throughput_metric("capacity").unit("UNIT_COUNTS_PER_SECOND"),
+        )
+        .cell(
+            "Throughput target partitions",
+            known_throughput_metric("target_partition_count").unit("UNIT_COUNT"),
+        )
+        .cell("Throughput warm-up", FlowController(f"{prefix}.throughput.warmup_ready").all("computation_id"))
+        .row()
+        .cell(
+            "Legacy criterion average",
+            FlowController(f"{prefix}.criterion_average").all("computation_id").all("criterion"),
+        )
+        .cell(
+            "Legacy criterion proposed partitions",
+            FlowController(f"{prefix}.criterion_proposed_partition_count")
+            .all("computation_id")
+            .all("criterion")
+            .unit("UNIT_COUNT"),
+        )
+        .cell("", EmptyCell())
+        .cell("", EmptyCell())
     ).owner
 
 
@@ -334,12 +418,53 @@ def build_alignment_timestamp():
     )
 
 
+def build_file_resources():
+    def target(metric):
+        return (
+            FlowController(f"yt.flow.controller.resource_controller.{metric}")
+            .all("resource", "file_provider_id", "revision_id", "display_version")
+            .aggr("host")
+        )
+
+    return (
+        Rowset()
+        .stack(False)
+        .row()
+        .cell(
+            "Resource/File/Active",
+            target("file_provider_target_revision").value("state", "active").unit("UNIT_COUNT"),
+            description="Controller target. The revision label identifies cached bytes; display_version identifies the source version.",
+        )
+        .cell(
+            "Resource/File/Preparing",
+            target("file_provider_target_revision").value("state", "preparing").unit("UNIT_COUNT"),
+            description="Candidate awaiting validation before becoming the active target.",
+        )
+        .row()
+        .cell(
+            "Resource/File/Instances",
+            FlowController("yt.flow.controller.resource_controller.file_provider_revision_instance_count")
+            .all("resource", "file_provider_id", "revision_id", "state")
+            .aggr("host")
+            .unit("UNIT_COUNT"),
+            description="Worker-reported revision states, distinct from the controller target.",
+        )
+        .cell(
+            "Resource/File/Age",
+            target("file_provider_target_revision_age").all("state").unit("UNIT_SECONDS"),
+            description="Now minus the source timestamp of each target revision. Unknown timestamps are omitted; this is not time since download or rollout.",
+        )
+    )
+
+
 def build_flow_controller(backend="monitoring"):
     def fill(d):
         d.add(build_pipeline_state())
         d.add(build_resource_usage("controller", add_component_to_title=False, backend=backend))
         d.add(build_flow_layout())
+        d.add(build_file_resources())
         d.add(build_flow_layout_mutations(backend))
+        d.add(build_partitioning_autoscaler())
         d.add(build_controller_iterations(backend))
         d.add(build_heartbeats())
         d.add(build_watermark_heuristics())

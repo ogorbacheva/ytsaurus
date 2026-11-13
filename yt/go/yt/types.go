@@ -73,18 +73,22 @@ var (
 type OperationState string
 
 var (
-	StateRunning       OperationState = "running"
-	StatePending       OperationState = "pending"
-	StateCompleted     OperationState = "completed"
-	StateFailed        OperationState = "failed"
-	StateAborted       OperationState = "aborted"
-	StateReviving      OperationState = "reviving"
-	StateInitializing  OperationState = "initializing"
-	StatePreparing     OperationState = "preparing"
-	StateMaterializing OperationState = "materializing"
-	StateCompleting    OperationState = "completing"
-	StateAborting      OperationState = "aborting"
-	StateFailing       OperationState = "failing"
+	StateStarting           OperationState = "starting"
+	StateOrphaned           OperationState = "orphaned"
+	StateWaitingForAgent    OperationState = "waiting_for_agent"
+	StateRunning            OperationState = "running"
+	StatePending            OperationState = "pending"
+	StateCompleted          OperationState = "completed"
+	StateFailed             OperationState = "failed"
+	StateAborted            OperationState = "aborted"
+	StateReviving           OperationState = "reviving"
+	StateInitializing       OperationState = "initializing"
+	StateReviveInitializing OperationState = "revive_initializing"
+	StatePreparing          OperationState = "preparing"
+	StateMaterializing      OperationState = "materializing"
+	StateCompleting         OperationState = "completing"
+	StateAborting           OperationState = "aborting"
+	StateFailing            OperationState = "failing"
 )
 
 func (o OperationState) IsFinished() bool {
@@ -182,6 +186,8 @@ func (id NodeID) YPath() ypath.Path {
 }
 
 type Revision uint64
+
+type CellTag uint16
 
 type OperationID guid.GUID
 
@@ -337,6 +343,17 @@ const (
 	ReplicaConsistencyNone ReplicaConsistency = 0
 	ReplicaConsistencySync ReplicaConsistency = 1
 )
+
+type VersionedReadMode string
+
+const (
+	VersionedReadModeDefault         VersionedReadMode = "default"
+	VersionedReadModeLatestTimestamp VersionedReadMode = "latest_timestamp"
+)
+
+type VersionedReadOptions struct {
+	ReadMode VersionedReadMode `yson:"read_mode,omitempty"`
+}
 
 type TabletReadKind int32
 

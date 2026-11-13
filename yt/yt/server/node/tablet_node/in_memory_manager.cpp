@@ -7,7 +7,6 @@
 #include "private.h"
 #include "slot_manager.h"
 #include "smooth_movement_tracker.h"
-#include "sorted_chunk_store.h"
 #include "store_manager.h"
 #include "structured_logger.h"
 #include "tablet.h"
@@ -43,8 +42,6 @@
 
 #include <yt/yt_proto/yt/client/table_chunk_format/proto/chunk_meta.pb.h>
 
-#include <yt/yt/library/numeric/algorithm_helpers.h>
-
 #include <yt/yt/core/compression/codec.h>
 
 #include <yt/yt/core/concurrency/async_semaphore.h>
@@ -65,8 +62,8 @@
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 namespace NYT::NTabletNode {
 
@@ -296,7 +293,7 @@ private:
 
     const TAsyncSemaphorePtr PreloadSemaphore_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, InterceptedDataSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, InterceptedDataSpinLock_);
     THashMap<TChunkId, TInMemoryChunkDataPtr> ChunkIdToData_;
 
 
@@ -475,33 +472,6 @@ IInMemoryManagerPtr CreateInMemoryManager(IBootstrap* bootstrap)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-std::optional<i64> GetEstimatedBlockRangeSize(
-    bool enablePreliminaryNetworkThrottling,
-    const TCachedVersionedChunkMetaPtr& meta,
-    int startBlockIndex,
-    int blocksCount)
-{
-    if (!enablePreliminaryNetworkThrottling) {
-        return {};
-    }
-
-    const auto& metaMisc = meta->Misc();
-    if (metaMisc.compressed_data_size() == 0 || metaMisc.uncompressed_data_size() == 0) {
-        return {};
-    }
-
-    i64 uncompressedSize = 0;
-    const auto& dataBlockMeta = meta->DataBlockMeta();
-    for (int index = startBlockIndex; index < startBlockIndex + blocksCount; ++index) {
-        uncompressedSize += dataBlockMeta->data_blocks(index).uncompressed_size();
-    }
-
-    auto compressionRatio = static_cast<double>(metaMisc.compressed_data_size()) / metaMisc.uncompressed_data_size();
-    return uncompressedSize * compressionRatio;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 TInMemoryChunkDataPtr PreloadInMemoryStore(
     const TTabletSnapshotPtr& tabletSnapshot,
     const IChunkStorePtr& store,
@@ -569,52 +539,8 @@ TInMemoryChunkDataPtr PreloadInMemoryStore(
 
     auto dataBlockCount = versionedChunkMeta->DataBlockMeta()->data_blocks_size();
 
-    int commonKeyPrefix = GetCommonKeyPrefix(
-        versionedChunkMeta->ChunkSchema()->GetKeyColumns(),
-        tabletSnapshot->PhysicalSchema->GetKeyColumns());
-
-    // Expected to be equal for dynamic tables.
-    YT_VERIFY(commonKeyPrefix == versionedChunkMeta->ChunkSchema()->GetKeyColumnCount());
-
-    auto sortOrders = GetSortOrders(tabletSnapshot->PhysicalSchema->GetSortColumns());
-
-    int startBlockIndex;
-    int endBlockIndex;
-
-    // TODO(ifsmirnov): support columnar chunks (YT-11707).
-    bool canDeduceBlockRange =
-        format == EChunkFormat::TableUnversionedSchemalessHorizontal ||
-        format == EChunkFormat::TableVersionedSimple;
-
-    if (store->IsSorted() && canDeduceBlockRange) {
-        auto sortedStore = store->AsSortedChunk();
-        auto lowerBound = std::max(tabletSnapshot->PivotKey, sortedStore->GetMinKey());
-        auto upperBound = std::min(tabletSnapshot->NextPivotKey, sortedStore->GetUpperBoundKey());
-
-        const auto& blockLastKeys = versionedChunkMeta->BlockLastKeys();
-
-        YT_VERIFY(dataBlockCount == std::ssize(blockLastKeys));
-
-        startBlockIndex = BinarySearch(0, dataBlockCount, [&] (int index) {
-            return !TestKeyWithWidening(
-                ToKeyRef(blockLastKeys[index], commonKeyPrefix),
-                ToKeyBoundRef(lowerBound, /*upper*/ false, sortOrders.size()),
-                sortOrders);
-        });
-
-        endBlockIndex = BinarySearch(0, dataBlockCount, [&] (int index) {
-            return TestKeyWithWidening(
-                ToKeyRef(blockLastKeys[index], commonKeyPrefix),
-                ToKeyBoundRef(upperBound, /*upper*/ true, sortOrders.size()),
-                sortOrders);
-        });
-        if (endBlockIndex < dataBlockCount) {
-            ++endBlockIndex;
-        }
-    } else {
-        startBlockIndex = 0;
-        endBlockIndex = dataBlockCount;
-    }
+    int startBlockIndex = 0;
+    int endBlockIndex = dataBlockCount;
 
     i64 preallocatedMemory = 0;
     i64 compressedDataSize = 0;
@@ -658,15 +584,14 @@ TInMemoryChunkDataPtr PreloadInMemoryStore(
     std::vector<NChunkClient::TBlock> blocks;
     blocks.reserve(endBlockIndex - startBlockIndex);
 
-    auto preThrottledBytes = GetEstimatedBlockRangeSize(
-        enablePreliminaryNetworkThrottling,
-        versionedChunkMeta,
-        startBlockIndex,
-        endBlockIndex - startBlockIndex);
+    std::optional<i64> preThrottledBytes;
+    if (enablePreliminaryNetworkThrottling && miscExt.compressed_data_size() > 0) {
+        preThrottledBytes = miscExt.compressed_data_size();
+    }
 
     if (preThrottledBytes) {
         YT_TLOG_DEBUG("Preliminary throttling of network bandwidth for preload")
-            .With("Blocks", FormatBlocks(startBlockIndex, endBlockIndex))
+            .With("Blocks", FormatBlockIndexRange(startBlockIndex, endBlockIndex))
             .With("Bytes", preThrottledBytes);
 
         WaitFor(networkThrottler->Throttle(*preThrottledBytes))
@@ -686,7 +611,7 @@ TInMemoryChunkDataPtr PreloadInMemoryStore(
 
         int readBlockCount = compressedBlocks.size();
         YT_TLOG_DEBUG("Finished reading chunk blocks")
-            .With("Blocks", FormatBlocks(blockIndex, blockIndex + readBlockCount - 1));
+            .With("Blocks", FormatBlockIndexRange(blockIndex, blockIndex + readBlockCount - 1));
 
         for (const auto& compressedBlock : compressedBlocks) {
             compressedDataSize += compressedBlock.Size();
@@ -705,7 +630,7 @@ TInMemoryChunkDataPtr PreloadInMemoryStore(
 
             case EInMemoryMode::Uncompressed: {
                 YT_TLOG_DEBUG("Decompressing chunk blocks")
-                    .With("Blocks", FormatBlocks(blockIndex, blockIndex + readBlockCount - 1))
+                    .With("Blocks", FormatBlockIndexRange(blockIndex, blockIndex + readBlockCount - 1))
                     .With("Codec", compressionCodec->GetId());
 
                 std::vector<TFuture<std::pair<TSharedRef, TDuration>>> asyncUncompressedBlocks;
@@ -741,9 +666,9 @@ TInMemoryChunkDataPtr PreloadInMemoryStore(
 
     if (enablePreliminaryNetworkThrottling) {
         auto difference = compressedDataSize - preThrottledBytes.value_or(0);
-        YT_LOG_DEBUG("Throttling the difference between received and estimated data size (Estimated: %v, Received %v)",
-            preThrottledBytes,
-            compressedDataSize);
+        YT_TLOG_DEBUG("Throttling the difference between received and estimated data size")
+            .With("Estimated", preThrottledBytes)
+            .With("Received", compressedDataSize);
 
         WaitFor(networkThrottler->Throttle(std::max(0l, difference)))
             .ThrowOnError();
@@ -937,7 +862,7 @@ private:
     std::atomic<bool> Sending_ = false;
     std::atomic<bool> Dropped_ = false;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, SpinLock_);
     std::deque<std::pair<TBlockId, TSharedRef>> Blocks_;
     i64 CurrentSize_ = 0;
 

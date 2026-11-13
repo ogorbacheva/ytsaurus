@@ -19,6 +19,10 @@ import yt.wrapper as yt
 logger = logging.getLogger(__name__)
 
 
+class YTToolError(Exception):
+    """An expected tool failure with a message suitable for the caller."""
+
+
 class ToolTemplateType(TypedDict):
     class ToolTemplateInputType(TypedDict):
         name: str
@@ -61,6 +65,10 @@ class YTToolBase:
 
     def set_runner(self, runner: YTToolRunnerMCP):
         self.runner: YTToolRunnerMCP = weakref.proxy(runner)
+
+    @classmethod
+    def _is_mutable(cls):
+        return cls._MUTABLE
 
     def _get_tool_description(self):
         if not self._tool_description:
@@ -109,7 +117,7 @@ class YTToolBase:
     def helper_check_write_path(self, path):
         """Reject mutating operations on system/log paths.
 
-        Raises RuntimeError if `path` falls under a forbidden prefix.
+        Raises YTToolError if `path` falls under a forbidden prefix.
         Called from mutating tools' on_handle_request before any mutation.
         """
         if not path:
@@ -123,7 +131,7 @@ class YTToolBase:
         for prefix in prefixes:
             prefix_norm = prefix.rstrip("/")
             if normalized == prefix_norm or normalized.startswith(prefix_norm + "/"):
-                raise RuntimeError(f"Write operations are forbidden under {prefix}")
+                raise YTToolError(f"Write operations are forbidden under {prefix}")
 
     def helper_process_common_exception(self, ex: Exception, raise_exception=True):
         self.runner._logger.error(type(ex))
@@ -143,7 +151,7 @@ class YTToolBase:
 
         if raise_exception:
             if result:
-                raise RuntimeError(result)
+                raise YTToolError(result) from ex
             else:
                 raise ex
         return result

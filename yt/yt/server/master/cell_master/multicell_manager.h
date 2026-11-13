@@ -1,6 +1,6 @@
 #pragma once
 
-#include "public.h"
+#include "private.h"
 
 #include <yt/yt/server/master/transaction_server/public.h>
 
@@ -139,6 +139,12 @@ struct IMulticellManager
      *  \note Thread affinity: any
      */
     virtual NObjectClient::TCellTagSet GetRoleMasterCells(EMasterCellRole cellRole) const = 0;
+
+    //! Returns the set of cells configured to host Cypress or Sequoia nodes.
+    /*!
+     *  \note Thread affinity: any
+     */
+    virtual NObjectClient::TCellTagSet GetNodeHostMasterCells() const = 0;
 
     //! Returns the number of cells configured for a given role.
     /*!

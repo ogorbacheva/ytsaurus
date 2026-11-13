@@ -22,11 +22,18 @@
 #include <yt/yt/client/security_client/acl.h>
 #include <yt/yt/client/security_client/helpers.h>
 
-#include <yt/yt/client/chunk_client/public.h>
+#include <yt/yt/client/api/config.h>
+
+#include <yt/yt/client/chunk_client/config.h>
+
+#include <yt/yt/library/containers/porto_helpers.h>
+
+#include <yt/yt/library/nbd/chunk/public.h>
 
 #include <yt/yt/core/ytree/convert.h>
 
 #include <yt/yt/core/misc/adjusted_exponential_moving_average.h>
+#include <yt/yt/core/misc/cache_config.h>
 #include <yt/yt/core/misc/config.h>
 #include <yt/yt/core/misc/error.h>
 #include <yt/yt/core/misc/fs.h>
@@ -123,7 +130,8 @@ void ValidateOutputTablePaths(std::vector<NYPath::TRichYPath> paths)
 template <class TConfig>
 void RegisterDiskSpace(TYsonStructRegistrar<TConfig>& registrar)
 {
-    registrar.Parameter("disk_space", &TConfig::DiskSpace);
+    registrar.Parameter("disk_space", &TConfig::DiskSpace)
+        .GreaterThanOrEqual(0);
 }
 
 template <class TConfig>
@@ -153,7 +161,6 @@ void RegisterNbdDisk(TYsonStructRegistrar<TConfig>& registrar)
         .Default();
 
     registrar.Postprocessor([&] (TConfig* config) {
-        // NBD disk size shall not exceed NExecNode::MaxNbdDiskSize.
         if (config->NbdDisk && config->DiskSpace > NExecNode::MaxNbdDiskSize) {
             THROW_ERROR_EXCEPTION("\"disk_space\" exceeds maximum limit for NBD disk")
                 .With("max_disk_space", NExecNode::MaxNbdDiskSize)
@@ -588,7 +595,7 @@ void TNbdDiskConfig::Register(TRegistrar registrar)
         .Default(3);
     registrar.Parameter("multiplexing_parallelism", &TThis::MultiplexingParallelism)
         .GreaterThanOrEqual(1)
-        .Default(NExecNode::DefaultNbdMultiplexingParallelism);
+        .Default(NNbd::NChunk::DefaultNbdMultiplexingParallelism);
 
     registrar.Postprocessor([&] (TNbdDiskConfig* config) {
         if (config->MinDataNodeCount > config->MaxDataNodeCount) {
@@ -643,6 +650,10 @@ void TJobShell::Register(TRegistrar registrar)
 
     registrar.Parameter("owners", &TThis::Owners)
         .Default();
+
+    registrar.Postprocessor([] (TJobShell* jobShell) {
+        NContainers::ValidatePortoContainerSubpath(jobShell->Subcontainer);
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -916,6 +927,9 @@ void TOperationSpecBase::Register(TRegistrar registrar)
     registrar.Parameter("fail_on_job_restart", &TThis::FailOnJobRestart)
         .Default(false);
 
+    registrar.Parameter("enable_job_interrupts", &TThis::EnableJobInterrupts)
+        .Default(true);
+
     registrar.Parameter("enable_job_splitting", &TThis::EnableJobSplitting)
         .Default(true);
 
@@ -1078,10 +1092,10 @@ void TOperationSpecBase::Register(TRegistrar registrar)
         .Default();
 
     registrar.Parameter("use_cluster_throttlers", &TThis::UseClusterThrottlers)
-        .Default(false);
+        .Default(true);
 
     registrar.Parameter("enable_multiple_jobs_in_allocation", &TThis::EnableMultipleJobsInAllocation)
-        .Default();
+        .Default(true);
 
     registrar.Parameter("update_secondary_index", &TThis::UpdateSecondaryIndex)
         .Default(true);
@@ -1310,6 +1324,10 @@ void TUserJobSpec::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("environment", &TThis::Environment)
         .Default();
+    // Filled in by the controller agent from the docker image config;
+    // not meant to be set by users.
+    registrar.Parameter("docker_image_environment", &TThis::DockerImageEnvironment)
+        .Default();
     registrar.Parameter("cpu_limit", &TThis::CpuLimit)
         .Default(1)
         .GreaterThanOrEqual(0);
@@ -1528,6 +1546,13 @@ void TUserJobSpec::Register(TRegistrar registrar)
 
         for (const auto& [variableName, _] : spec->Environment) {
             NControllerAgent::ValidateEnvironmentVariableName(variableName);
+        }
+
+        for (const auto& [sidecarName, _] : spec->Sidecars) {
+            if (auto error = NContainers::CheckPortoContainerNameComponent(sidecarName); !error.IsOK()) {
+                THROW_ERROR_EXCEPTION("Invalid sidecar name %Qv in option \"sidecars\"", sidecarName)
+                    .With(std::move(error));
+            }
         }
 
         // If you want to perform any actions on the volumes, it’s best to do them in the ValidateAndEnrichVolumeSpec function.
@@ -1961,7 +1986,32 @@ void TSortOperationSpecBase::Register(TRegistrar registrar)
     registrar.Parameter("force_job_size_adjuster", &TThis::ForceJobSizeAdjuster)
         .Default(false);
 
+    registrar.Parameter("enable_shared_job_size_adjuster", &TThis::EnableSharedJobSizeAdjuster)
+        .Default(false);
+
+    registrar.Parameter("use_push_based_shuffle", &TThis::UsePushBasedShuffle)
+        .Default(false);
+
     registrar.Postprocessor([] (TSortOperationSpecBase* spec) {
+        if (spec->UsePushBasedShuffle) {
+            THROW_ERROR_EXCEPTION_IF(
+                spec->EnablePartitionedDataBalancing,
+                "Option %Qv is not supported by push-based shuffle",
+                "enable_partitioned_data_balancing");
+            THROW_ERROR_EXCEPTION_IF(
+                spec->EnableFinalPartitionsMerging.value_or(false),
+                "Option %Qv is not supported by push-based shuffle",
+                "enable_final_partitions_merging");
+            THROW_ERROR_EXCEPTION_IF(
+                spec->IntermediateDirectUploadNodeCount.has_value(),
+                "Option %Qv is not applicable to push-based shuffle",
+                "intermediate_direct_upload_node_count");
+            THROW_ERROR_EXCEPTION_IF(
+                spec->ProbingRatio.has_value(),
+                "Option %Qv is not supported by push-based shuffle",
+                "probing_ratio");
+        }
+
         NTableClient::ValidateSortColumns(spec->SortBy);
 
         // Validate pivot_keys.
@@ -2192,6 +2242,44 @@ void TMapReduceOperationSpec::Register(TRegistrar registrar)
     });
 
     registrar.Postprocessor([] (TMapReduceOperationSpec* spec) {
+        if (spec->UsePushBasedShuffle) {
+            THROW_ERROR_EXCEPTION_IF(
+                spec->MapperOutputTableCount != 0,
+                "Push-based shuffle does not support nonzero %Qv",
+                "mapper_output_table_count");
+            THROW_ERROR_EXCEPTION_IF(
+                spec->InputQuery.has_value(),
+                "Option %Qv is not supported by push-based shuffle",
+                "input_query");
+            THROW_ERROR_EXCEPTION_IF(
+                !spec->HasNontrivialMapper() && spec->EnableTableIndexIfHasTrivialMapper,
+                "Option %Qv is not supported by push-based shuffle",
+                "enable_table_index_if_has_trivial_mapper");
+            THROW_ERROR_EXCEPTION_IF(
+                spec->DisableSortedInputInReducer,
+                "Option %Qv is not supported by push-based shuffle",
+                "disable_sorted_input_in_reducer");
+            THROW_ERROR_EXCEPTION_IF(
+                spec->HasNontrivialReduceCombiner() || spec->ForceReduceCombiners,
+                "Reduce combiners are not supported by push-based shuffle");
+            THROW_ERROR_EXCEPTION_IF(
+                spec->Reducer->EnableInputTableIndex.value_or(false) ||
+                    spec->MergeJobIO->ControlAttributes->EnableTableIndex ||
+                    spec->SortJobIO->ControlAttributes->EnableTableIndex,
+                "Reducer-side %Qlv control attribute is not supported by push-based shuffle",
+                NTableClient::EControlAttribute::TableIndex);
+
+            if (spec->HasNontrivialMapper()) {
+                THROW_ERROR_EXCEPTION_IF(
+                    std::ssize(spec->Mapper->OutputStreams) != 1,
+                    "Push-based shuffle requires the mapper to declare exactly one output stream")
+                    .With("output_stream_count", std::ssize(spec->Mapper->OutputStreams));
+                THROW_ERROR_EXCEPTION_IF(
+                    !spec->Mapper->OutputStreams[0]->Schema->IsStrict(),
+                    "Push-based shuffle requires a strict mapper output stream schema");
+            }
+        }
+
         auto throwError = [] (NTableClient::EControlAttribute attribute, const std::string& jobType) {
             THROW_ERROR_EXCEPTION(
                 "%Qlv control attribute is not supported by %Qlv jobs in map-reduce operation",
@@ -2457,11 +2545,20 @@ void TVanillaOperationSpec::Register(TRegistrar registrar)
                 THROW_ERROR_EXCEPTION("Empty task names are not allowed");
             }
 
+            if (taskName == "source" || taskName == "sink") {
+                THROW_ERROR_EXCEPTION("Task name %Qv is reserved", taskName);
+            }
+
             taskSpec->TaskTitle = taskName;
 
             ValidateNoOutputStreams(taskSpec, EOperationType::Vanilla);
 
             ValidateOutputTablePaths(taskSpec->OutputTablePaths);
+
+            if (taskSpec->RestartExitCode && (spec->FailOnJobRestart || taskSpec->FailOnJobRestart)) {
+                THROW_ERROR_EXCEPTION("\"restart_exit_code\" cannot be set together with \"fail_on_job_restart\"")
+                    .With("task_name", taskName);
+            }
 
             if (taskSpec->CollectiveOptions) {
                 collectiveTaskName = taskName;
@@ -2524,7 +2621,8 @@ void TJobResourcesConfig::Register(TRegistrar registrar)
         .GreaterThanOrEqual(0);
     registrar.BaseClassParameter("cpu", &TJobResourcesConfig::Cpu)
         .Default()
-        .GreaterThanOrEqual(0);
+        .GreaterThanOrEqual(0)
+        .LessThan(static_cast<double>(std::numeric_limits<TCpuResource>::max()));
     registrar.BaseClassParameter("network", &TJobResourcesConfig::Network)
         .Default()
         .GreaterThanOrEqual(0);
@@ -2743,6 +2841,9 @@ void TPoolConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("enable_step_function_for_gang_operations", &TThis::EnableStepFunctionForGangOperations)
         .Default(true);
+
+    registrar.Parameter("enable_fifo_children_reordering_for_guarantee_utilization", &TThis::EnableFifoChildrenReorderingForGuaranteeUtilization)
+        .Default();
 
     registrar.Parameter("metering_tags", &TThis::MeteringTags)
         .Default();

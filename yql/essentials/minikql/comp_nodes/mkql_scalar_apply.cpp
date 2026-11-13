@@ -12,7 +12,7 @@
 #include <yql/essentials/minikql/computation/mkql_value_builder.h>
 #include <yql/essentials/minikql/mkql_node_cast.h>
 #include <yql/essentials/parser/pg_wrapper/interface/utils.h>
-#include <yql/essentials/minikql/runtime_settings/runtime_settings_configuration.h>
+#include <yql/essentials/minikql/runtime_settings/runtime_settings.h>
 
 namespace NKikimr::NMiniKQL {
 
@@ -66,7 +66,9 @@ public:
                                                       originalContext.CountersProvider,
                                                       originalContext.LogProvider,
                                                       originalContext.LangVer,
-                                                      originalContext.GetRuntimeSettingsSharedPtr()),
+                                                      originalContext.GetRuntimeSettingsSharedPtr(),
+                                                      originalContext.BridgeMode,
+                                                      originalContext.BridgeBinaryPath),
 
                   originalContext.Mutables,
                   *NYql::NUdf::GetYqlMemoryPool(),

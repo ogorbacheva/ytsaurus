@@ -19,6 +19,7 @@
 #include <yt/yt/server/lib/exec_node/helpers.h>
 
 #include <yt/yt/server/lib/controller_agent/helpers.h>
+#include <yt/yt/server/lib/controller_agent/job_statistics_wire.h>
 
 #include <yt/yt/server/lib/job_agent/config.h>
 #include <yt/yt/server/lib/job_agent/structs.h>
@@ -41,10 +42,13 @@
 #include <yt/yt/library/process/subprocess.h>
 
 #include <yt/yt/core/concurrency/periodic_executor.h>
+#include <yt/yt/core/concurrency/scheduler_api.h>
 
 #include <yt/yt/core/misc/backoff_strategy.h>
 #include <yt/yt/core/misc/process_exit_profiler.h>
 #include <yt/yt/core/misc/statistics.h>
+
+#include <yt/yt/core/rpc/dispatcher.h>
 
 #include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/service_combiner.h>
@@ -569,7 +573,7 @@ private:
     // It is needed because cpu_to_vcpu_factor can change between preparing request and processing response.
     double LastHeartbeatCpuToVCpuFactor_ = 1.0;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, JobsLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, JobsLock_);
 
     THashMap<TJobId, TJobPtr> IdToJob_;
     THashMap<TAllocationId, TAllocationPtr> IdToAllocations_;
@@ -618,7 +622,7 @@ private:
     TPeriodicExecutorPtr RecentlyRemovedJobCleaner_;
     TPeriodicExecutorPtr JobProxyBuildInfoUpdater_;
 
-    NThreading::TAtomicObject<TErrorOr<TBuildInfoPtr>> CachedJobProxyBuildInfo_;
+    TAtomicObject<TErrorOr<TBuildInfoPtr>> CachedJobProxyBuildInfo_;
 
     THashMap<TGuid, TFuture<void>> OutstandingThrottlingRequests_;
 
@@ -710,13 +714,13 @@ private:
 
             if (!agentDescriptor) {
                 if (controllerAgentConnectorPool->GetEpoch() == context->Epoch) {
-                    YT_LOG_ERROR(
-                        "Descriptor not found but epoch didn't change (OperationId: %v, AllocationId: %v, IncarnationId %v)",
-                        operationId,
-                        allocationId,
-                        incarnationId);
+                    static constexpr auto Message = "Descriptor not found but epoch did not change"_sb;
+                    YT_TLOG_ERROR(Message)
+                        .With("OperationId", operationId)
+                        .With("AllocationId", allocationId)
+                        .With("IncarnationId", incarnationId);
 
-                    auto error = TError("Descriptor not found but epoch didn't change")
+                    auto error = TError(Message)
                         .With("abort_reason", EAbortReason::Other);
                     allocation->Abort(error);
                 }
@@ -998,9 +1002,14 @@ private:
 
         ToProto(request->mutable_controller_agent_incarnation_id(), agentDescriptor.IncarnationId);
 
-        auto getJobStatistics = [] (const TJobPtr& job) {
-            auto statistics = job->GetStatistics();
-            if (!statistics) {
+        auto tryFillJobStatistics = [&] (
+            const TJobPtr& job,
+            TNonNullPtr<NControllerAgent::NProto::TJobStatus> status,
+            bool throttleStatistics)
+        {
+            auto statistics = job->GetStatisticsForHeartbeat(context->OmitDataStatisticsFromYson);
+            auto hasJobStatistics = static_cast<bool>(statistics);
+            if (!hasJobStatistics) {
                 if (const auto& timeStatistics = job->GetTimeStatistics(); !timeStatistics.IsEmpty()) {
                     TStatistics timeStatisticsToSend;
                     timeStatisticsToSend.SetTimestamp(TInstant::Now());
@@ -1011,7 +1020,26 @@ private:
                 }
             }
 
-            return statistics;
+            if (!statistics) {
+                return false;
+            }
+            if (throttleStatistics && !context->StatisticsThrottler->TryAcquire(statistics.AsStringBuf().size())) {
+                return false;
+            }
+
+            if (hasJobStatistics) {
+                job->FillStatisticsForHeartbeat(status, context->OmitDataStatisticsFromYson);
+            } else {
+                EncodeJobStatisticsForHeartbeat(
+                    status,
+                    statistics,
+                    context->OmitDataStatisticsFromYson
+                        ? EJobStatisticsWireFormat::OmitDataStatistics
+                        : EJobStatisticsWireFormat::Legacy,
+                    /*inputDataStatisticsOmitted*/ false,
+                    /*outputDataStatisticsOmittedCount*/ 0);
+            }
+            return true;
         };
 
         auto addAllocationInfoToHeartbeatRequest = [&] (const TAllocationPtr& allocation) {
@@ -1039,10 +1067,8 @@ private:
 
             job->ResetStatisticsLastSendTime();
 
-            if (auto statistics = getJobStatistics(job)) {
-                auto statisticsString = statistics.ToString();
-                finishedJobsStatisticsSize += std::ssize(statisticsString);
-                jobStatus->set_statistics(std::move(statisticsString));
+            if (tryFillJobStatistics(job, GetPtr(*jobStatus), /*throttleStatistics*/ false)) {
+                finishedJobsStatisticsSize += jobStatus->statistics().size();
             }
         };
 
@@ -1181,15 +1207,11 @@ private:
 
             ++consideredRunningJobCount;
 
-            if (auto statistics = getJobStatistics(job)) {
-                auto statisticsString = statistics.ToString();
-                if (context->StatisticsThrottler->TryAcquire(statisticsString.size())) {
-                    ++reportedRunningJobCount;
+            if (tryFillJobStatistics(job, GetPtr(*jobStatus), /*throttleStatistics*/ true)) {
+                ++reportedRunningJobCount;
 
-                    runningJobsStatisticsSize += statisticsString.size();
-                    job->ResetStatisticsLastSendTime();
-                    jobStatus->set_statistics(std::move(statisticsString));
-                }
+                job->ResetStatisticsLastSendTime();
+                runningJobsStatisticsSize += jobStatus->statistics().size();
             }
         }
 
@@ -1967,22 +1989,24 @@ private:
     {
         YT_ASSERT_THREAD_AFFINITY(JobThread);
 
-        // TODO(max42): not sure if running ytserver-job-proxy --build --yson from JobThread
-        // is a good idea; maybe delegate to another thread?
-
         TErrorOr<TBuildInfoPtr> buildInfo;
 
         try {
-            auto jobProxyPath = ResolveBinaryPath(JobProxyProgramName)
+            buildInfo = WaitFor(BIND([] {
+                auto jobProxyPath = ResolveBinaryPath(JobProxyProgramName)
+                    .ValueOrThrow();
+
+                TSubprocess jobProxy(jobProxyPath);
+                jobProxy.AddArguments({"--build", "--yson"});
+
+                auto result = jobProxy.Execute();
+                result.Status.ThrowOnError();
+
+                return ConvertTo<TBuildInfoPtr>(TYsonString(result.Output));
+            })
+                .AsyncVia(NRpc::TDispatcher::Get()->GetHeavyInvoker())
+                .Run())
                 .ValueOrThrow();
-
-            TSubprocess jobProxy(jobProxyPath);
-            jobProxy.AddArguments({"--build", "--yson"});
-
-            auto result = jobProxy.Execute();
-            result.Status.ThrowOnError();
-
-            buildInfo = ConvertTo<TBuildInfoPtr>(TYsonString(result.Output));
         } catch (const std::exception& ex) {
             buildInfo = TError(NExecNode::EErrorCode::JobProxyUnavailable, "Failed to receive job proxy build info")
                 .With(ex);

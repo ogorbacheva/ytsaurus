@@ -10,6 +10,8 @@
 #include <yt/yt/ytlib/api/native/config.h>
 #include <yt/yt/ytlib/api/native/connection.h>
 
+#include <yt/yt/ytlib/auth/native_authentication_manager.h>
+
 #include <yt/yt/ytlib/scheduler/helpers.h>
 
 #include <yt/yt/ytlib/security_client/permission_cache.h>
@@ -120,12 +122,12 @@ public:
     {
         if (auto* traceParent = req->GetHeaders()->Find("traceparent")) {
             YT_TLOG_INFO("Request contains traceparent header")
-                .With("Traceparent", traceParent);
+                .With("Traceparent", *traceParent);
         }
 
         if (auto* xRequestId = req->GetHeaders()->Find("X-Request-Id")) {
             YT_TLOG_INFO("Request contains X-Request-Id header")
-                .With("XRequestId", xRequestId);
+                .With("XRequestId", *xRequestId);
         }
     }
 
@@ -366,6 +368,18 @@ private:
             // Instead, we send the authenticated username via "X-Clickhouse-User" header.
             ProxiedRequestHeaders_->Remove("Authorization");
             ProxiedRequestHeaders_->Remove("X-Clickhouse-Key");
+            ProxiedRequestHeaders_->Remove(NHeaders::ServiceTicketHeaderName);
+            ProxiedRequestHeaders_->Remove(NHeaders::UserTicketHeaderName);
+
+            auto* authenticationManager = NAuth::TNativeAuthenticationManager::Get();
+            if (Config_->EnableServiceTicketSubmission && authenticationManager->IsSubmissionEnabled()) {
+                auto tvmId = Bootstrap_->GetNativeConnection()->GetTvmId();
+                if (auto tvmService = authenticationManager->GetTvmService(); tvmService && tvmId) {
+                    ProxiedRequestHeaders_->Set(
+                        NHeaders::ServiceTicketHeaderName,
+                        tvmService->GetServiceTicket(*tvmId));
+                }
+            }
 
             ProxiedRequestHeaders_->Set("X-Clickhouse-User", User_);
             // In rare cases the request can be sent to an instance from another clique.
@@ -1344,6 +1358,9 @@ void TClickHouseHandler::HandleRequest(
         auto adjuctQueryCountCallback = BIND(&TClickHouseHandler::AdjustQueryCount, MakeWeak(this), context->GetUser());
         ControlInvoker_->Invoke(BIND(adjuctQueryCountCallback, +1));
         auto queryCountGuard = Finally(BIND(adjuctQueryCountCallback, -1).Via(ControlInvoker_));
+        auto structuredLogGuard = Finally([&] {
+            context->LogStructuredRequest();
+        });
 
         try {
             context->ProcessRequest();
@@ -1351,8 +1368,6 @@ void TClickHouseHandler::HandleRequest(
             YT_TLOG_INFO("Request failed with unexpected error")
                 .With(ex);
         }
-
-        context->LogStructuredRequest();
     }
 }
 

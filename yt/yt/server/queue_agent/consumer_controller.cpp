@@ -1,11 +1,11 @@
 #include "consumer_controller.h"
 
-#include "snapshot.h"
-#include "snapshot_representation.h"
 #include "config.h"
 #include "helpers.h"
 #include "pass_profiler.h"
 #include "profile_manager.h"
+#include "snapshot.h"
+#include "snapshot_representation.h"
 
 #include <yt/yt/ytlib/api/native/client.h>
 
@@ -13,10 +13,10 @@
 
 #include <yt/yt/ytlib/queue_client/dynamic_state.h>
 
+#include <yt/yt/client/object_client/helpers.h>
+
 #include <yt/yt/client/queue_client/consumer_client.h>
 #include <yt/yt/client/queue_client/helpers.h>
-
-#include <yt/yt/client/object_client/helpers.h>
 
 #include <yt/yt/client/table_client/helpers.h>
 
@@ -28,7 +28,7 @@
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <library/cpp/iterator/functools.h>
 
@@ -588,7 +588,7 @@ public:
 private:
     bool Leading_;
     TAtomicConsumerTableRowConstPtr ConsumerRow_;
-    NThreading::TAtomicObject<std::optional<TReplicatedTableMappingTableRow>> ReplicatedTableMappingRow_;
+    TAtomicObject<std::optional<TReplicatedTableMappingTableRow>> ReplicatedTableMappingRow_;
     const TConsumerReference ConsumerRef_;
     const IObjectStore* ObjectStore_;
     using TQueueControllerDynamicConfigAtomicPtr = TAtomicIntrusivePtr<TQueueControllerDynamicConfig>;

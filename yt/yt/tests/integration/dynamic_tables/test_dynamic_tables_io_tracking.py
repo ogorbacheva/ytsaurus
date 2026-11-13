@@ -286,10 +286,6 @@ class TestTabletNodeIOTracking(TestDynamicTableIOTrackingBase, DynamicTablesBase
 
     @authors("tea-mur", "akozhikhov")
     def test_dictionary_builder(self):
-        def _wait_dictionaries_built(path, previous_hunk_chunk_count):
-            # One dictionary hunk chunk for each of two policies.
-            wait(lambda: len(self._get_hunk_chunk_ids(path)) == previous_hunk_chunk_count + 2)
-
         # Prepare cluster.
         sync_create_cells(1)
         schema = yson.YsonList([
@@ -313,7 +309,7 @@ class TestTabletNodeIOTracking(TestDynamicTableIOTrackingBase, DynamicTablesBase
             "backoff_period": 1000,
         })
         remount_table("//tmp/table")
-        _wait_dictionaries_built("//tmp/table", 1)
+        self._wait_value_dictionaries_built("//tmp/table", 1)
 
         # Check io log.
         read_events = self.wait_for_raw_events(count=1, from_barrier=from_barrier, check_event_count=False,
@@ -344,6 +340,7 @@ class TestReplicatedTableIOTracking(TestDynamicTableIOTrackingBase, TestReplicat
         insert_rows("//tmp/table", data, require_sync_replica=False)
         timestamp = generate_timestamp()
         sync_flush_table("//tmp/table")
+        chunk_id = get_singular_chunk_id("//tmp/table")
 
         # Enable replication.
         from_barrier = self.write_log_barrier(self.get_node_address(), "Barrier")
@@ -356,7 +353,7 @@ class TestReplicatedTableIOTracking(TestDynamicTableIOTrackingBase, TestReplicat
         # Check io log.
         read_events = self.wait_for_raw_events(count=1, from_barrier=from_barrier, check_event_count=False,
                                                filter=lambda event: event.get("data_node_method@") == "GetBlockSet")
-        self._check_events(read_events, category="replication", allowed_chunk_ids=(get_singular_chunk_id("//tmp/table"), ))
+        self._check_events(read_events, category="replication", allowed_chunk_ids=(chunk_id, ))
 
 ##################################################################
 
@@ -412,6 +409,9 @@ class TestChaosTableIOTracking(TestDynamicTableIOTrackingBase, ChaosTestBase):
 
     @authors("tea-mur")
     def test_store_trimmer(self):
+        # Keep the chunk attached until its ID is saved.
+        update_nodes_dynamic_config({"tablet_node": {"store_trimmer": {"enable": False}}})
+
         # Prepare cluster.
         cell_id = self._sync_create_chaos_bundle_and_cell(chaos_bundle_options=self.CHAOS_BUNDLE_OPTIONS)
         replicas = [
@@ -429,10 +429,13 @@ class TestChaosTableIOTracking(TestDynamicTableIOTrackingBase, ChaosTestBase):
         insert_rows("//tmp/qs", [{"key": 0, "value": "0"}])
         from_barrier = self.write_log_barrier(self.get_node_address(), "Barrier")
 
-        # With store trimmer enabled chunk will be read soon after flush.
         sync_flush_table("//tmp/qs")
+        chunk_id = get_singular_chunk_id("//tmp/qs")
+
+        # The trimmer may remove the chunk after reading it.
+        update_nodes_dynamic_config({"tablet_node": {"store_trimmer": {"enable": True}}})
 
         # Check io log.
         read_events = self.wait_for_raw_events(count=1, from_barrier=from_barrier, check_event_count=False,
                                                filter=lambda event: event.get("data_node_method@") == "GetBlockSet")
-        self._check_events(read_events, category="replication_log_trim", allowed_chunk_ids=(get_singular_chunk_id("//tmp/qs"), ))
+        self._check_events(read_events, category="replication_log_trim", allowed_chunk_ids=(chunk_id, ))

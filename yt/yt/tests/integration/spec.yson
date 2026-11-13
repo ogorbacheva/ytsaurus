@@ -1,8 +1,8 @@
 {
-    cluster=arnold;
+    cluster=kolmogorov;
     pool="yt-integration-tests";
     pool_trees=[
-        "yt_integration_tests";
+        "physical";
     ];
     cypress_root="//home/yt-integration-tests";
     operation_spec={
@@ -33,12 +33,12 @@
         use_porto_memory_tracking=%true;
         layer_paths=[
             "//porto_layers/delta/fuse/porto_delta_layer_ubuntu_jammy_libfuse2_2024-11-22.tar.gz";
-            "//porto_layers/base/jammy/porto_layer_search_ubuntu_jammy_app_lastest.tar.gz";
+            "//porto_layers/base/jammy/porto_layer_search_ubuntu_jammy_app_latest";
         ];
     };
     run_as_root=%true;
     enable_network=%false;
-    blob_ttl=302400000000000;
-    output_ttl=518400000000000;
+    blob_ttl=172800000000000;
+    output_ttl=302400000000000;
     timeout=10800000000000;
 }

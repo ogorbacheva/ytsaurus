@@ -146,6 +146,10 @@ public:
     TFuture<NApi::IPrerequisitePtr> StartChaosLease(
         const TChaosLeaseStartOptions& options = {}) override;
 
+    TFuture<void> PingChaosLease(
+        NChaosClient::TChaosLeaseId chaosLeaseId,
+        const TChaosLeasePingOptions& options = {}) override;
+
     TFuture<void> SetUserBanned(
         const std::string& user,
         bool isBanned,
@@ -169,14 +173,14 @@ public:
         const TFileFragmentWriterOptions& options) override;
 
     // Queues.
-    TFuture<NQueueClient::IQueueRowsetPtr> PullQueue(
+    TFuture<TPullQueueResult> PullQueue(
         const NYPath::TRichYPath& queuePath,
         i64 offset,
         int partitionIndex,
         const NQueueClient::TQueueRowBatchReadOptions& rowBatchReadOptions,
         const TPullQueueOptions& options = {}) override;
 
-    TFuture<NQueueClient::IQueueRowsetPtr> PullQueueConsumer(
+    TFuture<TPullQueueResult> PullQueueConsumer(
         const NYPath::TRichYPath& consumerPath,
         const NYPath::TRichYPath& queuePath,
         std::optional<i64> offset,

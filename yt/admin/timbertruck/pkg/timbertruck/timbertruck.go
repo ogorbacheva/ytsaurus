@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,6 +47,12 @@ type Config struct {
 	// Default value is 30s.
 	ListActiveTasksPeriod *time.Duration `yaml:"list_acive_tasks_period"`
 
+	// The period of tt.stream.max_row_bytes and tt.stream.max_line_bytes: the metrics report
+	// the largest row or line since the start of the previous period.
+	//
+	// Default value is 1m.
+	MaxBytesMetricsPeriod *time.Duration `yaml:"max_bytes_metrics_period"`
+
 	// DeprecatedStreams lists stream names that are explicitly deprecated.
 	// On start Timbertruck will:
 	//  - Complete active tasks for these streams if found in the datastore and not configured.
@@ -62,7 +69,9 @@ type TimberTruck struct {
 
 	metrics metrics.Registry
 
-	handlers []streamHandler
+	handlersMu sync.Mutex
+	handlers   []streamHandler
+	serving    bool
 }
 
 func NewTimberTruck(config Config, logger *slog.Logger, metrics metrics.Registry) (result *TimberTruck, err error) {
@@ -83,6 +92,10 @@ func NewTimberTruck(config Config, logger *slog.Logger, metrics metrics.Registry
 	if logPusher.config.ListActiveTasksPeriod == nil {
 		defaultPeriod := 30 * time.Second
 		logPusher.config.ListActiveTasksPeriod = &defaultPeriod
+	}
+	if logPusher.config.MaxBytesMetricsPeriod == nil {
+		defaultPeriod := time.Minute
+		logPusher.config.MaxBytesMetricsPeriod = &defaultPeriod
 	}
 
 	logPusher.fsWatcher, err = NewFsWatcher(logger.With("component", "FsWatcher"))
@@ -117,6 +130,9 @@ type TaskController interface {
 	NotifyProgress(pipelines.FilePosition)
 	Logger() *slog.Logger
 	OnSkippedRow(data io.WriterTo, info pipelines.SkippedRowInfo)
+	OnLargeRow(info pipelines.LargeRowInfo)
+	OnRowSize(kind pipelines.LargeRowKind, size int)
+	OnLineSize(size int)
 }
 
 type TaskArgs struct {
@@ -149,6 +165,12 @@ type StreamConfig struct {
 }
 
 func (tt *TimberTruck) AddStream(config StreamConfig, newPipeline NewPipelineFunc) {
+	tt.handlersMu.Lock()
+	defer tt.handlersMu.Unlock()
+	tt.addStream(config, newPipeline)
+}
+
+func (tt *TimberTruck) addStream(config StreamConfig, newPipeline NewPipelineFunc) {
 	handler := streamHandler{
 		timberTruck: tt,
 		logger: tt.logger.With(
@@ -157,7 +179,10 @@ func (tt *TimberTruck) AddStream(config StreamConfig, newPipeline NewPipelineFun
 		),
 		config:             config,
 		newPipelineFunc:    newPipeline,
-		skippedRowsMetrics: newSkippedRowsMetrics(tt.logger, config.Name, tt.metrics),
+		skippedRowsMetrics: newRowCounters(tt.metrics, config.Name, "tt.stream.skipped_rows", "reason", pipelines.AllSkipRowReasons),
+		largeRowsMetrics:   newRowCounters(tt.metrics, config.Name, "tt.stream.large_rows", "kind", pipelines.AllLargeRowKinds),
+		maxRowBytesMetrics: newRowMaxGauges(tt.metrics, config.Name, "tt.stream.max_row_bytes", "kind", pipelines.AllLargeRowKinds),
+		maxLineBytesMetric: newStreamMaxGauge(tt.metrics, config.Name, "tt.stream.max_line_bytes"),
 		haveTasks:          make(chan struct{}),
 	}
 	if handler.config.MaxActiveTaskCount == nil {
@@ -168,16 +193,20 @@ func (tt *TimberTruck) AddStream(config StreamConfig, newPipeline NewPipelineFun
 	handler.logger.Info("Pipeline added")
 }
 
-// AddAndRunStream adds a new stream and launches its handler immediately.
-// It can be called while Serve(ctx) is running.
-//
-// Note: this method is not concurrent safe.
+// AddAndRunStream adds a new stream and launches its handler.
+// If Serve(ctx) is not running yet, the handler is launched by Serve(ctx).
 func (tt *TimberTruck) AddAndRunStream(ctx context.Context, config StreamConfig, newPipeline NewPipelineFunc) error {
-	tt.AddStream(config, newPipeline)
+	tt.handlersMu.Lock()
+	defer tt.handlersMu.Unlock()
+	tt.addStream(config, newPipeline)
+	if !tt.serving {
+		return nil
+	}
 	return tt.initializeStream(ctx, &tt.handlers[len(tt.handlers)-1])
 }
 
 func (tt *TimberTruck) Serve(ctx context.Context) error {
+	tt.handlersMu.Lock()
 	deprecatedStreams := tt.deprecatedStreams()
 
 	activeTasks, err := tt.datastore.ListActiveTasks()
@@ -210,8 +239,10 @@ func (tt *TimberTruck) Serve(ctx context.Context) error {
 			tt.logger.Error("Error initializing stream", "error", err, "stream", tt.handlers[i].config.Name)
 		}
 	}
+	tt.serving = true
 
 	tt.launchMetricsProc(ctx)
+	tt.handlersMu.Unlock()
 
 	tt.logger.Info("Serving")
 
@@ -230,6 +261,8 @@ func (tt *TimberTruck) BoundActiveTasks(streamNames []string, boundTime time.Tim
 		streamSet[name] = struct{}{}
 	}
 
+	tt.handlersMu.Lock()
+	defer tt.handlersMu.Unlock()
 	for i := range tt.handlers {
 		stream := tt.handlers[i].config.Name
 		if _, ok := streamSet[stream]; !ok {
@@ -334,16 +367,28 @@ func (tt *TimberTruck) launchMetricsProc(ctx context.Context) {
 
 	go func() {
 		ticker := time.NewTicker(*tt.config.ListActiveTasksPeriod)
+		maxBytesMetricsTicker := time.NewTicker(*tt.config.MaxBytesMetricsPeriod)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				activeTaskCounter.Do()
+			case <-maxBytesMetricsTicker.C:
+				tt.rotateMaxBytesMetrics()
 			}
 		}
 	}()
 
+}
+
+func (tt *TimberTruck) rotateMaxBytesMetrics() {
+	tt.handlersMu.Lock()
+	defer tt.handlersMu.Unlock()
+	for i := range tt.handlers {
+		tt.handlers[i].maxRowBytesMetrics.Rotate()
+		tt.handlers[i].maxLineBytesMetric.rotate()
+	}
 }
 
 type streamHandler struct {
@@ -353,7 +398,10 @@ type streamHandler struct {
 	config          StreamConfig
 	newPipelineFunc NewPipelineFunc
 
-	skippedRowsMetrics skippedRowsMetrics
+	skippedRowsMetrics rowCounters[pipelines.SkipRowReason]
+	largeRowsMetrics   rowCounters[pipelines.LargeRowKind]
+	maxRowBytesMetrics rowMaxGauges[pipelines.LargeRowKind]
+	maxLineBytesMetric *periodMax
 	haveTasks          chan struct{}
 }
 
@@ -674,6 +722,9 @@ func (h *streamHandler) ProcessTaskQueue(ctx context.Context) {
 			logger:             h.logger.With("component", "Pipeline", "stagedpath", task.StagedPath),
 			skippedRowsWriter:  newSkippedRowsWriter(path.Join(h.skippedRowsDir(), path.Base(task.StagedPath)), h.logger),
 			skippedRowsMetrics: h.skippedRowsMetrics,
+			largeRowsMetrics:   h.largeRowsMetrics,
+			maxRowBytesMetrics: h.maxRowBytesMetrics,
+			maxLineBytesMetric: h.maxLineBytesMetric,
 		}
 
 		var p *pipelines.Pipeline
@@ -849,7 +900,10 @@ type taskController struct {
 	datastore          *Datastore
 	logger             *slog.Logger
 	skippedRowsWriter  *SkippedRowsWriter
-	skippedRowsMetrics skippedRowsMetrics
+	skippedRowsMetrics rowCounters[pipelines.SkipRowReason]
+	largeRowsMetrics   rowCounters[pipelines.LargeRowKind]
+	maxRowBytesMetrics rowMaxGauges[pipelines.LargeRowKind]
+	maxLineBytesMetric *periodMax
 }
 
 func (c *taskController) NotifyProgress(pos pipelines.FilePosition) {
@@ -894,6 +948,27 @@ func (c *taskController) OnSkippedRow(data io.WriterTo, info pipelines.SkippedRo
 		attrs = append(attrs, k, v)
 	}
 	c.logger.Warn("Row skipped", attrs...)
+}
+
+func (c *taskController) OnLargeRow(info pipelines.LargeRowInfo) {
+	c.largeRowsMetrics.Inc(info.Kind)
+
+	attrs := []any{
+		"kind", string(info.Kind),
+		"offset", info.Offset,
+	}
+	for k, v := range info.Attrs {
+		attrs = append(attrs, k, v)
+	}
+	c.logger.Warn("Large row", attrs...)
+}
+
+func (c *taskController) OnRowSize(kind pipelines.LargeRowKind, size int) {
+	c.maxRowBytesMetrics.Observe(kind, size)
+}
+
+func (c *taskController) OnLineSize(size int) {
+	c.maxLineBytesMetric.observe(int64(size))
 }
 
 func getCreatePipelineMaxBackoff() time.Duration {

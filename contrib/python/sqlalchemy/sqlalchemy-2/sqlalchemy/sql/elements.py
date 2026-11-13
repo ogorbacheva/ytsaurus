@@ -4182,6 +4182,11 @@ class _OverrideBinds(Grouping[_T]):
         replaces_params: Sequence[BindParameter[Any]],
     ):
         self.element = element
+
+        # as with Grouping, take on the type of the element we wrap;
+        # otherwise the construct reports NULLTYPE and the result set
+        # for a column that's compiled from here has no result processor
+        self.type = element.type
         self.translate = {
             k.key: v.value for k, v in zip(replaces_params, bindparams)
         }
@@ -5313,7 +5318,7 @@ class quoted_name(util.MemoizedSlots, str):
         else:
             return quoted_name(value, quote)
 
-    def __new__(cls, value: str, quote: Optional[bool]) -> quoted_name:
+    def __new__(cls, value: str, quote: Optional[bool]) -> Self:
         assert (
             value is not None
         ), "use quoted_name.construct() for None passthrough"
@@ -5459,7 +5464,7 @@ class _truncated_label(quoted_name):
 
     __slots__ = ()
 
-    def __new__(cls, value: str, quote: Optional[bool] = None) -> Any:
+    def __new__(cls, value: str, quote: Optional[bool] = None) -> Self:
         quote = getattr(value, "quote", quote)
         # return super(_truncated_label, cls).__new__(cls, value, quote, True)
         return super().__new__(cls, value, quote)

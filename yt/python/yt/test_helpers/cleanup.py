@@ -21,7 +21,7 @@ SYSTEM_TRANSACTION_TITLE_SUBSTRINGS = [
 ]
 
 
-def abort_transactions(list_action, abort_action, exists_action, get_action):
+def iterate_user_transactions(list_action, exists_action, get_action):
     sequoia_tablet_cells = []
     # COMPAT(gritukan, aleksandra-zh)
     if exists_action("//sys/tablet_cell_bundles/sequoia-cypress"):
@@ -39,6 +39,11 @@ def abort_transactions(list_action, abort_action, exists_action, get_action):
         if sequoia:
             continue
 
+        yield tx
+
+
+def abort_transactions(list_action, abort_action, exists_action, get_action):
+    for tx in iterate_user_transactions(list_action, exists_action, get_action):
         try:
             abort_action(tx)
         except YtError:
@@ -74,6 +79,7 @@ def cleanup_objects(list_multiple_action, remove_multiple_action, exists_multipl
         "tablet_cells",
         "areas",
         "tablet_cell_bundles",
+        "master_cell_groups",
         "chaos_cells",
         "chaos_cell_bundles",
         "network_projects",

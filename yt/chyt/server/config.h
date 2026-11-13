@@ -38,7 +38,11 @@
 
 #include <yt/yt/library/cypress_election/config.h>
 
+#include <yt/yt/library/dynamic_config/config.h>
+
 #include <yt/yt/library/re2/public.h>
+
+#include <yt/yt/library/tvm/public.h>
 
 namespace NYT::NClickHouseServer {
 
@@ -51,6 +55,8 @@ struct TCompositeSettings
     EExtendedYsonFormat DefaultYsonFormat;
 
     bool ConvertUnsupportedTypesToString;
+
+    bool AnnotateResultSchemaWithNativeTypes;
 
     bool EnableComplexNullConverison;
 
@@ -154,6 +160,8 @@ struct TTestingSettings
     bool ThrowExceptionInSubquery;
     bool ThrowExceptionInWriterFinish;
     bool ThrowExceptionAfterRefreshQuery;
+    bool ThrowExceptionAfterRefreshCommit;
+    std::optional<int> FailMaterializedViewRefreshQueryResponseForPartition;
     i64 SubqueryAllocationSize;
 
     bool HangControlInvoker;
@@ -167,6 +175,7 @@ struct TTestingSettings
     std::optional<NYPath::TYPath> ListDirsBreakpoint;
     std::optional<NYPath::TYPath> SourceGenerateCallBreakpoint;
     std::optional<NYPath::TYPath> DropTableBreakpoint;
+    std::optional<NYPath::TYPath> MaterializedViewConsumerCommitBreakpoint;
 
     REGISTER_YSON_STRUCT(TTestingSettings);
 
@@ -238,6 +247,7 @@ struct TExecutionSettings
     //! Mode defines how tables are locked for reading during the query execution.
     ETableReadLockMode TableReadLockMode;
 
+    //! Skip chunks whose column min/max statistics do not satisfy the query filter.
     bool EnableMinMaxFiltering;
 
     //! The intent of this optimization is similar to the `optimize_read_in_order` setting in native CH.
@@ -412,21 +422,29 @@ DEFINE_REFCOUNTED_TYPE(TPrewhereSettings)
 struct TQuerySettings
     : public NYTree::TYsonStruct
 {
+    //! Skip chunks (and dynamic table tablets) whose key ranges do not satisfy the query key condition.
     bool EnableKeyConditionFiltering;
     bool MakeUpperBoundInclusive;
 
     bool EnableColumnarRead;
 
+    //! If a sorted table has a computed key column (e.g. `key_hash` with expression `farm_hash(key)`),
+    //! deduce its value from the WHERE predicate on source columns (e.g. `key = 'xyz'`)
+    //! so that the full key can be used for filtering.
     bool EnableComputedColumnDeduction;
 
     bool UseBlockSampling;
 
+    //! How deduced computed column values are added to the predicate:
+    //! `In` (`column IN (A, B, C)`) or `DNF` (`column = A OR column = B OR column = C`).
     EDeducedStatementMode DeducedStatementMode;
 
     bool LogKeyConditionDetails;
 
+    //! Perform row batches conversion inside our separate worker thread pool instead of the CH's default thread.
     bool ConvertRowBatchesInWorkerThreadPool;
 
+    //! For sorted dynamic tables, skip tablets whose pivot key ranges do not satisfy the key condition before fetching chunk specs.
     bool InferDynamicTableRangesFromPivotKeys;
 
     TConversionSettingsPtr Conversion;
@@ -455,9 +473,15 @@ struct TQuerySettings
 
     TPrewhereSettingsPtr Prewhere;
 
+    //! If `FROM <identifier>` resolves to both a YT table and a clique-internal storage, choose which one to read
+    //! from or throw an error.
     EStorageConflictResolveMode StorageConflictResolveMode;
 
     bool OmitInaccessibleRows;
+
+    // TODO(buyval01) Temporary compatibility workaround for ClickHouse's TO + POPULATE restriction.
+    // Replace with standard POPULATE DDL syntax once ClickHouse supports it.
+    bool MaterializedViewPopulate;
 
     REGISTER_YSON_STRUCT(TQuerySettings);
 
@@ -514,6 +538,11 @@ struct TSubqueryConfig
     bool UseColumnarStatistics;
 
     i64 MinSliceDataWeight;
+
+    //! If set, chunk specs of static tables fetched from master for a full (trivial)
+    //! read range are cached; null (the default) disables caching entirely. Does not
+    //! apply to dynamic tables.
+    TSlruCacheConfigPtr ChunkSpecCache;
 
     REGISTER_YSON_STRUCT(TSubqueryConfig);
 
@@ -691,7 +720,9 @@ struct TMaterializedViewsConfig
     NYPath::TYPath RootPath;
     TDuration ScanPeriod;
     i64 MaxRowsPerRefresh;
+    int MaxPartitionsPerRefresh;
     TDuration QueryTimeout;
+    TDuration TableMountTimeout;
     TDuration TransactionTimeout;
 
     REGISTER_YSON_STRUCT(TMaterializedViewsConfig);
@@ -784,6 +815,20 @@ DEFINE_REFCOUNTED_TYPE(TExecutionProfilingConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TYtDynamicConfig
+    : public NYTree::TYsonStruct
+{
+    TQuerySettingsPtr QuerySettings;
+
+    REGISTER_YSON_STRUCT(TYtDynamicConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TYtDynamicConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TYtConfig
     : public NYTree::TYsonStruct
 {
@@ -793,6 +838,7 @@ struct TYtConfig
     TGuid InstanceId;
     TString CliqueAlias;
     i64 CliqueIncarnation;
+    NYPath::TYPath OrchidRoot;
     //! Address override when entering discovery group.
     std::optional<TString> Address;
     //! Clique size for better profiling.
@@ -878,6 +924,9 @@ struct TYtConfig
 
     bool EnableHttpHeaderLog;
     NRe2::TRe2Ptr HttpHeaderBlacklist;
+
+    bool EnableHttpTvmAuthentication;
+    THashSet<NAuth::TTvmId> HttpAllowedServiceTvmIds;
 
     //! By default, CHYT gets the table schema along with the rest of the attributes.
     //! This option allows you to separate the schema fetch from the attribute fetch
@@ -978,6 +1027,9 @@ struct TClickHouseServerBootstrapConfig
 
     TYtConfigPtr Yt;
 
+    std::optional<NYPath::TYPath> DynamicConfigPath;
+    NDynamicConfig::TDynamicConfigManagerConfigPtr DynamicConfigManager;
+
     //! Instance will not shutdown during this period of time after receiving signal even
     //! if there are not any running queries.
     //! To avoid receiving queries after shutdown, this value should be greater than gossip period.
@@ -1004,6 +1056,20 @@ struct TClickHouseServerBootstrapConfig
 };
 
 DEFINE_REFCOUNTED_TYPE(TClickHouseServerBootstrapConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TClickHouseServerDynamicConfig
+    : public TSingletonsDynamicConfig
+{
+    TYtDynamicConfigPtr Yt;
+
+    REGISTER_YSON_STRUCT(TClickHouseServerDynamicConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TClickHouseServerDynamicConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 

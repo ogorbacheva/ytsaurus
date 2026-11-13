@@ -16,30 +16,29 @@ Lineage используется фреймворком в двух целях:
 
 | Тип функции | Родитель выходного сообщения |
 |---|---|
-| `RowFunction` / `DoProcessMessage` | текущее входное сообщение |
-| `BatchFunction` / `DoProcess` | все сообщения текущего батча |
+| `IProcessFunction::ProcessMessage` / `RowFunction` | текущее входное сообщение |
+| `IBatchProcessFunction::Process` / `BatchFunction` | все сообщения текущего батча |
 | Обработчик таймера | текущий таймер |
 
 ## Когда задавать lineage явно {#explicit-lineage}
 
-Родителями указываются входные сообщения **текущего вызова** batch-функции, из которых фактически получен данный вывод (в SDK компаньонов — их `message_id`); сообщения из других батчей родителями быть не могут.
+По умолчанию родителем выходного сообщения считается весь текущий батч. Явный lineage позволяет сузить это множество до конкретного подмножества входных объектов, что делает вычисление `EventTimestamp` и `AlignmentTimestamp` более точным.
 
-Обязательность зависит от типа компьютейшена:
-
-- **Swift**: у каждого выходного сообщения должен быть **ровно один родитель**, поэтому в batch-функции с батчем из более чем одного сообщения задавать lineage **обязательно** — сужайте родителей до одного входного сообщения. С дефолтом «весь батч» обработка завершится ошибкой `Message should have exactly one parent message`. Несколько родителей у выходного сообщения допустимы только при включённом параметре [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees).
-- **Transform**: задавать lineage необязательно, но с дефолтом «весь батч» `EventTimestamp` каждого выходного сообщения (если он не задан явно при построении) равен минимальному по всему батчу, что искажает event time и [watermark](../../../flow/concepts/watermarks.md). Сужайте родителей, если пайплайн использует event time.
-
-В row-функциях (`RowFunction` / `DoProcessMessage`) явный lineage не нужен: фреймворк сам назначает родителем текущее входное сообщение.
+В Swift-компьютейшене сужение обязательно: у каждого выходного сообщения должен быть ровно один родитель (несколько — только при [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees)). При обработке по одному сообщению фреймворк назначает родителя автоматически; в batch-обработке его задаёт пользовательский код. В Transform-компьютейшене явный lineage необязателен.
 
 ## API {#api}
 
 Lineage устанавливается через метод `SetParents` / `set_parent_ids` / `setParentIds` / `WithParentIDs` на объекте `OutputCollector`. Метод возвращает **новый** коллектор с привязанным контекстом lineage — все вызовы `AddMessage` / `add_message` / `addMessage` на нём будут нести этот lineage.
 
 Подробнее об использовании в каждом языке:
-- [C++](../../../flow/cpp/computation.md#output-collector)
+- [C++](../../../flow/cpp/process-functions.md)
 - [Java](../../../flow/java/computation.md#output-collector)
 - [Python](../../../flow/python/computation.md#output-collector)
 - [Go](../../../flow/go/computation.md#output-collector)
+
+## Статистика преобразования {#conversion-statistics}
+
+Flow оценивает отношение выхода ко входу для каждой пары потоков, отдельно по количеству сообщений и размеру в байтах. Статистика учитывает обработанные сообщения, а не гарантированно доставленные.
 
 ## См. также
 

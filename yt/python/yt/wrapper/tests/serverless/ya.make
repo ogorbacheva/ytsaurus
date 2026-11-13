@@ -38,9 +38,11 @@ SET(SRCS
     test_encryption_pickling.py
     test_formats.py
     test_misc.py
+    test_ping_transaction.py
     test_schema.py
     test_thread_pool.py
     test_typed.py
+    test_ypath.py
 )
 
 IF (NOT OPENSOURCE)

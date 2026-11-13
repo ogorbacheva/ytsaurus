@@ -34,6 +34,8 @@
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
+#include <library/cpp/yt/system/atomic_object.h>
+
 namespace NYT::NJobProxy {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -85,6 +87,10 @@ public:
     NConcurrency::IThroughputThrottlerPtr GetOutBandwidthThrottler() const override;
     NConcurrency::IThroughputThrottlerPtr GetOutRpsThrottler() const override;
     NConcurrency::IThroughputThrottlerPtr GetUserJobContainerCreationThrottler() const override;
+
+    TFuture<NDistributedChunkSessionClient::TSessionDescriptor> GetShuffleWriteSession(
+        int partitionIndex,
+        std::optional<NChunkClient::TSessionId> excludedSessionId) const override;
 
     NApi::NNative::IConnectionPtr CreateNativeConnection(
         NApi::NNative::TConnectionCompoundConfigPtr config,
@@ -146,6 +152,7 @@ private:
 
     // Local servers accessible only via Unix domain sockets.
     NRpc::IServerPtr RpcServer_;
+    NRpc::IServerPtr PrivateRpcServer_;
     NRpc::IServerPtr GrpcServer_;
     NRpc::IServerPtr HttpServer_;
 
@@ -157,11 +164,15 @@ private:
 
     NRpc::IChannelPtr SupervisorChannel_;
     std::unique_ptr<NExecNode::TSupervisorServiceProxy> SupervisorProxy_;
+    std::unique_ptr<NExecNode::TSupervisorServiceProxy> RetryingSupervisorProxy_;
 
     NApi::NNative::IClientPtr Client_;
 
     NConcurrency::TPeriodicExecutorPtr HeartbeatExecutor_;
+    TFuture<void> LastHeartbeatFuture_ = OKFuture;
     NConcurrency::TPeriodicExecutorPtr MemoryWatchdogExecutor_;
+
+    TAtomicObject<TFuture<void>> AbortFuture_;
 
     TDuration RefCountedTrackerLogPeriod_;
     TInstant LastRefCountedTrackerLogTime_;
@@ -181,7 +192,7 @@ private:
     NChunkClient::TJobIoMeterPtr JobIoMeter_;
 
     mutable THashMap<NScheduler::TClusterName, NConcurrency::IThroughputThrottlerPtr> InBandwidthThrottlers_;
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, InBandwidthThrottlersSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, InBandwidthThrottlersSpinLock_);
 
     NConcurrency::IThroughputThrottlerPtr OutBandwidthThrottler_;
     NConcurrency::IThroughputThrottlerPtr OutRpsThrottler_;
@@ -201,12 +212,14 @@ private:
 
     std::optional<int> OomScoreAdj_;
 
-    std::optional<TFuture<TString>> JobProxyPeakMemoryProfile_;
+    TFuture<TString> JobProxyPeakMemoryProfile_;
 
     NYTree::IYPathServicePtr CreateOrchidService();
     void InitializeOrchid();
 
     void UpdateCumulativeMemoryUsage(i64 memoryUsage);
+
+    void SetCpuGuarantee(double cpuGuarantee);
 
     void SetJob(IJobPtr job);
     IJobPtr FindJob() const;
@@ -232,7 +245,7 @@ private:
 
     void InitializeChunkReaderHost();
 
-    TStatistics GetEnrichedStatistics() const;
+    IJob::TStatistics GetEnrichedStatistics(const IJobPtr& job) const;
 
     IJobPtr CreateBuiltinJob();
 
@@ -283,6 +296,7 @@ private:
     void FillStderrResult(NControllerAgent::NProto::TJobResult* jobResult);
 
     void Abort(EJobProxyExitCode exitCode);
+    void DoAbort(EJobProxyExitCode exitCode);
 
     void LogSystemStats() const;
 

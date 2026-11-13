@@ -111,7 +111,7 @@ private:
     TInstant CurrentTime_;
 
     TLsmActionBatch OverallCompactionRequests_;
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, CompactionRequestsSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, CompactionRequestsSpinLock_);
 
     TStartedTasksSummary StartedTasksSummary_;
     // There are two algorithms: one selects the highest-priority task globally,
@@ -333,7 +333,8 @@ private:
         if (!mountConfig->EnableDiscardingExpiredPartitions ||
             mountConfig->MinDataVersions != 0 ||
             tablet->GetHasTtlColumn() ||
-            mountConfig->RowMergerType == ERowMergerType::Watermark)
+            tablet->GetHasWatermarks() ||
+            mountConfig->ForceZeroMajorTimestamp)
         {
             return {};
         }
@@ -475,6 +476,15 @@ private:
         const auto* tablet = eden->GetTablet();
         auto mountConfig = tablet->GetMountConfig();
 
+        auto maxPartitionTimestamp = MinTimestamp;
+        if (mountConfig->MaxOldEdenChunkPartitioningLag) {
+            for (const auto& partition : tablet->Partitions()) {
+                for (const auto& store : partition->Stores()) {
+                    maxPartitionTimestamp = std::max(maxPartitionTimestamp, store->GetMaxTimestamp());
+                }
+            }
+        }
+
         std::vector<TStore*> candidates;
 
         EStoreCompactionReason finalistCompactionReason;
@@ -489,6 +499,13 @@ private:
             auto compactionReason = GetStoreCompactionReason(candidate);
             if (compactionReason != EStoreCompactionReason::None) {
                 finalistCompactionReason = compactionReason;
+                finalists.push_back(candidate->GetId());
+            } else if (ShouldPartitionEdenStoreByTimestamp(
+                candidate,
+                maxPartitionTimestamp,
+                mountConfig->MaxOldEdenChunkPartitioningLag))
+            {
+                finalistCompactionReason = EStoreCompactionReason::OldEdenChunk;
                 finalists.push_back(candidate->GetId());
             }
 
@@ -862,7 +879,9 @@ private:
         }
 
         if (CurrentTime_ > config.StartTime + config.Duration) {
-            YT_TLOG_DEBUG_IF(store->GetTablet()->GetMountConfig()->EnableLsmVerboseLogging, "Found store that was supposed to be compacted by now")
+            YT_TLOG_DEBUG_IF(
+                store->GetTablet()->GetMountConfig()->EnableLsmVerboseLogging,
+                "Found store that was supposed to be compacted by now")
                 .With(store->GetTablet()->LoggingTags())
                 .With("StoreId", store->GetId())
                 .With("StartTime", config.StartTime)
@@ -1017,6 +1036,20 @@ private:
         return std::min(
             config->MaxOverlappingStoreCount,
             config->CriticalOverlappingStoreCount.value_or(config->MaxOverlappingStoreCount));
+    }
+
+    static bool ShouldPartitionEdenStoreByTimestamp(
+        const TStore* store,
+        TTimestamp maxPartitionTimestamp,
+        std::optional<TDuration> maxTimestampLag)
+    {
+        if (!maxTimestampLag || maxPartitionTimestamp == MinTimestamp) {
+            return false;
+        }
+
+        auto minTimestamp = store->GetMinTimestamp();
+        return minTimestamp < maxPartitionTimestamp &&
+            TimestampDiffToDuration(minTimestamp, maxPartitionTimestamp).second > *maxTimestampLag;
     }
 };
 

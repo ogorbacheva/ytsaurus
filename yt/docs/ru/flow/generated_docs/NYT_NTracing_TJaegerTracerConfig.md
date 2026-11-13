@@ -7,6 +7,9 @@
 || **Параметр** | **Описание** ||
 || `collector_channel_config` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NRpc::NGrpc::TChannelConfig](./all_yson_structs#NYT_NRpc_NGrpc_TChannelConfig)`>`
  ||
+|| `collector_headers` | **Тип**: `THashMap<std::string, std::string>`
+**Значение по умолчанию**: `{}`
+ ||
 || `flush_period` | **Тип**: [TDuration](./all_yson_structs#TDuration)
 **Значение по умолчанию**: `15s`
  ||
@@ -43,8 +46,6 @@
  ||
 || `enable_pid_tag` | **Тип**: `bool`
 **Значение по умолчанию**: `false`
- ||
-|| `tvm_service` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NAuth::TTvmServiceConfig](./all_yson_structs#NYT_NAuth_TTvmServiceConfig)`>`
  ||
 || `test_drop_spans` | **Тип**: `bool`
 **Значение по умолчанию**: `false`

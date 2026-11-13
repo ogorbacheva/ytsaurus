@@ -1,63 +1,62 @@
 package tech.ytsaurus.flow.pipeline;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
+import java.util.Objects;
+import java.util.function.UnaryOperator;
 
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tech.ytsaurus.flow.config.EnvironmentReader;
 import tech.ytsaurus.flow.config.PipelineRunnerConfig;
+import tech.ytsaurus.flow.state.StateDescriptor;
 import tech.ytsaurus.flow.stream.FlowStream;
-import tech.ytsaurus.yson.YsonParser;
 import tech.ytsaurus.ysontree.YTree;
-import tech.ytsaurus.ysontree.YTreeBuilder;
+import tech.ytsaurus.ysontree.YTreeBinarySerializer;
 import tech.ytsaurus.ysontree.YTreeMapNode;
 import tech.ytsaurus.ysontree.YTreeNode;
-import tech.ytsaurus.ysontree.YTreeTextSerializer;
 
 /**
  * Java-side runner for the {@code --config --flow-bin} vanilla launch path.
  *
- * <p>Enriches the pipeline spec so the worker ships the Java companion jars and mounts a JDK porto
- * layer, then spawns flow_server, which performs the launch and sets the spec, and waits for it.
+ * <p>Enriches the pipeline spec so the worker gets the Java companion jars (shipped by the launcher
+ * unless the companion resources declare a classpath of the job environment) and a JDK delivered
+ * by the job environment resolved from the vanilla config (porto layers or the task's docker
+ * image; see the SDK README), then spawns flow_server, which performs the launch and sets the
+ * spec, and waits for it.
  */
 public class FlowLauncher {
+    static final String ENV_VAR_YT_FLOW_BIN = "YT_FLOW_BIN";
+
     private static final Logger log = LoggerFactory.getLogger(FlowLauncher.class);
 
-    private static final String JAVA_COMPANION_MANAGER_CLASS = PipelineSpecEnricher.JAVA_COMPANION_MANAGER_CLASS;
-
-    private static final String PORTO_LAYERS_RESOURCE = "yt-porto-layers.yson";
-
-    static final String COMPANION_JARS_DIR = "java_companion";
-
-    // Override the JDK binary path (used by the local-YT test).
-    static final String ENV_VAR_JDK_BIN_PATH = "YT_FLOW_JDK_BIN_PATH";
-    // Override the JDK layers (YSON list); an empty list means no layers and no porto tag.
-    static final String ENV_VAR_JDK_LAYERS = "YT_FLOW_JDK_LAYERS";
-    // Override the system layer path; empty means do not set it.
-    static final String ENV_VAR_SYSTEM_LAYER = "YT_FLOW_SYSTEM_LAYER";
-
-    private final PortoLayersConfig portoLayersConfig;
     private final EnvironmentReader envReader;
+    private final JobEnvironmentResolver environmentResolver;
+    private final CompanionJars companionJars;
 
     public FlowLauncher() {
         this(new EnvironmentReader());
     }
 
     FlowLauncher(EnvironmentReader envReader) {
+        this(envReader, new CompanionJars());
+    }
+
+    FlowLauncher(EnvironmentReader envReader, CompanionJars companionJars) {
+        this(envReader, companionJars, System.getProperty("java.home"));
+    }
+
+    FlowLauncher(EnvironmentReader envReader, CompanionJars companionJars, String launcherJavaHome) {
         this.envReader = envReader;
-        this.portoLayersConfig = loadPortoLayersConfig();
+        this.environmentResolver = new JobEnvironmentResolver(envReader, launcherJavaHome);
+        this.companionJars = companionJars;
     }
 
     /**
@@ -68,8 +67,52 @@ public class FlowLauncher {
     }
 
     /**
-     * Enriches the pipeline config with everything the registered pipeline implies, runs
-     * flow_server on it, and returns its exit code.
+     * Launches with an application-specific config transformation after standard enrichment and before final
+     * validation. A rejected config never starts flow_server.
+     *
+     * <p>This overload declares no registered streams or states. The config or the transformation must supply
+     * their schemas and state descriptors; a profile state must carry its own descriptor source.
+     *
+     * @param configPath path to the pipeline config in YSON format.
+     * @param flowBin path to flow_server, or null/empty to use {@code $YT_FLOW_BIN}.
+     * @param configTransform returns a non-null full config containing a {@code spec} map.
+     */
+    public int launch(
+            @Nullable String configPath,
+            @Nullable String flowBin,
+            UnaryOperator<YTreeNode> configTransform
+    ) throws IOException, InterruptedException {
+        return launch(configPath, flowBin, Map.of(), List.of(), List.of(), configTransform);
+    }
+
+    /**
+     * Enriches, validates and writes the full config in binary YSON without starting flow_server.
+     *
+     * <p>Uses the same standard enrichment, transformation and final validation as
+     * {@link #launch(String, String, UnaryOperator)}. Declares no registered streams or states;
+     * the config or transformation must supply their schemas and state descriptors.
+     *
+     * @param configPath path to the source config, which is left unchanged.
+     * @param outputPath destination for the completed config; must differ from the source file.
+     * @param configTransform returns a non-null full config containing a {@code spec} map.
+     */
+    public void writeConfig(
+            @Nullable String configPath,
+            Path outputPath,
+            UnaryOperator<YTreeNode> configTransform
+    ) throws IOException {
+        String inputPath = requireConfigPath(configPath);
+        if (isSameConfigFile(Path.of(inputPath), outputPath)) {
+            throw new IllegalArgumentException("Output config must differ from the source config");
+        }
+        var config = buildExtendedConfig(inputPath, Map.of(), List.of(), configTransform);
+        writePipelineConfig(config, outputPath);
+    }
+
+    /**
+     * Enriches the pipeline config with the registered streams, runs flow_server on it, and
+     * returns its exit code. Declares no states: a profile state must then carry its own
+     * descriptor source in the spec.
      *
      * @param configPath      path to the pipeline config in YSON format.
      * @param flowBin         path to the {@code flow_server} binary that performs the launch.
@@ -84,58 +127,114 @@ public class FlowLauncher {
             Map<String, FlowStream<?>> streams,
             List<String> flowServerFlags
     ) throws IOException, InterruptedException {
-        if (configPath == null || configPath.isEmpty()) {
-            throw new IllegalArgumentException("--config <pipeline.yson> is required to launch the pipeline");
+        return launch(configPath, flowBin, streams, List.of(), flowServerFlags);
+    }
+
+    /**
+     * Enriches the pipeline config with everything the registered pipeline implies, runs
+     * flow_server on it, and returns its exit code.
+     *
+     * @param configPath      path to the pipeline config in YSON format.
+     * @param flowBin         path to the {@code flow_server} binary that performs the launch, or
+     *                        {@code null} to take {@code $YT_FLOW_BIN}.
+     * @param streams         streams registered by the pipeline; their schemas are written into
+     *                        {@code spec.streams}.
+     * @param states          states declared by the pipeline; the descriptor sources of profile
+     *                        states are filled from them.
+     * @param flowServerFlags extra flags forwarded to {@code flow_server} verbatim, such as
+     *                        {@code --validate-only}.
+     * @throws IllegalArgumentException if the launch is misconfigured, or if a profile state of the
+     *                                  spec cannot be described from the declared states.
+     */
+    public int launch(
+            @Nullable String configPath,
+            @Nullable String flowBin,
+            Map<String, FlowStream<?>> streams,
+            Collection<StateDescriptor<?>> states,
+            List<String> flowServerFlags
+    ) throws IOException, InterruptedException {
+        return launch(configPath, flowBin, streams, states, flowServerFlags, UnaryOperator.identity());
+    }
+
+    private int launch(
+            @Nullable String configPath,
+            @Nullable String flowBin,
+            Map<String, FlowStream<?>> streams,
+            Collection<StateDescriptor<?>> states,
+            List<String> flowServerFlags,
+            UnaryOperator<YTreeNode> configTransform
+    ) throws IOException, InterruptedException {
+        String inputPath = requireConfigPath(configPath);
+        String flowBinPath = flowBin == null || flowBin.isEmpty() ? envReader.getVar(ENV_VAR_YT_FLOW_BIN) : flowBin;
+        if (flowBinPath == null || flowBinPath.isEmpty()) {
+            throw new IllegalArgumentException("flow_server is not given: pass --flow-bin <path to flow_server> "
+                    + "or set " + ENV_VAR_YT_FLOW_BIN);
         }
-        if (flowBin == null || flowBin.isEmpty()) {
-            throw new IllegalArgumentException("--flow-bin <path to flow_server> is required to launch the pipeline");
-        }
+        String flowBinAbs = Paths.get(flowBinPath).toAbsolutePath().toString();
 
-        String flowBinAbs = Paths.get(flowBin).toAbsolutePath().toString();
-
-        YTreeNode pipelineConfig = buildExtendedConfig(configPath, streams);
-        String extendedConfigPath = writeExtendedConfig(pipelineConfig).toString();
-
-        List<String> command = new ArrayList<>(List.of(flowBinAbs, "--config", extendedConfigPath));
-        command.addAll(flowServerFlags);
-        log.info("Launching {}", command);
-
-        Process flowServer = new ProcessBuilder(command)
-                .inheritIO()
-                .start();
-        // flow_server mutates the cluster, so it must not outlive the runner watching its exit code.
-        Thread terminator = new Thread(flowServer::destroy, "flow-server-terminator");
-        Runtime.getRuntime().addShutdownHook(terminator);
+        YTreeNode pipelineConfig = buildExtendedConfig(inputPath, streams, states, configTransform);
+        Path extendedConfig = writeExtendedConfig(pipelineConfig);
         try {
-            return flowServer.waitFor();
-        } catch (InterruptedException e) {
-            flowServer.destroy();
-            throw e;
-        } finally {
+            List<String> command = new ArrayList<>(List.of(flowBinAbs, "--config", extendedConfig.toString()));
+            command.addAll(flowServerFlags);
+            log.info("Launching {}", command);
+
+            Process flowServer = new ProcessBuilder(command)
+                    .inheritIO()
+                    .start();
+            // flow_server mutates the cluster, so it must not outlive the runner watching its exit code.
+            // The JVM halts once the hook returns, so the config is deleted here too; flow_server
+            // reads it once at startup, so deleting it is safe even after an async destroy.
+            Thread terminator = new Thread(() -> {
+                flowServer.destroy();
+                deleteExtendedConfig(extendedConfig);
+            }, "flow-server-terminator");
+            Runtime.getRuntime().addShutdownHook(terminator);
             try {
-                Runtime.getRuntime().removeShutdownHook(terminator);
-            } catch (IllegalStateException alreadyShuttingDown) {
-                // Shutdown already started; the hook does the job.
+                return flowServer.waitFor();
+            } catch (InterruptedException e) {
+                flowServer.destroy();
+                throw e;
+            } finally {
+                try {
+                    Runtime.getRuntime().removeShutdownHook(terminator);
+                } catch (IllegalStateException alreadyShuttingDown) {
+                    // Shutdown already started; the hook does the job.
+                }
             }
+        } finally {
+            deleteExtendedConfig(extendedConfig);
         }
     }
 
     /**
      * Loads the pipeline config and applies every enrichment the launch needs. Visible for tests.
      */
-    YTreeNode buildExtendedConfig(String configPath, Map<String, FlowStream<?>> streams) {
+    YTreeNode buildExtendedConfig(
+            String configPath,
+            Map<String, FlowStream<?>> streams,
+            Collection<StateDescriptor<?>> states
+    ) {
+        return buildExtendedConfig(configPath, streams, states, UnaryOperator.identity());
+    }
+
+    private YTreeNode buildExtendedConfig(
+            String configPath,
+            Map<String, FlowStream<?>> streams,
+            Collection<StateDescriptor<?>> states,
+            UnaryOperator<YTreeNode> configTransform
+    ) {
         PipelineRunnerConfig runnerConfig = new PipelineRunnerConfig(configPath, envReader);
         YTreeNode pipelineConfig = runnerConfig.getFullSpec();
         YTreeMapNode root = pipelineConfig.mapNode();
-        YTreeMapNode spec = root
-                .get("spec")
-                .filter(YTreeNode::isMapNode)
-                .map(YTreeNode::mapNode)
-                .orElseThrow(() -> new IllegalArgumentException("Pipeline config has no \"spec\" map"));
+        YTreeMapNode spec = requirePipelineSpec(pipelineConfig);
 
         // The registered pipeline is the source of truth for stream schemas, whether or not the
         // runner also submits a vanilla operation.
         PipelineSpecEnricher.patchStreamSchemas(spec, streams);
+        // The declared states describe the profile states whose spec names no descriptor source:
+        // the worker never compiles the user's proto, so the descriptors travel in the spec.
+        ProfileStateSpecEnricher.patch(spec, states);
 
         YTreeMapNode vanilla = root
                 .get("vanilla")
@@ -143,156 +242,69 @@ public class FlowLauncher {
                 .map(YTreeNode::mapNode)
                 .orElse(null);
 
-        // A disabled section means the federation is deployed separately: completing the companion
-        // resource would point it at a classpath nothing ships.
         if (vanilla != null && vanilla.get("enable").map(YTreeNode::boolValue).orElse(false)) {
-            enrichVanilla(vanilla);
-            patchCompanionResources(spec);
+            enrichForVanillaLaunch(vanilla, spec);
         }
 
+        pipelineConfig = Objects.requireNonNull(
+                configTransform.apply(pipelineConfig),
+                "configTransform must return a non-null full pipeline config"
+        );
         // Last: the final gate validates the spec exactly as it is submitted.
-        PipelineSpecEnricher.validateCompanionMainClass(spec);
+        PipelineSpecEnricher.validateCompanionMainClass(requirePipelineSpec(pipelineConfig));
 
         return pipelineConfig;
     }
 
-    /**
-     * Enriches the {@code vanilla} section of the pipeline config: ships companion jars into the
-     * worker and applies the JDK porto layers to both worker and controller tasks.
-     */
-    void enrichVanilla(YTreeMapNode vanilla) {
-        if (!vanilla.get("enable").map(YTreeNode::boolValue).orElse(false)) {
-            return;
+    private static YTreeMapNode requirePipelineSpec(YTreeNode config) {
+        if (!config.isMapNode()) {
+            throw new IllegalArgumentException("Pipeline config must be a map");
         }
-
-        YTreeMapNode worker = getOrCreateMap(vanilla, "worker");
-        shipCompanionJars(worker);
-        applyLayersAndSystemLayer(worker);
-
-        // Layers are applied to both tasks; jar shipping stays worker-only.
-        YTreeMapNode controller = getOrCreateMap(vanilla, "controller");
-        applyLayersAndSystemLayer(controller);
-    }
-
-    /** Ships every companion jar into {@code worker.local_files}. */
-    private void shipCompanionJars(YTreeMapNode worker) {
-        YTreeMapNode localFiles = getOrCreateMap(worker, "local_files");
-        for (Path jar : discoverCompanionJars()) {
-            String inJobName = Path.of(COMPANION_JARS_DIR, jar.getFileName().toString()).toString();
-            localFiles.put(inJobName, YTree.stringNode(jar.toAbsolutePath().toString()));
-        }
-        log.info("Shipping {} companion jars under {}", localFiles.asMap().size(), COMPANION_JARS_DIR);
-    }
-
-    /** Enumerates the companion jars from the runner's {@code java.library.path} directories. */
-    protected List<Path> discoverCompanionJars() {
-        String libPath = System.getProperty("java.library.path", "");
-        List<Path> jars = new ArrayList<>();
-        for (String entry : libPath.split(File.pathSeparator)) {
-            if (entry.isEmpty()) {
-                continue;
-            }
-            Path dir = Paths.get(entry).toAbsolutePath();
-            if (!Files.isDirectory(dir)) {
-                continue;
-            }
-            try (Stream<Path> stream = Files.list(dir)) {
-                stream.filter(p -> p.getFileName().toString().endsWith(".jar")).forEach(jars::add);
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
-            }
-        }
-        if (jars.isEmpty()) {
-            throw new IllegalStateException(
-                    "No companion jars found under java.library.path=" + libPath
-                            + "; cannot ship the Java companion into the vanilla job");
-        }
-        return jars;
-    }
-
-    /** Sets {@code task.layers} and {@code task.system_layer_path}; an empty layer list drops both. */
-    private void applyLayersAndSystemLayer(YTreeMapNode task) {
-        List<String> jdkLayers = envReader.getVarOptional(ENV_VAR_JDK_LAYERS)
-                .map(this::parseJdkLayers)
-                .orElseGet(() -> List.of(portoLayersConfig.jdkLayer.layerPath));
-        if (jdkLayers.isEmpty()) {
-            // No layers: host JDK, no porto tag.
-            task.remove("layers");
-            task.remove("system_layer_path");
-            return;
-        }
-        YTreeBuilder listBuilder = YTree.listBuilder();
-        for (String layer : jdkLayers) {
-            listBuilder.value(layer);
-        }
-        task.put("layers", listBuilder.buildList());
-
-        String systemLayer = envReader.getVarOptional(ENV_VAR_SYSTEM_LAYER).orElse(portoLayersConfig.systemLayerPath);
-        if (!systemLayer.isEmpty()) {
-            task.put("system_layer_path", YTree.stringNode(systemLayer));
-        }
-    }
-
-    private List<String> parseJdkLayers(String yson) {
-        YTreeNode node = parseYson(yson.getBytes(StandardCharsets.UTF_8));
-        List<String> result = new ArrayList<>();
-        if (node.isListNode()) {
-            for (YTreeNode item : node.asList()) {
-                result.add(item.stringValue());
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Completes every companion resource under {@code spec.resources} for the vanilla launch: the
-     * shipped classpath and the porto-layer JDK. Visible for tests.
-     */
-    void patchCompanionResources(YTreeMapNode spec) {
-        YTreeNode resourcesNode = spec.get("resources").orElse(null);
-        if (resourcesNode == null || !resourcesNode.isMapNode()) {
-            return;
-        }
-        // Java binary from the layer config, overridable for the local-YT test.
-        String jdkBinPath = envReader.getVarOptional(ENV_VAR_JDK_BIN_PATH).orElse(portoLayersConfig.jdkLayer.javaBinPath);
-        YTreeMapNode resources = resourcesNode.mapNode();
-        for (Map.Entry<String, YTreeNode> entry : resources.asMap().entrySet()) {
-            YTreeNode resource = entry.getValue();
-            if (!resource.isMapNode()) {
-                continue;
-            }
-            YTreeMapNode resourceMap = resource.mapNode();
-            String className = resourceMap.get("resource_class_name").map(YTreeNode::stringValue).orElse("");
-            if (!JAVA_COMPANION_MANAGER_CLASS.equals(className)) {
-                continue;
-            }
-            YTreeMapNode completed = buildCompanionManager(resourceMap, jdkBinPath);
-            resources.put(entry.getKey(), completed);
-            log.info("Completed java companion resource {} for the vanilla launch", entry.getKey());
-        }
-    }
-
-    /** Builds the completed TJavaCompanionManager resource from the hand-written TJavaCompanionManager one. */
-    private YTreeMapNode buildCompanionManager(YTreeMapNode javaResource, String jdkBinPath) {
-        YTreeMapNode oldParameters = javaResource.get("parameters")
+        return config.mapNode().get("spec")
                 .filter(YTreeNode::isMapNode)
                 .map(YTreeNode::mapNode)
-                .orElse(null);
+                .orElseThrow(() -> new IllegalArgumentException("Pipeline config has no \"spec\" map"));
+    }
 
-        if (oldParameters == null)
-            throw new IllegalArgumentException("Missed parameters in TJavaCompanionManager resource");
+    private static boolean isSameConfigFile(Path input, Path output) throws IOException {
+        var normalizedInput = input.toAbsolutePath().normalize();
+        var normalizedOutput = output.toAbsolutePath().normalize();
+        if (normalizedInput.equals(normalizedOutput)) {
+            return true;
+        }
+        if (!Files.exists(output)) {
+            return false;
+        }
+        return Files.isSameFile(input, output);
+    }
 
-        // main_class comes from the hand-written spec and is validated by PipelineSpecEnricher
-        // after this runs.
-        YTreeMapNode newParameters = oldParameters.toMapBuilder()
-                .key("classpath").value(COMPANION_JARS_DIR + File.separator + "*")
-                .key("jdk_bin_path").value(jdkBinPath)
-                .buildMap();
+    private static String requireConfigPath(@Nullable String configPath) {
+        if (configPath == null || configPath.isEmpty()) {
+            throw new IllegalArgumentException("--config <pipeline.yson> is required to prepare the pipeline");
+        }
+        return configPath;
+    }
 
-        // Only the parameters are completed; every other resource key survives.
-        return javaResource.toMapBuilder()
-                .key("parameters").value(newParameters)
-                .buildMap();
+    /**
+     * Applies every vanilla-launch enrichment: ships the companion jars unless every companion
+     * resource declares its classpath, applies the resolved job environment to the tasks, and
+     * completes the companion resources. Visible for tests.
+     */
+    void enrichForVanillaLaunch(YTreeMapNode vanilla, YTreeMapNode spec) {
+        JobEnvironment environment = environmentResolver.resolve(vanilla);
+
+        YTreeMapNode worker = getOrCreateMap(vanilla, "worker");
+        // One shipment serves every resource without a classpath; a resource that declares one
+        // keeps it, so a mixed spec still ships.
+        if (PipelineSpecEnricher.needsShippedJars(spec)) {
+            companionJars.ship(worker);
+        } else {
+            log.info("Every Java companion resource declares its classpath: shipping no companion jars,"
+                    + " the job environment provides them");
+        }
+
+        environment.patchVanillaConfig(vanilla);
+        PipelineSpecEnricher.patchCompanionResources(spec, environment);
     }
 
     private YTreeMapNode getOrCreateMap(YTreeMapNode parent, String key) {
@@ -305,65 +317,37 @@ public class FlowLauncher {
         return created;
     }
 
-    private YTreeNode parseYson(byte[] bytes) {
-        YsonParser parser = new YsonParser(bytes);
-        YTreeBuilder builder = YTree.builder();
-        parser.parseNode(builder);
-        return builder.build();
-    }
-
-    /** Reads the YT porto layer config for the running runtime's major version from a classpath resource. */
-    private PortoLayersConfig loadPortoLayersConfig() {
-        YTreeMapNode config;
-        try (InputStream stream = FlowLauncher.class.getClassLoader().getResourceAsStream(PORTO_LAYERS_RESOURCE)) {
-            if (stream == null) {
-                throw new IllegalStateException("Missing classpath resource " + PORTO_LAYERS_RESOURCE);
-            }
-            byte[] bytes = stream.readAllBytes();
-            config = parseYson(bytes).mapNode();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-
-        String systemLayerPath = config.getOrThrow("system_layer_path").stringValue();
-        int jdkMajorVersion = Runtime.version().feature();
-        YTreeNode entry = config.getOrThrow("jdk_layers").mapNode().get(String.valueOf(jdkMajorVersion))
-                .orElseThrow(() -> new IllegalStateException(
-                        "No JDK layer config for major version " + jdkMajorVersion + " in " + PORTO_LAYERS_RESOURCE));
-        YTreeMapNode entryMap = entry.mapNode();
-        JdkLayer jdkLayer = new JdkLayer(
-                entryMap.getOrThrow("layer_path").stringValue(),
-                entryMap.getOrThrow("java_bin_path").stringValue());
-        return new PortoLayersConfig(jdkLayer, systemLayerPath);
-    }
-
-    private Path writeExtendedConfig(YTreeNode pipelineConfig) throws IOException {
+    /**
+     * Writes the enriched config into a fresh temp dir. Visible for tests.
+     */
+    Path writeExtendedConfig(YTreeNode pipelineConfig) throws IOException {
         Path dir = Files.createTempDirectory("flow_runner_");
         Path path = dir.resolve("extended-pipeline.yson");
-        Files.writeString(path, YTreeTextSerializer.serialize(pipelineConfig), StandardCharsets.UTF_8);
-        return path;
-    }
-
-    /** Resolved YT porto layer config from {@code yt-porto-layers.yson}. */
-    private static final class PortoLayersConfig {
-        final JdkLayer jdkLayer;
-        final String systemLayerPath;
-
-        PortoLayersConfig(JdkLayer jdkLayer, String systemLayerPath) {
-            this.jdkLayer = jdkLayer;
-            this.systemLayerPath = systemLayerPath;
+        try {
+            writePipelineConfig(pipelineConfig, path);
+            return path;
+        } catch (IOException | RuntimeException e) {
+            deleteExtendedConfig(path);
+            throw e;
         }
     }
 
-    /** Per-JDK-major entry under {@code jdk_layers} in {@code yt-porto-layers.yson}. */
-    private static final class JdkLayer {
-        final String layerPath;
-        final String javaBinPath;
-
-        JdkLayer(String layerPath, String javaBinPath) {
-            this.layerPath = layerPath;
-            this.javaBinPath = javaBinPath;
+    private static void writePipelineConfig(YTreeNode config, Path path) throws IOException {
+        try (var output = Files.newOutputStream(path)) {
+            YTreeBinarySerializer.serialize(config, output);
         }
     }
 
+    /**
+     * Removes the config written by {@link #writeExtendedConfig} together with its temp dir. Visible for tests.
+     */
+    static void deleteExtendedConfig(Path extendedConfig) {
+        try {
+            Files.deleteIfExists(extendedConfig);
+            Files.deleteIfExists(extendedConfig.getParent());
+        } catch (IOException e) {
+            // Best effort: a leftover temp dir is litter, not a launch failure.
+            log.warn("Failed to delete temp config dir {}", extendedConfig.getParent(), e);
+        }
+    }
 }

@@ -205,14 +205,15 @@ private:
         if (!responseOrError.IsOK()) {
             // TODO(khlebnikov): Handle NotFound as abort, but gRPC code is not mapped yet.
             // TODO(khlebnikov): Maybe add common EProcessErrorCode::Lost.
-            auto error = TError("Cannot get container status")
+            static constexpr auto Message = "Cannot get container status"_sb;
+            auto error = TError(Message)
                 .With("container_name", ContainerDescriptor_.Name)
                 .With("container_id", ContainerDescriptor_.Id)
                 .With("pod_name", PodDescriptor_->Name)
                 .With("pod_id", PodDescriptor_->Id)
                 .With(responseOrError);
-            YT_TLOG_ERROR("Process is lost")
-                .With(error);
+            YT_TLOG_ERROR(Message)
+                .With(responseOrError);
             YT_UNUSED_FUTURE(AsyncWaitExecutor_->Stop());
             FinishedPromise_.TrySet(std::move(error));
             return;
@@ -292,7 +293,7 @@ public:
         {
             auto* filter = req->mutable_filter();
 
-            if (auto namespace_ = Config_->Namespace; !namespace_.empty()) {
+            if (const auto& namespace_ = Config_->Namespace; !namespace_.empty()) {
                 auto& labels = *filter->mutable_label_selector();
                 labels[YTPodNamespaceLabel] = namespace_;
             }
@@ -313,7 +314,7 @@ public:
         {
             auto* filter = req->mutable_filter();
 
-            if (auto namespace_ = Config_->Namespace; !namespace_.empty()) {
+            if (const auto& namespace_ = Config_->Namespace; !namespace_.empty()) {
                 auto& labels = *filter->mutable_label_selector();
                 labels[YTPodNamespaceLabel] = namespace_;
             }

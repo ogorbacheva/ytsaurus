@@ -23,6 +23,8 @@
 #include <yt/yql/providers/yt/lib/yt_url_lister/yt_url_lister.h>
 #include <yt/yql/providers/yt/provider/yql_yt_provider.h>
 
+#include <yt/yql/library/token_resolver/yt_token_resolver.h>
+
 #include <yql/essentials/parser/pg_wrapper/interface/comp_factory.h>
 
 #include <yql/essentials/providers/common/codec/yql_codec_type_flags.h>
@@ -34,12 +36,15 @@
 #include <yql/essentials/providers/common/provider/yql_provider_names.h>
 #include <yql/essentials/providers/common/udf_resolve/yql_simple_udf_resolver.h>
 
+#include <yt/yql/providers/dq/common/yql_dq_clique.h>
 #include <contrib/ydb/library/yql/providers/dq/provider/yql_dq_gateway.h>
 #include <yt/yql/providers/dq/gateway/yql_dq_gateway_factory.h>
 #include <contrib/ydb/library/yql/providers/dq/provider/yql_dq_provider.h>
 #include <contrib/ydb/library/yql/providers/dq/provider/yql_dq_state.h>
 #include <contrib/ydb/library/yql/providers/dq/provider/exec/yql_dq_exectransformer.h>
 #include <contrib/ydb/library/yql/providers/dq/helper/yql_dq_helper_impl.h>
+#include <yt/yql/providers/dq/clique/yql_dq_clique_routing_gateway.h>
+#include <yt/yql/providers/dq/global_worker_manager/dq_gateway_with_uploader.h>
 
 #include <yql/essentials/ast/yql_expr.h>
 #include <contrib/ydb/library/yql/dq/comp_nodes/yql_common_dq_factory.h>
@@ -79,7 +84,7 @@
 #include <yt/yt/core/misc/fs.h>
 #include <yt/yt/core/yson/protobuf_interop.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <library/cpp/yson/node/node_io.h>
 #include <library/cpp/yson/parser.h>
@@ -136,7 +141,7 @@ struct TQueryRepresentations
 {
     std::optional<TString> Plan;
     std::optional<TString> Ast;
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ReprSpinLock);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ReprSpinLock);
 };
 DECLARE_REFCOUNTED_TYPE(TQueryRepresentations)
 DEFINE_REFCOUNTED_TYPE(TQueryRepresentations)
@@ -206,10 +211,31 @@ enum class EAbortState
     Finished
 };
 
+struct TActiveQueryConfig
+    : public TRefCounted
+{
+    TActiveQueryConfig(
+        TDynamicConfigPtr dynamicConfig,
+        std::optional<TString> defaultCluster)
+        : DynamicConfig(std::move(dynamicConfig))
+        , DefaultCluster(std::move(defaultCluster))
+    { }
+
+    // Store shared data for TProgram after dyn config changing.
+    TDynamicConfigPtr DynamicConfig;
+
+    std::optional<TString> DefaultCluster;
+};
+DECLARE_REFCOUNTED_TYPE(TActiveQueryConfig)
+using TConstActiveQueryConfigPtr = TIntrusivePtr<const TActiveQueryConfig>;
+DEFINE_REFCOUNTED_TYPE(TActiveQueryConfig)
+
 struct TActiveQuery
 {
-    // Store shared data for TProgram after dyn config changing.
-    TDynamicConfigPtr ProgramSharedData;
+    using TConfig = TActiveQueryConfig;
+
+    TConstActiveQueryConfigPtr Config;
+
     NYql::TProgramFactoryPtr ProgramFactory;
 
     NYql::TProgramPtr Program;
@@ -241,7 +267,7 @@ public:
         const TVector<TString>& columns) override
     {
         TMemoryUsageInfo memInfo("DqResOrPull");
-        TScopedAlloc alloc(__LOCATION__, NKikimr::TAlignedPagePoolCounters(), state->FunctionRegistry->SupportsSizedAllocators());
+        TScopedAlloc alloc(__LOCATION__);
         THolderFactory holderFactory(alloc.Ref(), memInfo, state->FunctionRegistry);
         TTypeEnvironment env(alloc);
         NYql::NCommon::TCodecContext codecCtx(env, *state->FunctionRegistry, &holderFactory);
@@ -366,6 +392,7 @@ public:
     TYqlPlugin(TYqlNativePluginOptions options)
         : DqManagerConfig_(options.DqManagerConfig ? NYTree::ConvertTo<TDqManagerConfigPtr>(options.DqManagerConfig) : nullptr)
         , StartDqManager_(options.StartDqManager)
+        , EnableClique_(options.EnableClique)
     {
         try {
             if (StartDqManager_) {
@@ -431,13 +458,15 @@ public:
             // TODO(aneporada): Add static gatewaays config to TYqlNativePluginOptions
             SyncWithStaticGateways(StaticGatewaysConfig_, GatewaysConfigInitial_);
 
+            YtClusters_ = MakeIntrusive<TConfigClusters>(GatewaysConfigInitial_.GetYt());
+
             NYql::TFileStorageConfig fileStorageConfig;
             fileStorageConfig.ParseFromStringOrThrow(NYson::YsonStringToProto(
                 options.FileStorageConfig,
                 NYson::ReflectProtobufMessageType<NYql::TFileStorageConfig>(),
                 protobufWriterOptions));
 
-            FileStorage_ = WithAsync(CreateFileStorage(fileStorageConfig, {MakeYtDownloader(fileStorageConfig)}));
+            FileStorage_ = WithAsync(CreateFileStorage(fileStorageConfig, {MakeYtDownloader(fileStorageConfig, YtClusters_)}));
 
             NYql::TYtTvmConfig tvmConfig;
             tvmConfig.ParseFromStringOrThrow(NYson::YsonStringToProto(
@@ -455,6 +484,16 @@ public:
 
             YtAccessProvider_ = CreateYtAccessProvider(TvmClient_, ytAccessProviderConfig);
 
+            NYql::TYtTokenResolverConfig ytTokenResolverConfig;
+            if (options.YtTokenResolverConfig) {
+                ytTokenResolverConfig.ParseFromStringOrThrow(NYson::YsonStringToProto(
+                    options.YtTokenResolverConfig,
+                    NYson::ReflectProtobufMessageType<NYql::TYtTokenResolverConfig>(),
+                    protobufWriterOptions));
+            }
+
+            YtTokenResolver_ = NYql::CreateYtTokenResolver(ytTokenResolverConfig);
+
             FuncRegistry_ = NKikimr::NMiniKQL::CreateFunctionRegistry(
                 NKikimr::NMiniKQL::CreateBuiltinRegistry())->Clone();
             const NKikimr::NMiniKQL::TUdfModuleRemappings emptyRemappings;
@@ -462,6 +501,10 @@ public:
 
             auto* staticGatewayYtConfig = StaticGatewaysConfig_.MutableYt();
             staticGatewayYtConfig->SetMrJobBinMd5(CalculateMD5Checksum(staticGatewayYtConfig->GetMrJobBin()));
+            for (auto& entry : *staticGatewayYtConfig->MutableMrJobBinaries()) {
+                auto& binary = *entry.MutableBinary();
+                binary.SetMd5(CalculateMD5Checksum(binary.GetFile()));
+            }
             YQL_LOG(DEBUG) <<  "SetMrJobBinMd5 ready";
 
             TVector<TString> udfPaths;
@@ -546,6 +589,14 @@ public:
         YQL_LOG(INFO) << "YQL plugin initialized";
     }
 
+    ~TYqlPlugin() override
+    {
+        if (DqGateway_) {
+            DqGateway_->Stop();
+            DqGateway_.Reset();
+        }
+    }
+
     void Start() override
     {
         if (DqManager_ && StartDqManager_) {
@@ -555,14 +606,17 @@ public:
             // This pool is required for all DQ queries
             DqGatewayOffloadThreadPool_->Start(1);
         }
+        InitializeDqGateway();
     }
 
     TClustersResult GuardedGetUsedClusters(
+        TQueryId queryId,
         TString queryText,
         TYsonString settings,
         std::vector<TQueryFile> files)
     {
-        auto dynamicConfig = DynamicConfig_.Acquire();
+        const auto queryConfig = GetQueryConfig(queryId);
+        const auto& dynamicConfig = queryConfig->DynamicConfig;
         auto fictionalQueryId = TQueryId::Create();
         auto factory = CreateProgramFactory(fictionalQueryId, *dynamicConfig);
         auto program = factory->Create("-memory-", queryText, ToString(fictionalQueryId));
@@ -574,11 +628,7 @@ public:
 
         program->SetOperationAttrsYson(PatchQueryAttributes(OperationAttributes_, settings));
 
-        auto defaultQueryClusterForUserArtifacts = dynamicConfig->DefaultCluster;
         auto ysonSettings = NodeFromYsonString(settings.ToString()).AsMap();
-        if (auto cluster = ysonSettings.FindPtr("cluster")) {
-            defaultQueryClusterForUserArtifacts = cluster->AsString();
-        }
 
         SetProgramYqlVersion(program, ysonSettings);
 
@@ -588,8 +638,8 @@ public:
         NSQLTranslation::TTranslationSettings sqlSettings;
         sqlSettings.ClusterMapping = dynamicConfig->Clusters;
         sqlSettings.ModuleMapping = Modules_;
-        if (defaultQueryClusterForUserArtifacts) {
-            sqlSettings.DefaultCluster = *defaultQueryClusterForUserArtifacts;
+        if (queryConfig->DefaultCluster) {
+            sqlSettings.DefaultCluster = *queryConfig->DefaultCluster;
         }
         sqlSettings.SyntaxVersion = 1;
         sqlSettings.V0Behavior = NSQLTranslation::EV0Behavior::Disable;
@@ -613,38 +663,33 @@ public:
             };
         }
 
-        std::vector<std::pair<TString, TString>> clustersList;
-        clustersList.reserve(usedClusters->size());
-
-        THashMap<TString, TString> clusters;
-        {
-            auto dynamicConfig = DynamicConfig_.Acquire();
-            clusters = dynamicConfig->ClusterAddresses;
-        }
-
         // Default cluster for execution. It may differ from default cluster for user artifacts
         if (dynamicConfig->DefaultCluster) {
             usedClusters->insert(*dynamicConfig->DefaultCluster);
         }
 
-        if (defaultQueryClusterForUserArtifacts) {
-            // Default cluster must be first in list.
-            usedClusters->erase(*defaultQueryClusterForUserArtifacts);
-            clustersList.emplace_back(std::pair<TString, TString>{std::move(*defaultQueryClusterForUserArtifacts), clusters[*defaultQueryClusterForUserArtifacts]});
+        // Default cluster for user artifacts.
+        if (queryConfig->DefaultCluster) {
+            usedClusters->insert(*queryConfig->DefaultCluster);
         }
 
+        const auto& clusterAddresses = dynamicConfig->ClusterAddresses;
+        std::vector<std::pair<TString, TString>> clustersList;
+        clustersList.reserve(usedClusters->size());
         for (const auto& cluster : *usedClusters) {
-            clustersList.emplace_back(std::pair<TString, TString>{cluster, clusters[cluster]});
+            clustersList.emplace_back(cluster, clusterAddresses.Value(cluster, TString()));
         }
 
         return TClustersResult{
             .Clusters = std::move(clustersList),
+            .DefaultCluster = queryConfig->DefaultCluster,
         };
     }
 
     TQueryResult GuardedRun(
         TQueryId queryId,
         TString user,
+        TString queryIdentityToken,
         TYsonString credentialsStr,
         TString queryText,
         TYsonString settings,
@@ -659,15 +704,19 @@ public:
             };
         }
 
-        auto dynamicConfig = DynamicConfig_.Acquire();
+        const auto queryConfig = GetQueryConfig(queryId);
+        const auto& dynamicConfig = queryConfig->DynamicConfig;
         auto factory = CreateProgramFactory(queryId, *dynamicConfig);
-        factory->SetUrlListerManager(MakeUrlListerManager({MakeYtUrlLister()}));
+        factory->SetUrlListerManager(MakeUrlListerManager({
+            MakeYtUrlLister(MakeIntrusive<TConfigClusters>(dynamicConfig->GatewaysConfig.GetYt()))
+        }));
         auto [program, sqlSettings] = CreateProgramAndSqlSettingsFromParameters(
             queryId,
             queryText,
             settings,
             credentialsStr,
-            dynamicConfig,
+            queryIdentityToken,
+            *queryConfig,
             factory);
 
         auto pipelineConfigurator = New<TQueryPipelineConfigurator>(program);
@@ -678,7 +727,6 @@ public:
             YT_VERIFY(!activeQuery.Started);
             YT_VERIFY(!activeQuery.Program);
 
-            activeQuery.ProgramSharedData = dynamicConfig;
             activeQuery.ProgramFactory = factory;
             activeQuery.Program = program;
             activeQuery.PipelineConfigurator = pipelineConfigurator;
@@ -802,7 +850,7 @@ public:
         TString progress;
 
         {
-            auto guard = ReaderGuard(ProgressSpinLock_);
+            auto guard = WriterGuard(ProgressSpinLock_);
 
             auto& activeQuery = GetActiveQuery(queryId);
             progress = activeQuery.ProgressMerger.ToYsonString();
@@ -823,18 +871,21 @@ public:
     TGetDeclaredParametersInfoResult GetDeclaredParametersInfo(
         TQueryId queryId,
         TString user,
+        TString queryIdentityToken,
         TString queryText,
         TYsonString settingsStr,
         TYsonString credentialsStr) override
     {
-        auto dynamicConfig = DynamicConfig_.Acquire();
+        const auto queryConfig = GetQueryConfig(queryId);
+        const auto& dynamicConfig = queryConfig->DynamicConfig;
         auto factory = CreateProgramFactory(queryId, *dynamicConfig);
         auto [program, sqlSettings] = CreateProgramAndSqlSettingsFromParameters(
             queryId,
             queryText,
             settingsStr,
             credentialsStr,
-            dynamicConfig,
+            queryIdentityToken,
+            *queryConfig,
             factory);
 
         if (!program->ParseSql(sqlSettings)) {
@@ -855,7 +906,7 @@ public:
     }
 
     TClustersResult GetUsedClusters(
-        TQueryId /*queryId*/,
+        TQueryId queryId,
         TString queryText,
         TYsonString settings,
         std::vector<TQueryFile> files) noexcept override
@@ -865,7 +916,7 @@ public:
         auto coroutine = NConcurrency::TCoroutine<void()>(
             BIND([&](NConcurrency::TCoroutine<void()>& /*self*/){
                 try {
-                    result = GuardedGetUsedClusters(queryText, settings, files);
+                    result = GuardedGetUsedClusters(queryId, queryText, settings, files);
                 } catch (const std::exception& ex) {
                     result = TClustersResult{
                         .YsonError = MessageToYtErrorYson(ex.what()),
@@ -880,9 +931,31 @@ public:
         return result;
     }
 
+    TClustersResult GetClustersInfo(TQueryId queryId) noexcept override
+    {
+        try {
+            const auto queryConfig = GetQueryConfig(queryId);
+            const auto& dynamicConfig = queryConfig->DynamicConfig;
+            std::vector<std::pair<TString, TString>> clusters;
+            clusters.reserve(dynamicConfig->ClusterAddresses.size());
+            for (const auto& [name, address] : dynamicConfig->ClusterAddresses) {
+                clusters.emplace_back(name, address);
+            }
+            return TClustersResult{
+                .Clusters = std::move(clusters),
+                .DefaultCluster = queryConfig->DefaultCluster,
+            };
+        } catch (const std::exception& ex) {
+            return TClustersResult{
+                .YsonError = MessageToYtErrorYson(ex.what()),
+            };
+        }
+    }
+
     TQueryResult Run(
         TQueryId queryId,
         TString user,
+        TString queryIdentityToken,
         TYsonString credentials,
         TString queryText,
         TYsonString settings,
@@ -904,7 +977,7 @@ public:
                 });
 
                 try {
-                    result = GuardedRun(queryId, user, credentials, queryText, settings, files, executeMode, queryType);
+                    result = GuardedRun(queryId, user, queryIdentityToken, credentials, queryText, settings, files, executeMode, queryType);
                 } catch (const std::exception& ex) {
                     YQL_LOG(DEBUG) << "Query " << ToString(queryId) << " finished with errors";
                     result = TQueryResult{
@@ -920,9 +993,9 @@ public:
         return result;
     }
 
-    TQueryResult GetProgress(TQueryId queryId) noexcept override
+    TQueryResult GetProgress(TQueryId queryId, TProgressOptions /*progressOptions*/) noexcept override
     {
-        auto guard = ReaderGuard(ProgressSpinLock_);
+        auto guard = WriterGuard(ProgressSpinLock_);
         if (auto* activeQuery = GetActiveQueryPtr(queryId)) {
             TQueryResult result;
             if (activeQuery->ProgressMerger.HasChangesSinceLastFlush()) {
@@ -1087,15 +1160,25 @@ public:
         // Not implemented
     }
 
-    void RegisterQuery(TQueryId queryId) noexcept override
+    void RegisterQuery(TQueryId queryId, TYsonString settings) override
     {
+        auto dynamicConfig = DynamicConfig_.Acquire();
+        auto defaultCluster = dynamicConfig->DefaultCluster;
+        auto settingsMap = NodeFromYsonString(settings.ToString()).AsMap();
+        if (auto cluster = settingsMap.FindPtr("cluster")) {
+            defaultCluster = cluster->AsString();
+        }
+
         auto guard = WriterGuard(ProgressSpinLock_);
         // There should not be known query before registration.
         YT_VERIFY(!ActiveQueriesProgress_.contains(queryId));
 
-        ActiveQueriesProgress_[queryId] = TActiveQuery{
+        ActiveQueriesProgress_.emplace(queryId, TActiveQuery{
+            .Config = New<TActiveQuery::TConfig>(
+                std::move(dynamicConfig),
+                std::move(defaultCluster)),
             .Started = false,
-        };
+        });
     }
 
     void UnregisterQuery(TQueryId queryId) noexcept override
@@ -1109,7 +1192,7 @@ public:
             auto iterator = ActiveQueriesProgress_.find(queryId);
             YT_VERIFY(iterator != ActiveQueriesProgress_.end());
 
-            activeQuery = std::move(iterator->second);
+            activeQuery.emplace(std::move(iterator->second));
             ActiveQueriesProgress_.erase(iterator);
 
             YQL_LOG(DEBUG) << "Query " << ToString(queryId) << " is removed";
@@ -1123,8 +1206,12 @@ public:
 private:
     const TDqManagerConfigPtr DqManagerConfig_;
     const bool StartDqManager_;
+    const bool EnableClique_;
     TDqManagerPtr DqManager_;
+    NYql::IDqGateway::TPtr DqGateway_;
+    TVector<NYql::NProto::TDqConfig::TYtBackend> CliqueBackends_;
     THolder<IThreadPool> DqGatewayOffloadThreadPool_;
+    TConfigClusters::TPtr YtClusters_;
     NYql::TFileStoragePtr FileStorage_;
     ::TIntrusivePtr<NKikimr::NMiniKQL::IMutableFunctionRegistry> FuncRegistry_;
     TAtomicIntrusivePtr<TDynamicConfig> DynamicConfig_;
@@ -1135,12 +1222,13 @@ private:
     TString YqlAgentToken_;
     NYql::ITvmClient::TPtr TvmClient_;
     NYql::IYtAccessProvider::TPtr YtAccessProvider_;
+    NYql::IYtTokenResolver::TPtr YtTokenResolver_;
 
     std::atomic<TLangVersion> MaxYqlLangVersion_;
     TLangVersion MaxYqlLangVersionInitial_;
     TLangVersion DefaultYqlApiLangVersion_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ProgressSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ProgressSpinLock_);
     THashMap<TQueryId, TActiveQuery> ActiveQueriesProgress_;
     TUserDataTable UserDataTable_;
 
@@ -1161,6 +1249,12 @@ private:
         auto* activeQuery = GetActiveQueryPtr(queryId);
         YT_VERIFY(activeQuery);
         return *activeQuery;
+    }
+
+    TConstActiveQueryConfigPtr GetQueryConfig(TQueryId queryId)
+    {
+        auto guard = ReaderGuard(ProgressSpinLock_);
+        return GetActiveQuery(queryId).Config;
     }
 
     std::optional<TAbortResult> ValidateAbortState(
@@ -1287,6 +1381,64 @@ private:
         return std::move(dynamicConfig);
     }
 
+    void InitializeDqGateway()
+    {
+        if (!DqManagerConfig_) {
+            return;
+        }
+
+        NYql::NProto::TDqConfig dqConfig;
+        dqConfig.SetPort(DqManagerConfig_->GrpcPort);
+        dqConfig.SetOpenSessionTimeoutMs(TDuration::Minutes(60).MilliSeconds());
+        dqConfig.SetRequestTimeoutMs(TDuration::Max().MilliSeconds());
+
+        if (DqManager_) {
+            if (const auto& vanillaJobLite = DqManager_->GetVanillaJobLite()) {
+                auto* ytBackend = dqConfig.AddYtBackends();
+                ytBackend->SetVanillaJobLite(vanillaJobLite->GetPath());
+                ytBackend->SetVanillaJobLiteMd5(vanillaJobLite->GetMd5());
+            }
+            if (EnableClique_) {
+                const auto& backends = DqManager_->GetYtBackends();
+                CliqueBackends_.assign(backends.begin(), backends.end());
+            }
+        }
+
+        DqGateway_ = NYql::CreateDqGateway(dqConfig);
+        if (CliqueBackends_.empty()) {
+            return;
+        }
+
+        const auto resolveYtCluster = NYql::MakeYtBackendResolver(CliqueBackends_);
+        DqGateway_ = NYql::CreateDqCliqueRoutingGateway(DqGateway_, resolveYtCluster);
+
+        if (!StartDqManager_) {
+            return;
+        }
+
+        TResourceManagerOptions uploadOptions;
+        uploadOptions.YtBackend = CliqueBackends_.front();
+        uploadOptions.UploadPrefix = NYql::GetDqCliqueUploadPrefix(uploadOptions.YtBackend);
+
+        auto resolveUploadCluster = [backends = CliqueBackends_] (
+            TResourceManagerOptions* options,
+            const NYql::TDqSettings::TPtr& settings)
+        {
+            if (!settings || !settings->Clique.Get()) {
+                return false;
+            }
+            NYql::ConfigureDqCliqueUploadOptions(backends, *settings->Clique.Get(), options);
+            return true;
+        };
+
+        DqGateway_ = NYql::CreateDqGatewayWithUploader(
+            DqGateway_,
+            DqManager_->GetActorSystem(),
+            std::move(uploadOptions),
+            DqManager_->GetCoordinator(),
+            std::move(resolveUploadCluster));
+    }
+
     NYql::TProgramFactoryPtr CreateProgramFactory(TQueryId queryId, TDynamicConfig& dynamicConfig) {
         YQL_LOG_CTX_ROOT_SESSION_SCOPE(ToString(queryId));
 
@@ -1300,26 +1452,16 @@ private:
         ytServices.SecretMasker = CreateSecretMasker();
         ytServices.TvmClient = TvmClient_;
         ytServices.YtAccessProvider = YtAccessProvider_;
+        ytServices.YtTokenResolver = YtTokenResolver_;
 
         TVector<NYql::TDataProviderInitializer> dataProvidersInit;
         if (DqManagerConfig_) {
-            NYql::NProto::TDqConfig dqConfig;
-            dqConfig.SetPort(DqManagerConfig_->GrpcPort);
-            dqConfig.SetOpenSessionTimeoutMs(TDuration::Minutes(60).MilliSeconds());
-            dqConfig.SetRequestTimeoutMs(TDuration::Max().MilliSeconds());
+            YT_VERIFY(DqGateway_);
 
-            if (DqManager_) {
-                const auto vanillaJobLite = DqManager_->GetVanillaJobLite();
-                auto* ytBackend = dqConfig.AddYtBackends();
-                ytBackend->SetVanillaJobLite(vanillaJobLite->GetPath());
-                ytBackend->SetVanillaJobLiteMd5(vanillaJobLite->GetMd5());
-            }
-
-            auto dqGateway = NYql::CreateDqGateway(dqConfig);
             // NOTE: prevent deadlock upon thread joining
             // details in https://st.yandex-team.ru/YT-26302
             auto dqGatewayWithOffloading = CreateDqGatewayWithOffloading(
-                std::move(dqGateway),
+                DqGateway_,
                 DqGatewayOffloadThreadPool_.Get());
 
             auto dqCompFactory = NKikimr::NMiniKQL::GetCompositeWithBuiltinFactory({
@@ -1329,13 +1471,22 @@ private:
                 GetPgFactory()
             });
 
+            NYql::TDqCliqueValidator cliqueValidator;
+            if (!CliqueBackends_.empty()) {
+                cliqueValidator = [backends = CliqueBackends_] (const TString& value) {
+                    NYql::ValidateDqCliqueYtBackend(backends, value);
+                };
+            }
+
             dataProvidersInit.push_back(
                 GetDqDataProviderInitializer(
                     NYql::CreateDqExecTransformerFactory(MakeIntrusive<TSkiffConverter>()),
                     std::move(dqGatewayWithOffloading),
                     std::move(dqCompFactory),
                     {},
-                    FileStorage_));
+                    FileStorage_,
+                    /*externalUser*/ false,
+                    std::move(cliqueValidator)));
         }
 
         auto ytNativeGateway = CreateYtNativeGateway(ytServices);
@@ -1343,6 +1494,7 @@ private:
 
         ExtProviderSpecific(
             dynamicConfig.GatewaysConfig,
+            StaticGatewaysConfig_,
             FuncRegistry_.Get(),
             dataProvidersInit,
             FileStorage_);
@@ -1367,7 +1519,7 @@ private:
         program->SetMaxLanguageVersion(MaxYqlLangVersion_);
         if (auto version = settingsMap.FindPtr("yql_version")) {
             TLangVersion parsedVersion;
-            if (ParseLangVersion(version->AsString(), parsedVersion)) {
+            if (ParseLangVersion(version->AsString(), parsedVersion) && NYql::IsValidLangVersion(parsedVersion)) {
                 program->SetLanguageVersion(parsedVersion);
             } else {
                 ythrow yexception() << Format("Invalid YQL language version (Version: %v)", version->AsString());
@@ -1382,9 +1534,11 @@ private:
         const TString& queryText,
         const TYsonString& settingsStr,
         const TYsonString& credentialsStr,
-        TDynamicConfigPtr dynamicConfig,
+        const TString& queryIdentityToken,
+        const TActiveQuery::TConfig& queryConfig,
         TProgramFactoryPtr factory)
     {
+        const auto& dynamicConfig = queryConfig.DynamicConfig;
         auto program = factory->Create("-memory-", queryText, ToString(queryId));
 
         TVector<std::pair<TString, NYql::TCredential>> credentials;
@@ -1398,22 +1552,19 @@ private:
             });
         }
         program->AddCredentials(credentials);
+        program->SetUserCredentials({.QueryIdentityToken = queryIdentityToken});
 
         program->SetOperationAttrsYson(PatchQueryAttributes(OperationAttributes_, settingsStr));
 
-        auto defaultQueryCluster = dynamicConfig->DefaultCluster;
         auto settingsMap = NodeFromYsonString(settingsStr.ToString()).AsMap();
-        if (auto cluster = settingsMap.FindPtr("cluster")) {
-            defaultQueryCluster = cluster->AsString();
-        }
 
         SetProgramYqlVersion(program, settingsMap);
 
         NSQLTranslation::TTranslationSettings sqlSettings;
         sqlSettings.ClusterMapping = dynamicConfig->Clusters;
         sqlSettings.ModuleMapping = Modules_;
-        if (defaultQueryCluster) {
-            sqlSettings.DefaultCluster = *defaultQueryCluster;
+        if (queryConfig.DefaultCluster) {
+            sqlSettings.DefaultCluster = *queryConfig.DefaultCluster;
         }
         sqlSettings.SyntaxVersion = 1;
         sqlSettings.V0Behavior = NSQLTranslation::EV0Behavior::Disable;

@@ -25,7 +25,7 @@
 
 #include <yt/yt/core/concurrency/delayed_executor.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <util/generic/algorithm.h>
 
@@ -82,7 +82,7 @@ std::vector<IChunkReaderPtr> CreatePartReaders(
 NErasure::TPartIndexList GetPartIndexesToRead(TChunkId chunkId, NErasure::ICodec* codec)
 {
     if (TypeFromId(chunkId) == EObjectType::ErasureJournalChunk) {
-        int dataPartCount = codec->GetDataPartCount();
+        int dataPartCount = codec->GetParams().DataPartCount;
         NErasure::TPartIndexList result;
         result.resize(dataPartCount);
         std::iota(result.begin(), result.end(), 0);
@@ -321,7 +321,7 @@ private:
 
     const NLogging::TLogger Logger;
 
-    NThreading::TAtomicObject<TChunkReplicaList> InitialReplicas_;
+    TAtomicObject<TChunkReplicaList> InitialReplicas_;
 };
 
 DEFINE_REFCOUNTED_TYPE(TErasureChunkReader)
@@ -349,7 +349,7 @@ IChunkReaderPtr CreateChunkReader(
             std::move(remoteReaderOptions),
             std::move(chunkReaderHost),
             chunkId,
-            NErasure::GetCodec(codecId),
+            NErasure::GetCodecOrThrow(codecId),
             std::move(replicas));
     }
 }

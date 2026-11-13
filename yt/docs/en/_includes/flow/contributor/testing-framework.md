@@ -1,6 +1,6 @@
 # Flow pipeline testing framework
 
-This page describes how to set up a workstation and configure low-level parameters for contributors who are improving Flow itself and running its integration test suite. If you're a pipeline author testing your code, see [Testing (C++)](../../../flow/cpp/testing.md), [Testing (Java)](../../../flow/java/testing.md), and [Testing (Python)](../../../flow/python/testing.md) — these pages include the launch parameters and techniques you need for pipeline tests.
+This page describes how to set up a workstation and configure low-level parameters for contributors who are improving Flow itself and running its integration test suite. If you're a pipeline author testing your code, see [Testing (C++)](../../../flow/cpp/testing.md), [Testing (Java)](../../../flow/java/testing.md), [Testing (Go)](../../../flow/go/testing.md), and [Testing (Python)](../../../flow/python/testing.md) — these pages include the launch parameters and techniques you need for pipeline tests.
 
 ## Environment setup {#setup}
 
@@ -24,7 +24,7 @@ sudo sysctl -p
 
 Without `core_uses_pid=1`, you might see odd behavior, such as extracting multiple backtraces from a single coredump.
 
-If you need the UI of the local {{product-name}} for debugging, you’ll need network access — see the [relevant section](../../../flow/cpp/testing.md#debug-ui-yt) in the documentation for pipeline authors.
+{% if audience == "internal" %}If you need the UI of the local {{product-name}} for debugging, you’ll need network access — see the [relevant section](../../../flow/cpp/testing.md#debug-ui-yt) in the documentation for pipeline authors.{% endif %}
 
 ## Flow test parameters {#test-param}
 
@@ -43,3 +43,9 @@ Examples:
 ya make -A --test-param ERROR_BACKTRACE_ENRICHER_LEVEL=enabled_for_all
 ya make -A --test-param DUMP_BACKTRACES_IF_HANGS=1
 ```
+
+## Local cluster settings
+
+`FlowTestBase` reads clusters from `yt_cluster_info.json` in the test output directory, preserving their order: the first cluster is primary, and the rest are replicas. A recipe without this file can provide one primary cluster through `YT_PROXY` and `YT_PROXY_URL_ALIASING_CONFIG`. `YT_PROXY` may name an alias in this dictionary or contain an address matching exactly one alias. An unknown or ambiguous address requires an unambiguous alias or the standard metadata file. Alias entries do not add test replicas.
+
+When the file is present, `YT_PROXY`, if supplied, must resolve to its primary cluster address. Addresses for names present in both the file and the alias dictionary must agree; extra aliases are allowed. For local tests, the framework sets `YT_USER=root` and a test `YT_TOKEN` before creating clients and passes the test token explicitly. `EXTERNAL_YT_CONFIG` keeps its existing cluster and path semantics.

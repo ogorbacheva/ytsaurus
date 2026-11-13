@@ -37,7 +37,7 @@ void VerifyError(size_t result)
         return;
     }
 
-    if (result == ZSTD_error_memory_allocation) {
+    if (ZSTD_getErrorCode(result) == ZSTD_error_memory_allocation) {
         AbortProcessDramatically(
             EProcessExitCode::OutOfMemory,
             "Zstd codec failed with memory allocation error");
@@ -63,6 +63,11 @@ void ZstdCompress(int level, TSource* source, TBlob* output)
     }
 
     auto context = ZSTD_createCCtx();
+    if (!context) {
+        AbortProcessDramatically(
+            EProcessExitCode::OutOfMemory,
+            "Zstd codec failed to allocate compression context");
+    }
     auto contextGuard = Finally([&] {
         ZSTD_freeCCtx(context);
     });
@@ -363,7 +368,9 @@ public:
 
     i64 GetMemoryUsage() const override
     {
-        return ZSTD_sizeof_DDict(DigestedDictionary_);
+        // NB: Correct only for ZSTD_initStaticDDict over own Storage with ZSTD_dlm_byCopy,
+        // with ZSTD_dlm_byRef dictionary content lives outside of Storage and is not accounted.
+        return Storage_.size();
     }
 
     const ZSTD_DDict* GetDigestedDictionary() const

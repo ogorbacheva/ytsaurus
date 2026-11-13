@@ -118,6 +118,8 @@ void TQueryTrackerProxyConfig::Register(TRegistrar registrar)
         .Default(1_KB);
     registrar.Parameter("max_query_file_content_size_bytes", &TThis::MaxQueryFileContentSizeBytes)
         .Default(2_KB);
+    registrar.Parameter("queries_by_mutation_id_ttl", &TThis::QueriesByMutationIdTtl)
+        .Default(TDuration::Hours(1));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -135,7 +137,7 @@ void TQueryTrackerDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("health_check_period", &TThis::HealthCheckPeriod)
         .Default(TDuration::Seconds(1));
     registrar.Parameter("not_indexed_queries_ttl", &TThis::NotIndexedQueriesTtl)
-        .Default(TDuration::Hours(1));
+        .Default(TDuration::Days(14));
     registrar.Parameter("ql_engine", &TThis::QLEngine)
         .DefaultNew();
     registrar.Parameter("yql_engine", &TThis::YqlEngine)
@@ -170,12 +172,14 @@ void TQueryTrackerDynamicConfig::Register(TRegistrar registrar)
 void TQueryTrackerBootstrapConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("min_required_state_version", &TThis::MinRequiredStateVersion)
-        .Default(21);
+        .Default(24);
     registrar.Parameter("abort_on_unrecognized_options", &TThis::AbortOnUnrecognizedOptions)
         .Default(false);
     registrar.Parameter("proxy_thread_pool_size", &TThis::ProxyThreadPoolSize)
         .Default(4);
     registrar.Parameter("user", &TThis::User);
+    registrar.Parameter("admins_group", &TThis::AdminsGroup)
+        .Default();
     registrar.Parameter("cypress_annotations", &TThis::CypressAnnotations)
         .Default(NYTree::BuildYsonNodeFluently()
             .BeginMap()

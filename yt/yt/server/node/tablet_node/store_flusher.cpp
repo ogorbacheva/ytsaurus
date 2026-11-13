@@ -205,7 +205,7 @@ private:
     NProfiling::TGauge DynamicMemoryUsageWriteLogsCounter_ = Profiler_.WithTag("memory_type", "write_logs").Gauge("/dynamic_memory_usage");
     NProfiling::TGauge DynamicMemoryUsageOtherCounter_ = Profiler_.WithTag("memory_type", "other").Gauge("/dynamic_memory_usage");
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, SpinLock_);
     i64 PassiveMemoryUsage_;
     i64 ActiveMemoryUsage_;
     i64 BackingMemoryUsage_;
@@ -301,11 +301,15 @@ private:
     void ScanTabletForRotationErrors(TTablet* tablet)
     {
         if (tablet->GetDynamicStoreCount() >= DynamicStoreCountLimit) {
-            auto error = TError("Dynamic store count limit is exceeded")
+            static constexpr auto Message = "Dynamic store count limit is exceeded"_sb;
+            YT_TLOG_DEBUG(Message)
+                .With("TabletId", tablet->GetId())
+                .With("BackgroundActivity", ETabletBackgroundActivity::Rotation)
+                .With("Limit", DynamicStoreCountLimit);
+            auto error = TError(Message)
                 .With("tablet_id", tablet->GetId())
                 .With("background_activity", ETabletBackgroundActivity::Rotation)
                 .With("limit", DynamicStoreCountLimit);
-            YT_LOG_DEBUG(error);
             tablet->RuntimeData()->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Rotation].Store(error);
             return;
@@ -551,8 +555,12 @@ private:
 
             auto throttler = Bootstrap_->GetOutThrottler(EWorkloadCategory::SystemTabletStoreFlush);
 
+            auto flushInvoker = Bootstrap_->GetTabletNodeDynamicConfig()->StoreFlusher->UseQueryPool
+                ? Bootstrap_->GetQueryPoolInvoker("$store_flush", ToString(task->Info->TaskId))
+                : ThreadPool_->GetInvoker();
+
             auto asyncFlushResult = BIND(flushCallback)
-                .AsyncVia(ThreadPool_->GetInvoker())
+                .AsyncVia(std::move(flushInvoker))
                 .Run(transaction, std::move(throttler), currentTimestamp, writerProfiler, task->Info);
 
             auto flushResult = WaitFor(asyncFlushResult)
@@ -652,14 +660,17 @@ private:
             YT_TLOG_INFO("Store flush completed")
                 .With("WallTime", timer.GetElapsedTime());
         } catch (const std::exception& ex) {
-            auto error = TError(ex)
+            static constexpr auto Message = "Error flushing tablet store, backing off"_sb;
+            auto error = TError(Message)
                 .With("tablet_id", tabletId)
-                .With("background_activity", ETabletBackgroundActivity::Flush);
+                .With("background_activity", ETabletBackgroundActivity::Flush)
+                .With(ex);
 
             tabletSnapshot->TabletRuntimeData->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Flush].Store(error);
-            YT_TLOG_ERROR("Error flushing tablet store, backing off")
-                .With(error);
+            YT_TLOG_ERROR(Message)
+                .With("BackgroundActivity", ETabletBackgroundActivity::Flush)
+                .With(ex);
 
             storeManager->BackoffStoreFlush(store);
 

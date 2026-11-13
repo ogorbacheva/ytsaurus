@@ -19,6 +19,7 @@
     XX(AcquisitionTime, acquisition_time) \
     XX(ActionId, action_id) \
     XX(ActionIds, action_ids) \
+    XX(ActiveTransactionCountAlertThresholdAndLimitOverride, active_transaction_count_alert_threshold_and_limit_override) \
     XX(ActualTabletState, actual_tablet_state) \
     XX(Addresses, addresses) \
     XX(AlertCount, alert_count) \
@@ -74,6 +75,7 @@
     XX(CellId, cell_id) \
     XX(CellIds, cell_ids) \
     XX(CellTag, cell_tag) \
+    XX(CellTags, cell_tags) \
     XX(Cellars, cellars) \
     XX(ChangelogAccountViolatedResourceLimits, changelog_account_violated_resource_limits) \
     XX(ChaosCellBundle, chaos_cell_bundle) \
@@ -159,6 +161,7 @@
     XX(DesiredTabletCount, desired_tablet_count) \
     XX(DesiredTabletSize, desired_tablet_size) \
     XX(DestroyedChunkReplicaCount, destroyed_chunk_replica_count) \
+    XX(DetailedChunkReplicationStatistics, detailed_chunk_replication_statistics) \
     XX(DetailedMasterMemoryUsage, detailed_master_memory_usage) \
     XX(DisableSchedulerJobs, disable_scheduler_jobs) \
     XX(DisableTabletBalancer, disable_tablet_balancer) \
@@ -184,6 +187,7 @@
     XX(EnableDetailedProfiling, enable_detailed_profiling) \
     XX(EnableDynamicStoreRead, enable_dynamic_store_read) \
     XX(EnableFairShareTruncationInFifoPool, enable_fair_share_truncation_in_fifo_pool) \
+    XX(EnableFifoChildrenReorderingForGuaranteeUtilization, enable_fifo_children_reordering_for_guarantee_utilization) \
     XX(EnableLightweightOperations, enable_lightweight_operations) \
     XX(EnablePrioritySchedulingSegmentModuleAssignment, enable_priority_scheduling_segment_module_assignment) \
     XX(EnablePriorityStrongGuaranteeAdjustment, enable_priority_strong_guarantee_adjustment) \
@@ -259,6 +263,7 @@
     XX(HasRowLevelAce, has_row_level_ace) \
     XX(HashedPassword, hashed_password) \
     XX(Health, health) \
+    XX(HealthHistory, health_history) \
     XX(HistoricUsageAggregationPeriod, historic_usage_aggregation_period) \
     XX(HistoricallyNonVital, historically_non_vital) \
     XX(Host, host) \
@@ -291,6 +296,7 @@
     XX(IndexTablePath, index_table_path) \
     XX(IndexTo, index_to) \
     XX(InheritAcl, inherit_acl) \
+    XX(InitiatorId, initiator_id) \
     XX(InplaceReshard, inplace_reshard) \
     XX(IntegralGuarantees, integral_guarantees) \
     XX(IOStatistics, io_statistics) \
@@ -318,9 +324,11 @@
     XX(LeaseTransactionIds, lease_transaction_ids) \
     XX(LeasesState, leases_state) \
     XX(LifeStage, life_stage) \
+    XX(LocalDetailedChunkReplicationStatistics, local_detailed_chunk_replication_statistics) \
     XX(LocalExportedObjectCount, local_exported_object_count) \
     XX(LocalHealth, local_health) \
     XX(LocalJobs, local_jobs) \
+    XX(LocalLostChunkIds, local_lost_chunk_ids) \
     XX(LocalPartLossTime, local_part_loss_time) \
     XX(LocalReplicationStatus, local_replication_status) \
     XX(LocalRequisition, local_requisition) \
@@ -331,6 +339,7 @@
     XX(LockMode, lock_mode) \
     XX(LockedNodeIds, locked_node_ids) \
     XX(Locks, locks) \
+    XX(LostChunkIds, lost_chunk_ids) \
     XX(LostVitalChunkCount, lost_vital_chunk_count) \
     XX(LowerLimit, lower_limit) \
     XX(MaintenanceRequests, maintenance_requests) \
@@ -445,6 +454,7 @@
     XX(ProfilingMode, profiling_mode) \
     XX(ProfilingTag, profiling_tag) \
     XX(ProjectId, project_id) \
+    XX(ProlongedChunkCount, prolonged_chunk_count) \
     XX(ProxyKind, proxy_kind) \
     XX(PullReplicationChunkCount, pull_replication_chunk_count) \
     XX(PullReplicationQueueSize, pull_replication_queue_size) \

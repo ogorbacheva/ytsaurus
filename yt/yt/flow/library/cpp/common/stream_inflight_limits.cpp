@@ -15,6 +15,22 @@ ui64 ComputeSeq(const TStreamUsage& usage)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TStreamUsageSerializer::Register(TRegistrar registrar)
+{
+    registrar.ExternalClassParameter("cumulative_byte_in", &TThat::CumulativeByteIn)
+        .Default();
+    registrar.ExternalClassParameter("cumulative_byte_out", &TThat::CumulativeByteOut)
+        .Default();
+    registrar.ExternalClassParameter("cumulative_count_in", &TThat::CumulativeCountIn)
+        .Default();
+    registrar.ExternalClassParameter("cumulative_count_out", &TThat::CumulativeCountOut)
+        .Default();
+    registrar.ExternalClassParameter("pending_inflated_bytes", &TThat::PendingInflatedBytes)
+        .Default();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 TStreamLimitUsageState::TStreamLimitUsageState(i64 inflationPerMessage)
     : InflationPerMessage_(inflationPerMessage)
 { }
@@ -97,6 +113,17 @@ void TStreamLimitUsageState::SetLimitBytes(i64 limitBytes)
 i64 TStreamLimitUsageState::GetLimitBytes() const
 {
     return LimitBytes_.load(std::memory_order_relaxed);
+}
+
+void TStreamLimitUsageState::SetDemandBytes(std::optional<i64> demandBytes)
+{
+    DemandBytes_.store(demandBytes.value_or(-1), std::memory_order_relaxed);
+}
+
+std::optional<i64> TStreamLimitUsageState::GetDemandBytes() const
+{
+    auto demandBytes = DemandBytes_.load(std::memory_order_relaxed);
+    return demandBytes >= 0 ? std::optional<i64>(demandBytes) : std::nullopt;
 }
 
 i64 TStreamLimitUsageState::GetInflationPerMessage() const

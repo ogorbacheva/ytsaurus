@@ -500,6 +500,8 @@ void TClusterNodeDynamicConfig::Register(TRegistrar registrar)
         .Optional();
     registrar.Parameter("resource_limits", &TThis::ResourceLimits)
         .DefaultNew();
+    registrar.Parameter("hotswap_manager", &TThis::HotswapManager)
+        .DefaultNew();
     registrar.Parameter("data_node", &TThis::DataNode)
         .DefaultNew();
     registrar.Parameter("cellar_node", &TThis::CellarNode)
@@ -561,6 +563,10 @@ void TClusterNodeDynamicConfig::Register(TRegistrar registrar)
         .DefaultNew();
     registrar.Parameter("fair_share_hierarchical_scheduler", &TThis::FairShareHierarchicalScheduler)
         .DefaultNew();
+
+    registrar.Parameter("connection_thread_pool_size", &TThis::ConnectionThreadPoolSize)
+        .GreaterThan(0)
+        .Optional();
 
     registrar.Postprocessor([] (TThis* config) {
         if (!config->JobResourceManager->CheckUserJobsCategoryLimitOnResourceUpdate) {

@@ -86,6 +86,8 @@
 #include <yt/yt/library/containers/container_devices_checker.h>
 #endif
 
+#include <yt/yt/library/disk_manager/hotswap_manager.h>
+
 #include <yt/yt/library/fusion/service_locator.h>
 
 #include <yt/yt/library/coredumper/public.h>
@@ -770,13 +772,13 @@ private:
     TError UnrecognizedOptionsAlert_;
 
     TObjectServiceCachePtr ObjectServiceCache_;
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, CachingObjectServicesLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, CachingObjectServicesLock_);
     THashMap<TCellTag, ICachingObjectServicePtr> CachingObjectServices_;
     THashMap<TCellTag, IServicePtr> ProxyingChunkServices_;
 
     NApi::NNative::TMasterConnectionConfigPtr PrimaryMaster_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, SecondaryMasterConnectionLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, SecondaryMasterConnectionLock_);
     TSecondaryMasterConnectionConfigs SecondaryMasterConnectionConfigs_;
 
     IIOTrackerPtr IOTracker_;
@@ -1079,7 +1081,8 @@ private:
             portoExecutor->SubscribeFailed(BIND([this, this_ = MakeStrong(this)] (const TError& error) {
                 YT_TLOG_ERROR("Porto executor failed")
                     .With(error);
-                ExecNodeBootstrap_->GetSlotManager()->OnPortoExecutorFailed(error);
+                ExecNodeBootstrap_->GetSlotManager()->OnJobEnvironmentExecutorFailed(
+                    TError(NExecNode::EErrorCode::PortoExecutorFailure, "Porto executor failed").With(error));
             }));
 
             auto useDaemonSubcontainer = topLevelPortoConfig
@@ -1314,7 +1317,7 @@ private:
 
 #ifdef __linux__
         if (ContainerDevicesChecker_) {
-            ContainerDevicesChecker_->SubscribeCheck(BIND_NO_PROPAGATE(&TSlotManager::OnContainerDevicesCheckFinished, ExecNodeBootstrap_->GetSlotManager())
+            ContainerDevicesChecker_->SubscribeCheck(BIND_NO_PROPAGATE(&TBootstrap::OnContainerDevicesCheckFinished, MakeStrong(this))
                 .Via(GetControlInvoker()));
             ContainerDevicesChecker_->Start();
         }
@@ -1385,7 +1388,7 @@ private:
 
             YT_TLOG_FATAL_UNLESS(
                 error.IsOK(),
-                "Unexpected failure while waiting for the first dynamic config loaded during node registration compelition")
+                "Unexpected failure while waiting for the first dynamic config loaded during node registration completion")
                 .With(error);
         }
     }
@@ -1445,6 +1448,33 @@ private:
         VersionedChunkMetaManager_->Reconfigure(versionedChunkMetaConfig);
     }
 
+    void OnContainerDevicesCheckFinished(const TError& error)
+    {
+        auto config = DynamicConfigManager_->GetConfig()->ExecNode->SlotManager;
+
+        TError result;
+        if (config->EnableContainerDeviceChecker && !error.IsOK()) {
+            auto message = ToString(error);
+
+            if (error.FindMatching(NContainers::EErrorCode::FailedToStartContainer) &&
+                message.Contains("Operation not permitted: mknod"))
+            {
+                if (!IsDataNode() && !IsTabletNode() && config->RestartContainerAfterFailedDeviceCheck) {
+                    if (auto restartManager = GetRestartManager()) {
+                        YT_TLOG_ERROR("Request restart after test volume creation failed")
+                            .With(error);
+                        restartManager->RequestRestart();
+                    }
+                }
+
+                result = TError("Test container could not be created, snapshot container needs to be restarted")
+                    .With(error);
+            }
+        }
+
+        ExecNodeBootstrap_->GetSlotManager()->OnContainerDevicesCheckFinished(result);
+    }
+
     void OnBundleDynamicConfigChanged(
         const NCellarNode::TBundleDynamicConfigPtr& /*oldConfig*/,
         const NCellarNode::TBundleDynamicConfigPtr& newConfig)
@@ -1486,6 +1516,10 @@ private:
         }
         TSingletonManager::Reconfigure(newConfig);
 
+        if (auto hotswapManager = TryGetHotswapManager()) {
+            hotswapManager->Reconfigure(newConfig->HotswapManager);
+        }
+
         NodeMemoryUsageTracker_->Reconfigure(newConfig->NodeMemoryTracker);
 
         StorageHeavyThreadPool_->SetThreadCount(
@@ -1496,6 +1530,7 @@ private:
         auto netTxLimit = NodeResourceManager_->GetNetTxLimit();
         auto netRxLimit = NodeResourceManager_->GetNetRxLimit();
         ReconfigureThrottlers(newConfig, netTxLimit, netRxLimit);
+        NetworkStatistics_->Reconfigure(newConfig->DataNode);
 
         RawReadRpsOutThrottler_->Reconfigure(newConfig->DataNode->ReadRpsOutThrottler
             ? newConfig->DataNode->ReadRpsOutThrottler
@@ -1574,6 +1609,9 @@ private:
         }
 
         Connection_->GetMasterCellDirectorySynchronizer()->ApplyDynamicConfigOverride(newConfig->MasterCellDirectorySynchronizer);
+
+        ConnectionThreadPool_->SetThreadCount(newConfig->ConnectionThreadPoolSize.value_or(
+            Config_->ClusterConnection->Dynamic->ThreadPoolSize));
     }
 
     void PopulateAlerts(std::vector<TError>* alerts)

@@ -17,6 +17,7 @@
 #include <yt/yt/ytlib/object_client/config.h>
 #include <yt/yt/ytlib/object_client/caching_object_service.h>
 #include <yt/yt/ytlib/object_client/object_service_cache.h>
+#include <yt/yt/ytlib/object_client/private.h>
 
 #include <yt/yt/client/object_client/helpers.h>
 
@@ -34,7 +35,10 @@
 #include <yt/yt/core/rpc/local_channel.h>
 #include <yt/yt/core/rpc/dispatcher.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <yt/yt/core/ytree/fluent.h>
+#include <yt/yt/core/ytree/ypath_service.h>
+
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 namespace NYT::NCellMasterClient {
 
@@ -357,6 +361,11 @@ public:
         }
     }
 
+    IYPathServicePtr GetOrchidService() override
+    {
+        return IYPathService::FromProducer(BIND(&TCellDirectory::BuildOrchid, MakeStrong(this)));
+    }
+
     void UpdateDefault() override
     {
         {
@@ -395,7 +404,7 @@ private:
     const NNative::TConnectionOptions Options_;
     const NHiveClient::ICellDirectoryPtr HiveCellDirectory_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, SpinLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, SpinLock_);
     THashMap<TCellTag, TEnumIndexedArray<EMasterChannelKind, IChannelPtr>> RetryingCellChannelMap_;
     THashMap<TCellTag, TEnumIndexedArray<EMasterChannelKind, IChannelPtr>> NonRetryingCellChannelMap_;
     THashMap<TCellTag, EMasterCellRoles> CellTagToRoles_;
@@ -405,6 +414,20 @@ private:
     TCellTagSet SecondaryMasterCellTags_;
     THashSet<NObjectClient::TCellId> SecondaryMasterCellIds_;
     THashMap<TCellTag, IServicePtr> CachingObjectServices_;
+
+    void BuildOrchid(NYson::IYsonConsumer* consumer)
+    {
+        TEnumIndexedArray<EMasterCellRole, TCellTagList> roleToCellTags;
+        {
+            auto guard = ReaderGuard(SpinLock_);
+            roleToCellTags = RoleToCellTags_;
+        }
+
+        BuildYsonFluently(consumer)
+            .BeginMap()
+                .Item("role_to_cell_tags").Value(roleToCellTags)
+            .EndMap();
+    }
 
     static void ValidateSelectorRole(EMasterCellRole role) {
         THROW_ERROR_EXCEPTION_IF(role == EMasterCellRole::Unknown,
@@ -660,12 +683,12 @@ private:
                 effectiveError = &error.InnerErrors().front();
             }
 
-            if (effectiveError->GetNonTrivialCode() == NSequoiaClient::EErrorCode::SequoiaRetriableError) {
+            if (effectiveError->FindMatching(NSequoiaClient::EErrorCode::SequoiaRetriableError)) {
                 return true;
             }
 
             if (options.RetryRequestQueueSizeLimitExceeded &&
-                effectiveError->GetCode() == NSecurityClient::EErrorCode::RequestQueueSizeLimitExceeded)
+                effectiveError->FindMatching(NSecurityClient::EErrorCode::RequestQueueSizeLimitExceeded))
             {
                 return true;
             }

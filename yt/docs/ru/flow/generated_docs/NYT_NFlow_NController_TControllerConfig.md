@@ -17,6 +17,9 @@
 || `scheduler_period` | **Тип**: [TDuration](./all_yson_structs#TDuration)
 **Значение по умолчанию**: `5s`
 Период запуска планировщика. ||
+|| `no_spec_iteration_backoff` | **Тип**: [TDuration](./all_yson_structs#TDuration)
+**Значение по умолчанию**: `1s`
+ ||
 || `cache_period` | **Тип**: [TDuration](./all_yson_structs#TDuration)
 **Значение по умолчанию**: `1s`
  ||
@@ -35,8 +38,18 @@
 || `publish_timeout` | **Тип**: [TDuration](./all_yson_structs#TDuration)
 **Значение по умолчанию**: `2h`
  ||
-|| `election_manager` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NFlow::NController::TElectionManagerConfig](./all_yson_structs#NYT_NFlow_NController_TElectionManagerConfig)`>`
-**Значение по умолчанию**: `{}`
+|| `election_manager` | **Тип**: `NYT::NYTree::TPolymorphicYsonStruct<NYT::NYTree::NDetail::TPolymorphicMapping<&NYT::NFlow::NController::ElectionBackendDiscriminator.<char const at offset 0>, NYT::NFlow::NController::EElectionBackend, NYT::NYTree::NDetail::TOptionalValue<NYT::NFlow::NController::EElectionBackend, (NYT::NFlow::NController::EElectionBackend)0>, NYT::NFlow::NController::TElectionBackendConfigBase, NYT::NYTree::NDetail::TLeafTag<(NYT::NFlow::NController::EElectionBackend)0, NYT::NFlow::NController::TCypressElectionBackendConfig>, NYT::NYTree::NDetail::TLeafTag<(NYT::NFlow::NController::EElectionBackend)1, NYT::NFlow::NController::TDyntableElectionBackendConfig>, NYT::NYTree::NDetail::TLeafTag<(NYT::NFlow::NController::EElectionBackend)2, NYT::NFlow::NController::TChaosElectionBackendConfig>>>`
+**Значение по умолчанию**:
+
+```yson
+{
+    "backend" = "cypress";
+    "leader_cache_update_period" = 1000;
+    "leader_lease_ping_period" = 1000;
+    "leader_lease_ttl" = 5000;
+    "lock_acquisition_period" = 1000;
+}
+```
 Настройки выбора лидера среди нескольких контроллеров. ||
 || `persisted_state_manager` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NFlow::NController::TPersistedStateManagerConfig](./all_yson_structs#NYT_NFlow_NController_TPersistedStateManagerConfig)`>`
 **Значение по умолчанию**: `{}`
@@ -52,3 +65,15 @@
  ||
 |#
 
+
+{% cut "**Дополнительные параметры**" %}
+
+
+#|
+|| `publish_request_timeout` | **Тип**: [TDuration](./all_yson_structs#TDuration)
+**Значение по умолчанию**: `1s`
+Таймаут одного запроса попытки публикации. Неудачная попытка повторяется, так что этот параметр определяет только то, как долго одна попытка может висеть до повтора. ||
+|#
+
+
+{% endcut %}

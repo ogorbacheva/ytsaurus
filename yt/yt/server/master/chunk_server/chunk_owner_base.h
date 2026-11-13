@@ -1,11 +1,13 @@
 #pragma once
 
-#include "chunk.h"
+#include "public.h"
+
 #include "chunk_merger_traversal_info.h"
 #include "chunk_owner_data_statistics.h"
+#include "chunk_requisition.h"
 
-#include <yt/yt/server/master/cypress_server/public.h>
 #include <yt/yt/server/master/cypress_server/node.h>
+#include <yt/yt/server/master/cypress_server/public.h>
 
 #include <yt/yt/server/master/table_server/public.h>
 
@@ -62,7 +64,7 @@ public:
     const TChunkList* GetSnapshotHunkChunkList() const;
     const TChunkList* GetSnapshotChunkList(EChunkListContentType type) const;
 
-    const TChunkList* GetDeltaChunkList() const;
+    const TChunkList* GetAppendDeltaChunkList() const;
 
     const TChunkOwnerDataStatistics& DeltaStatistics() const;
     TChunkOwnerDataStatistics* MutableDeltaStatistics();

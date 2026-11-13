@@ -13,6 +13,7 @@ namespace NYT::NFlow::NTables {
 ////////////////////////////////////////////////////////////////////////////////
 
 DECLARE_REFCOUNTED_STRUCT(TInternalState);
+DECLARE_REFCOUNTED_CLASS(TFailedMessages);
 DECLARE_REFCOUNTED_STRUCT(TContext);
 
 DECLARE_REFCOUNTED_STRUCT(IPartitionStates);
@@ -23,6 +24,8 @@ DECLARE_REFCOUNTED_STRUCT(IKeyVisitorStates);
 DECLARE_REFCOUNTED_CLASS(TKeyVisitorStates);
 DECLARE_REFCOUNTED_STRUCT(ITimers);
 DECLARE_REFCOUNTED_CLASS(TTimers);
+DECLARE_REFCOUNTED_STRUCT(ITimerPages);
+DECLARE_REFCOUNTED_CLASS(TTimerPages);
 DECLARE_REFCOUNTED_STRUCT(IInputMessages);
 DECLARE_REFCOUNTED_CLASS(TInputMessages);
 DECLARE_REFCOUNTED_CLASS(TCompactInputMessages);

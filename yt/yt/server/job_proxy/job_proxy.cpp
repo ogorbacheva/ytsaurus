@@ -111,6 +111,7 @@
 #include <yt/yt/core/bus/server.h>
 
 #include <yt/yt/core/concurrency/action_queue.h>
+#include <yt/yt/core/concurrency/delayed_executor.h>
 #include <yt/yt/core/concurrency/periodic_executor.h>
 #include <yt/yt/core/concurrency/thread_pool_poller.h>
 #include <yt/yt/core/concurrency/throughput_throttler.h>
@@ -194,12 +195,11 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void FillStatistics(auto& req, const IJobPtr& job, const TStatistics& enrichedStatistics)
+void FillStatistics(auto& req, IJob::TStatistics jobStatistics)
 {
-    auto extendedStatistics = job->GetStatistics();
-    req->set_statistics(ToProto(ConvertToYsonString(enrichedStatistics)));
-    *req->mutable_total_input_data_statistics() = std::move(extendedStatistics.TotalInputStatistics.DataStatistics);
-    for (auto& statistics : extendedStatistics.OutputStatistics) {
+    req->set_statistics(ToProto(ConvertToYsonString(jobStatistics.Statistics)));
+    *req->mutable_total_input_data_statistics() = std::move(jobStatistics.TotalInputStatistics.DataStatistics);
+    for (auto& statistics : jobStatistics.OutputStatistics) {
         *req->add_output_data_statistics() = std::move(statistics.DataStatistics);
     }
 }
@@ -237,7 +237,7 @@ std::string TJobProxy::GetPreparationPath() const
 
 std::string TJobProxy::GetSlotPath() const
 {
-    if ((!Config_->RootPath && !Config_->DockerImage) || Config_->TestRootFS) {
+    if (!Config_->RootPath && !Config_->DockerImage) {
         return NFs::CurrentWorkingDirectory();
     }
 
@@ -399,6 +399,7 @@ void TJobProxy::SendHeartbeat()
 
     auto job = FindJob();
     if (!job) {
+        LastHeartbeatFuture_ = OKFuture;
         return;
     }
 
@@ -413,7 +414,7 @@ void TJobProxy::SendHeartbeat()
     auto req = SupervisorProxy_->OnJobProgress();
     ToProto(req->mutable_job_id(), JobId_);
     req->set_progress(job->GetProgress());
-    FillStatistics(req, job, GetEnrichedStatistics());
+    FillStatistics(req, GetEnrichedStatistics(job));
     req->set_stderr_size(job->GetStderrSize());
     req->set_has_job_trace(job->HasJobTrace());
     req->set_epoch(epoch);
@@ -421,29 +422,34 @@ void TJobProxy::SendHeartbeat()
         req->set_last_progress_save_time(ToProto(*time));
     }
 
-    if (auto& profileFuture = JobProxyPeakMemoryProfile_; profileFuture.has_value()) {
-        if (!profileFuture->IsSet()) {
-            YT_TLOG_DEBUG("JobProxy peak memory profile is not ready to be reported in the current heartbeat");
+    if (JobProxyPeakMemoryProfile_) {
+        if (!JobProxyPeakMemoryProfile_.IsSet()) {
+            YT_TLOG_DEBUG("Job proxy peak memory profile is not ready to be reported in the current heartbeat");
         } else {
-            YT_TLOG_DEBUG("Reporting JobProxy peak memory profile");
-            auto profile = profileFuture
-                ->AsUnique()
-                .GetOrCrash()
-                .ValueOrThrow();
+            YT_TLOG_DEBUG("Reporting job proxy peak memory profile");
+            auto profileOrError = JobProxyPeakMemoryProfile_
+                .AsUnique()
+                .GetOrCrash();
 
-            ToProto(
-                req->add_profiles(),
-                TJobProfile{
-                    .ProfilingBinary = EProfilingBinary::JobProxy,
-                    .ProfilerType = EProfilerType::PeakMemory,
-                    .Blob = std::move(profile),
-                    .ProfilingProbability = 1.0,
-                });
-            profileFuture.reset();
+            if (profileOrError.IsOK()) {
+                ToProto(
+                    req->add_profiles(),
+                    TJobProfile(
+                        EProfilingBinary::JobProxy,
+                        EProfilerType::PeakMemory,
+                        1.0,
+                        std::move(profileOrError.Value())));
+            } else {
+                YT_TLOG_WARNING("Failed to report job proxy peak memory profile")
+                    .With(profileOrError);
+            }
+            JobProxyPeakMemoryProfile_.Reset();
         }
     }
 
-    req->Invoke().Subscribe(BIND(&TJobProxy::OnHeartbeatResponse, MakeWeak(this)));
+    LastHeartbeatFuture_ = req->Invoke().AsVoid()
+        .Apply(BIND(&TJobProxy::OnHeartbeatResponse, MakeWeak(this)))
+        .ToImmediatelyCancelable(/*propagateCancelation*/ false);
 }
 
 void TJobProxy::OnHeartbeatResponse(const TError& error)
@@ -553,7 +559,7 @@ void TJobProxy::RetrieveJobSpec()
     LogJobSpec(GetJobSpecHelper()->GetJobSpec());
 
     auto totalMemoryReserve = resourceUsage.memory();
-    CpuGuarantee_ = resourceUsage.cpu();
+    SetCpuGuarantee(resourceUsage.cpu());
     NetworkUsage_ = resourceUsage.network();
 
     // We never report to node less memory usage, than was initially reserved.
@@ -649,17 +655,28 @@ void TJobProxy::DoRun()
         YT_TLOG_INFO("CPU monitor stopped");
     }
 
+    if (auto abortFuture = AbortFuture_.Load()) {
+        WaitFor(abortFuture)
+            .ThrowOnError();
+    }
+
     if (GetJobSpecHelper()->HasSidecars()) {
         FindJobProxyEnvironment()->ShutdownSidecars();
     }
 
-    {
+    if (RpcServer_) {
         auto error = WaitFor(RpcServer_->Stop()
             .WithTimeout(RpcServerShutdownTimeout));
         YT_TLOG_ERROR_UNLESS(error.IsOK(), "Error stopping RPC server")
             .With(error);
     }
 
+    if (PrivateRpcServer_) {
+        auto error = WaitFor(PrivateRpcServer_->Stop()
+            .WithTimeout(RpcServerShutdownTimeout));
+        YT_TLOG_ERROR_UNLESS(error.IsOK(), "Error stopping private RPC server")
+            .With(error);
+    }
 
     if (GrpcServer_) {
         auto error = WaitFor(GrpcServer_->Stop()
@@ -673,6 +690,17 @@ void TJobProxy::DoRun()
             .WithTimeout(RpcServerShutdownTimeout));
         YT_TLOG_ERROR_UNLESS(error.IsOK(), "Error stopping HTTP server")
             .With(error);
+    }
+
+    if (PublicRpcServer_) {
+        auto error = WaitFor(PublicRpcServer_->Stop()
+            .WithTimeout(RpcServerShutdownTimeout));
+        YT_TLOG_ERROR_UNLESS(error.IsOK(), "Error stopping public RPC server")
+            .With(error);
+    }
+
+    if (auto delay = Config_->JobTestingOptions->DelayBeforeReportResult) {
+        TDelayedExecutor::WaitForDuration(*delay);
     }
 
     FillJobResult(&result);
@@ -776,6 +804,14 @@ void TJobProxy::UpdateCumulativeMemoryUsage(i64 memoryUsage)
     LastMemoryMeasureTime_ = now;
 }
 
+void TJobProxy::SetCpuGuarantee(double cpuGuarantee)
+{
+    CpuGuarantee_ = cpuGuarantee;
+    if (JobIoMeter_) {
+        JobIoMeter_->SetIoFairShareWeight(cpuGuarantee);
+    }
+}
+
 void TJobProxy::SetJob(IJobPtr job)
 {
     Job_.Store(std::move(job));
@@ -837,7 +873,11 @@ void TJobProxy::EnableRpcProxyInJobProxy(int rpcProxyWorkerThreadPoolSize, bool 
         auto shuffleService = CreateShuffleService(
             apiInvoker,
             rootClient,
-            localServerAddress);
+            localServerAddress,
+            // TODO(apollo1321): The shuffle service is exposed to the user here. The TVM bridge
+            // cannot validate service tickets, since ParseServiceTicket is unimplemented for it.
+            // See YT-29714 for details.
+            /*authenticator*/ nullptr);
         PublicRpcServer_->RegisterService(std::move(shuffleService));
         connection->RegisterShuffleService(localServerAddress);
         YT_TLOG_INFO("Shuffle Service registered")
@@ -908,6 +948,7 @@ TJobResult TJobProxy::RunJob()
         environment = CreateJobProxyEnvironment(
             Config_,
             JobThread_->GetInvoker(),
+            GetPreparationPath(),
             GetSlotPath(),
             /*failedSidecarCallback*/ [this] (TError sidecarError) {
                 auto job = FindJob();
@@ -924,9 +965,12 @@ TJobResult TJobProxy::RunJob()
         TrafficMeter_ = New<TTrafficMeter>(LocalDescriptor_.GetDataCenter());
         TrafficMeter_->Start();
 
-        JobIoMeter_ = New<TJobIoMeter>(Config_->JobIoMeterMaxHistoryDuration);
+        JobIoMeter_ = New<TJobIoMeter>(
+            std::min(Config_->IOConsumedReportWindow, Config_->JobIoMeterMaxHistoryDuration),
+            Config_->EnableJobIoStatistics);
 
         YT_VERIFY(Config_->BusServer->UnixDomainSocketPath);
+        YT_VERIFY(Config_->PrivateBusServer->UnixDomainSocketPath);
         YT_VERIFY(Config_->GrpcServer->Addresses.size() == 1);
 
         InitializeOrchid();
@@ -938,12 +982,12 @@ TJobResult TJobProxy::RunJob()
 
         YT_TLOG_INFO("Creating RPC and GRPC servers")
             .With("RpcSocketPath", Config_->BusServer->UnixDomainSocketPath)
+            .With("PrivateRpcSocketPath", Config_->PrivateBusServer->UnixDomainSocketPath)
             .With("GrpcSocketPath", Config_->GrpcServer->Addresses[0]->Address);
 
         RpcServer_ = NRpc::NBus::CreateBusServer(CreateLocalBusServer(Config_->BusServer));
         RpcServer_->Configure(Config_->RpcServer);
         RpcServer_->OnDynamicConfigChanged(Config_->RpcServerDynamic);
-        RpcServer_->RegisterService(CreateJobProberService(this, GetControlInvoker()));
         RpcServer_->RegisterService(jobApiService);
         RpcServer_->RegisterService(NOrchid::CreateOrchidService(
             OrchidRoot_,
@@ -951,6 +995,12 @@ TJobResult TJobProxy::RunJob()
             /*authenticator*/ nullptr));
 
         RpcServer_->Start();
+
+        PrivateRpcServer_ = NRpc::NBus::CreateBusServer(CreateLocalBusServer(Config_->PrivateBusServer));
+        PrivateRpcServer_->Configure(Config_->RpcServer);
+        PrivateRpcServer_->OnDynamicConfigChanged(Config_->RpcServerDynamic);
+        PrivateRpcServer_->RegisterService(CreateJobProberService(this, GetControlInvoker()));
+        PrivateRpcServer_->Start();
 
         if (Config_->EnableGrpcServer) {
             GrpcServer_ = NRpc::NGrpc::CreateServer(Config_->GrpcServer);
@@ -1007,6 +1057,12 @@ TJobResult TJobProxy::RunJob()
         SupervisorChannel_ = supervisorChannel;
         SupervisorProxy_ = std::make_unique<TSupervisorServiceProxy>(SupervisorChannel_);
         SupervisorProxy_->SetDefaultTimeout(Config_->SupervisorRpcTimeout);
+
+        RetryingSupervisorProxy_ = std::make_unique<TSupervisorServiceProxy>(
+            Config_->UseRetryingChannels
+                ? SupervisorChannel_
+                : CreateRetryingChannel(Config_->RetryingChannel, SupervisorChannel_));
+        RetryingSupervisorProxy_->SetDefaultTimeout(Config_->SupervisorRpcTimeout);
 
         RetrieveJobSpec();
 
@@ -1184,6 +1240,27 @@ TJobResult TJobProxy::RunJob()
     return job->Run();
 }
 
+TFuture<NDistributedChunkSessionClient::TSessionDescriptor> TJobProxy::GetShuffleWriteSession(
+    int partitionIndex,
+    std::optional<NChunkClient::TSessionId> excludedSessionId) const
+{
+    auto req = RetryingSupervisorProxy_->GetShuffleWriteSession();
+    ToProto(req->mutable_job_id(), GetJobId());
+    req->set_partition_index(partitionIndex);
+    if (excludedSessionId) {
+        ToProto(req->mutable_excluded_session_id(), *excludedSessionId);
+    }
+
+    return req->Invoke()
+        .Apply(BIND([] (const TSupervisorServiceProxy::TRspGetShuffleWriteSessionPtr& rsp) {
+            return NDistributedChunkSessionClient::TSessionDescriptor{
+                .SessionId = FromProto<NChunkClient::TSessionId>(rsp->session_id()),
+                .SequencerNode = FromProto<NNodeTrackerClient::TNodeDescriptor>(
+                    rsp->sequencer_node()),
+            };
+        }));
+}
+
 NApi::NNative::IConnectionPtr TJobProxy::CreateNativeConnection(
     NApi::NNative::TConnectionCompoundConfigPtr config,
     NApi::NNative::TConnectionOptions options) const
@@ -1224,7 +1301,7 @@ void TJobProxy::ReportResult(
     req->set_finish_time(ToProto(finishTime));
     auto job = FindJob();
     if (job) {
-        FillStatistics(req, job, GetEnrichedStatistics());
+        FillStatistics(req, GetEnrichedStatistics(job));
     }
 
     // Check that data statistics do not contradict with the actual
@@ -1273,31 +1350,29 @@ void TJobProxy::ReportResult(
             }
 
             // We must extract JobProxyPeakMemoryProfile_ from |JobThread_|.
-            std::optional<TFuture<TString>> profileFuture;
+            TFuture<TString> profileFuture;
             YT_UNUSED_FUTURE(WaitFor(
                 BIND([this, &profileFuture] {
-                    profileFuture.swap(JobProxyPeakMemoryProfile_);
+                    std::swap(profileFuture, JobProxyPeakMemoryProfile_);
                 })
                     .AsyncVia(JobThread_->GetInvoker())
-                    .Run()
-            ));
+                    .Run()));
             if (profileFuture) {
                 if (Config_->JobProxyPeakMemoryProfiler->WaitLastProfile) {
-                    WaitUntilSet(profileFuture->AsVoid());
+                    WaitUntilSet(profileFuture.AsVoid());
                 }
 
-                if (profileFuture->IsSet()) {
+                if (profileFuture.IsSet()) {
                     ToProto(
                         req->add_profiles(),
-                        TJobProfile{
-                            .ProfilingBinary = EProfilingBinary::JobProxy,
-                            .ProfilerType = EProfilerType::PeakMemory,
-                            .Blob = profileFuture
-                                ->AsUnique()
+                        TJobProfile(
+                            EProfilingBinary::JobProxy,
+                            EProfilerType::PeakMemory,
+                            1.0,
+                            profileFuture
+                                .AsUnique()
                                 .GetOrCrash()
-                                .Value(),
-                            .ProfilingProbability = 1.0,
-                        });
+                                .ValueOrThrow()));
                 }
             }
         } catch (const std::exception& ex) {
@@ -1377,31 +1452,27 @@ void TJobProxy::InitializeChunkReaderHost()
         clusterContextList);
 }
 
-TStatistics TJobProxy::GetEnrichedStatistics() const
+IJob::TStatistics TJobProxy::GetEnrichedStatistics(const IJobPtr& job) const
 {
-    TStatistics statistics;
+    auto jobStatistics = job ? job->GetStatistics() : IJob::TStatistics{};
+    auto& statistics = jobStatistics.Statistics;
 
     auto statisticsOutputTableCountLimit = Config_->StatisticsOutputTableCountLimit.value_or(std::numeric_limits<int>::max());
 
-    if (auto job = FindJob()) {
-        auto extendedStatistics = job->GetStatistics();
-        statistics = std::move(extendedStatistics.Statistics);
-
+    if (job) {
         if (job->HasInput()) {
-            statistics.AddSample("/data/input"_SP, extendedStatistics.TotalInputStatistics.DataStatistics);
-            DumpCodecStatistics(extendedStatistics.TotalInputStatistics.CodecStatistics, "/codec/cpu/decode"_SP, &statistics);
+            DumpCodecStatistics(jobStatistics.TotalInputStatistics.CodecStatistics, "/codec/cpu/decode"_SP, &statistics);
         }
 
-        for (int index = 0; index < std::min<int>(statisticsOutputTableCountLimit, extendedStatistics.OutputStatistics.size()); ++index) {
+        for (int index = 0; index < std::min<int>(statisticsOutputTableCountLimit, jobStatistics.OutputStatistics.size()); ++index) {
             auto ypathIndex = TStatisticPathLiteral(ToString(index));
-            statistics.AddSample("/data/output"_SP / ypathIndex, extendedStatistics.OutputStatistics[index].DataStatistics);
-            DumpCodecStatistics(extendedStatistics.OutputStatistics[index].CodecStatistics, "/codec/cpu/encode"_SP / ypathIndex, &statistics);
+            DumpCodecStatistics(jobStatistics.OutputStatistics[index].CodecStatistics, "/codec/cpu/encode"_SP / ypathIndex, &statistics);
         }
 
         auto totalChunkReaderStatistics = New<TChunkReaderStatistics>();
         if (GetJobSpecHelper()->GetJobType() == EJobType::RemoteCopy) {
             // Chunk reader statistics for remote copy is collected in a custom way.
-            if (auto chunkReaderStatistics = extendedStatistics.RemoteCopyChunkReaderStatistics) {
+            if (auto chunkReaderStatistics = jobStatistics.RemoteCopyChunkReaderStatistics) {
                 auto remoteCopyJobSpecExt = GetJobSpecHelper()->GetJobSpec()
                     .GetExtension(TRemoteCopyJobSpecExt::remote_copy_job_spec_ext);
 
@@ -1435,14 +1506,14 @@ TStatistics TJobProxy::GetEnrichedStatistics() const
         }
 
         DumpChunkReaderStatistics(&statistics, "/chunk_reader_statistics"_SP, totalChunkReaderStatistics);
-        DumpTimingStatistics(&statistics, "/chunk_reader_statistics"_SP, extendedStatistics.TimingStatistics);
+        DumpTimingStatistics(&statistics, "/chunk_reader_statistics"_SP, jobStatistics.TimingStatistics);
 
-        for (int index = 0; index < std::min<int>(statisticsOutputTableCountLimit, extendedStatistics.ChunkWriterStatistics.size()); ++index) {
+        for (int index = 0; index < std::min<int>(statisticsOutputTableCountLimit, jobStatistics.ChunkWriterStatistics.size()); ++index) {
             auto ypathIndex = TStatisticPathLiteral(ToString(index));
-            DumpChunkWriterStatistics(&statistics, "/chunk_writer_statistics"_SP / ypathIndex, extendedStatistics.ChunkWriterStatistics[index]);
+            DumpChunkWriterStatistics(&statistics, "/chunk_writer_statistics"_SP / ypathIndex, jobStatistics.ChunkWriterStatistics[index]);
         }
 
-        if (const auto& pipeStatistics = extendedStatistics.PipeStatistics) {
+        if (const auto& pipeStatistics = jobStatistics.PipeStatistics) {
             auto dumpPipeStatistics = [&] (const TStatisticPath& path, const IJob::TStatistics::TPipeStatistics& pipeStatistics) {
                 statistics.AddSample(path / "idle_time"_L, pipeStatistics.ConnectionStatistics.IdleDuration);
                 statistics.AddSample(path / "busy_time"_L, pipeStatistics.ConnectionStatistics.BusyDuration);
@@ -1458,15 +1529,15 @@ TStatistics TJobProxy::GetEnrichedStatistics() const
             }
         }
 
-        if (auto time = extendedStatistics.LatencyStatistics.InputTimeToFirstReadBatch) {
+        if (auto time = jobStatistics.LatencyStatistics.InputTimeToFirstReadBatch) {
             statistics.AddSample("/latency/input/time_to_first_read_batch"_SP, *time);
         }
-        if (auto time = extendedStatistics.LatencyStatistics.InputTimeToFirstWrittenBatch) {
+        if (auto time = jobStatistics.LatencyStatistics.InputTimeToFirstWrittenBatch) {
             statistics.AddSample("/latency/input/time_to_first_written_batch"_SP, *time);
         }
 
         TDuration minOutputTimeToFirstBatch = TDuration::Max();
-        for (const auto& [index, time] : Enumerate(extendedStatistics.LatencyStatistics.OutputTimeToFirstReadBatch)) {
+        for (const auto& [index, time] : Enumerate(jobStatistics.LatencyStatistics.OutputTimeToFirstReadBatch)) {
             if (!time) {
                 continue;
             }
@@ -1482,7 +1553,7 @@ TStatistics TJobProxy::GetEnrichedStatistics() const
                 minOutputTimeToFirstBatch);
         }
 
-        for (const auto& [index, timingStatistics] : SEnumerate(extendedStatistics.WriterTimingStatistics)) {
+        for (const auto& [index, timingStatistics] : SEnumerate(jobStatistics.WriterTimingStatistics)) {
             statistics.AddSample(
                 "/chunk_writer_statistics"_SP / TStatisticPathLiteral(ToString(index)) / "write_time"_L,
                 timingStatistics.WriteTime);
@@ -1558,7 +1629,7 @@ TStatistics TJobProxy::GetEnrichedStatistics() const
 
     statistics.SetTimestamp(TInstant::Now());
 
-    return statistics;
+    return jobStatistics;
 }
 
 IUserJobEnvironmentPtr TJobProxy::CreateUserJobEnvironment(const TJobSpecEnvironmentOptions& options) const
@@ -1589,11 +1660,6 @@ IUserJobEnvironmentPtr TJobProxy::CreateUserJobEnvironment(const TJobSpecEnviron
 
         if (!Config_->RootPath) {
             YT_TLOG_INFO("Job is not using custom rootfs");
-            return std::nullopt;
-        }
-
-        if (Config_->TestRootFS) {
-            YT_TLOG_INFO("Job is running in testing rootfs mode");
             return std::nullopt;
         }
 
@@ -1726,6 +1792,7 @@ IUserJobEnvironmentPtr TJobProxy::CreateUserJobEnvironment(const TJobSpecEnviron
         .EnableCudaGpuCoreDump = options.EnableGpuCoreDumps,
         .EnablePortoMemoryTracking = options.EnablePortoMemoryTracking,
         .EnablePorto = options.EnablePorto,
+        .TargetUserId = options.TargetUserId,
         .ThreadLimit = options.ThreadLimit,
     };
 
@@ -2023,6 +2090,16 @@ void TJobProxy::CheckMemoryUsage()
         YT_TLOG_DEBUG("Requesting node for memory usage increase")
             .With("OldMemoryReserve", RequestedMemoryReserve_.load())
             .With("NewMemoryReserve", memoryReserve);
+        // The node may abort the job for overdraft on this request, reporting the statistics it has.
+        // Deliver fresh max_memory first; otherwise the controller agent cannot tell which process overdrafted.
+        auto executedEvent = HeartbeatExecutor_->GetExecutedEvent();
+        HeartbeatExecutor_->ScheduleOutOfBand();
+        auto error = WaitFor(executedEvent);
+        if (error.IsOK()) {
+            error = WaitFor(LastHeartbeatFuture_);
+        }
+        YT_TLOG_ERROR_UNLESS(error.IsOK(), "Failed to send heartbeat before memory reserve increase")
+            .With(error);
         RequestedMemoryReserve_ = memoryReserve;
         UpdateResourceUsage();
     }
@@ -2129,6 +2206,22 @@ void TJobProxy::FillStderrResult(TJobResult* jobResult)
 
 void TJobProxy::Abort(EJobProxyExitCode exitCode)
 {
+    auto abortFuture = AbortFuture_.Transform([&] (TFuture<void>& future) {
+        if (!future) {
+            future = BIND(&TJobProxy::DoAbort, MakeStrong(this), exitCode)
+                .AsyncVia(JobThread_->GetInvoker())
+                .Run()
+                .ToUncancelable();
+        }
+        return future;
+    });
+
+    WaitFor(abortFuture)
+        .ThrowOnError();
+}
+
+void TJobProxy::DoAbort(EJobProxyExitCode exitCode)
+{
     if (Config_->SendHeartbeatBeforeAbort) {
         auto error = WaitFor(HeartbeatExecutor_->GetExecutedEvent());
         YT_TLOG_ERROR_UNLESS(error.IsOK(), "Failed to send heartbeat before abort")
@@ -2157,7 +2250,7 @@ bool TJobProxy::TrySetCpuGuarantee(double cpuGuarantee)
         YT_TLOG_INFO("Changed CPU share")
             .With("OldCpuShare", CpuGuarantee_.load())
             .With("NewCpuShare", cpuGuarantee);
-        CpuGuarantee_ = cpuGuarantee;
+        SetCpuGuarantee(cpuGuarantee);
         UpdateResourceUsage();
         return true;
     } else {
@@ -2344,7 +2437,7 @@ void TJobProxy::OnMemoryEstimationExceeded(i64 usage)
 
     auto job = FindJob();
     if (job) {
-        YT_TLOG_INFO("Profiling Job proxy peak memory")
+        YT_TLOG_INFO("Profiling job proxy peak memory")
             .With("RunExternalSymbolizer", Config_->JobProxyPeakMemoryProfiler->RunExternalSymbolizer);
         JobProxyPeakMemoryProfile_ = ProfileJobProxyPeakMemory(
             Config_->JobProxyPeakMemoryProfiler->RunExternalSymbolizer);

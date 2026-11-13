@@ -6,7 +6,7 @@ Go computation support in Flow is built on the [companion](../../flow/concepts/g
 
 [Examples]({{source-root}}/yt/yt/flow/examples/go)
 
-The SDK is imported as `a.yandex-team.ru/yt/go/flow`.
+{% if audience == "internal" %}The SDK is imported as `a.yandex-team.ru/yt/go/flow`.{% else %}Import the SDK as `go.ytsaurus.tech/yt/go/flow`.{% endif %}
 
 ## Application architecture {#architecture}
 
@@ -101,7 +101,7 @@ For details, see [The distribute flag (Go)](distribute.md).
 
 The entry point of a Go companion is the `main` function. In it, configure the computations through `flow.Pipeline` and call `pipeline.Run()`. The `main` function from [WordCount](examples/wordcount.md):
 
-{% code '/yt/yt/flow/examples/go/word_count/main.go' lang='go' %}
+{% code '/yt/yt/flow/examples/go/word_count/main.go' lang='go' lines='[BEGIN main]-[END main]' %}
 
 If your functions need additional resources (a dictionary, a cache, an HTTP client, and so on), `main` is the place to create them: put them into the fields of the value that is bound to the computation.
 
@@ -156,6 +156,18 @@ cd yt/yt/flow
 ya make examples/go/word_count bin/flow_server
 ```
 
+## Using the SDK as a Go module {#go-module}
+
+Outside the repository build, the SDK is the Go module `go.ytsaurus.tech/yt/go/flow`. It is released together with the other Flow components, at the version of the Flow release, so pin the version of the release you run:
+
+```bash
+go get go.ytsaurus.tech/yt/go/flow@vX.Y.Z
+```
+
+The module names the `go.ytsaurus.tech/yt/go` release it needs, and `go get` picks it up. Don't pin `go.ytsaurus.tech/yt/go` below that release: earlier releases still contain the `flow` packages themselves, and the build fails with `ambiguous import`.
+
+Build the pipeline binary with `go build` and start it as described below, passing a `flow_server` of the same release through `--flow-bin`. To launch it from the released Flow image instead, see [Running in a docker environment](../devops/docker-environment.md#languages).
+
 ## Starting a pipeline {#launch}
 
 Run the built binary with:
@@ -171,7 +183,7 @@ Here is what happens:
 
 Unknown command-line flags are skipped rather than rejected: the pipeline binary is your own program, and it is free to declare its own flags.
 
-`flow_server` is passed explicitly through `--flow-bin` and isn’t embedded into the Go binary: this keeps the pipeline lightweight, and whoever starts the pipeline chooses the `flow_server` version.
+`flow_server` is not embedded in the Go binary: this keeps the pipeline lightweight and allows whoever starts the pipeline to select the `flow_server` version. If `--flow-bin` is not specified, the runner uses the path from the `YT_FLOW_BIN` environment variable.
 
 The entire startup is performed by `flow_server`: it validates the spec, creates a vanilla operation if needed, **installs the pipeline spec** (`set-pipeline-specs`), and starts the pipeline. The Go side only *builds* and enriches the spec and never installs it directly.
 
@@ -203,14 +215,15 @@ If `pipeline.yson` contains a `vanilla` block with `enable = %true`, `flow_serve
 
 The required parameters are `pool` and `worker.count`. The remaining fields (`cpu_limit`, `memory_limit`, the number of controllers, and so on) have reasonable defaults — for the full list of fields and their descriptions, see [TVanillaConfig](../../flow/generated_docs/all_yson_structs.md#NYT_NFlow_TVanillaConfig) and [TVanillaTaskConfig](../../flow/generated_docs/all_yson_structs.md#NYT_NFlow_TVanillaTaskConfig).
 
-Spec enrichment is performed specifically for a vanilla start and consists of two edits:
+The Go runner adds registered stream schemas to `spec.streams` when they are not already present. With Vanilla enabled, it also makes these changes:
 
 - The pipeline binary is added to `vanilla.worker.local_files` under the name `go_companion` — `flow_server` delivers it to the job sandbox under that name.
-- Every resource with `resource_class_name = "NYT::NFlow::NCompanion::TCompanionManager"` gets `parameters.entrypoint.executable = "./go_companion"`, so the worker starts the companion from the sandbox itself.
+- Every resource with `resource_class_name = "NYT::NFlow::NCompanion::TCompanionManager"` without a declared `parameters.entrypoint.executable` (or with `./go_companion`) gets `parameters.entrypoint.executable = "./go_companion"`, so the worker starts the companion from the sandbox itself. A declared one is kept, and when every such resource declares one, the binary is not shipped.
+- `vanilla.worker.port_count` is raised to at least `3` for the companion.
 
 {% note info %}
 
-A pipeline started without a vanilla operation works with the companion at the host path already written in its spec — in that case enrichment changes nothing.
+Without Vanilla, the runner still adds registered stream schemas. It leaves the companion host path already written in the spec unchanged.
 
 {% endnote %}
 

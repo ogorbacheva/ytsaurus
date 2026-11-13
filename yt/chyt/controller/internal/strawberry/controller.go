@@ -9,16 +9,19 @@ import (
 	"go.ytsaurus.tech/yt/go/yt"
 )
 
+type PrepareResult struct {
+	Spec        map[string]any
+	Description map[string]any
+	Annotations map[string]any
+	OpletInfo   yson.RawValue
+	RunAsUser   bool
+}
+
 // Controller encapsulates particular application business logic, in particular:
 // how operations should be started, which files to bring with them, how to check liveness, etc.
 type Controller interface {
-	// Prepare builds all necessary operation spec fields.
-	Prepare(ctx context.Context, oplet *Oplet) (
-		spec map[string]any,
-		description map[string]any,
-		annotation map[string]any,
-		runAsUser bool,
-		err error)
+	// Prepare builds operation spec fields and metadata without changing persistent state.
+	Prepare(ctx context.Context, oplet *Oplet) (*PrepareResult, error)
 
 	// Family returns short lowercase_with_underscore identifier which is included to all vanilla
 	// operation annotations started by this strawberry controller. This allows efficient operation
@@ -36,6 +39,9 @@ type Controller interface {
 
 	// GetControllerSnapshot returns snapshot of controller state for tracking oplet coherence.
 	GetControllerSnapshot() (yson.RawValue, error)
+
+	// IsControllerSnapshotOutdated compares a stored snapshot with the current state using the oplet's restart policy.
+	IsControllerSnapshotOutdated(snapshot yson.RawValue, oplet *Oplet) (bool, error)
 
 	// DescribeOptions returns human-readable descriptors for controller-related speclet options.
 	// Some options can be missing in the result if they are not intended to be visible through user interfaces.
@@ -55,9 +61,6 @@ type Controller interface {
 	// Returns `nil` if scaling is not required.
 	// May be called concurrently since it is accessed from `runScaler`, not from `background` goroutine.
 	GetScalerTarget(ctx context.Context, opletInfo OpletInfoForScaler) (*ScalerTarget, error)
-
-	// COMPAT(buyval01): Temporary auxiliary method that is only needed to modify persistent state.
-	GetOpletInfo(ctx context.Context, oplet *Oplet) (any, error)
 
 	// CheckState gets family specific info about oplet health state and if it needs to be restarted.
 	CheckState(ctx context.Context, oplet *Oplet) (ControllerOpletState, error)
@@ -81,8 +84,9 @@ type MetricsProvider interface {
 }
 
 type ControllerFactory struct {
-	Ctor   func(l log.Logger, ytc yt.Client, root ypath.Path, cluster string, config yson.RawValue) Controller
-	Config yson.RawValue
+	Ctor       func(l log.Logger, ytc yt.Client, root ypath.Path, cluster string, config yson.RawValue) Controller
+	Config     yson.RawValue
+	Deprecated bool
 	// TODO(max): extra commands is actually of type []api.CmdDescriptor, but we can't import it here
 	// without creating a circular dependency. Come up with a better solution.
 	ExtraCommands any

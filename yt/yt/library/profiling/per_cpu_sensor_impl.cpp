@@ -2,7 +2,9 @@
 
 #include "summary.h"
 
-#include <library/cpp/yt/system/tscp.h>
+#include <library/cpp/yt/cpu_clock/clock.h>
+
+#include <library/cpp/yt/system/access_spreader.h>
 
 namespace NYT::NProfiling {
 
@@ -10,8 +12,8 @@ namespace NYT::NProfiling {
 
 void TPerCpuCounter::Increment(i64 delta)
 {
-    auto tscp = TTscp::Get();
-    Shards_[tscp.ProcessorId].Value.fetch_add(delta, std::memory_order::relaxed);
+    int stripeIndex = GetCurrentAccessStripe(PerCpuShardCount);
+    Shards_[stripeIndex].Value.fetch_add(delta, std::memory_order::relaxed);
 }
 
 i64 TPerCpuCounter::GetValue()
@@ -27,8 +29,8 @@ i64 TPerCpuCounter::GetValue()
 
 void TPerCpuTimeCounter::Add(TDuration delta)
 {
-    auto tscp = TTscp::Get();
-    Shards_[tscp.ProcessorId].Value.fetch_add(delta.GetValue(), std::memory_order::relaxed);
+    int stripeIndex = GetCurrentAccessStripe(PerCpuShardCount);
+    Shards_[stripeIndex].Value.fetch_add(delta.GetValue(), std::memory_order::relaxed);
 }
 
 TDuration TPerCpuTimeCounter::GetValue()
@@ -60,14 +62,15 @@ TPerCpuGauge::TWrite TPerCpuGauge::TWrite::Unpack(__int128 i)
 
 void TPerCpuGauge::Update(double value)
 {
-    auto tscp = TTscp::Get();
+    int stripeIndex = GetCurrentAccessStripe(PerCpuShardCount);
+    TCpuInstant timestamp = GetApproximateCpuInstant();
 
-    TWrite write{value, tscp.Instant};
+    TWrite write{value, timestamp};
 #ifdef __clang__
-    Shards_[tscp.ProcessorId].Value.store(write.Pack(), std::memory_order::relaxed);
+    Shards_[stripeIndex].Value.store(write.Pack(), std::memory_order::relaxed);
 #else
-    auto guard = Guard(Shards_[tscp.ProcessorId].Lock);
-    Shards_[tscp.ProcessorId].Value = write;
+    auto guard = Guard(Shards_[stripeIndex].Lock);
+    Shards_[stripeIndex].Value = write;
 #endif
 }
 
@@ -98,8 +101,7 @@ double TPerCpuGauge::GetValue()
 template <class T>
 void TPerCpuSummary<T>::Record(T value)
 {
-    auto tscp = TTscp::Get();
-    auto& shard = Shards_[tscp.ProcessorId];
+    auto& shard = Shards_[GetCurrentAccessStripe(PerCpuShardCount)];
     auto guard = Guard(shard.Lock);
     shard.Value.Record(value);
     shard.Empty.store(false, std::memory_order::release);

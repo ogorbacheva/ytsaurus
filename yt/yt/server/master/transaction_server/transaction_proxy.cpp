@@ -23,6 +23,7 @@
 
 #include <yt/yt/core/ytree/convert.h>
 #include <yt/yt/core/ytree/fluent.h>
+#include <yt/yt/core/ytree/ypath_proxy.h>
 
 namespace NYT::NTransactionServer {
 
@@ -106,6 +107,7 @@ private:
         descriptors->push_back(EInternedAttributeKey::LeaseCellIds);
         descriptors->push_back(EInternedAttributeKey::SuccessorTransactionLeaseCount);
         descriptors->push_back(EInternedAttributeKey::LeasesState);
+        descriptors->push_back(EInternedAttributeKey::InitiatorId);
     }
 
     bool GetBuiltinAttribute(TInternedAttributeKey key, IYsonConsumer* consumer) override
@@ -220,6 +222,11 @@ private:
                     .Value(transaction->ExportedObjects().size());
                 return true;
 
+            case EInternedAttributeKey::InitiatorId:
+                BuildYsonFluently(consumer)
+                    .Value(transaction->GetInitiatorId());
+                return true;
+
             default:
                 break;
         }
@@ -239,6 +246,18 @@ private:
                         transaction,
                         TDuration::MilliSeconds(ConvertTo<i64>(value)));
                 return true;
+
+            case EInternedAttributeKey::Owner: {
+                auto* subject = Bootstrap_
+                    ->GetSecurityManager()
+                    ->GetSubjectByNameOrAliasOrThrow(ConvertTo<std::string>(value), /*activeLifeStageOnly*/ true);
+                // There are Owner->AsUser() casts in CommitTransaction() and AbortTransaction(), see YT-29619.
+                THROW_ERROR_EXCEPTION_UNLESS(subject->IsUser(),
+                    "Subject %Qv cannot own a transaction since it is not a user",
+                    subject->GetName());
+                break;
+            }
+
             default:
                 break;
         }

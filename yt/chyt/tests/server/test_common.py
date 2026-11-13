@@ -3,12 +3,12 @@ from helpers import (get_object_attribute_cache_config, get_schema_from_descript
 
 from yt_commands import (authors, raises_yt_error, create, create_user, make_ace, exists, abort_job, write_table, get,
                          get_table_columnar_statistics, set_node_banned, remove, read_table, sync_create_cells, sync_mount_table,
-                         sync_unmount_table, insert_rows, print_debug, merge, set, remove_user)
+                         sync_unmount_table, insert_rows, print_debug, merge, set, remove_user, make_rl_ace)
 
 from yt_sequoia_helpers import not_implemented_in_sequoia
 
 from base import (ClickHouseTestBase, Clique, QueryFailedError, UserJobFailed, InstanceUnavailableCode, enable_sequoia,
-                  grant_system_permissions_to_clickhouse_user)
+                  grant_system_permissions_to_clickhouse_user, DEFAULT_ORCHID_ROOT, with_tablet_cell)
 
 from yt.common import YtError, wait, parts_to_uuid, update_inplace, update as config_update
 
@@ -189,6 +189,7 @@ class TestClickHouseCommon(ClickHouseTestBase):
             assert get("//tmp/test_table/@chunk_count") == 2
             assert clique.make_query('select distinct value from "//tmp/test_table" where value = 1') == [{"value": 1}]
 
+    @with_tablet_cell
     @authors("a-dyu")
     @pytest.mark.timeout(150)
     def test_simple_distinct_optimization(self):
@@ -444,29 +445,21 @@ class TestClickHouseCommon(ClickHouseTestBase):
 
     @authors("evgenstf")
     def test_orchid_error_handle(self):
-        if not exists("//sys/clickhouse/orchids"):
-            create("map_node", "//sys/clickhouse/orchids")
-
         create_user("test_user")
         set(
-            "//sys/clickhouse/@acl",
+            DEFAULT_ORCHID_ROOT + "/@acl",
             [
                 make_ace("allow", "test_user", ["write", "create", "remove", "modify_children"]),
-            ],
-        )
-        set("//sys/accounts/sys/@acl", [make_ace("allow", "test_user", "use")])
-
-        set(
-            "//sys/clickhouse/orchids/@acl",
-            [
                 make_ace("deny", "test_user", "create"),
             ],
         )
+        set("//sys/accounts/sys/@acl", [make_ace("allow", "test_user", "use")])
 
         with pytest.raises(YtError):
             with Clique(1, config_patch={"yt": {"user": "test_user"}}):
                 pass
 
+    @with_tablet_cell
     @authors("a-dyu")
     def test_min_max_optimization(self):
         table_schema = [{"name": "a", "type": "int64"}, {"name": "b", "type": "string"}, {"name": "c", "type": "int64"}]
@@ -491,7 +484,7 @@ class TestClickHouseCommon(ClickHouseTestBase):
                 },
             }
         }
-        with Clique(1, config_patch=patch, export_query_log=True) as clique:
+        with Clique(1, config_patch=patch, export_query_log=True, disable_chunk_spec_cache=True) as clique:
             assert clique.make_query("select min(a) from '//tmp/t/empty'") == [{"min(a)": None}]
             assert clique.make_query_and_validate_prewhered_row_count("select min(a) from '//tmp/t/1'", exact=2) == [{"min(a)": 0}]
             assert clique.make_query_and_validate_prewhered_row_count("select max(a) from '//tmp/t/1'", exact=2) == [{"max(a)": 4}]
@@ -573,6 +566,11 @@ class TestClickHouseCommon(ClickHouseTestBase):
         finally:
             if node_to_ban is not None:
                 set_node_banned(node_to_ban, False)
+
+    @authors("buyval01")
+    def test_no_default_orchid_root(self):
+        with Clique(1, config_patch={"yt": {"orchid_root": ""}}) as clique:
+            assert not exists("{}/{}".format(DEFAULT_ORCHID_ROOT, clique.op.id))
 
     @authors("evgenstf")
     def test_subquery_data_weight_limit_exceeded(self):
@@ -2297,7 +2295,6 @@ class TestClickHouseCommon(ClickHouseTestBase):
             assert clique.make_query(query) == [{"res": 3}, {"res": 5}]
 
     @authors("coteeq")
-    @not_implemented_in_sequoia
     def test_rls(self):
         with Clique(1) as clique:
             create_user("u")
@@ -2316,10 +2313,9 @@ class TestClickHouseCommon(ClickHouseTestBase):
             write_table("//tmp/t", [{"key": 15, "value": "value2"}, {"key": 16, "value": "value3"}])
 
             acl = [
-                make_ace("allow", "u", "read"),
-                make_ace("allow", "u", "read"),
+                make_rl_ace("u"),
+                make_rl_ace("u", "key = 15"),
             ]
-            acl[-1]["row_access_predicate"] = "key = 15"
             set("//tmp/t/@acl", acl)
 
             def make_query(query):
@@ -2341,6 +2337,47 @@ class TestClickHouseCommon(ClickHouseTestBase):
                 clique.make_query('select * from "//tmp/t"', user="u")
 
     @authors("coteeq")
+    @pytest.mark.parametrize("optimize_for", ["scan", "lookup"])
+    def test_row_level_acl_authenticated_user(self, optimize_for):
+        users = ["val_2", "val_7", "no_matching_rows"]
+        for user in users:
+            create_user(user)
+        create(
+            "table",
+            "//tmp/t",
+            attributes={
+                "schema": [
+                    {"name": "key", "type": "int64"},
+                    {"name": "value", "type": "string"},
+                ],
+                "optimize_for": optimize_for,
+                "inherit_acl": False,
+                "acl": [
+                    make_rl_ace(users),
+                    make_rl_ace(users, "value = [$authenticated_user]"),
+                ],
+            },
+        )
+        rows = [{"key": value, "value": f"val_{value}"} for value in [2, 7, 9]]
+        for row in rows:
+            write_table("<append=%true>//tmp/t", [row])
+
+        with Clique(2) as clique:
+            for user in users:
+                expected = [{"key": row["key"]} for row in rows if row["value"] == user]
+                settings = {"chyt.omit_inaccessible_rows": 1}
+                assert clique.make_query(
+                    'select key from "//tmp/t" order by key',
+                    user=user,
+                    settings=settings,
+                ) == expected
+                assert clique.make_query(
+                    'select count() as cnt from "//tmp/t"',
+                    user=user,
+                    settings=settings,
+                ) == [{"cnt": len(expected)}]
+
+    @authors("coteeq")
     def test_dictionary_with_row_level_acl(self):
         create_user("u")
 
@@ -2359,13 +2396,11 @@ class TestClickHouseCommon(ClickHouseTestBase):
         write_table("//tmp/t", [{"key": 15, "value": "value15"}, {"key": 16, "value": "value16"}])
 
         acl = [
-            make_ace("allow", "u", "read"),
-            make_ace("allow", "u", "read"),
-            make_ace("allow", "yt-clickhouse", "read"),
-            make_ace("allow", "yt-clickhouse", "read"),
+            make_rl_ace("u"),
+            make_rl_ace("u", "key = 15"),
+            make_rl_ace("yt-clickhouse"),
+            make_rl_ace("yt-clickhouse", "key = 16"),
         ]
-        acl[1]["row_access_predicate"] = "key = 15"
-        acl[3]["row_access_predicate"] = "key = 16"
         set("//tmp/t/@acl", acl)
 
         dict_config = {
@@ -2615,7 +2650,7 @@ class TestDataTypeConversion(ClickHouseTestBase):
         data.append(get_row(None))
         write_table("//tmp/t", data)
 
-        with Clique(1, config_patch=self.low_cardinality_config()) as clique:
+        with Clique(1, config_patch=self.low_cardinality_config(), disable_chunk_spec_cache=True) as clique:
             settings = {
                 "chyt.conversion.low_cardinality.mode": "all",
             }
@@ -2982,6 +3017,73 @@ class TestCustomSettings(ClickHouseTestBase):
                             clique.make_query("select * from `//tmp/t`", settings=settings)
                     else:
                         assert clique.make_query("select * from `//tmp/t`", settings=settings) == [{"a": 1}]
+
+    @authors("buyval01")
+    def test_dynamic_defaults(self):
+        dynamic_config_path = "//tmp/chyt_dynamic_config"
+        create("document", dynamic_config_path, attributes={"value": {
+            "yt": {
+                "query_settings": {
+                    "testing": {
+                        "throw_exception_in_distributor": True,
+                        "throw_exception_in_subquery": True,
+                    },
+                },
+            },
+        }})
+        create("table", "//tmp/t", attributes={"schema": [{"name": "a", "type": "int64"}]})
+        write_table("//tmp/t", [{"a": 1}])
+
+        config_patch = {
+            "yt": {
+                "query_settings": {
+                    "testing": {
+                        "throw_exception_in_subquery": False,
+                    },
+                },
+            },
+            "dynamic_config_path": dynamic_config_path,
+            "dynamic_config_manager": {
+                "update_period": 100,
+            },
+        }
+        with Clique(1, config_patch=config_patch) as clique:
+            instance = clique.get_active_instances()[0]
+
+            def get_testing_config():
+                dynamic_config = clique.get_orchid(
+                    instance,
+                    "/dynamic_config",
+                    verbose=False,
+                )
+                yt_config = dynamic_config.get("effective_config", {}).get("yt", {})
+                query_settings = yt_config.get("query_settings", {})
+                return query_settings.get("testing", {})
+
+            wait(lambda: get_testing_config().get("throw_exception_in_distributor"))
+            assert not get_testing_config()["throw_exception_in_subquery"]
+
+            with raises_yt_error("Testing exception in distributor"):
+                clique.make_query("select * from `//tmp/t`")
+
+            assert clique.make_query(
+                "select * from `//tmp/t`",
+                settings={"chyt.testing.throw_exception_in_distributor": 0},
+            ) == [{"a": 1}]
+
+            set(dynamic_config_path, {
+                "yt": {
+                    "query_settings": {
+                        "testing": {
+                            "throw_exception_in_distributor": False,
+                            "throw_exception_in_subquery": True,
+                        },
+                    },
+                },
+            })
+            wait(lambda: not get_testing_config()["throw_exception_in_distributor"])
+            assert not get_testing_config()["throw_exception_in_subquery"]
+            assert clique.make_query("select * from `//tmp/t`") == [{"a": 1}]
 
     @authors("max42")
     def test_boolean(self):

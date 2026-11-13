@@ -1,24 +1,37 @@
 #pragma once
 
-#include "companion_client.h"
-#include "companion_manager.h"
-#include "companion_model.h"
-#include "companion_resource.h"
 #include "public.h"
+
+#include <yt/yt/flow/library/cpp/companion/client/companion_client.h>
+#include <yt/yt/flow/library/cpp/companion/client/companion_model.h>
+#include <yt/yt/flow/library/cpp/companion/manager/companion_manager.h>
+#include <yt/yt/flow/library/cpp/companion/resources/companion_resource.h>
+
+#include <yt/yt/flow/library/cpp/common/registry.h>
+
 #include <yt/yt/flow/library/cpp/computation/computation_base.h>
 
 #include <functional>
 
-namespace NYT::NFlow {
-
-struct TSimpleExternalState;
-
-template <class T>
-class TJoinedStateKeyClient;
-
-} // namespace NYT::NFlow
-
 namespace NYT::NFlow::NCompanion {
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TCompanionFunctionParameters
+    : public virtual NYTree::TYsonStruct
+{
+    //! IDs of the application functions the companion runs in this computation.
+    std::optional<std::vector<std::string>> FunctionIds;
+
+    REGISTER_YSON_STRUCT(TCompanionFunctionParameters);
+
+    static void Register(TRegistrar registrar);
+};
+
+//! Rejects |function_ids| unless the companion advertised that it resolves them.
+void ValidateCompanionFunctionIds(
+    const TCompanionFunctionParameters& parameters,
+    const TCompanionComputationInfo& computationInfo);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -38,13 +51,17 @@ TCompanionResponsePtr ProcessWithCompanionHealing(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-//! Packs read-only joined external states into |request|: for every joiner, the loaded states for
-//! its extract-derived keys — the keys its preload loaded, derived from the whole batch rather
-//! than from a single message key.
+//! Packs read-only joined external states into |request|: for every joiner adapter, the encoded
+//! states for its extract-derived keys — the keys its preload loaded, derived from the whole
+//! batch rather than from a single message key.
 void AddJoinedExternalStates(
     const TCompanionProcessRequestPtr& request,
-    const THashMap<std::string, TJoinedStateKeyClient<TSimpleExternalState>>& joiners,
+    const THashMap<std::string, ICompanionStateAdapterPtr>& joiners,
     const IInputContextPtr& input);
+
+//! Rejects an external state manager with ``auto_preload = %false``: companion states are
+//! shipped with the batch, so the companion cannot preload on demand.
+void ValidateExternalStateManagersAutoPreload(const TComputationSpec& spec);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -60,7 +77,11 @@ class TCompanionComputationBaseAdapter
     // Verify that TBase is derived from TUniversalComputationBase.
     static_assert(std::derived_from<TBase, TUniversalComputationBase>);
 
+    using TExtendedParameters = TCombinedYsonStruct<typename TBase::TParameters, TCompanionFunctionParameters>;
+
 public:
+    YT_FLOW_EXTEND_PARAMETERS(TExtendedParameters, TBase);
+
     TCompanionComputationBaseAdapter(
         TComputationContextPtr context,
         TDynamicComputationContextPtr dynamicContext);
@@ -74,11 +95,20 @@ protected:
     //! Fetches and validates companion info.
     /*!
      *  This method should be called from DoInit() of the derived class.
-     *  It fetches the companion info and validates that the computation exists
-     *  and that the companion supports resource commands when the computation
-     *  requires companion resources.
+     *  It fetches the companion info and validates that the computation exists,
+     *  that the companion supports resource commands when the computation
+     *  requires companion resources, and that it resolves |function_ids| when
+     *  the parameter is set.
      */
     void FetchAndValidateCompanionInfo();
+
+    //! Verifies that the companion advertised support for the wire format of the
+    //! state described by |descriptor|. Must be called after #FetchAndValidateCompanionInfo.
+    /*!
+     *  A state with a format the companion did not advertise must never be sent to it;
+     *  the thrown error asks to update the companion SDK.
+     */
+    void ValidateCompanionStateFormat(const TCompanionStateDescriptor& descriptor);
 
     //! Put job info to companion context.
     /*!

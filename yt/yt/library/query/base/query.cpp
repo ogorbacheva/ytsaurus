@@ -1,5 +1,4 @@
 #include "query.h"
-#include "query_helpers.h"
 #include "query_visitors.h"
 #include "helpers.h"
 
@@ -23,6 +22,10 @@ using NCodegen::EOptimizationLevel;
 
 struct TExpressionRowsetTag
 { };
+
+// COMPAT(sabdenovch)
+constexpr i64 UnorderedReadHint = std::numeric_limits<i64>::max();
+constexpr i64 OrderedReadWithPrefetchHint = UnorderedReadHint - 1;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -394,13 +397,26 @@ std::vector<size_t> TJoinClause::GetForeignColumnIndices() const
     auto joinRenamedTableColumns = GetRenamedSchema()->Columns();
 
     if (GroupClause) {
+        THashMap<std::string, size_t> groupColumnIndices;
         size_t foreignColumnsIndex = 0;
         for (const auto& groupItem : GroupClause->GroupItems) {
-            if (ForeignJoinedColumns.contains(groupItem.Name)) {
-                foreignColumns.push_back(foreignColumnsIndex);
+            if (const auto* reference = groupItem.Expression->As<TReferenceExpression>()) {
+                groupColumnIndices.emplace(reference->ColumnName, foreignColumnsIndex);
             }
             foreignColumnsIndex++;
         }
+
+        for (const auto& renamedColumn : joinRenamedTableColumns) {
+            if (ForeignJoinedColumns.contains(renamedColumn.Name())) {
+                auto it = groupColumnIndices.find(renamedColumn.Name());
+                if (it == groupColumnIndices.end()) {
+                    THROW_ERROR_EXCEPTION("Foreign column %Qv is missing from the pushed group clause",
+                        renamedColumn.Name());
+                }
+                foreignColumns.push_back(it->second);
+            }
+        }
+
         for (const auto& _ : GroupClause->AggregateItems) {
             foreignColumns.push_back(foreignColumnsIndex++);
         }
@@ -468,19 +484,7 @@ TQueryPtr THierarchicalJoinClause::GetJoinSubquery() const
         "Expected one join clause, but got %v",
         std::ssize(JoiningSubquery->JoinClauses));
 
-    auto whereClause = JoiningSubquery->JoinClauses[0]->Predicate;
-
-    if (IsLeft && JoiningSubquery->WhereClause) {
-        // WhereClause filter stays as correctness guard: it excludes rows for unmatched keys.
-        // Pushing this predicate into the fetch subplan is an optimization.
-        auto foreignRenamedSchema = GetForeignTableRenamedSchema();
-        auto [foreignFilter, _] = SplitPredicateByColumnSubset(JoiningSubquery->WhereClause, *foreignRenamedSchema);
-        if (!IsTrue(foreignFilter)) {
-            whereClause = MakeAndExpression(whereClause, foreignFilter);
-        }
-    }
-
-    joinSubplan->WhereClause = whereClause;
+    joinSubplan->WhereClause = JoiningSubquery->JoinClauses[0]->Predicate;
 
     auto projectClause = New<TProjectClause>();
     for (const auto& column : ForeignEquations) {
@@ -599,6 +603,25 @@ TWhenThenExpression::TWhenThenExpression(TConstExpressionPtr condition, TConstEx
 
 ////////////////////////////////////////////////////////////////////////////////
 
+EScanOrder DeriveLegacyScanOrder(const TConstBaseQueryPtr& query, bool allowUnorderedGroupByWithLimit)
+{
+    // COMPAT(sabdenovch)
+    if (query->Limit || query->Prefetching) {
+        if (allowUnorderedGroupByWithLimit) {
+            bool ordered = !query->OrderClause &&
+                (!query->GroupClause ||
+                 query->GroupClause->AllAggregatesAreFirst() ||
+                 query->GroupClause->CommonPrefixWithPrimaryKey > 0);
+            return ordered ? EScanOrder::Ordered : EScanOrder::Unordered;
+        } else {
+            return !query->OrderClause ? EScanOrder::Ordered : EScanOrder::Unordered;
+        }
+    } else {
+        YT_VERIFY(!query->OrderClause);
+        return EScanOrder::Unordered;
+    }
+}
+
 TBaseQuery::TBaseQuery(TGuid id)
     : Id(id)
 { }
@@ -612,34 +635,11 @@ TBaseQuery::TBaseQuery(const TBaseQuery& other)
     , ProjectClause(other.ProjectClause)
     , Offset(other.Offset)
     , Limit(other.Limit)
+    , ScanOrder(other.ScanOrder)
     , UseDisjointGroupBy(other.UseDisjointGroupBy)
     , InferRanges(other.InferRanges)
-    , IsReverseScan(other.IsReverseScan)
+    , Prefetching(other.Prefetching)
 { }
-
-EScanOrder TBaseQuery::GetScanOrder(bool allowUnorderedGroupByWithLimit) const
-{
-    if (IsReverseScan) {
-        return EScanOrder::Reversed;
-    }
-
-    if (Limit < std::numeric_limits<i64>::max()) {
-        if (allowUnorderedGroupByWithLimit) {
-            bool ordered = !OrderClause && (!GroupClause || GroupClause->AllAggregatesAreFirst() || GroupClause->CommonPrefixWithPrimaryKey > 0);
-            return ordered ? EScanOrder::Ordered : EScanOrder::Unordered;
-        } else {
-            return !OrderClause ? EScanOrder::Ordered : EScanOrder::Unordered;
-        }
-    } else {
-        YT_VERIFY(!OrderClause);
-        return EScanOrder::Unordered;
-    }
-}
-
-bool TBaseQuery::IsPrefetching() const
-{
-    return Limit == OrderedReadWithPrefetchHint;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -883,11 +883,11 @@ std::string InferName(TConstBaseQueryPtr query, const TInferNameOptions& options
         clauses.push_back(std::string("ORDER BY ") + JoinToString(query->OrderClause->OrderItems, orderItemFormatter));
     }
 
-    if (query->Limit < std::numeric_limits<i64>::max()) {
+    if (query->Limit) {
         if (query->Offset != 0) {
             clauses.push_back(std::string("OFFSET ") + (options.OmitValues ? "?" : ToString(query->Offset)));
         }
-        clauses.push_back(std::string("LIMIT ") + (options.OmitValues ? "?" : ToString(query->Limit)));
+        clauses.push_back(std::string("LIMIT ") + (options.OmitValues ? "?" : ToString(*query->Limit)));
     }
 
     return JoinToString(clauses, TStringBuf(" "));
@@ -1040,7 +1040,23 @@ bool Compare(
         CHECK(subqueryRhs);
 
         CHECK(Compare(subqueryLhs->FromExpressions, subqueryRhs->FromExpressions, referenceComparer));
-        CHECK(Compare(subqueryLhs->WhereClause, subqueryRhs->WhereClause, referenceComparer));
+        CHECK(static_cast<bool>(subqueryLhs->WhereClause) == static_cast<bool>(subqueryRhs->WhereClause));
+        if (subqueryLhs->WhereClause) {
+            CHECK(Compare(subqueryLhs->WhereClause, subqueryRhs->WhereClause, referenceComparer));
+        }
+
+        CHECK(subqueryLhs->Offset == subqueryRhs->Offset);
+        CHECK(subqueryLhs->Limit == subqueryRhs->Limit);
+        CHECK(static_cast<bool>(subqueryLhs->OrderClause) == static_cast<bool>(subqueryRhs->OrderClause));
+        if (subqueryLhs->OrderClause) {
+            const auto& lhsItems = subqueryLhs->OrderClause->OrderItems;
+            const auto& rhsItems = subqueryRhs->OrderClause->OrderItems;
+            CHECK(lhsItems.size() == rhsItems.size());
+            for (int index = 0; index < std::ssize(lhsItems); ++index) {
+                CHECK(lhsItems[index].Descending == rhsItems[index].Descending);
+                CHECK(Compare(lhsItems[index].Expression, rhsItems[index].Expression, referenceComparer));
+            }
+        }
 
         if (subqueryLhs->ProjectClause) {
             CHECK(subqueryRhs->ProjectClause);
@@ -1138,6 +1154,9 @@ void FromProto(TConstGroupClausePtr* original, const NProto::TGroupClause& seria
 
 void ToProto(NProto::TProjectClause* proto, const TConstProjectClausePtr& original);
 void FromProto(TConstProjectClausePtr* original, const NProto::TProjectClause& serialized);
+
+void ToProto(NProto::TOrderClause* proto, const TConstOrderClausePtr& original);
+void FromProto(TConstOrderClausePtr* original, const NProto::TOrderClause& serialized);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1356,6 +1375,15 @@ void ToProto(NProto::TExpression* serialized, const TConstExpressionPtr& origina
             ToProto(proto->mutable_project_clause(), subqueryExpr->ProjectClause);
         }
 
+        if (subqueryExpr->OrderClause) {
+            ToProto(proto->mutable_order_clause(), subqueryExpr->OrderClause);
+        }
+
+        proto->set_offset(subqueryExpr->Offset);
+        if (subqueryExpr->Limit) {
+            proto->set_limit(*subqueryExpr->Limit);
+        }
+
         ToProto(proto->mutable_join_clauses(), subqueryExpr->JoinClauses);
     }
 }
@@ -1552,6 +1580,16 @@ void FromProto(TConstExpressionPtr* original, const NProto::TExpression& seriali
 
             if (ext.has_project_clause()) {
                 FromProto(&result->ProjectClause, ext.project_clause());
+            }
+
+            if (ext.has_order_clause()) {
+                FromProto(&result->OrderClause, ext.order_clause());
+            }
+
+            result->Offset = ext.offset();
+            if (ext.has_limit() && ext.limit() != UnorderedReadHint) {
+                // COMPAT(sabdenovch): UnorderedReadHint in subquery limit means no limit.
+                result->Limit = ext.limit();
             }
 
             FromProto(&result->JoinClauses, ext.join_clauses());
@@ -1889,7 +1927,16 @@ void ToProto(NProto::TQuery* serialized, const TConstQueryPtr& original)
     ToProto(serialized->mutable_id(), original->Id);
 
     serialized->set_offset(original->Offset);
-    serialized->set_limit(original->Limit);
+    if (original->Limit) {
+        serialized->set_limit(*original->Limit);
+    } else {
+        // COMPAT(sabdenovch)
+        serialized->set_limit(
+            original->Prefetching || original->ScanOrder == EScanOrder::Ordered
+                ? OrderedReadWithPrefetchHint
+                : UnorderedReadHint);
+    }
+    serialized->set_scan_order(ToProto(original->ScanOrder));
     serialized->set_use_disjoint_group_by(original->UseDisjointGroupBy);
     serialized->set_infer_ranges(original->InferRanges);
     serialized->set_is_final(original->IsFinal);
@@ -1928,7 +1975,15 @@ void FromProto(TConstQueryPtr* original, const NProto::TQuery& serialized)
     auto result = New<TQuery>(FromProto<TGuid>(serialized.id()));
 
     result->Offset = serialized.offset();
-    result->Limit = serialized.limit();
+    // COMPAT(sabdenovch)
+    if (!serialized.has_limit() || serialized.limit() == UnorderedReadHint) {
+        result->ScanOrder = EScanOrder::Unordered;
+    } else if (serialized.limit() == OrderedReadWithPrefetchHint) {
+        result->Prefetching = true;
+        result->ScanOrder = EScanOrder::Ordered;
+    } else {
+        result->Limit = serialized.limit();
+    }
     result->UseDisjointGroupBy = serialized.use_disjoint_group_by();
     result->InferRanges = serialized.infer_ranges();
 
@@ -1960,6 +2015,10 @@ void FromProto(TConstQueryPtr* original, const NProto::TQuery& serialized)
 
     if (serialized.has_project_clause()) {
         FromProto(&result->ProjectClause, serialized.project_clause());
+    }
+
+    if (serialized.has_scan_order()) {
+        FromProto(&result->ScanOrder, serialized.scan_order());
     }
 
     *original = result;

@@ -8,6 +8,7 @@
 #include "tablet_action.h"
 #include "tablet_action_manager.h"
 #include "tablet_cell.h"
+#include "tablet_cell_bundle.h"
 #include "tablet_manager.h"
 
 #include <yt/yt/server/master/cell_master/bootstrap.h>
@@ -17,6 +18,8 @@
 #include <yt/yt/server/master/cell_master/config.h>
 
 #include <yt/yt/server/master/cell_server/tamed_cell_manager.h>
+
+#include <yt/yt/server/master/table_server/table_node.h>
 
 #include <yt/yt/server/lib/tablet_balancer/config.h>
 
@@ -127,7 +130,7 @@ public:
         auto size = GetTabletBalancingSize(tablet);
         auto bounds = GetTabletSizeConfig(tablet->GetTable());
         if (size < bounds.MinTabletSize || size > bounds.MaxTabletSize) {
-            auto bundleId = tablet->GetTable()->TabletCellBundle()->GetId();
+            auto bundleId = tablet->GetTable()->GetTabletCellBundle()->GetId();
             TabletIdQueue_[bundleId].push_back(tablet->GetId());
             QueuedTabletIds_.insert(tablet->GetId());
             QueueSizeGauge_.Update(++TotalQueueSize_);
@@ -333,7 +336,7 @@ private:
             .With("TabletId", tablet->GetId())
             .With("SrcCellId", srcCell->GetId())
             .With("DstCellId", targetCellId)
-            .With("Bundle", table->TabletCellBundle()->GetName())
+            .With("Bundle", table->GetTabletCellBundle()->GetName())
             .With("TabletBalancerCorrelationId", correlationId);
 
         TReqCreateTabletAction request;
@@ -363,7 +366,7 @@ private:
             .With("TabletIds", tabletIds)
             .With("NewTabletCount", newTabletCount)
             .With("TotalSize", size)
-            .With("Bundle", table->TabletCellBundle()->GetName())
+            .With("Bundle", table->GetTabletCellBundle()->GetName())
             .With("TabletBalancerCorrelationId", correlationId);
 
         TReqCreateTabletAction request;

@@ -32,6 +32,10 @@ void TQueryEngineDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("expression_builder_version", &TThis::ExpressionBuilderVersion)
         .Optional();
 
+    registrar.Parameter("max_projection_count", &TThis::MaxProjectionCount)
+        .GreaterThan(0)
+        .Default(DefaultMaxProjectionCount);
+
     registrar.Parameter("codegen_optimization_level", &TThis::OptimizationLevel)
         .Optional();
 
@@ -51,6 +55,10 @@ void TQueryEngineDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("allow_reverse_scan_for_order_by", &TThis::AllowReverseScanForOrderBy)
         .Optional();
 
+    // COMPAT(dtorilov): Remove after 26.2.
+    registrar.Parameter("enable_scalar_subquery_order_by_and_limit", &TThis::EnableScalarSubqueryOrderByAndLimit)
+        .Optional();
+
     registrar.Parameter("allow_heavy_range_inference_in_joins", &TThis::AllowHeavyRangeInferenceInJoins)
         .Optional();
 
@@ -65,6 +73,10 @@ void TQueryEngineDynamicConfig::Register(TRegistrar registrar)
         .Optional();
 
     registrar.Parameter("max_subsplits_per_tablet", &TThis::MaxSubsplitsPerTablet)
+        .GreaterThan(0)
+        .Optional();
+
+    registrar.Parameter("max_jit_stack_frame_size", &TThis::MaxJitStackFrameSize)
         .GreaterThan(0)
         .Optional();
 }

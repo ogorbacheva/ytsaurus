@@ -10,7 +10,7 @@
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 namespace NYT::NSignature {
 
@@ -28,7 +28,7 @@ public:
         IKeyStoreWriterPtr keyWriter,
         TSignatureGeneratorPtr generator);
 
-    //! Starts periodic key rotation, waiting for the completion of the first rotation.
+    //! Starts periodic key rotation. If rotation is enabled, waits for the first rotation.
     TFuture<void> Start();
 
     //! Stops periodic key rotation, waiting for the completion of the current rotation.
@@ -37,10 +37,6 @@ public:
     //! Schedules an out-of-order key rotation.
     TFuture<void> Rotate();
 
-    //! Returns the future that is set when the next started rotation completes, with "next"
-    //! starting from some point inside of this call.
-    TFuture<void> GetNextRotationFuture();
-
     void Reconfigure(TKeyRotatorConfigPtr config);
 
 private:
@@ -48,7 +44,7 @@ private:
     const IKeyStoreWriterPtr KeyWriter_;
     const TSignatureGeneratorPtr Generator_;
     const NConcurrency::TRetryingPeriodicExecutorPtr Executor_;
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ReconfigureSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ReconfigureSpinLock_);
 
     TError DoRotate();
 };

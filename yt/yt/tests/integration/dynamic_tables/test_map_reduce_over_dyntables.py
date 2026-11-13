@@ -1,11 +1,14 @@
-from yt_env_setup import YTEnvSetup, parametrize_external
+from yt_env_setup import YTEnvSetup, parametrize_external, Restarter, NODES_SERVICE
 from yt_commands import (
-    authors, print_debug, wait, create, remove, get, set, copy, insert_rows, trim_rows,
+    authors, print_debug, wait, create, remove, get, set, copy, insert_rows, trim_rows, delete_rows,
     alter_table, write_file, read_table, write_table, map, sort, reduce, map_reduce, generate_timestamp,
     sync_create_cells, sync_mount_table, sync_unmount_table, merge, join_reduce,
     sync_freeze_table, sync_unfreeze_table, sync_reshard_table, sync_flush_table, sync_compact_table,
     create_dynamic_table, extract_statistic_v2, MinTimestamp, sorted_dicts, get_singular_chunk_id,
-    lookup_rows, raises_yt_error, select_rows, generate_uuid, set_node_banned)
+    lookup_rows, raises_yt_error, select_rows, generate_uuid, set_node_banned,
+    get_account_disk_space_limit, set_account_disk_space_limit)
+
+from yt_helpers import get_master_locate_counters, get_master_locate_count_delta
 
 from yt_type_helpers import (
     make_schema,
@@ -15,7 +18,7 @@ from yt_type_helpers import (
     list_type,
 )
 
-from yt_dynamic_tables_base import map_in_parallel
+from yt_dynamic_tables_base import map_in_parallel, DynamicTablesBase
 
 from yt.test_helpers import assert_items_equal
 import yt.yson as yson
@@ -25,6 +28,7 @@ import pytest
 import base64
 import random
 import time
+from functools import partial
 
 ##################################################################
 
@@ -40,15 +44,96 @@ class TestMapOnDynamicTables(YTEnvSetup):
 
     def _create_simple_dynamic_table(self, path, sort_order="ascending", **attributes):
         if "schema" not in attributes:
-            attributes.update(
-                {
-                    "schema": [
-                        {"name": "key", "type": "int64", "sort_order": sort_order},
-                        {"name": "value", "type": "string"},
-                    ]
-                }
-            )
+            schema = [
+                {"name": "key", "type": "int64", "sort_order": sort_order},
+                {"name": "value", "type": "string"},
+            ]
+            if "max_inline_hunk_size" in attributes:
+                schema[1]["max_inline_hunk_size"] = attributes.pop("max_inline_hunk_size")
+            attributes.update({"schema": schema})
         create_dynamic_table(path, **attributes)
+
+    @authors("atalmenev")
+    @pytest.mark.parametrize("op_type", ["map", "reduce", "map_reduce"])
+    def test_hunk_chunk_replica_prefetch_locates(self, op_type):
+        sync_create_cells(1)
+        self._create_simple_dynamic_table("//tmp/t_in", max_inline_hunk_size=1)
+        sync_mount_table("//tmp/t_in")
+        rows = [{"key": i, "value": "x" * 100} for i in range(20)]
+        insert_rows("//tmp/t_in", rows)
+        sync_unmount_table("//tmp/t_in")
+
+        create("table", "//tmp/t_out")
+        run_op = {
+            "map": partial(map, command="cat"),
+            "reduce": partial(reduce, command="cat", reduce_by="key"),
+            "map_reduce": partial(
+                map_reduce,
+                mapper_command="cat",
+                reducer_command="cat",
+                sort_by="key",
+                reduce_by="key"),
+        }[op_type]
+
+        locate_counters = get_master_locate_counters()
+        run_op(in_="//tmp/t_in", out="//tmp/t_out")
+
+        assert_items_equal(read_table("//tmp/t_out"), rows)
+        assert get_master_locate_count_delta(locate_counters) == 0
+
+    @authors("atalmenev")
+    @pytest.mark.parametrize("path", [
+        "//tmp/t_in",
+        "//tmp/t_in{key,value}",
+        "//tmp/t_in{value}",
+        "//tmp/t_in{key}",
+        "<rename_columns={value=payload}>//tmp/t_in{payload}",
+        "<rename_columns={value=payload}>//tmp/t_in{key}",
+    ])
+    def test_hunk_chunk_replica_prefetch_column_selectors(self, path):
+        sync_create_cells(1)
+        self._create_simple_dynamic_table("//tmp/t_in", max_inline_hunk_size=1)
+        sync_mount_table("//tmp/t_in")
+        rows = [{"key": i, "value": "x" * 100} for i in range(20)]
+        insert_rows("//tmp/t_in", rows)
+        sync_unmount_table("//tmp/t_in")
+
+        create("table", "//tmp/t_out")
+        locate_counters = get_master_locate_counters()
+        map(in_=path, out="//tmp/t_out", command="cat")
+
+        if "{key}" in path:
+            expected_rows = [{"key": row["key"]} for row in rows]
+        elif "{payload}" in path:
+            expected_rows = [{"payload": row["value"]} for row in rows]
+        elif "{value}" in path:
+            expected_rows = [{"value": row["value"]} for row in rows]
+        else:
+            expected_rows = rows
+        assert_items_equal(read_table("//tmp/t_out"), expected_rows)
+        assert get_master_locate_count_delta(locate_counters) == 0
+
+    @authors("atalmenev")
+    @pytest.mark.parametrize("op_type", ["merge", "sort"])
+    def test_hunk_chunk_replica_prefetch_specs(self, op_type):
+        sync_create_cells(1)
+        self._create_simple_dynamic_table("//tmp/t_in", max_inline_hunk_size=1)
+        sync_mount_table("//tmp/t_in")
+        rows = [{"key": i, "value": "x" * 100} for i in range(20)]
+        insert_rows("//tmp/t_in", rows)
+        sync_unmount_table("//tmp/t_in")
+
+        create("table", "//tmp/t_out")
+        run_op = {
+            "merge": partial(merge, force_transform=True),
+            "sort": partial(sort, sort_by=["key"]),
+        }[op_type]
+
+        locate_counters = get_master_locate_counters()
+        run_op(in_="//tmp/t_in", out="//tmp/t_out")
+
+        assert_items_equal(read_table("//tmp/t_out"), rows)
+        assert get_master_locate_count_delta(locate_counters) == 0
 
     @authors("savrus", "apollo1321")
     @parametrize_external
@@ -681,7 +766,7 @@ class TestMapOnDynamicTables(YTEnvSetup):
         sync_mount_table(input)
 
         def check_all_operations(checker, only_input_query=False):
-            checker(map, command="cat", mode="ordered")
+            checker(map, command="cat", ordered=True)
             checker(merge, mode="ordered")
             if not only_input_query:
                 checker(reduce, reduce_by="k", command="cat")
@@ -1061,6 +1146,89 @@ class TestMapOnDynamicTables(YTEnvSetup):
 
         assert_items_equal(read_table("//tmp/t_output"), [{"k": 1, "v": "c"}])
 
+    @authors("sabdenovch")
+    def test_index_deletions_preserved(self):
+        sync_create_cells(1)
+
+        create("table", "//tmp/indexed_table_snapshot")
+        write_table("//tmp/indexed_table_snapshot", [{"key": 1, "value": "foo"}])
+
+        create_dynamic_table(
+            "//tmp/index_table",
+            schema=[
+                {"name": "value", "type": "string", "sort_order": "ascending"},
+                {"name": "key", "type": "int64", "sort_order": "ascending"},
+                {"name": "$empty", "type": "int64"},
+            ],
+            mount_config={
+                "force_zero_major_timestamp": True,
+                "min_data_ttl": 0,
+                "max_data_ttl": 0,
+            })
+        sync_mount_table("//tmp/index_table")
+
+        ts = generate_timestamp()
+        delete_rows("//tmp/index_table", [{"value": "foo", "key": 1}])
+        insert_rows("//tmp/index_table", [{"value": "boo", "key": 1}])
+
+        sync_unmount_table("//tmp/index_table")
+        set("//tmp/index_table/@forced_compaction_revision", 0)
+        chunk_id = get("//tmp/index_table/@chunk_ids/0")
+        sync_mount_table("//tmp/index_table")
+
+        wait(lambda: chunk_id not in get("//tmp/index_table/@chunk_ids"))
+
+        assert select_rows("value from [//tmp/index_table]") == [{"value": "boo"}]
+        merge(
+            in_="//tmp/indexed_table_snapshot",
+            out=f"<append=%true;output_timestamp={ts}>//tmp/index_table",
+            mode="ordered")
+        assert select_rows("value from [//tmp/index_table]") == [{"value": "boo"}]
+
+    @authors("apollo1321")
+    def test_unavailable_versioned_chunk_skip_tactics(self):
+        sync_create_cells(1)
+
+        create_dynamic_table(
+            "//tmp/t_input",
+            schema=[
+                {"name": "k", "type": "int64", "sort_order": "ascending"},
+                {"name": "v", "type": "string"},
+            ],
+            replication_factor=1)
+        sync_mount_table("//tmp/t_input")
+        insert_rows("//tmp/t_input", [{"k": 1, "v": "a"}])
+        sync_unmount_table("//tmp/t_input")
+
+        chunk_id = get_singular_chunk_id("//tmp/t_input")
+        replicas = get(f"#{chunk_id}/@stored_replicas")
+        assert len(replicas) == 1
+        replica = str(replicas[0])
+
+        op = merge(
+            in_="//tmp/t_input",
+            out="<create=%true>//tmp/t_output",
+            mode="sorted",
+            track=False,
+            spec={
+                "suspend_operation_after_materialization": True,
+                "unavailable_chunk_strategy": "skip",
+                "unavailable_chunk_tactics": "skip",
+                "job_io": {
+                    "table_reader": {"retry_count": 1, "pass_count": 1},
+                },
+            })
+
+        wait(lambda: get(op.get_path() + "/@suspended"))
+        set_node_banned(replica, True)
+        try:
+            wait(lambda: get(f"#{chunk_id}/@replication_status/default/lost"))
+            op.resume()
+            with raises_yt_error("Dynamic table chunk .* became unavailable"):
+                op.track()
+        finally:
+            set_node_banned(replica, False)
+
 
 ##################################################################
 
@@ -1086,6 +1254,8 @@ class TestMapOnDynamicTablesPortal(TestMapOnDynamicTablesMulticell):
 
 
 class TestMapOnDynamicTablesSequoia(TestMapOnDynamicTablesMulticell):
+    NUM_TEST_PARTITIONS = 11
+
     ENABLE_MULTIDAEMON = True
     USE_SEQUOIA = True
     ENABLE_CYPRESS_TRANSACTIONS_IN_SEQUOIA = True
@@ -1559,7 +1729,9 @@ class TestSchedulerMapReduceDynamic(MROverOrderedDynTablesHelper):
             "operation_options": {
                 "min_uncompressed_block_size": 1,
             },
-            "enable_partition_map_job_size_adjustment": True,
+            "map_reduce_operation_options": {
+                "enable_partition_map_job_size_adjustment": True,
+            },
         }
     }
 
@@ -1795,3 +1967,81 @@ class TestSchedulerMapReduceDynamicSequoia(TestSchedulerMapReduceDynamicMulticel
         "11": {"roles": ["chunk_host"]},
         "12": {"roles": ["chunk_host", "sequoia_node_host"]},
     }
+
+
+##################################################################
+
+
+class TestHunkChunkReplicaPrefetchOnSeparateMedium(DynamicTablesBase):
+    ENABLE_MULTIDAEMON = False
+
+    NUM_NODES = 5
+    NUM_SCHEDULERS = 1
+
+    HUNK_MEDIUM = "hunk_medium"
+    HUNK_NODE_INDEX = 0
+
+    # NB: node #HUNK_NODE_INDEX comes first; a comprehension would not see the names of the class body.
+    MEDIUM_CONFIG = {
+        "default": {"locations_per_node": dict.fromkeys(range(HUNK_NODE_INDEX + 1, NUM_NODES), 1)},
+        HUNK_MEDIUM: {"locations_per_node": {HUNK_NODE_INDEX: 1}},
+    }
+
+    @classmethod
+    def setup_class(cls):
+        super(TestHunkChunkReplicaPrefetchOnSeparateMedium, cls).setup_class()
+        disk_space_limit = get_account_disk_space_limit("tmp", "default")
+        set_account_disk_space_limit("tmp", disk_space_limit, cls.HUNK_MEDIUM)
+
+    @authors("atalmenev")
+    @pytest.mark.parametrize("unavailable_chunk_strategy", ["wait", "skip", "fail"])
+    def test_unavailable_hunk_chunk(self, unavailable_chunk_strategy):
+        sync_create_cells(1)
+
+        self._create_sorted_table(
+            "//tmp/t",
+            schema=[
+                {"name": "key", "type": "int64", "sort_order": "ascending"},
+                {"name": "value", "type": "string", "max_inline_hunk_size": 10},
+            ],
+            replication_factor=1,
+            hunk_primary_medium=self.HUNK_MEDIUM)
+        sync_mount_table("//tmp/t")
+        rows = [{"key": i, "value": "x" * 100} for i in range(20)]
+        insert_rows("//tmp/t", rows)
+        sync_unmount_table("//tmp/t")
+
+        hunk_chunk_id = self._get_hunk_chunk_ids("//tmp/t")[0]
+        data_chunk_id = self._get_store_chunk_ids("//tmp/t")[0]
+
+        hunk_node = str(get(f"#{hunk_chunk_id}/@stored_replicas")[0])
+        data_node = str(get(f"#{data_chunk_id}/@stored_replicas")[0])
+        assert hunk_node != data_node
+
+        create("table", "//tmp/t_out")
+        with Restarter(self.Env, NODES_SERVICE, addresses=[hunk_node]):
+            wait(lambda: get(f"#{hunk_chunk_id}/@replication_status/{self.HUNK_MEDIUM}/lost"))
+
+            op = map(
+                in_="//tmp/t",
+                out="//tmp/t_out",
+                command="cat",
+                spec={"unavailable_chunk_strategy": unavailable_chunk_strategy},
+                track=False)
+
+            unavailable_chunks_path = f"{op.get_path()}/controller_orchid/unavailable_input_chunks/<local>"
+            if unavailable_chunk_strategy != "wait":
+                wait(lambda: op.get_job_count("running") > 0 or op.get_job_count("failed") > 0)
+                assert hunk_chunk_id not in get(unavailable_chunks_path, default=[])
+                op.abort()
+                return
+
+            wait(lambda: hunk_chunk_id in get(unavailable_chunks_path, default=[]))
+            assert op.get_job_count("completed") == 0
+            assert op.get_job_count("running") == 0
+
+        wait(lambda: hunk_chunk_id not in get(unavailable_chunks_path, default=[]))
+        wait(lambda: op.get_job_count("running") > 0 or op.get_job_count("completed") > 0)
+
+        op.track()
+        assert_items_equal(read_table("//tmp/t_out"), rows)

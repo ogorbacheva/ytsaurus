@@ -26,6 +26,7 @@
 
 #include <yt/yt/server/master/cell_server/cellar_node_tracker.h>
 
+#include <yt/yt/server/master/chunk_server/config.h>
 #include <yt/yt/server/master/chunk_server/chunk_manager.h>
 #include <yt/yt/server/master/chunk_server/data_node_tracker.h>
 #include <yt/yt/server/master/chunk_server/job.h>
@@ -453,9 +454,9 @@ public:
         return host;
     }
 
-    TCompactVector<std::string, 4> GetGroupNamesForNode(TNode* node) override
+    std::vector<std::string> GetGroupNamesForNode(const TNode* node) override
     {
-        TCompactVector<std::string, 4> result;
+        std::vector<std::string> result;
         auto groups = GetGroupsForNode(node);
         for (const auto& group : groups) {
             result.push_back(group->Id);
@@ -1042,12 +1043,12 @@ private:
 
     int AggregatedOnlineNodeCount_ = 0;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, NodeStatisticsLock_);
-    TInstant NodeStatisticsUpdateDeadline_ = {};
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, NodeStatisticsLock_);
+    TInstant NodeStatisticsUpdateDeadline_;
     TAggregatedNodeStatistics AggregatedNodeStatistics_;
     using TFlavoredNodeStatistics = TEnumIndexedArray<ENodeFlavor, TAggregatedNodeStatistics>;
     TFlavoredNodeStatistics FlavoredNodeStatistics_;
-    TInstant LocalStateToNodeCountUpdateDeadline_ = {};
+    TInstant LocalStateToNodeCountUpdateDeadline_;
     using TLocalStateToNodeCount = TEnumIndexedArray<ENodeState, int>;
     TLocalStateToNodeCount LocalStateToNodeCount_;
     THashMap<const TDataCenter*, TAggregatedNodeStatistics> DataCenterNodeStatistics_;
@@ -1267,9 +1268,15 @@ private:
         }
 
         if (leaseTransaction) {
+            YT_VERIFY(Bootstrap_->IsPrimaryMaster());
+
             UnregisterLeaseTransaction(node);
             node->SetLeaseTransaction(leaseTransaction);
             RegisterLeaseTransaction(node);
+
+            const auto& config = Bootstrap_->GetConfigManager()->GetConfig();
+            node->SetLeaseTransactionTimeoutBeforeExtension(std::nullopt);
+            UpdateNodeLeaseTimeoutExtension(node, ComputeNodeLeaseTimeoutExtension(node, config));
         }
     }
 
@@ -1290,11 +1297,21 @@ private:
                 return true;
             };
 
+            // A temporarily unavailable DC has the same no-disposal contract as pending restart.
+            auto nodeTemporarilyUnavailable =
+                node->IsPendingRestart() ||
+                IsNodeInTemporarilyUnavailableDataCenter(
+                    node,
+                    Bootstrap_->GetConfigManager()->GetConfig()->ChunkManager);
+
+            // Include unreliable cells since they also receive the restart mutation.
             if (GetDynamicConfig()->NoRestartingNodesDisposal &&
-                node->GetAggregatedState() == ENodeState::Online &&
+                std::ranges::all_of(node->MulticellDescriptors(), [] (const auto& descriptor) {
+                    return descriptor.second.State == ENodeState::Online;
+                }) &&
                 options.Flavors.contains(ENodeFlavor::Data) &&
                 options.LocationIndexesInHeartbeatsSupported &&
-                node->IsPendingRestart() &&
+                nodeTemporarilyUnavailable &&
                 allLocationsAreReported())
             {
                 SetNodeHasRestarted(node);
@@ -1458,6 +1475,12 @@ private:
 
         auto* node = GetNodeByAddress(address);
 
+        const auto& multicellManager = Bootstrap_->GetMulticellManager();
+        if (multicellManager->IsPrimaryMaster()) {
+            request->set_registration_revision(ToProto(GetCurrentMutationContext()->GetVersion().ToRevision()));
+        }
+        node->SetRegistrationRevision(FromProto<TRevision>(request->registration_revision()));
+
         if (node->IsDataNode() || (node->IsExecNode() && !options.ExecNodeIsNotDataNode)) {
             const auto& dataNodeTracker = Bootstrap_->GetDataNodeTracker();
             dataNodeTracker->ProcessRegisterNode(node, request, response);
@@ -1481,7 +1504,6 @@ private:
         // so node can already be online for this cell.
         CheckNodeOnline(node);
 
-        const auto& multicellManager = Bootstrap_->GetMulticellManager();
         // TODO(grphil): Add some analog for pending restart.
         if (multicellManager->IsPrimaryMaster()) {
             if (node->GetLocalState() == ENodeState::Registered) {
@@ -1496,9 +1518,12 @@ private:
 
         FillSecondaryMastersConnectionConfigs(response->mutable_secondary_masters_configs());
 
+        response->set_registration_revision(request->registration_revision());
+
         if (context) {
-            context->SetResponseInfo("NodeId: %v",
-                node->GetId());
+            context->AnnotateResponse()
+                .With("NodeId", node->GetId())
+                .With("RegistrationRevision", node->GetRegistrationRevision());
         }
     }
 
@@ -1536,6 +1561,7 @@ private:
         EnsureNodeObjectCreated(options);
 
         auto* node = GetNodeByAddress(address);
+        node->SetRegistrationRevision(FromProto<TRevision>(request->registration_revision()));
 
         auto chunkLocationUuids = FromProto<std::vector<TChunkLocationUuid>>(request->chunk_location_uuids());
         bool isDataNode = node->IsDataNode() || (node->IsExecNode() && !options.ExecNodeIsNotDataNode);
@@ -1778,7 +1804,6 @@ private:
         }
 
         const auto& multicellManager = Bootstrap_->GetMulticellManager();
-
         if (multicellManager->IsPrimaryMaster()) {
             YT_VERIFY(!request->has_id());
 
@@ -2615,6 +2640,8 @@ private:
 
         request.set_location_indexes_in_heartbeats_supported(originalRequest->location_indexes_in_heartbeats_supported());
 
+        request.set_registration_revision(originalRequest->registration_revision());
+
         const auto& multicellManager = Bootstrap_->GetMulticellManager();
         multicellManager->PostToSecondaryMasters(request);
     }
@@ -2733,6 +2760,8 @@ private:
             : ENodeState::Offline;
         request.set_node_state(ToProto(materializedState));
 
+        request.set_registration_revision(ToProto(node->GetRegistrationRevision()));
+
         const auto& multicellManager = Bootstrap_->GetMulticellManager();
         multicellManager->PostToMaster(request, cellTag);
     }
@@ -2821,7 +2850,7 @@ private:
         const auto& dataNodeTracker = Bootstrap_->GetDataNodeTracker();
         dataNodeTracker->OnProfiling(&buffer);
 
-        auto localStateToNodeCount = GetLocalStateToNodeCount();
+        const auto& localStateToNodeCount = GetLocalStateToNodeCount();
         for (auto state : TEnumTraits<ENodeState>::GetDomainValues()) {
             TWithTagGuard tagGuard(&buffer, "state", FormatEnum(state));
             buffer.AddGauge("/node_count", localStateToNodeCount[state]);
@@ -2905,6 +2934,7 @@ private:
         auto minLastDataHeartbeatTime = now - GetDynamicConfig()->NodeDataHeartbeatOutdateDuration;
         auto minLastJobHeartbeatTime = now - GetDynamicConfig()->NodeJobHeartbeatOutdateDuration;
         auto minLastIncompleteStateChangeTime = now - GetDynamicConfig()->MaxNodeIncompleteStateDuration;
+        auto minLastDisposeStateChangeTime = now - GetDynamicConfig()->MaxNodeDisposeStateDuration;
 
         std::vector<TError> alerts;
 
@@ -2912,18 +2942,23 @@ private:
         TOldNodeAlert jobHeartbeatAlert;
         THashMap<ENodeState, TOldNodeAlert> noStateChangeAlert;
 
+        const auto& hydraManager = Bootstrap_->GetHydraFacade()->GetHydraManager();
+        bool readOnly = hydraManager->GetReadOnly();
+
         for (auto [nodeId, node] : NodeMap_) {
             if (!IsObjectAlive(node)) {
                 continue;
             }
 
-            if (node->GetAggregatedState() == ENodeState::Offline) {
+            auto state = node->GetAggregatedState();
+            if (state == ENodeState::Offline) {
                 continue;
             }
 
-            if (node->GetAggregatedState() == ENodeState::Online) {
+            if (state == ENodeState::Online) {
                 if (node->IsDataNode()) {
-                    if (node->GetLastDataHeartbeatTime() < minLastDataHeartbeatTime) {
+                    // Data heartbeats are mutations and cannot be processed while Hydra is read-only.
+                    if (!readOnly && node->GetLastDataHeartbeatTime() < minLastDataHeartbeatTime) {
                         dataHeartbeatAlert.Update(node->GetDefaultAddress(), node->GetLastDataHeartbeatTime());
                     }
 
@@ -2933,11 +2968,25 @@ private:
                 }
             } else {
                 const auto& multicellManager = Bootstrap_->GetMulticellManager();
-                if (multicellManager->IsPrimaryMaster() && node->GetLastStateChangeTime() < minLastIncompleteStateChangeTime) {
-                    noStateChangeAlert[node->GetAggregatedState()].Update(node->GetDefaultAddress(), node->GetLastStateChangeTime());
+                auto lastChangeTime = node->GetLastStateChangeTime();
+                auto beingDisposed = state == ENodeState::BeingDisposed;
+                if (state == ENodeState::Mixed) {
+                    for (const auto& [_, descriptor] : node->MulticellDescriptors()) {
+                        if (descriptor.State == ENodeState::BeingDisposed) {
+                            beingDisposed = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (multicellManager->IsPrimaryMaster() && (lastChangeTime < minLastIncompleteStateChangeTime ||
+                    (beingDisposed && lastChangeTime < minLastDisposeStateChangeTime)))
+                {
+                    noStateChangeAlert[state].Update(node->GetDefaultAddress(), lastChangeTime);
                 }
             }
         }
+
         if (dataHeartbeatAlert.AlertedNodeCount > 0) {
             YT_TLOG_ALERT("Nodes had no data heartbeat for too long")
                 .With("NodeCount", dataHeartbeatAlert.AlertedNodeCount)
@@ -2975,7 +3024,7 @@ private:
         Alerts_ = std::move(alerts);
     }
 
-    TNodeGroupList GetGroupsForNode(TNode* node)
+    TNodeGroupList GetGroupsForNode(const TNode* node)
     {
         TNodeGroupList result;
         for (auto& group : NodeGroups_) {
@@ -3127,7 +3176,7 @@ private:
                     increment(&statistics->IOPerMedium[mediumIndex], location.io_statistics());
                 }
                 statistics->ChunkReplicaCount += nodeStatistics.total_stored_chunk_count();
-                statistics->FullNodeCount += nodeStatistics.full() ? 1 : 0;
+                statistics->FullNodeCount += nodeStatistics.full();
             };
             updateStatistics(&AggregatedNodeStatistics_);
 
@@ -3178,7 +3227,118 @@ private:
         return Bootstrap_->GetConfigManager()->GetConfig()->NodeTracker;
     }
 
-    void OnDynamicConfigChanged(TDynamicClusterConfigPtr /*oldConfig*/)
+    bool IsNodeInTemporarilyUnavailableDataCenter(
+        const TNode* node,
+        const NChunkServer::TDynamicChunkManagerConfigPtr& config) const
+    {
+        if (!node->IsDataNode() || !config->UseDataCenterAwareReplicator) {
+            return false;
+        }
+
+        const auto* dataCenter = node->GetDataCenter();
+        if (!dataCenter) {
+            return false;
+        }
+
+        const auto& dataCenterName = dataCenter->GetName();
+        return config->StorageDataCenters.contains(dataCenterName) &&
+            config->TemporarilyUnavailableStorageDataCenters.contains(dataCenterName);
+    }
+
+    TDuration ComputeTemporarilyUnavailableDataCenterLeaseTimeout(
+        const TDynamicNodeTrackerConfigPtr& config) const
+    {
+        auto splay = config->TemporarilyUnavailableDataCenterLeaseTimeoutSplay;
+        if (splay == TDuration::Zero()) {
+            return config->TemporarilyUnavailableDataCenterLeaseTimeout;
+        }
+
+        auto* mutationContext = GetCurrentMutationContext();
+        auto random = mutationContext->RandomGenerator()->Generate<ui64>();
+        auto splayOffset = TDuration::MicroSeconds(random % splay.MicroSeconds());
+        return config->TemporarilyUnavailableDataCenterLeaseTimeout + splayOffset;
+    }
+
+    std::optional<TDuration> ComputeNodeLeaseTimeoutExtension(
+        const TNode* node,
+        const TDynamicClusterConfigPtr& config) const
+    {
+        YT_VERIFY(HasMutationContext());
+
+        if (IsNodeInTemporarilyUnavailableDataCenter(node, config->ChunkManager)) {
+            return ComputeTemporarilyUnavailableDataCenterLeaseTimeout(config->NodeTracker);
+        }
+
+        if (node->IsPendingRestart()) {
+            return config->NodeTracker->PendingRestartLeaseTimeout;
+        }
+
+        return std::nullopt;
+    }
+
+    void UpdateNodeLeaseTimeoutExtension(
+        TNode* node,
+        std::optional<TDuration> timeout)
+    {
+        YT_VERIFY(HasMutationContext());
+        YT_VERIFY(Bootstrap_->IsPrimaryMaster());
+
+        auto transaction = node->GetLeaseTransaction();
+        if (!transaction || !transaction->GetTimeout()) {
+            return;
+        }
+
+        auto timeoutBeforeExtension = node->GetLeaseTransactionTimeoutBeforeExtension();
+
+        if (!timeout) {
+            if (!timeoutBeforeExtension) {
+                // Node has been unaffected by a lease extension.
+                return;
+            }
+
+            const auto& transactionManager = Bootstrap_->GetTransactionManager();
+            transactionManager->SetTransactionTimeout(transaction, *timeoutBeforeExtension);
+            node->SetLeaseTransactionTimeoutBeforeExtension(std::nullopt);
+        } else {
+            // Preserve the original timeout when multiple extensions take place.
+            if (!timeoutBeforeExtension) {
+                timeoutBeforeExtension = transaction->GetTimeout();
+                node->SetLeaseTransactionTimeoutBeforeExtension(timeoutBeforeExtension);
+            }
+
+            const auto& transactionManager = Bootstrap_->GetTransactionManager();
+            transactionManager->SetTransactionTimeout(
+                transaction,
+                std::max(*timeoutBeforeExtension, *timeout));
+        }
+    }
+
+    void UpdateTemporarilyUnavailableDataCenterLeaseTimeouts(
+        const TDynamicClusterConfigPtr& oldConfig,
+        const TDynamicClusterConfigPtr& newConfig)
+    {
+        if (!HasMutationContext() || !Bootstrap_->IsPrimaryMaster()) {
+            return;
+        }
+
+        const auto& oldDataCenters = oldConfig->ChunkManager->TemporarilyUnavailableStorageDataCenters;
+        const auto& newDataCenters = newConfig->ChunkManager->TemporarilyUnavailableStorageDataCenters;
+        if (oldDataCenters == newDataCenters) {
+            return;
+        }
+
+        for (auto node : GetValuesSortedByKey(NodesWithFlavor_[ENodeFlavor::Data])) {
+            if (!IsObjectAlive(node)) {
+                continue;
+            }
+
+            UpdateNodeLeaseTimeoutExtension(
+                node,
+                ComputeNodeLeaseTimeoutExtension(node, newConfig));
+        }
+    }
+
+    void OnDynamicConfigChanged(TDynamicClusterConfigPtr oldConfig)
     {
         RebuildNodeGroups();
         RecomputePendingRegisterNodeMutationCounters();
@@ -3186,6 +3346,10 @@ private:
         ReconfigureNodeSemaphores();
         ReconfigureThrottledNodeRegistrations();
         RebuildAggregatedNodeStatistics();
+
+        UpdateTemporarilyUnavailableDataCenterLeaseTimeouts(
+            oldConfig,
+            Bootstrap_->GetConfigManager()->GetConfig());
 
         ProfilingExecutor_->SetPeriod(GetDynamicConfig()->ProfilingPeriod);
 
@@ -3261,75 +3425,63 @@ private:
         NodeDisableTabletCellsChanged_.Fire(node);
     }
 
+    void RenewNodeLeaseForPendingRestart(TNode* node)
+    {
+        YT_VERIFY(Bootstrap_->IsPrimaryMaster());
+        YT_VERIFY(node->IsPendingRestart());
+
+        if (!IsLeader()) {
+            return;
+        }
+
+        auto transaction = node->GetLeaseTransaction();
+        if (!transaction || !transaction->GetTimeout()) {
+            return;
+        }
+
+        const auto& transactionManager = Bootstrap_->GetTransactionManager();
+        transactionManager->PingTransaction(
+            transaction->GetId(),
+            /*pingAncestors*/ false,
+            /*pingerAddress*/ std::nullopt)
+            .Subscribe(BIND([nodeId = node->GetId(), address = node->GetDefaultAddress()] (const TError& error) {
+                if (!error.IsOK()) {
+                    YT_TLOG_WARNING("Failed to renew node lease for a pending restart")
+                        .With("NodeId", nodeId)
+                        .With("Address", address)
+                        .With(error);
+                }
+            }));
+    }
+
     void OnNodePendingRestartUpdated(TNode* node)
     {
-        auto setTransactionTimeoutOnPrimary = [&] (TTransaction* transaction, TDuration timeout) {
-            const auto& multicellManager = Bootstrap_->GetMulticellManager();
-            if (!multicellManager->IsPrimaryMaster()) {
-                return;
-            }
-
-            const auto& transactionManager = Bootstrap_->GetTransactionManager();
-            transactionManager->SetTransactionTimeout(transaction, timeout);
-
-            if (node->IsPendingRestart() && IsLeader()) {
-                transactionManager->PingTransaction(transaction->GetId(), /*pingAncestors*/ false, /*pingerAddress*/ std::nullopt)
-                    .Subscribe(BIND([nodeId = node->GetId(), address = node->GetDefaultAddress()] (const TError& error) {
-                        if (!error.IsOK()) {
-                            YT_TLOG_WARNING("Failed to ping node lease transaction after extending its timeout for a pending restart")
-                                .With("NodeId", nodeId)
-                                .With("Address", address)
-                                .With(error);
-                        }
-                    }));
-            }
-        };
-
-        if (auto transaction = node->GetLeaseTransaction()) {
-            if (auto timeout = transaction->GetTimeout()) {
-                if (!node->IsPendingRestart() &&
-                    !node->GetLastSeenLeaseTransactionTimeout())
-                {
-                    const auto& config = Bootstrap_->GetConfig()->NodeTracker;
-                    auto defaultTimeout = node->IsDataNode()
-                        ? config->DefaultDataNodeLeaseTransactionTimeout
-                        : config->DefaultNodeTransactionTimeout;
-                    node->SetLastSeenLeaseTransactionTimeout(defaultTimeout);
-
-                    YT_TLOG_ALERT("Lease timeout missing for pending restart node")
-                        .With("NodeId", node->GetId())
-                        .With("Address", node->GetDefaultAddress());
-                }
-
-                auto newTimeout = node->IsPendingRestart()
-                    ? GetDynamicConfig()->PendingRestartLeaseTimeout
-                    : *node->GetLastSeenLeaseTransactionTimeout();
-
-                node->SetLastSeenLeaseTransactionTimeout(timeout);
-
-                setTransactionTimeoutOnPrimary(transaction, newTimeout);
-            }
-        }
-
         auto nodeId = node->GetId();
 
-        if (auto it = PendingRestartMaintenanceNodeIdToSetIt_.find(nodeId);
-            it != PendingRestartMaintenanceNodeIdToSetIt_.end())
-        {
-            PendingRestartMaintenanceNodeIds_.erase(it->second);
-            PendingRestartMaintenanceNodeIdToSetIt_.erase(it);
+        if (Bootstrap_->IsPrimaryMaster()) {
+            const auto& config = Bootstrap_->GetConfigManager()->GetConfig();
+            UpdateNodeLeaseTimeoutExtension(node, ComputeNodeLeaseTimeoutExtension(node, config));
+
+            if (auto it = PendingRestartMaintenanceNodeIdToSetIt_.find(nodeId);
+                it != PendingRestartMaintenanceNodeIdToSetIt_.end())
+            {
+                PendingRestartMaintenanceNodeIds_.erase(it->second);
+                PendingRestartMaintenanceNodeIdToSetIt_.erase(it);
+            }
+
+            if (node->IsPendingRestart()) {
+                auto* mutationContext = GetCurrentMutationContext();
+                auto it = PendingRestartMaintenanceNodeIds_.emplace(mutationContext->GetTimestamp(), nodeId).first;
+                PendingRestartMaintenanceNodeIdToSetIt_.emplace(nodeId, it);
+
+                RenewNodeLeaseForPendingRestart(node);
+            }
         }
 
-        if (Bootstrap_->IsPrimaryMaster() && node->IsPendingRestart()) {
-            auto* mutationContext = GetCurrentMutationContext();
-            auto it = PendingRestartMaintenanceNodeIds_.emplace(mutationContext->GetTimestamp(), nodeId).first;
-            PendingRestartMaintenanceNodeIdToSetIt_.emplace(nodeId, it);
-        }
-
-        YT_LOG_INFO("Node restart is %v (NodeId: %v, Address: %v)",
-            node->IsPendingRestart() ? "pending" : "no longer pending",
-            nodeId,
-            node->GetDefaultAddress());
+        YT_TLOG_INFO("Node restart pending state changed")
+            .With("PendingRestart", node->IsPendingRestart())
+            .With("NodeId", nodeId)
+            .With("Address", node->GetDefaultAddress());
 
         NodePendingRestartChanged_.Fire(node);
     }

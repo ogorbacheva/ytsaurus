@@ -15,6 +15,8 @@
 #include <yt/yt/ytlib/hive/cluster_directory_synchronizer.h>
 #include <yt/yt/ytlib/api/native/connection.h>
 
+#include <yt/yt/client/security_client/public.h>
+
 #include <yt/yt/core/rpc/service_detail.h>
 #include <yt/yt/core/concurrency/periodic_executor.h>
 #include <yt/yt/core/net/local_address.h>
@@ -126,7 +128,9 @@ private:
     {
         auto targetUser = std::string(request->user_name());
         auto banned = request->is_banned();
-        context->SetRequestInfo("TargetUser: %v, IsBanned: %v", targetUser, banned);
+        context->AnnotateRequest()
+            .With("TargetUser", targetUser)
+            .With("IsBanned", banned);
 
         ThrowIfDisabled();
 
@@ -137,20 +141,22 @@ private:
     DECLARE_RPC_SERVICE_METHOD(NBanClient::NProto, GetUserBanned)
     {
         auto targetUser = std::string(request->user_name());
-        context->SetRequestInfo("TargetUser: %v", targetUser);
+        context->AnnotateRequest()
+            .With("TargetUser", targetUser);
 
         ThrowIfDisabled();
 
         auto isBanned = GetBannedConsistently(targetUser);
         response->set_is_banned(isBanned);
 
-        context->SetResponseInfo("IsBanned: %v", isBanned);
+        context->AnnotateResponse()
+            .With("IsBanned", isBanned);
         context->Reply();
     }
 
     DECLARE_RPC_SERVICE_METHOD(NBanClient::NProto, ListBannedUsers)
     {
-        context->SetRequestInfo();
+        context->AnnotateRequest();
         ThrowIfDisabled();
 
         for (const auto& bannedUser : ListBanned()) {
@@ -220,6 +226,11 @@ private:
 
     void SetBanned(const std::string& user, bool isBanned)
     {
+        if (isBanned && user == NSecurityClient::RootUserName) {
+            THROW_ERROR_EXCEPTION("User %Qv cannot be banned",
+                user);
+        }
+
         auto userValue = CrossClusterReplicatedState_->Value(GetTag(), TYPath(user));
         auto nodeFactory = NYTree::CreateEphemeralNodeFactory();
         auto node = nodeFactory->CreateMap();

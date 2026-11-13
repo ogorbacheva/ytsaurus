@@ -255,6 +255,7 @@ private:
         auto waitOnBlockedRowTimer = GetWaitOnBlockedRowTimer(tableProfiler, InitialQueryKind_);
 
         BarrierFuture_ = barrierFuture
+            .ToImmediatelyCancelable()
             .WithTimeout(Store_->Context_->GetTabletManagerConfig()->MaxBlockedRowWaitTime)
             .Apply(BIND([waitOnBlockedRowTimer, start] (const TError& error) {
                 if (error.GetCode() == NYT::EErrorCode::Timeout) {
@@ -267,7 +268,6 @@ private:
 
                 waitOnBlockedRowTimer.Record(CpuDurationToDuration(GetCpuInstant() - start));
             }));
-
     }
 
     TUnversionedRow CaptureRow(TOrderedDynamicRow dynamicRow)
@@ -379,9 +379,18 @@ TOrderedDynamicRow TOrderedDynamicStore::WriteRow(
         dynamicRow[*TimestampColumnId_] = MakeUnversionedUint64Value(context->CommitTimestamp.Underlying(), *TimestampColumnId_);
     }
 
+    i64 dataWeight;
+    // COMPAT(akozhikhov)
+    if (auto context = TryGetCurrentMutationContext();
+        context && static_cast<ETabletReign>(context->Request().Reign) < ETabletReign::NewHunkDataWeightComputation)
+    {
+        dataWeight = static_cast<i64>(NTableClient::GetDataWeight(dynamicRow));
+    } else {
+        dataWeight = NTableClient::GetDataWeightAfterHunkDecoding(dynamicRow, Schema_);
+    }
+
     // NB: Includes the weight of the $timestamp column if it exists.
     // NB: Be sure to place writes of all additional columns before this line.
-    auto dataWeight = NTableClient::GetDataWeightAfterHunkDecoding(dynamicRow, Schema_);
     if (CumulativeDataWeightColumnId_) {
         if (dynamicRow[*CumulativeDataWeightColumnId_].Type == EValueType::Null) {
             // Account for the $cumulative_data_weight column we are adding.

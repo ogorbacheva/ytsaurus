@@ -1,6 +1,7 @@
 RECURSE(
     changelog_surgeon
     chaos_tools
+    collect_stuck_transactions
     cuda_core_dump_injection
     data_node_rpc_request
     dump_changelog
@@ -34,6 +35,6 @@ RECURSE(
     sqllogictest_generator
 )
 
-IF (OS_LINUX AND YT_ENABLE_JOURNAL_NBD)
+IF (OS_LINUX AND NOT OPENSOURCE)
     RECURSE(nbd_server)
 ENDIF()

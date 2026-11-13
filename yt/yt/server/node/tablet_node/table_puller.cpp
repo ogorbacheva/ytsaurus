@@ -73,6 +73,23 @@ DEFINE_ENUM(EPullerErrorKind,
     (UnableToPickQueueReplica)
 );
 
+DEFINE_ENUM(EPullerSkipReason,
+    (Unknown)
+    (NoTabletSnapshot)
+    (NoReplicationCard)
+    (OutdatedReplicationCard)
+    (NotActiveServant)
+    (NoSelfReplica)
+    (WrongSelfReplicaPath)
+    (SelfReplicaIsDisabled)
+    (TransactionNotSerialized)
+    (Reconfiguring)
+    (EraChanged)
+    (NotAsync)
+    (Failed)
+    (None)
+);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 inline static constexpr int TabletRowsPerRead = 1000;
@@ -119,6 +136,22 @@ public:
     const NNative::IClientPtr& GetLocalClient() const
     {
         return Underlying_->GetLocalClient();
+    }
+
+    bool IsSameDatacenter(const std::string& clusterName)
+    {
+        const auto& localDc = Underlying_->GetLocalDc();
+        if (!localDc) {
+            return false;
+        }
+
+        const auto& remoteClient = GetClient(clusterName);
+        if (!remoteClient) {
+            return false;
+        }
+
+        const auto& remoteDc = remoteClient->GetNativeConnection()->GetStaticConfig()->Datacenter;
+        return remoteDc == localDc;
     }
 
 private:
@@ -220,6 +253,7 @@ public:
                         .Item("estimated_overdraft_duration")
                             .Value(ReplicationThrottler_->GetEstimatedOverdraftDuration())
                     .EndMap()
+                .Item("iteration_skip_reason").Value(SkipReason_.load())
             .EndMap();
     }
 
@@ -249,12 +283,56 @@ private:
     const IChaosAgentPtr ChaosAgent_;
 
     TQueueReplicaSelector QueueReplicaSelector_;
+    TReplicaId PartialFailureReplicaId_;
+    int PartialFailureCount_ = 0;
     ui64 ReplicationRound_ = 0;
     TReplicationProgress LastReplicationProgressAdvance_;
     TPerFiberClusterClientCache ReplicatorClientCache_;
     TIterationTimeTracker ReplicationIterationTimeTracker_;
 
     TPeriodicExecutorPtr ReplicationExecutor_;
+    std::atomic<EPullerSkipReason> SkipReason_ = EPullerSkipReason::Unknown;
+
+    void ResetQueueReplicaSelectionState()
+    {
+        QueueReplicaSelector_.ResetLastPulledFromReplicaId();
+        PartialFailureReplicaId_ = NullObjectId;
+        PartialFailureCount_ = 0;
+    }
+
+    void ProcessPullRowsSubrequestErrors(
+        TReplicaId queueReplicaId,
+        const std::vector<TError>& subrequestErrors)
+    {
+        if (PartialFailureReplicaId_ != queueReplicaId) {
+            PartialFailureReplicaId_ = queueReplicaId;
+            PartialFailureCount_ = 0;
+        }
+
+        if (subrequestErrors.empty()) {
+            PartialFailureCount_ = 0;
+            return;
+        }
+
+        ++PartialFailureCount_;
+
+        YT_TLOG_DEBUG("Pull rows request partially failed")
+            .With("QueueReplicaId", queueReplicaId)
+            .WithFormat("PartialFailureCount", "%v/%v", PartialFailureCount_, MountConfig_->TablePullerMaxPartialFailures);
+
+        if (PartialFailureCount_ >= MountConfig_->TablePullerMaxPartialFailures) {
+            auto error = TError("Queue replica repeatedly returned partial pull rows results")
+                .With("partial_failure_count", PartialFailureCount_)
+                .With("max_partial_failures", MountConfig_->TablePullerMaxPartialFailures)
+                .With(subrequestErrors);
+
+            YT_TLOG_WARNING("Banning queue replica due to repeated partial pull rows failures")
+                .With("QueueReplicaId", queueReplicaId)
+                .With(error);
+            ResetQueueReplicaSelectionState();
+            QueueReplicaSelector_.GetBannedReplicaTracker().BanReplica(queueReplicaId, std::move(error));
+        }
+    }
 
     void UpdatePullerErrors(TTabletErrors& tabletErrors, TError currentPullError)
     {
@@ -302,22 +380,30 @@ private:
         try {
             tabletSnapshot = TabletSnapshotStore_->FindTabletSnapshot(TabletId_, MountRevision_);
             if (!tabletSnapshot) {
+                SkipReason_.store(EPullerSkipReason::NoTabletSnapshot);
+
                 THROW_ERROR_EXCEPTION("No tablet snapshot is available")
                     .With(HardErrorAttribute);
             }
 
             auto replicationCard = tabletSnapshot->TabletRuntimeData->ReplicationCard.Acquire();
             if (!replicationCard) {
+                SkipReason_.store(EPullerSkipReason::NoReplicationCard);
+
                 THROW_ERROR_EXCEPTION("No replication card");
             }
 
             auto snapshotEra = tabletSnapshot->TabletRuntimeData->ReplicationEra.load();
             if (snapshotEra == InvalidReplicationEra) {
+                SkipReason_.store(EPullerSkipReason::OutdatedReplicationCard);
+
                 YT_TLOG_DEBUG("Will not pull rows since replication era is not known yet");
                 return;
             }
 
             if (replicationCard->Era < snapshotEra) {
+                SkipReason_.store(EPullerSkipReason::OutdatedReplicationCard);
+
                 // This can happen right after snapshot loading when old replication card is fetched from cache.
                 YT_TLOG_DEBUG("Will not pull rows since replication card is outdated")
                     .With("ReplicationCardEra", replicationCard->Era)
@@ -326,12 +412,16 @@ private:
             }
 
             if (!tabletSnapshot->TabletRuntimeData->SmoothMovementData.IsActiveServant) {
+                SkipReason_.store(EPullerSkipReason::NotActiveServant);
+
                 YT_TLOG_DEBUG("Will not pull rows since tablet servant is not active");
                 return;
             }
 
             auto* selfReplica = replicationCard->FindReplica(tabletSnapshot->UpstreamReplicaId);
             if (!selfReplica) {
+                SkipReason_.store(EPullerSkipReason::NoSelfReplica);
+
                 THROW_ERROR_EXCEPTION("Table unable to identify self replica in replication card")
                     .With("upstream_replica_id", tabletSnapshot->UpstreamReplicaId)
                     .With(HardErrorAttribute);
@@ -340,6 +430,8 @@ private:
             auto localConnection = ReplicatorClientCache_.GetLocalClient()->GetNativeConnection();
             const auto& clusterName = localConnection->GetClusterName().value();
             if (!IsReplicaLocationValid(selfReplica, tabletSnapshot->TablePath, clusterName)) {
+                SkipReason_.store(EPullerSkipReason::WrongSelfReplicaPath);
+
                 THROW_ERROR_EXCEPTION("Upstream replica id corresponds to another table")
                     .With("upstream_replica_id", tabletSnapshot->UpstreamReplicaId)
                     .With("table_path", tabletSnapshot->TablePath)
@@ -350,6 +442,8 @@ private:
             }
 
             if (IsReplicaDisabled(selfReplica->State)) {
+                SkipReason_.store(EPullerSkipReason::SelfReplicaIsDisabled);
+
                 YT_TLOG_DEBUG("Will not pull rows since replica is not enabled")
                     .With("ReplicaState", selfReplica->State);
                 return;
@@ -359,6 +453,8 @@ private:
             if (auto delayedLocklessRowCount = tabletSnapshot->TabletRuntimeData->DelayedLocklessRowCount.load();
                 delayedLocklessRowCount > 0)
             {
+                SkipReason_.store(EPullerSkipReason::TransactionNotSerialized);
+
                 YT_TLOG_DEBUG("Will not pull rows since some transactions are not serialized yet")
                     .With("DelayedLocklessRowCount", delayedLocklessRowCount);
                 return;
@@ -366,6 +462,8 @@ private:
 
             auto replicationRound = tabletSnapshot->TabletChaosData->ReplicationRound.load();
             if (replicationRound < ReplicationRound_) {
+                SkipReason_.store(EPullerSkipReason::TransactionNotSerialized);
+
                 YT_TLOG_DEBUG("Will not pull rows since previous pull rows transaction is not fully serialized yet")
                     .With("ReplicationRound", replicationRound);
                 return;
@@ -373,12 +471,16 @@ private:
             ReplicationRound_ = replicationRound;
 
             if (auto pullRowsTransactionId = tabletSnapshot->TabletChaosData->PreparedWritePulledRowsTransactionId.Load()) {
+                SkipReason_.store(EPullerSkipReason::TransactionNotSerialized);
+
                 YT_TLOG_DEBUG("Will not pull rows since previous pull rows transaction is not fully serialized yet")
                     .With("TransactionId", pullRowsTransactionId);
                 return;
             }
 
             if (auto advanceTransactionId = tabletSnapshot->TabletChaosData->PreparedAdvanceReplicationProgressTransactionId.Load()) {
+                SkipReason_.store(EPullerSkipReason::TransactionNotSerialized);
+
                 YT_TLOG_DEBUG("Will not pull rows since previous advance transaction is not fully serialized yet")
                     .With("TransactionId", advanceTransactionId);
                 return;
@@ -389,6 +491,8 @@ private:
             if (writeMode == ETabletWriteMode::Pull) {
                 configGuard = ChaosAgent_->TryGetConfigLockGuard();
                 if (!configGuard) {
+                    SkipReason_.store(EPullerSkipReason::Reconfiguring);
+
                     YT_TLOG_DEBUG("Tablet is being reconfigured right now, skipping replication iteration");
                     return;
                 }
@@ -400,6 +504,8 @@ private:
             }
 
             if (snapshotEra != tabletSnapshot->TabletRuntimeData->ReplicationEra.load()) {
+                SkipReason_.store(EPullerSkipReason::EraChanged);
+
                 YT_TLOG_DEBUG("Skipping pull rows iteration since snapshot era has changed")
                     .With("SnapshotEra", snapshotEra)
                     .With("ReplicationEra", tabletSnapshot->TabletRuntimeData->ReplicationEra.load());
@@ -407,21 +513,27 @@ private:
             }
 
             if (writeMode != ETabletWriteMode::Pull) {
+                SkipReason_.store(EPullerSkipReason::NotAsync);
+
                 YT_TLOG_DEBUG("Will not pull rows since tablet write mode does not imply pulling")
                     .With("WriteMode", writeMode);
                 UpdatePullerErrors(tabletSnapshot->TabletRuntimeData->Errors, TError());
-                QueueReplicaSelector_.ResetLastPulledFromReplicaId();
+                ResetQueueReplicaSelectionState();
                 return;
             }
 
             auto replicationProgress = tabletSnapshot->TabletRuntimeData->ReplicationProgress.Acquire();
 
             if (!IsReplicationProgressGreaterOrEqual(*replicationProgress, LastReplicationProgressAdvance_)) {
+                SkipReason_.store(EPullerSkipReason::TransactionNotSerialized);
+
                 YT_TLOG_DEBUG("Skipping chaos agent iteration because last progress advance is not there yet")
                     .With("TabletReplicationProgress", static_cast<TReplicationProgress>(*replicationProgress))
                     .With("LastReplicationProgress", LastReplicationProgressAdvance_);
                 return;
             }
+
+            SkipReason_.store(EPullerSkipReason::None);
 
             if (auto newProgress = MaybeAdvanceReplicationProgress(selfReplica, replicationProgress)) {
                 if (!IsReplicationProgressGreaterOrEqual(*newProgress, LastReplicationProgressAdvance_)) {
@@ -446,7 +558,7 @@ private:
                     LastReplicationProgressAdvance_ = std::move(*newProgress);
                 }
 
-                QueueReplicaSelector_.ResetLastPulledFromReplicaId();
+                ResetQueueReplicaSelectionState();
             } else {
                 QueueReplicaSelector_.GetBannedReplicaTracker().SyncReplicas(replicationCard);
                 DoPullRows(
@@ -459,7 +571,11 @@ private:
 
             UpdatePullerErrors(tabletSnapshot->TabletRuntimeData->Errors, TError());
         } catch (const std::exception& ex) {
-            QueueReplicaSelector_.ResetLastPulledFromReplicaId();
+            if (SkipReason_.load() == EPullerSkipReason::None) {
+                SkipReason_.store(EPullerSkipReason::Failed);
+            }
+
+            ResetQueueReplicaSelectionState();
             auto error = TError(ex);
             YT_TLOG_ERROR("Error pulling rows, backing off")
                 .With(error);
@@ -565,6 +681,7 @@ private:
             tabletSnapshot->UpstreamReplicaId,
             replicationCard,
             *replicationProgress,
+            ComputeSameDCQueueClusters(replicationCard, selfReplica->ClusterName),
             now);
 
         if (!queueReplicaOrError.IsOK()) {
@@ -640,6 +757,8 @@ private:
                     .With("versioned_result", result.Versioned)
                     .With(HardErrorAttribute);
             }
+
+            ProcessPullRowsSubrequestErrors(queueReplicaId, result.SubrequestErrors);
 
             auto rowCount = result.RowCount;
             auto dataWeight = result.DataWeight;
@@ -939,6 +1058,28 @@ private:
         YT_TLOG_INFO("Doing hard backoff")
             .With(error);
         TDelayedExecutor::WaitForDuration(Config_->ReplicatorHardBackoffTime);
+    }
+
+    THashSet<std::string> ComputeSameDCQueueClusters(
+        const TReplicationCardPtr& replicationCard,
+        const std::string& selfClusterName)
+    {
+        THashSet<std::string> otherSameDcQueueClusters;
+        for (const auto& [_, replicaInfo] : replicationCard->Replicas) {
+            const auto& replicaClusterName = replicaInfo.ClusterName;
+            if (replicaInfo.ContentType != ETableReplicaContentType::Queue ||
+                !IsReplicaEnabled(replicaInfo.State) ||
+                replicaClusterName == selfClusterName)
+            {
+                continue;
+            }
+
+            if (ReplicatorClientCache_.IsSameDatacenter(replicaClusterName)) {
+                otherSameDcQueueClusters.insert(replicaClusterName);
+            }
+        }
+
+        return otherSameDcQueueClusters;
     }
 };
 

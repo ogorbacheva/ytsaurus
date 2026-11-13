@@ -8,7 +8,7 @@
 
 #include <yt/yt/core/ytree/yson_struct.h>
 
-#include <yt/yt/flow/library/cpp/connectors/common/ordered_async_sink_base.h>
+#include <yt/yt/flow/library/cpp/connectors/common/ordered_batching_async_sink_base.h>
 #include <yt/yt/flow/library/cpp/connectors/common/sync_sink_base.h>
 
 namespace NYT::NFlow::NSortedDynamicTable {
@@ -38,6 +38,7 @@ struct TSyncSinkParameters
     std::optional<THashSet<std::string>> AggregateColumns;
     bool DeleteRows{};
     bool RequireSyncReplica{};
+    bool AllowMissingKeyColumns{};
 
     REGISTER_YSON_STRUCT(TSyncSinkParameters);
 
@@ -57,6 +58,39 @@ struct TDynamicSyncSinkParameters
 };
 
 DECLARE_REFCOUNTED_TYPE(TDynamicSyncSinkParameters);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TAsyncSinkParameters
+    : public TOrderedBatchingAsyncSinkBase::TParameters
+    , public virtual TInfoSpec
+{
+    std::optional<THashSet<std::string>> ColumnFilter;
+    std::optional<THashSet<std::string>> AggregateColumns;
+    bool DeleteRows{};
+    bool RequireSyncReplica{};
+    bool AllowMissingKeyColumns{};
+
+    REGISTER_YSON_STRUCT(TAsyncSinkParameters);
+
+    static void Register(TRegistrar registrar);
+};
+
+DECLARE_REFCOUNTED_TYPE(TAsyncSinkParameters);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TDynamicAsyncSinkParameters
+    : public TOrderedBatchingAsyncSinkBase::TDynamicParameters
+{
+    TDuration BackoffDuration;
+
+    REGISTER_YSON_STRUCT(TDynamicAsyncSinkParameters);
+
+    static void Register(TRegistrar registrar);
+};
+
+DECLARE_REFCOUNTED_TYPE(TDynamicAsyncSinkParameters);
 
 ////////////////////////////////////////////////////////////////////////////////
 

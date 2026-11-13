@@ -1,5 +1,7 @@
 #pragma once
 
+#include <yql/essentials/core/project_settings/yql_project_settings.h>
+
 #include <yql/essentials/core/credentials/yql_credentials.h>
 #include <yql/essentials/core/file_storage/file_storage.h>
 #include <yql/essentials/core/services/yql_plan.h>
@@ -51,6 +53,7 @@ public:
         TString runner);
 
     void SetIssueReportTarget(const TString& reportTarget);
+    void SetProjectSettings(TProjectSettings settings);
     void SetLanguageVersion(TLangVersion version);
     void SetMaxLanguageVersion(TLangVersion version);
     void SetVolatileResults();
@@ -67,7 +70,9 @@ public:
     void EnableAutoUseYqlLibs();
     void SetArrowResolver(IArrowResolver::TPtr arrowResolver);
     void SetUdfResolverLogfile(const TString& path);
+    void SetUdfBridgeBinaryPath(const TString& path);
     void AddRemoteLayersProvider(const TString& alias, NLayers::IRemoteLayerProviderPtr provider);
+    void SetTranslatorsRegistry(NSQLTranslation::TTranslatorsRegistry translatorsRegistry);
 
     TProgramPtr Create(
         const TFile& file,
@@ -85,6 +90,7 @@ public:
 
 private:
     TString IssueReportTarget_;
+    TProjectSettings ProjectSettings_;
     const bool UseRepeatableRandomAndTimeProviders_;
     bool UseUnrepeatableRandom_ = false;
     const NKikimr::NMiniKQL::IFunctionRegistry* FunctionRegistry_;
@@ -108,7 +114,9 @@ private:
     bool AutoUseYqlLibs_ = false;
     IArrowResolver::TPtr ArrowResolver_;
     TMaybe<TString> UdfResolverLogfile_;
+    TString BridgeBinaryPath_;
     THashMap<TString, NLayers::IRemoteLayerProviderPtr> RemoteLayersProviders_;
+    NSQLTranslation::TTranslatorsRegistry TranslatorsRegistry_;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -127,6 +135,7 @@ public:
     void SetVolatileResults();
 
     void AddCredentials(const TVector<std::pair<TString, TCredential>>& credentials);
+    void SetUserCredentials(const TUserCredentials& userCredentials);
     void ClearCredentials();
 
     void AddUserDataTable(const TUserDataTable& userDataTable);
@@ -288,6 +297,7 @@ public:
     void SetValidateOptions(NUdf::EValidateMode validateMode);
     void SetDisableNativeUdfSupport(bool disable);
     void SetUseTableMetaFromGraph(bool use);
+    void SetStrictConfigValidation(bool strict);
 
     void SetProgressWriter(TOperationProgressWriter writer) {
         Y_ENSURE(!TypeCtx_, "TypeCtx_ already created");
@@ -309,14 +319,7 @@ public:
         OperationOptions_.SharedId = id;
     }
 
-    void SetOperationTitle(const TString& title) {
-        Y_ENSURE(!TypeCtx_, "TypeCtx_ already created");
-        if (!title.Contains("YQL")) {
-            ythrow yexception() << "Please mention YQL in the title '" << title << "'";
-        }
-
-        OperationOptions_.Title = title;
-    }
+    void SetOperationTitle(const TString& title);
 
     void SetOperationUrl(const TString& url) {
         Y_ENSURE(!TypeCtx_, "TypeCtx_ already created");
@@ -408,7 +411,10 @@ private:
         IArrowResolver::TPtr arrowResolver,
         EHiddenMode hiddenMode,
         const TQContext& qContext,
-        THashMap<TString, NLayers::IRemoteLayerProviderPtr> remoteLayersProviders);
+        THashMap<TString, NLayers::IRemoteLayerProviderPtr> remoteLayersProviders,
+        TString bridgeBinaryPath,
+        NSQLTranslation::TTranslatorsRegistry translatorsRegistry,
+        TProjectSettings projectSettings);
 
     TTypeAnnotationContextPtr BuildTypeAnnotationContext(const TString& username);
     TTypeAnnotationContextPtr GetAnnotationContext() const;
@@ -491,6 +497,10 @@ private:
     NUdf::EValidateMode ValidateMode_ = NUdf::EValidateMode::None;
     bool DisableNativeUdfSupport_ = false;
     bool UseTableMetaFromGraph_ = false;
+    bool StrictConfigValidation_ = false;
+    TProjectSettings ProjectSettings_;
+    TString BridgeBinaryPath_;
+    THashSet<TString> AcceptedSqlProjectSettings_;
     TMaybe<TSet<TString>> UsedClusters_;
     TMaybe<TSet<TString>> UsedProviders_;
     TMaybe<TString> ExternalQueryAst_;
@@ -515,9 +525,11 @@ private:
     bool FuzzUntypedLambda_ = false;
     bool FuzzUniversal_ = false;
     THashMap<TString, NLayers::IRemoteLayerProviderPtr> RemoteLayersProviders_;
+    const NSQLTranslation::TTranslatorsRegistry TranslatorsRegistry_;
 };
 
 TGatewaySQLFlags SQLFlagsFromQContext(const TQContext& context);
+TProjectSettings ProjectSettingsFromQContext(const TQContext& context);
 THolder<TGatewaysConfig> GatewaysConfigFromQContext(const TQContext& context);
 
 bool HasFullCapture(const IQReaderPtr& reader);

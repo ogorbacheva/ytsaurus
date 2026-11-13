@@ -66,6 +66,83 @@ TEST(TFlowLayoutMutationTest, CreatePartition)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+TEST(TFlowLayoutMutationTest, ResourceInstanceSnapshotsAndDeltas)
+{
+    auto state = New<TFlowState>();
+    auto control = New<TPersistedStateControl<std::string>>(New<TStorageHandler>());
+    state->AttachToControl(control);
+    control->Recover();
+    auto layout = state->ExecutionSpec->Layout;
+    auto follower = New<TFlowLayout>();
+    state->StartMutation();
+    auto instance = New<TResourceInstance>();
+    instance->ResourceInstanceId = TResourceInstanceId(TGuid::Create());
+    instance->ResourceId = TResourceId("resource");
+    instance->WorkerAddress = "worker";
+    instance->WorkerIncarnationId = TIncarnationId(TGuid::Create());
+    layout->ResourceInstances.emplace(instance->ResourceInstanceId, instance);
+    auto snapshot = layout->Clone();
+    snapshot->CreateSnapshot(false);
+    EXPECT_EQ(snapshot->ResourceInstances.size(), 1u);
+    state->CommitMutation();
+    follower->Apply(layout->Follow(TSequenceId(0)));
+    ASSERT_EQ(follower->ResourceInstances.size(), 1u);
+    EXPECT_EQ(follower->ResourceInstances.at(instance->ResourceInstanceId)->ResourceId, instance->ResourceId);
+    const auto additionVersion = layout->GetVersion();
+    state->StartMutation();
+    layout->ResourceInstances.erase(instance->ResourceInstanceId);
+    state->CommitMutation();
+    EXPECT_GT(layout->GetVersion(), additionVersion);
+    follower->Apply(layout->Follow(TSequenceId(additionVersion.Underlying())));
+    EXPECT_EQ(follower->ResourceInstances.size(), 0u);
+    EXPECT_EQ(snapshot->ResourceInstances.size(), 1u);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TEST(TFlowLayoutMutationTest, ExecutionSpecUpdateRejectsSupersededSnapshot)
+{
+    auto state = New<TFlowState>();
+    auto control = New<TPersistedStateControl<std::string>>(New<TStorageHandler>());
+    state->AttachToControl(control);
+    control->Recover();
+    auto layout = state->ExecutionSpec->Layout;
+    auto workerSpec = New<TExecutionSpec>();
+    auto instance = New<TResourceInstance>();
+    instance->ResourceInstanceId = TResourceInstanceId(TGuid::Create());
+    instance->ResourceId = TResourceId("resource");
+    instance->WorkerAddress = "worker";
+    instance->WorkerIncarnationId = TIncarnationId(TGuid::Create());
+    state->StartMutation();
+    layout->ResourceInstances.emplace(instance->ResourceInstanceId, instance);
+    state->CommitMutation();
+    auto snapshot = state->ExecutionSpec->Clone();
+    snapshot->CreateSnapshot();
+    const auto snapshotVersion = snapshot->Layout->GetVersion();
+
+    state->StartMutation();
+    layout->ResourceInstances.erase(instance->ResourceInstanceId);
+    auto replacement = CloneYsonStruct(instance);
+    replacement->ResourceInstanceId = TResourceInstanceId(TGuid::Create());
+    layout->ResourceInstances.emplace(replacement->ResourceInstanceId, replacement);
+    state->CommitMutation();
+
+    EXPECT_EQ(snapshot->Layout->GetVersion(), snapshotVersion);
+    EXPECT_TRUE(snapshot->Layout->ResourceInstances.contains(instance->ResourceInstanceId));
+    auto workerVersions = BuildExecutionSpecVersions(workerSpec);
+    EXPECT_THROW(PrepareExecutionSpecUpdate(snapshot, workerVersions), std::exception);
+
+    auto freshSnapshot = state->ExecutionSpec->Clone();
+    freshSnapshot->CreateSnapshot();
+    auto [update, rows] = PrepareExecutionSpecUpdate(freshSnapshot, workerVersions);
+    workerSpec = ApplyExecutionSpecUpdate(workerSpec, update, rows);
+    EXPECT_EQ(workerSpec->Layout->GetVersion(), freshSnapshot->Layout->GetVersion());
+    EXPECT_FALSE(workerSpec->Layout->ResourceInstances.contains(instance->ResourceInstanceId));
+    EXPECT_TRUE(workerSpec->Layout->ResourceInstances.contains(replacement->ResourceInstanceId));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 TEST(TFlowViewSerializeTest, RendersLayoutButKeepsDefaultEmpty)
 {
     auto flowState = New<TFlowState>();
@@ -291,6 +368,56 @@ TEST(TInputMetricsAggregationTest, IgnoresStaleJobStatuses)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+TEST(TPerformanceMetricsAggregationTest, RatesAggregateButJobIdentityDoesNot)
+{
+    auto makeMetrics = [] (double cpu, double messages, TInstant startTime) {
+        auto metrics = New<TNodePerformanceMetrics>();
+        metrics->CpuUsage10m = cpu;
+        metrics->MessagesPerSecond10m = messages;
+        metrics->MetricsStartTime = startTime;
+        metrics->FlowCoreVersion = "v1";
+        metrics->PipelineSpecVersion = TVersion(7);
+        return metrics;
+    };
+
+    auto aggregated = AggregateNodePerformanceMetrics({
+        makeMetrics(1.0, 100.0, TInstant::Seconds(10)),
+        makeMetrics(3.0, 300.0, TInstant::Seconds(20)),
+    });
+
+    EXPECT_DOUBLE_EQ(*aggregated->Total->MessagesPerSecond10m, 400.0);
+    EXPECT_DOUBLE_EQ(*aggregated->Avg->MessagesPerSecond10m, 200.0);
+    EXPECT_DOUBLE_EQ(*aggregated->Max->MessagesPerSecond10m, 300.0);
+    EXPECT_DOUBLE_EQ(*aggregated->Total->CpuUsage10m, 4.0);
+
+    for (const auto& metrics : {aggregated->Total, aggregated->Avg, aggregated->Max}) {
+        EXPECT_FALSE(metrics->MetricsStartTime.has_value());
+        EXPECT_FALSE(metrics->FlowCoreVersion.has_value());
+        EXPECT_FALSE(metrics->PipelineSpecVersion.has_value());
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! A binary rollback loads persisted state written by a newer binary: fields it does not know
+//! must be dropped, not rejected.
+TEST(TPersistedStateCompatibilityTest, UnknownFieldsAreDropped)
+{
+    auto partition = ConvertTo<TPartitionPtr>(TYsonString(TString(
+        "{partition_id=\"1-2-3-4\"; computation_id=c; state_epoch=1; state_timestamp=1; future_field=#}")));
+    EXPECT_EQ(partition->ComputationId, TComputationId("c"));
+
+    auto flowState = ConvertTo<TFlowStatePtr>(TYsonString(TString(
+        "{balancer_state={groups={g={worker_coef_edges={a={b={from=a; to=b; obs=0.1; weight=1.0; updated_at=1; future_field=1}}}}}; "
+        "partition_histories={\"1-2-3-4\"={worker_address=w; cpu_usage=1.0; future_field=1}}; future_field=1}; future_field=1}")));
+    ASSERT_EQ(flowState->BalancerState->Groups.size(), 1u);
+    EXPECT_EQ(flowState->BalancerState->Groups.at(TWorkerGroupId("g"))->WorkerCoefEdges.at("a").size(), 1u);
+    ASSERT_EQ(flowState->BalancerState->PartitionHistories.size(), 1u);
+    EXPECT_EQ(flowState->BalancerState->PartitionHistories.begin()->second->WorkerAddress, "w");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 TEST(TExecutionSpecEpochTest, AdvancesForEveryVersionComponent)
 {
     auto versions = New<TExecutionSpecVersions>();
@@ -334,6 +461,29 @@ TEST(TExecutionSpecEpochTest, RemainsPositivePastTheOld2038OverflowBoundary)
 TFlowViewPtr CreateSyncedFlowView()
 {
     return New<TFlowView>();
+}
+
+TEST(TFlowCoreTargetTest, FollowsExecutionSpecUpdates)
+{
+    auto controllerSpec = New<TExecutionSpec>();
+    auto workerSpec = New<TExecutionSpec>();
+    auto synchronize = [&] {
+        auto versions = ConvertTo<TExecutionSpecVersionsPtr>(ConvertToYsonString(BuildExecutionSpecVersions(workerSpec)));
+        auto [update, rows] = PrepareExecutionSpecUpdate(controllerSpec, versions);
+        update = ConvertTo<TExecutionSpecPtr>(ConvertToYsonString(update));
+        workerSpec = ApplyExecutionSpecUpdate(workerSpec, update, rows);
+    };
+
+    for (const auto& target : {"first-core-target", "second-core-target", ""}) {
+        controllerSpec->FlowCoreTarget->TrySetValue(TFlowCoreTarget(target), TestVersionProvider());
+        synchronize();
+        EXPECT_EQ(workerSpec->FlowCoreTarget->GetValue(), controllerSpec->FlowCoreTarget->GetValue());
+        EXPECT_EQ(workerSpec->FlowCoreTarget->GetVersion(), controllerSpec->FlowCoreTarget->GetVersion());
+
+        synchronize();
+        EXPECT_EQ(workerSpec->FlowCoreTarget->GetValue(), controllerSpec->FlowCoreTarget->GetValue());
+        EXPECT_EQ(workerSpec->FlowCoreTarget->GetVersion(), controllerSpec->FlowCoreTarget->GetVersion());
+    }
 }
 
 TEST(TFlowCoreTargetTest, EmptyTargetPasses)

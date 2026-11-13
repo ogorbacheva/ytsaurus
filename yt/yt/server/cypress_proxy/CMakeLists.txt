@@ -42,8 +42,10 @@ target_link_libraries(yt-server-cypress_proxy PUBLIC
   server-lib-misc
   server-lib-object_server
   server-lib-cypress_proxy
+  server-lib-rpc_proxy
   server-lib-security_server
   server-lib-sequoia
+  server-lib-table_server
   server-lib-cross_cluster_replicated_state
 )
 
@@ -57,7 +59,9 @@ target_sources(yt-server-cypress_proxy PRIVATE
   ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/cypress_proxy_service_base.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/cypress_transaction_service.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/dynamic_config_manager.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/embedded_api_service.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/helpers.cpp
+  ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/internal_api_service.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/master_connector.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/master_proxy.cpp
   ${PROJECT_SOURCE_DIR}/yt/yt/server/cypress_proxy/node_proxy.cpp

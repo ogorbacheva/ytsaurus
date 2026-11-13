@@ -5,6 +5,7 @@ SRCS(
     dq_gateway_with_offloading.cpp
     dq_manager.cpp
     provider_load.cpp
+    ytflow_load.cpp
 )
 
 PEERDIR(
@@ -51,12 +52,15 @@ PEERDIR(
     contrib/ydb/library/yql/dq/comp_nodes
     contrib/ydb/library/yql/dq/opt
     yt/yql/providers/dq/actors/yt
+    yt/yql/providers/dq/clique
+    yt/yql/providers/dq/common
     yt/yql/providers/dq/global_worker_manager
     yt/yql/providers/dq/metrics
     contrib/ydb/library/yql/providers/dq/helper
     contrib/ydb/library/yql/providers/dq/provider
     contrib/ydb/library/yql/providers/dq/provider/exec
     contrib/ydb/library/yql/providers/dq/worker_manager/interface
+    yt/yql/library/token_resolver
     yt/yql/providers/dq/control
     yt/yql/providers/dq/gateway
     yt/yql/providers/dq/service
@@ -77,7 +81,9 @@ PEERDIR(
     yt/yql/providers/yt/codec/codegen
     yt/yql/providers/yt/comp_nodes/dq/llvm16
     yt/yql/providers/yt/comp_nodes/llvm16
-    contrib/ydb/library/yql/providers/yt/dq_task_preprocessor
+    yt/yql/providers/ytflow/gateway
+    yt/yql/providers/ytflow/provider
+    yt/yql/providers/yt/dq_task_preprocessor
 
     yt/yql/plugin
     yt/yql/plugin/lib
@@ -88,7 +94,6 @@ IF (NOT OPENSOURCE)
 ELSE()
     SRCS(
         dummy_secret_masker.cpp
-        no_ytflow_load.cpp
         no_pq_load.cpp
         no_solomon_load.cpp
     )

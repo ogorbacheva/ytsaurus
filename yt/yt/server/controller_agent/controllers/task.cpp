@@ -6,19 +6,21 @@
 #include "job_info.h"
 #include "job_memory.h"
 #include "job_splitter.h"
+#include "journal_nbd_spec.h"
 #include "task_host.h"
 
 #include <yt/yt/server/controller_agent/chunk_list_pool.h>
 #include <yt/yt/server/controller_agent/config.h>
+#include <yt/yt/server/controller_agent/helpers.h>
 #include <yt/yt/server/controller_agent/scheduling_context.h>
 
 #include <yt/yt/server/lib/chunk_pools/helpers.h>
 
 #include <yt/yt/server/lib/scheduler/helpers.h>
 
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 #include <yt/yt/ytlib/chunk_client/input_chunk.h>
 #include <yt/yt/ytlib/chunk_client/job_spec_extensions.h>
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
 
 #include <yt/yt/ytlib/controller_agent/helpers.h>
 
@@ -156,6 +158,14 @@ void TTask::Prepare()
         GetJobSplitterConfig(),
         GetChunkPoolOutput().Get(),
         Logger);
+
+    if (userJobSpec) {
+        i64 journalNbdMemoryUsage = 0;
+        for (const auto& [_, journalNbdSpec] : TaskHost_->GetJournalNbdSpecs(userJobSpec)) {
+            journalNbdMemoryUsage += journalNbdSpec.MemoryUsage;
+        }
+        JournalNbdMemoryUsage_ = journalNbdMemoryUsage;
+    }
 
     if (TaskHost_->GetConfig()->UseResourceOverdraftMemoryMultiplierFromSpec) {
         if (userJobSpec) {
@@ -299,6 +309,11 @@ bool TTask::IsCoreTableEnabled() const
     return TaskHost_->GetCoreTablePath() && GetUserJobSpec();
 }
 
+bool TTask::IsJournalNbdEnabled() const
+{
+    return TaskHost_->IsJournalNbdEnabled() && HasNbdDiskRequest(GetUserJobSpec());
+}
+
 i64 TTask::GetLocality(TNodeId nodeId) const
 {
     return HasInputLocality()
@@ -323,10 +338,7 @@ void TTask::AddInput(TChunkStripePtr stripe)
         // in InputChunkToReadBounds_) as pools have no use for them.
         // For sorted chunk pool behavior is trickier as task adjusts the input read limits
         // to match comparator of sorted chunk pool.
-        YT_VERIFY(!dataSlice->IsLegacy);
         AdjustInputKeyBounds(dataSlice);
-        // Data slice may be either legacy or not depending on whether task uses
-        // legacy sorted chunk pool or not.
     }
 
     if (TaskHost_->GetSpec()->UseClusterThrottlers) {
@@ -354,10 +366,8 @@ void TTask::AddInput(TChunkStripePtr stripe)
     UpdateTask();
 }
 
-void TTask::AdjustInputKeyBounds(const TLegacyDataSlicePtr& dataSlice)
+void TTask::AdjustInputKeyBounds(const TDataSlicePtr& dataSlice)
 {
-    YT_VERIFY(!dataSlice->IsLegacy);
-
     if ((dataSlice->LowerLimit().KeyBound && !dataSlice->LowerLimit().KeyBound.IsUniversal()) ||
         (dataSlice->UpperLimit().KeyBound && !dataSlice->UpperLimit().KeyBound.IsUniversal()))
     {
@@ -372,10 +382,8 @@ void TTask::AdjustInputKeyBounds(const TLegacyDataSlicePtr& dataSlice)
     AdjustDataSliceForPool(dataSlice);
 }
 
-void TTask::AdjustDataSliceForPool(const TLegacyDataSlicePtr& dataSlice) const
+void TTask::AdjustDataSliceForPool(const TDataSlicePtr& dataSlice) const
 {
-    YT_VERIFY(!dataSlice->IsLegacy);
-
     dataSlice->LowerLimit().KeyBound = TKeyBound();
     dataSlice->UpperLimit().KeyBound = TKeyBound();
 
@@ -385,9 +393,8 @@ void TTask::AdjustDataSliceForPool(const TLegacyDataSlicePtr& dataSlice) const
     }
 }
 
-void TTask::AdjustOutputKeyBounds(const TLegacyDataSlicePtr& dataSlice) const
+void TTask::AdjustOutputKeyBounds(const TDataSlicePtr& dataSlice) const
 {
-    YT_VERIFY(!dataSlice->IsLegacy);
     if (dataSlice->ReadRangeIndex) {
         YT_VERIFY(IsInput_);
         const auto& inputTable = TaskHost_->GetInputTable(dataSlice->GetTableIndex());
@@ -539,7 +546,6 @@ NScheduler::TAllocationStartDescriptor TTask::CreateAllocationStartDescriptor(
         auto& attributes = startDescriptor.AllocationAttributes;
 
         attributes.CudaToolkitVersion = userJobSpec->CudaToolkitVersion;
-        // Do not set disk_request allocation attributes in case of NBD disk.
         for (const auto& [_, volume] : userJobSpec->Volumes) {
             if (!volume->DiskRequest) {
                 continue;
@@ -549,6 +555,9 @@ NScheduler::TAllocationStartDescriptor TTask::CreateAllocationStartDescriptor(
                 attributes.DiskRequest.MediumIndex = diskRequest->MediumIndex;
                 attributes.DiskRequest.DiskSpace = diskRequest->DiskSpace;
                 attributes.DiskRequest.InodeCount = diskRequest->InodeCount;
+            } else if (volume->DiskRequest->GetType() == NExecNode::EVolumeType::Nbd) {
+                // NBD uses no local disk; keep exec node from falling back to MinRequiredDiskSpace.
+                attributes.DiskRequest.DiskSpace = attributes.DiskRequest.DiskSpace.value_or(0);
             }
         }
         attributes.PortCount = userJobSpec->PortCount;
@@ -643,9 +652,7 @@ TTask::GetOutputCookieInfoForNextJob(const TAllocation& allocation)
             if (result.OutputCookie == IChunkPoolOutput::NullCookie) {
                 YT_TLOG_DEBUG("Job input is empty");
 
-                if (!previousJobCompetitionType) {
-                    CheckAndProcessOperationCompletedInScheduleJob();
-                }
+                CheckAndProcessOperationCompletedInScheduleJob();
 
                 return std::unexpected(EScheduleFailReason::EmptyInput);
             }
@@ -819,6 +826,7 @@ std::expected<NScheduler::TJobResourcesWithQuota, EScheduleFailReason> TTask::Tr
 
     auto userJobSpec = GetUserJobSpec();
     if (userJobSpec) {
+        auto journalNbdEnabled = IsJournalNbdEnabled();
         for (const auto& [_, volume] : userJobSpec->Volumes) {
             if (!volume->DiskRequest) {
                 continue;
@@ -829,9 +837,17 @@ std::expected<NScheduler::TJobResourcesWithQuota, EScheduleFailReason> TTask::Tr
                 continue;
             }
 
+            auto isNbd = volume->DiskRequest->GetType() == NExecNode::EVolumeType::Nbd;
+
+            // The journal backend's chunks are charged to the account by master as they are written,
+            // so an account resource usage lease on top of that would count the disk twice.
+            if (isNbd && journalNbdEnabled) {
+                continue;
+            }
+
             auto diskQuota = CreateDiskQuota(diskRequest, TaskHost_->GetMediumDirectory());
             // Do not set needed resources in case of NBD disk since we do not need these resources on exe nodes.
-            if (volume->DiskRequest->GetType() != NExecNode::EVolumeType::Nbd) {
+            if (!isNbd) {
                 neededResources.DiskQuota() = diskQuota;
             }
             joblet->DiskRequestAccount = diskRequest->Account;
@@ -857,8 +873,7 @@ std::expected<NScheduler::TJobResourcesWithQuota, EScheduleFailReason> TTask::Tr
     }
 
     // Check the usage against the limits. This is the last chance to give up.
-    if (!context.CanSatisfyDemand(neededResources))
-    {
+    if (!context.CanSatisfyDemand(neededResources)) {
         YT_TLOG_DEBUG("Actual resource demand is not met")
             .With("AvailableResources", context.GetResourcesString(TaskHost_->GetMediumDirectory()))
             .With("NeededResources", FormatResources(neededResources));
@@ -955,6 +970,10 @@ std::expected<NScheduler::TJobResourcesWithQuota, EScheduleFailReason> TTask::Tr
 
     if (TaskHost_->CoreTable() && IsCoreTableEnabled()) {
         joblet->CoreTableChunkListId = TaskHost_->ExtractDebugChunkList(TaskHost_->CoreTable()->ExternalCellTag);
+    }
+
+    if (IsJournalNbdEnabled()) {
+        joblet->JournalNbdChunkListId = TaskHost_->ExtractJournalNbdChunkList();
     }
 
     // Sync part.
@@ -1237,6 +1256,9 @@ void TTask::RegisterMetadata(auto&& registrar)
             this_->JobCollectiveManager_.InitializeCounter();
         }));
 
+    PHOENIX_REGISTER_FIELD(39, JournalNbdMemoryUsage_,
+        .SinceVersion(ESnapshotVersion::JournalNbd));
+
     registrar.AfterLoad([] (TThis* this_, auto& /*context*/) {
         // COMPAT(galtsev)
         if (this_->TaskHost_->GetSpec()->JobExperiment) {
@@ -1417,7 +1439,8 @@ TJobFinishedResult TTask::OnJobCompleted(TJobletPtr joblet, TCompletedJobSummary
             error.FindMatching(NChunkPools::EErrorCode::MaxPrimaryDataWeightPerJobExceeded) ||
             error.FindMatching(NChunkPools::EErrorCode::MaxCompressedDataSizePerJobExceeded))
         {
-            YT_LOG_ERROR(error);
+            YT_TLOG_ERROR("Job completion failed due to a chunk pool limit")
+                .With(error);
 
             result.OperationFailedError = error;
             return result;
@@ -1433,6 +1456,12 @@ TJobFinishedResult TTask::OnJobCompleted(TJobletPtr joblet, TCompletedJobSummary
         if (InputDataWeightHistogram_ && dataWeight > 0) {
             InputDataWeightHistogram_->AddValue(dataWeight);
         }
+    }
+
+    // The disk's chunks are scratch; release the chunk list once completion is durable.
+    if (joblet->JournalNbdChunkListId) {
+        TaskHost_->ReleaseChunkTrees({joblet->JournalNbdChunkListId}, /*unstageRecursively*/ true, /*waitForSnapshot*/ true);
+        joblet->JournalNbdChunkListId = NullChunkListId;
     }
 
     return result;
@@ -1460,6 +1489,10 @@ void TTask::ReleaseJobletResources(TJobletPtr joblet, bool waitForSnapshot)
         }
     }
     TaskHost_->ReleaseChunkTrees(joblet->ChunkListIds, /*recursive*/ true, waitForSnapshot);
+    // The disk's chunks are scratch; release the chunk list on any non-completion finish.
+    if (joblet->JournalNbdChunkListId) {
+        TaskHost_->ReleaseChunkTrees({joblet->JournalNbdChunkListId}, /*unstageRecursively*/ true, waitForSnapshot);
+    }
 }
 
 TJobFinishedResult TTask::OnJobFailed(TJobletPtr joblet, const TFailedJobSummary& jobSummary)
@@ -1574,6 +1607,11 @@ void TTask::OnJobLost(TCompletedJobPtr completedJob, TChunkId chunkId)
     for (auto* jobManager : JobManagers_) {
         jobManager->OnJobLost(completedJob->OutputCookie);
     }
+}
+
+bool TTask::IsJobOutputNeeded(const TCompletedJobPtr& /*completedJob*/) const
+{
+    return true;
 }
 
 void TTask::OnStripeRegistrationFailed(
@@ -1696,12 +1734,15 @@ void TTask::AddSequentialInputSpec(
         TaskHost_->GetOperationType());
     auto* inputSpec = jobSpecExt->add_input_table_specs();
     const auto& list = joblet->InputStripeList;
+    THashSet<TChunkId> seenHunkChunks;
     for (const auto& stripe : list->Stripes()) {
         AddChunksToInputSpec(
             IsInput_ ? nodeDirectoryBuilderFactory.GetNodeDirectoryBuilder(stripe).get() : nullptr,
             inputSpec,
             stripe,
-            comparator);
+            GetPtr(seenHunkChunks),
+            comparator,
+            jobSpecExt);
     }
     UpdateInputSpecTotals(jobSpec, joblet);
 }
@@ -1722,6 +1763,7 @@ void TTask::AddParallelInputSpec(
         TaskHost_->GetInputManager(),
         TaskHost_->GetOperationType());
     const auto& list = joblet->InputStripeList;
+    THashSet<TChunkId> seenHunkChunks;
     for (const auto& stripe : list->Stripes()) {
         auto* inputSpec = stripe->IsForeign()
             ? jobSpecExt->add_foreign_input_table_specs()
@@ -1730,7 +1772,9 @@ void TTask::AddParallelInputSpec(
             IsInput_ ? directoryBuilderFactory.GetNodeDirectoryBuilder(stripe).get() : nullptr,
             inputSpec,
             stripe,
-            comparator);
+            GetPtr(seenHunkChunks),
+            comparator,
+            jobSpecExt);
     }
     UpdateInputSpecTotals(jobSpec, joblet);
 }
@@ -1739,16 +1783,18 @@ void TTask::AddChunksToInputSpec(
     TNodeDirectoryBuilder* directoryBuilder,
     TTableInputSpec* inputSpec,
     TChunkStripePtr stripe,
-    TComparator comparator)
+    TNonNullPtr<THashSet<TChunkId>> seenHunkChunks,
+    TComparator comparator,
+    TJobSpecExt* jobSpecExt)
 {
     YT_ASSERT_INVOKER_AFFINITY(TaskHost_->GetJobSpecBuildInvoker());
 
-    stripe = GetChunkMapping()->GetMappedStripe(stripe);
+    auto mappedStripe = GetChunkMapping()->GetMappedStripe(stripe);
+    stripe = std::move(mappedStripe.Stripe);
+    jobSpecExt->set_is_approximate(jobSpecExt->is_approximate() || mappedStripe.IsRegenerated);
 
     for (const auto& dataSlice : stripe->DataSlices()) {
-        YT_VERIFY(!dataSlice->IsLegacy);
         AdjustOutputKeyBounds(dataSlice);
-        YT_VERIFY(!dataSlice->IsLegacy);
 
         inputSpec->add_chunk_spec_count_per_data_slice(dataSlice->ChunkSlices.size());
         inputSpec->add_virtual_row_index_per_data_slice(dataSlice->VirtualRowIndex.value_or(-1));
@@ -1784,6 +1830,28 @@ void TTask::AddChunksToInputSpec(
             if (directoryBuilder) {
                 auto replicas = chunkSlice->GetInputChunk()->GetReplicas();
                 directoryBuilder->Add(replicas);
+            }
+
+            const auto& hunkChunkRefsExt = chunkSlice->GetInputChunk()->HunkChunkRefsExt();
+            if (IsInput_ &&
+                hunkChunkRefsExt &&
+                TaskHost_->GetConfig()->EnableHunkChunkReplicaPrefetch &&
+                TaskHost_->GetOperationType() != EOperationType::RemoteCopy)
+            {
+                const auto& inputManager = TaskHost_->GetInputManager();
+                for (const auto& hunkChunkRef : hunkChunkRefsExt->refs()) {
+                    auto hunkChunkId = FromProto<TChunkId>(hunkChunkRef.chunk_id());
+                    if (auto [_, inserted] = seenHunkChunks->insert(hunkChunkId); !inserted) {
+                        continue;
+                    }
+
+                    if (auto hunkChunk = inputManager->FindInputChunk(hunkChunkId)) {
+                        ToProto(inputSpec->add_hunk_chunk_specs(), hunkChunk);
+                        if (directoryBuilder) {
+                            directoryBuilder->Add(hunkChunk->GetReplicas());
+                        }
+                    }
+                }
             }
         }
     }
@@ -2100,7 +2168,7 @@ TSharedRef TTask::BuildJobSpecProto(TJobletPtr joblet, const std::optional<NSche
 {
     YT_ASSERT_INVOKER_AFFINITY(TaskHost_->GetJobSpecBuildInvoker());
 
-    auto jobSpec = ObjectPool<TJobSpec>().Allocate();
+    auto jobSpec = ObjectPool<TJobSpec>().AllocateUnique();
 
     BuildJobSpec(joblet, jobSpec.get());
 
@@ -2126,10 +2194,10 @@ TSharedRef TTask::BuildJobSpecProto(TJobletPtr joblet, const std::optional<NSche
         }
     }
 
-    jobSpecExt->set_is_approximate(joblet->InputStripeList->IsApproximate());
+    jobSpecExt->set_is_approximate(jobSpecExt->is_approximate() || joblet->InputStripeList->IsApproximate());
 
     // Adjust sizes if approximation flag is set.
-    if (joblet->InputStripeList->IsApproximate()) {
+    if (jobSpecExt->is_approximate()) {
         jobSpecExt->set_input_data_weight(static_cast<i64>(
             jobSpecExt->input_data_weight() *
             ApproximateSizesBoostFactor));
@@ -2183,7 +2251,9 @@ bool TTask::IsJobInterruptible() const
 
 void TTask::AddFootprintAndUserJobResources(TExtendedJobResources& jobResources) const
 {
-    jobResources.SetFootprintMemory(TaskHost_->GetConfig()->FootprintMemory.value_or(GetFootprintMemorySize()));
+    jobResources.SetFootprintMemory(
+        TaskHost_->GetConfig()->FootprintMemory.value_or(GetFootprintMemorySize()) +
+        JournalNbdMemoryUsage_);
     auto userJobSpec = GetUserJobSpec();
     if (userJobSpec) {
         jobResources.SetUserJobMemory(userJobSpec->MemoryLimit + TaskHost_->GetConfig()->ExecFootprintMemory.value_or(0L));
@@ -2330,10 +2400,12 @@ void TTask::RegisterStripe(
                     .With("JobType", joblet->JobType)
                     .With("InputCookie", inputCookie);
             } catch (const std::exception& ex) {
+                YT_TLOG_ERROR("Handling stripe registration failure")
+                    .With("InputCookie", inputCookie)
+                    .With(ex);
                 auto error = TError("Failure while registering result stripe of a restarted job in a chunk mapping")
                     .With(ex)
                     .With("input_cookie", inputCookie);
-                YT_LOG_ERROR(error);
                 OnStripeRegistrationFailed(error, lostIt->second, stripe, streamDescriptor);
             }
 
@@ -2422,11 +2494,9 @@ std::vector<TChunkStripePtr> TTask::BuildChunkStripes(
         // merge phase over several intermediate chunks.
         inputChunk->SetTableRowIndex(currentTableRowIndex);
         currentTableRowIndex += inputChunk->GetRowCount();
-        auto chunkSlice = CreateInputChunkSlice(std::move(inputChunk));
+        auto chunkSlice = CreateKeylessInputChunkSlice(std::move(inputChunk));
         chunkSlice->SetSliceIndex(index);
         auto dataSlice = CreateUnversionedInputDataSlice(std::move(chunkSlice));
-        // TODO(max42): revisit this.
-        dataSlice->TransformToNewKeyless();
         // NB(max42): This heavily relies on the property of intermediate data being deterministic
         // (i.e. it may be reproduced with exactly the same content divided into chunks with exactly
         // the same boundary keys when the job output is lost).

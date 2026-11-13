@@ -1,11 +1,9 @@
 # Release notes
 
-> Note: This page is only available in English.
-
 Thanks to multiple outside contributors for the active participation in {{product-name}} development.
 
 
-## {{product-name}} Server
+## {{product-name}} Server {#server} {#ytsaurus-server} {#yt-server}
 
 {% include notitle [YT server](../_includes/releases/yt-server.md) %}
 
@@ -17,13 +15,17 @@ Thanks to multiple outside contributors for the active participation in {{produc
 
 {% include notitle [Strawberry](../_includes/releases/strawberry.md) %}
 
-## CHYT
+## CHYT {#chyt} {#chyt-releases}
 
 {% include notitle [CHYT](../_includes/releases/chyt.md) %}
 
 ## SPYT
 
 {% include notitle [SPYT](../_includes/releases/spyt.md) %}
+
+## Flow
+
+{% include notitle [Flow](../_includes/releases/flow.md) %}
 
 ## Kubernetes operator
 
@@ -45,7 +47,7 @@ Thanks to multiple outside contributors for the active participation in {{produc
 
 {% include notitle [Tutorial](../_includes/releases/tutorial.md) %}
 
-## Task proxy
+## Task proxy {#task-proxy}
 
 {% include notitle [Task proxy](../_includes/releases/task-proxy.md) %}
 

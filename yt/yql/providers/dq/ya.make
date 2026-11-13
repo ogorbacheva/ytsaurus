@@ -1,5 +1,7 @@
 RECURSE(
     actors
+    clique
+    common
     control
     gateway
     global_worker_manager
@@ -10,4 +12,11 @@ RECURSE(
     scheduler
     service
     stats_collector
+    testlib
 )
+
+IF (NOT OPENSOURCE AND NOT OS_WINDOWS)
+    RECURSE(
+        clique_discovery
+    )
+ENDIF()

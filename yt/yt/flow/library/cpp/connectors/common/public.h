@@ -17,11 +17,6 @@ DECLARE_REFCOUNTED_STRUCT(TOrderedAsyncSinkState);
 
 DECLARE_REFCOUNTED_STRUCT(TOrderedBatchingAsyncSinkState);
 
-DECLARE_REFCOUNTED_STRUCT(TDelegatingAsyncSinkParameters);
-DECLARE_REFCOUNTED_STRUCT(TDelegatingAsyncSinkDynamicParameters);
-DECLARE_REFCOUNTED_STRUCT(TAtMostOnceStrategyParameters);
-DECLARE_REFCOUNTED_STRUCT(TAtMostOnceStrategyDynamicParameters);
-
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace NYT::NFlow

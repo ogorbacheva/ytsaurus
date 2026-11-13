@@ -161,11 +161,11 @@ Start Flink SQL Client:
 
 4. Monitor job progress at [localhost:8083](http://localhost:8083).
 
-   ![](../../../../../images/flyt-connector-simple-sink-job-ui.png)
+   ![](../../../../../_images/flyt-connector-simple-sink-job-ui.png)
 
 5. The table `flink_simple_test_table` will be created in the `/tmp/flink_simple_test_table` directory and will contain the results of the Flink job.
 
-   ![](../../../../../images/flyt-connector-simple-sink-result-ui.png)
+   ![](../../../../../_images/flyt-connector-simple-sink-result-ui.png)
 
 Congratulations! You've launched your first job with {{product-name}} and Apache Flink.
 
@@ -405,7 +405,7 @@ FROM partitioned_data_source;
 
 Result:
 
-![](../../../../../images/flyt-connector-partitioned-table-result-ui.png)
+![](../../../../../_images/flyt-connector-partitioned-table-result-ui.png)
 
 ## Table Resharding {#table-resharding}
 
@@ -429,7 +429,7 @@ The connector supports automatic table resharding at table creation time. Reshar
 
 The connector supports both synchronous and asynchronous Lookup operations with caching.
 
-Lookup operations enrich a stream with data from an external table by key. In SQL terms, this corresponds to the `Lookup Join` scenario. For more information about lookup joins, see [{#T}](../../../../user-guide/dynamic-tables/dyn-query-language.md#lookup-joins).
+Lookup operations enrich a stream with data from an external table by key. In SQL terms, this corresponds to the `Lookup Join` scenario. For more information about lookup joins, see [{#T}](../../../../user-guide/dynamic-tables/dyn-query-language.md#joins).
 
 This section covers stream enrichment with data from {{product-name}}. If you only need the basic write scenario, the steps in [Quick Start](#quick-start-guide) are sufficient.
 
@@ -566,11 +566,11 @@ ON o.user_id = l.id;
 
 Open the Apache Flink UI at [localhost:8083](http://localhost:8083).
 
-![](../../../../../images/flyt-connector-lookup-join-job-ui.png)
+![](../../../../../_images/flyt-connector-lookup-join-job-ui.png)
 
 Flink SQL Client displays the results of the Lookup Join operation in real time.
 
-![](../../../../../images/flyt-connector-lookup-join-flink-sql-result.png)
+![](../../../../../_images/flyt-connector-lookup-join-flink-sql-result.png)
 
 
 ## Examples {#examples}

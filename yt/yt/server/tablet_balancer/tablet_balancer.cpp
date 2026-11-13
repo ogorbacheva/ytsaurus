@@ -14,7 +14,7 @@
 
 #include <yt/yt/server/lib/tablet_balancer/config.h>
 #include <yt/yt/server/lib/tablet_balancer/balancing_helpers.h>
-#include <yt/yt/server/lib/tablet_balancer/parameterized_balancing_helpers.h>
+#include <yt/yt/server/lib/tablet_balancer/parameterized_move_helpers.h>
 
 #include <yt/yt/library/cypress_election/election_manager.h>
 
@@ -109,7 +109,7 @@ public:
     }
 
 private:
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, Lock_);
 
     std::atomic<TDuration> TimeoutOnStart_;
     std::atomic<TDuration> Timeout_;
@@ -160,7 +160,7 @@ public:
     }
 
 private:
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     THashMap<TCellTag, IReconfigurableThroughputThrottlerPtr> Throttlers_;
     TThroughputThrottlerConfigPtr Config_;
 };
@@ -262,12 +262,11 @@ private:
     // Bundles with currently running balancing callback.
     THashSet<std::string> BalancingBundles_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, BundleErrorsLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, BundleErrorsLock_);
     mutable THashMap<std::string, TBundleErrors> BundleErrors_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, Lock_);
     THashSet<TGlobalGroupTag> GroupsToMoveOnNextIteration_;
-    // Used for forcing iteration by request by |RequestBalancing|.
     THashSet<TGlobalGroupTag> GroupsToReshardOnNextIteration_;
     IActionManagerPtr ActionManager_;
     IClusterStateProviderPtr ClusterStateProvider_;
@@ -484,15 +483,17 @@ TTabletBalancer::TTabletBalancer(
 {
     auto dynamicConfig = DynamicConfig_.Acquire();
     MasterRequestThrottler_ = New<TMulticellThrottler>(dynamicConfig->MasterRequestThrottler);
-    ActionManager_ = CreateActionManager(
-        dynamicConfig->ActionManager,
-        Bootstrap_->GetClient(),
-        Bootstrap_,
-        MasterRequestThrottler_);
     ClusterStateProvider_ = CreateClusterStateProvider(
         Bootstrap_,
         dynamicConfig->ClusterStateProvider,
         ControlInvoker_);
+    ActionManager_ = CreateActionManager(
+        dynamicConfig->ActionManager,
+        Bootstrap_->GetClient(),
+        Bootstrap_,
+        MasterRequestThrottler_,
+        ClusterStateProvider_,
+        dynamicConfig->MaxUnhealthyBundlesOnReplicaCluster);
 
     Bootstrap_->GetDynamicConfigManager()->SubscribeBeforeConfigChanged(DynamicConfigChangedCallback_);
 }
@@ -657,6 +658,14 @@ void TTabletBalancer::OnBundleBalancingFinished(const TError& error, const std::
         YT_TLOG_DEBUG("Canceling iteration because tablet balancer instance is no longer active")
             .With("BundleName", bundleName);
         ActionManager_->CancelPendingActions(bundleName);
+        return;
+    }
+
+    if (!AreBundlesHealthy(DynamicConfig_.Acquire()->MaxUnhealthyBundlesOnReplicaCluster)) {
+        YT_TLOG_INFO("Canceling pending actions for bundle because many unhealthy bundles have been found on a replica cluster")
+            .With("BundleName", bundleName);
+        ActionManager_->CancelPendingActions(bundleName);
+        UpdateCancelledBundleIterationCounter(bundleName);
         return;
     }
 
@@ -1265,7 +1274,7 @@ void TTabletBalancer::OnDynamicConfigChanged(
         PollExecutor_->SetPeriod(newPeriod);
     }
 
-    ActionManager_->Reconfigure(newConfig->ActionManager);
+    ActionManager_->Reconfigure(newConfig->ActionManager, newConfig->MaxUnhealthyBundlesOnReplicaCluster);
     ClusterStateProvider_->Reconfigure(newConfig->ClusterStateProvider);
     ParameterizedBalancingScheduler_.Reconfigure(
         newConfig->ParameterizedTimeoutOnStart.value_or(Config_->ParameterizedTimeoutOnStart),
@@ -1318,7 +1327,7 @@ void TTabletBalancer::RequestBalancing(
 
         auto group = tabletIt->second->Table->GetBalancingGroup();
         if (!group) {
-            YT_TLOG_DEBUG("No group for tablet for on-demand balancing")
+            YT_TLOG_DEBUG("Tablet has no balancing group; skipping on-demand balancing")
                 .With("BundleName", balancingRequest.BundleName)
                 .With("TabletId", tabletId);
             continue;
@@ -1365,17 +1374,7 @@ bool TTabletBalancer::AreBundlesHealthy(int unhealthyBundleLimit) const
         return false;
     }
 
-    for (const auto& [cluster, bundles] : unhealthyBundlesOrError.Value()) {
-        if (std::ssize(bundles) >= unhealthyBundleLimit) {
-            YT_TLOG_WARNING("Considering replica cluster unhealthy because too many bundles are unhealthy")
-                .With("Cluster", cluster)
-                .With("UnhealtyBundles", bundles)
-                .With("Limit", unhealthyBundleLimit);
-            return false;
-        }
-    }
-
-    return true;
+    return AreReplicaClustersHealthy(unhealthyBundlesOrError.Value(), unhealthyBundleLimit);
 }
 
 bool TTabletBalancer::IsBundleHealthy(const std::string& bundleName) const
@@ -1389,16 +1388,7 @@ bool TTabletBalancer::IsBundleHealthy(const std::string& bundleName) const
         return false;
     }
 
-    for (const auto& [cluster, bundles] : unhealthyBundlesOrError.Value()) {
-        if (std::find(bundles.begin(), bundles.end(), bundleName) != bundles.end()) {
-            YT_TLOG_WARNING("Tablet cell bundle on another cluster is unhealthy")
-                .With("Cluster", cluster)
-                .With("BundleName", bundleName);
-            return false;
-        }
-    }
-
-    return true;
+    return IsBundleHealthyOnReplicaClusters(unhealthyBundlesOrError.Value(), bundleName);
 }
 
 std::vector<std::string> TTabletBalancer::UpdateBundleList()
@@ -1678,7 +1668,7 @@ bool TTabletBalancer::TryBalanceViaMoveParameterized(const TBundleSnapshotPtr& b
             .With("BundleName", bundle->Name)
             .With("Group", groupName)
             .With("GroupType", groupConfig->Type)
-            .With("GroupMetric", groupConfig->Parameterized->Metric)
+            .With("GroupMetrics", groupConfig->Parameterized->GetMetrics())
             .With(ex);
 
         if (ex.Error().FindMatching(NTabletBalancer::EErrorCode::StatisticsFetchFailed)) {
@@ -1721,7 +1711,7 @@ bool TTabletBalancer::TryBalanceViaReshardParameterized(
             .With("BundleName", bundle->Name)
             .With("Group", groupName)
             .With("GroupType", groupConfig->Type)
-            .With("GroupMetric", groupConfig->Parameterized->Metric)
+            .With("GroupMetrics", groupConfig->Parameterized->GetMetrics())
             .With(ex);
 
         if (ex.Error().FindMatching(NTabletBalancer::EErrorCode::StatisticsFetchFailed)) {
@@ -1867,17 +1857,15 @@ void TTabletBalancer::ExecuteReshardIteration(const IReshardIterationPtr& reshar
             }
 
             ++actionCount;
-            YT_LOG_DEBUG("Reshard action created (TabletIds: %v, TabletCount: %v, "
-                "DataSize: %v, TableId: %v, TabletIndexes: %v-%v, TablePath: %v, CorrelationId: %v, PendingTabletIds: %v)",
-                descriptor.Tablets,
-                descriptor.TabletCount,
-                descriptor.DataSize,
-                table->Id,
-                firstTabletIndex,
-                lastTabletIndex,
-                table->Path,
-                descriptor.CorrelationId,
-                descriptor.PendingTabletIds);
+            YT_TLOG_DEBUG("Reshard action created")
+                .With("TabletIds", descriptor.Tablets)
+                .With("TabletCount", descriptor.TabletCount)
+                .With("DataSize", descriptor.DataSize)
+                .With("TableId", table->Id)
+                .WithFormat("TabletIndexes", "%v-%v", firstTabletIndex, lastTabletIndex)
+                .With("TablePath", table->Path)
+                .With("CorrelationId", descriptor.CorrelationId)
+                .With("PendingTabletIds", descriptor.PendingTabletIds);
 
             reshardIteration->UpdateProfilingCounters(table, descriptor);
         }
@@ -2006,38 +1994,29 @@ std::vector<TReshardDescriptor> TTabletBalancer::PickPivotsForDescriptors(
         auto rspOrError = responses[index];
 
         if (!rspOrError.IsOK()) {
-            YT_LOG_ERROR(rspOrError,
-                "Failed to pick pivot keys for reshard action "
-                "(TabletIds: %v, TabletCount: %v, DataSize: %v, "
-                "TableId: %v, TabletIndexes: %v-%v, CorrelationId: %v)",
-                descriptorIt->Tablets,
-                descriptorIt->TabletCount,
-                descriptorIt->DataSize,
-                table->Id,
-                firstTabletIndex,
-                lastTabletIndex,
-                descriptorIt->CorrelationId);
+            YT_TLOG_ERROR("Failed to pick pivot keys for reshard action")
+                .With("TabletIds", descriptorIt->Tablets)
+                .With("TabletCount", descriptorIt->TabletCount)
+                .With("DataSize", descriptorIt->DataSize)
+                .With("TableId", table->Id)
+                .WithFormat("TabletIndexes", "%v-%v", firstTabletIndex, lastTabletIndex)
+                .With("CorrelationId", descriptorIt->CorrelationId)
+                .With(rspOrError);
 
             PickPivotFailures_.Increment(1);
 
-            if (reshardIteration->GetDynamicConfig()->CancelActionIfPickPivotKeysFails) {
-                YT_LOG_DEBUG(rspOrError,
-                    "Cancelled tablet action creation because pick pivot keys failed "
-                    "(TabletIds: %v, TabletCount: %v, DataSize: %v, TableId: %v, "
-                    "TabletIndexes: %v-%v, CorrelationId: %v)",
-                    descriptorIt->Tablets,
-                    descriptorIt->TabletCount,
-                    descriptorIt->DataSize,
-                    table->Id,
-                    firstTabletIndex,
-                    lastTabletIndex,
-                    descriptorIt->CorrelationId);
-                continue;
-            }
-        } else {
-            descriptorIt->PivotKeys = std::move(rspOrError.ValueOrThrow());
+            YT_TLOG_DEBUG("Cancelled tablet action creation because pick pivot keys failed")
+                .With("TabletIds", descriptorIt->Tablets)
+                .With("TabletCount", descriptorIt->TabletCount)
+                .With("DataSize", descriptorIt->DataSize)
+                .With("TableId", table->Id)
+                .WithFormat("TabletIndexes", "%v-%v", firstTabletIndex, lastTabletIndex)
+                .With("CorrelationId", descriptorIt->CorrelationId)
+                .With(rspOrError);
+            continue;
         }
 
+        descriptorIt->PivotKeys = std::move(rspOrError.ValueOrThrow());
         descriptors.emplace_back(std::move(*descriptorIt));
     }
     return descriptors;

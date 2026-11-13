@@ -1,5 +1,7 @@
 #include "config.h"
 
+#include "private.h"
+
 #include <yt/yt/ytlib/journal_client/helpers.h>
 
 namespace NYT::NCypressServer {
@@ -81,6 +83,15 @@ void TDynamicCypressManagerConfig::Register(TRegistrar registrar)
     registrar.Parameter("enable_symlink_cyclicity_check", &TThis::EnableSymlinkCyclicityCheck)
         .Default(true);
 
+    registrar.Parameter("enable_symlink_backfill", &TThis::EnableSymlinkBackfill)
+        .Default(false)
+        .DontSerializeDefault();
+
+    registrar.Parameter("symlink_backfill_max_link_count", &TThis::SymlinkBackfillMaxLinkCount)
+        .Default(10'000)
+        .GreaterThan(0)
+        .DontSerializeDefault();
+
     registrar.Parameter("use_better_check_when_rewriting_path", &TThis::UseBetterCheckWhenRewritingPath)
         .Default(false)
         .DontSerializeDefault();
@@ -141,6 +152,10 @@ void TDynamicCypressManagerConfig::Register(TRegistrar registrar)
         .Default(NTableClient::EOptimizeFor::Scan);
 
     registrar.Parameter("ignore_rootstock_absence_on_scion_removal", &TThis::IgnoreRootstockAbsenceOnScionRemoval)
+        .Default(false)
+        .DontSerializeDefault();
+
+    registrar.Parameter("enable_sequoia_node_state_validation_in_create_lock", &TThis::EnableSequoiaNodeStateValidationInCreateLock)
         .Default(false)
         .DontSerializeDefault();
 

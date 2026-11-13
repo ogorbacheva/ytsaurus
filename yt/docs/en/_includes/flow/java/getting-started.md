@@ -1,10 +1,12 @@
 # Quick start with {{product-name}} Flow (Java)
 
-You implement Java and Kotlin computations in Flow through the companion mechanism. Java or Kotlin code runs in a separate gRPC process that interacts with the C++ worker.
+Java and Kotlin computation support in Flow is implemented through the [companion](../../../flow/concepts/glossary.md#companion) mechanism. Java or Kotlin code runs in a separate gRPC process that communicates with a C++ [worker](../../../flow/concepts/glossary.md#worker).
 
 [Java SDK source code for Flow]({{source-root}}/yt/java/flow)
 
 [Examples]({{source-root}}/yt/yt/flow/examples/java)
+
+For objects shared by jobs in one JVM, see [Companion resources](../../../flow/java/resources.md): registration, resource wiring and lifecycle rules also apply to Kotlin.
 
 ## Application architecture {#architecture}
 
@@ -15,21 +17,21 @@ Any Flow pipeline consists of three components:
 
 You use Java and Kotlin in the `Runner` and `Worker`.
 
-![](../../../flow/images/java_flow_cluster.svg)
+![](../../../flow/_images/java_flow_cluster.svg)
 
 ## Two configuration approaches
 
 The Java SDK for Flow (with Kotlin support) provides two approaches to configure a companion:
 
-1. **Manual** (SimpleRunnerProgram + PipelineContext + GrpcServerExecution) — suitable for simple cases where you don’t need dependency injection.
+1. **Manual** (`PipelineContext` + `FlowApplication.run`) — suitable for simple cases where you don’t need dependency injection.
 2. **Spring Boot** (auto-config with `@FlowComputation` annotations) — the recommended approach for production services with complex configuration and dependencies.
 
 ## Computation and SourceComputation
 
-To create a computation in Java, choose the appropriate builder that matches the Computation type in C++:
+To create a Java [computation](../../../flow/concepts/glossary.md#stream-and-computation), select the appropriate builder that corresponds to the [C++ computation type](../../../flow/concepts/companion.md#computation-types):
 
 - `Computation.builder()` — for `TTransformCompanionComputation` and `TSwiftMapCompanionComputation`.
-- `SourceComputation.builder()` — for `TSwiftOrderedSourceCompanionComputation`.
+- `SourceComputation.builder()` — for `TSwiftOrderedSourceCompanionComputation` and `TTransformOrderedSourceCompanionComputation`.
 
 {% list tabs group=lang %}
 
@@ -66,56 +68,27 @@ To create a computation in Java, choose the appropriate builder that matches the
 {% endlist %}
 
 `Computation.builder()` requires two mandatory parameters:
-- **Computation id** — this maps requests between the worker and the companion.
+- **Computation id** — used to map requests between the [worker](../../../flow/concepts/glossary.md#worker) and the companion.
 - **Process function** — the function that contains the message-processing logic.
+
 
 ## Process Function
 
 There are two types of ProcessFunction:
 
-- `RowFunction` — receives messages and timers one at a time; it provides the `onMessage` and `onTimer` methods.
+- `RowFunction` — receives [messages](../../../flow/concepts/glossary.md#message) and [timers](../../../flow/concepts/glossary.md#timer) one at a time and provides the `onMessage` and `onTimer` methods.
 - `BatchFunction` — receives the entire batch of messages and timers; it provides the `onMessages` and `onTimers` methods.
 
 For more details, see the [Computation (Java)](../../../flow/java/computation.md) section.
 
-## Runner
+## Entry point {#entry-point}
 
-This is the class with the `main` method for starting the pipeline. `SimpleRunnerProgram` is the Java equivalent of [NYT::NFlow::TSimpleRunnerProgram](../../../flow/release/basic-rules.md#launch-flow) and accepts the same configuration files and environment variables.
+Without Spring Boot, the pipeline entry point is a class whose `main` method calls `FlowApplication.run(args, context)`. With Spring Boot, the application `main` starts Spring, which configures Flow; see [Spring Boot integration](../../../flow/java/spring.md). The process chooses its role from `YT_FLOW_MODE`:
 
-{% list tabs group=lang %}
+- When the variable is unset, the process runs as the **runner**: it enriches the pipeline spec and hands the launch to `flow_server`.
+- With `YT_FLOW_MODE=Worker`, the process runs as a **companion**: it starts a gRPC server and handles worker requests. The worker sets this variable when it starts the companion.
 
-- Java
-
-  ```java
-  import tech.ytsaurus.flow.pipeline.SimpleRunnerProgram;
-
-  public class RunnerMain {
-      public static void main(String[] args) throws Exception {
-          SimpleRunnerProgram.runPipeline(args);
-      }
-  }
-  ```
-
-- Kotlin
-
-  ```kotlin
-  import tech.ytsaurus.flow.pipeline.SimpleRunnerProgram
-
-  object RunnerMain {
-      @JvmStatic
-      fun main(args: Array<String>) {
-          SimpleRunnerProgram.runPipeline(args)
-      }
-  }
-  ```
-
-{% endlist %}
-
-## Node companion
-
-### Manual approach
-
-In the companion’s `main` method, you configure the computations, add them to `PipelineContext`, and start the gRPC server via `GrpcServerExecution`:
+Configure computations and streams in `main`, and add them to `PipelineContext`:
 
 {% list tabs group=lang %}
 
@@ -124,9 +97,9 @@ In the companion’s `main` method, you configure the computations, add them to 
   ```java
   import tech.ytsaurus.flow.computation.Computation;
   import tech.ytsaurus.flow.context.PipelineContext;
-  import tech.ytsaurus.flow.execution.GrpcServerExecution;
+  import tech.ytsaurus.flow.pipeline.FlowApplication;
 
-  public class NodeCompanionMain {
+  public class PipelineMain {
       public static void main(String[] args) throws Exception {
           var mapper = Computation.builder()
               .setComputationId("mapper")
@@ -135,9 +108,9 @@ In the companion’s `main` method, you configure the computations, add them to 
 
           var context = new PipelineContext();
           context.registerComputation(mapper);
+          context.registerTypedStreams(Word.class);
 
-          GrpcServerExecution execution = new GrpcServerExecution(context);
-          execution.start();
+          FlowApplication.run(args, context);
       }
   }
   ```
@@ -147,9 +120,9 @@ In the companion’s `main` method, you configure the computations, add them to 
   ```kotlin
   import tech.ytsaurus.flow.computation.Computation
   import tech.ytsaurus.flow.context.PipelineContext
-  import tech.ytsaurus.flow.execution.GrpcServerExecution
+  import tech.ytsaurus.flow.pipeline.FlowApplication
 
-  object NodeCompanionMain {
+  object PipelineMain {
       @JvmStatic
       fun main(args: Array<String>) {
           val mapper = Computation.builder()
@@ -159,20 +132,30 @@ In the companion’s `main` method, you configure the computations, add them to 
 
           val context = PipelineContext()
           context.registerComputation(mapper)
+          context.registerTypedStreams(Word::class.java)
 
-          val execution = GrpcServerExecution(context)
-          execution.start()
+          FlowApplication.run(args, context)
       }
   }
   ```
 
 {% endlist %}
 
-If your custom functions need additional resources (a map, cache, etc.), the companion’s `main` method is a good place to create them. These resources must be thread-safe.
+The runner requires `--config` with the pipeline config path and accepts `--flow-bin` with the `flow_server` binary path. If `--flow-bin` is omitted, it uses the path from the `YT_FLOW_BIN` environment variable.
 
-### Spring Boot approach
+```bash
+./run.sh com.example.pipeline.PipelineMain --config pipeline.yson --flow-bin flow_server
+```
 
-When using Spring Boot, you register the `mapper` computation with the `@FlowComputation` annotation directly on the process-function class (the `reader` source is passthrough: it’s declared in the pipeline spec and isn’t registered in the Java companion):
+Use the fully qualified class name: `run.sh` passes its first argument directly to `java`.
+
+The runner fills in `spec.streams` from registered message types when the spec does not define those schemas explicitly. Set the `main_class` of the `TJavaCompanionManager` resource in the pipeline spec.
+
+If your functions need extra resources, such as a dictionary or cache, create them in `main` and make them thread-safe.
+
+### Spring Boot approach {#spring-boot-approach}
+
+When using Spring Boot, the `mapper` computation is registered by applying the `@FlowComputation` annotation directly to the process function class (the `reader` source is passthrough: it is declared in the pipeline spec and is not registered in the Java companion):
 
 {% list tabs group=lang %}
 
@@ -201,38 +184,33 @@ When using Spring Boot, you register the `mapper` computation with the `@FlowCom
 
 {% endlist %}
 
-You declare typed streams via `ComputationProvider` (the `getStreams()` method) or as separate `FlowStream<?>` beans:
+Typed streams are declared by annotating the message POJO class with `@FlowMessage` and listing the stream identifiers it handles in `streamIds`. The existing JPA `@Entity` annotation supplies the schema. Spring Boot discovers these classes by scanning the application packages and registers their streams automatically:
 
 {% list tabs group=lang %}
 
 - Java
 
   ```java
-  @Configuration
-  public class WordCountContext implements ComputationProvider {
-
-      @Override
-      public List<FlowStream<?>> getStreams() {
-          return List.of(FlowStreams.typed("words", Word.class));
-      }
+  @Entity
+  @FlowMessage(streamIds = {"words"})
+  public class Word {
+      // fields, constructors, getters, setters...
   }
   ```
 
 - Kotlin
 
   ```kotlin
-  @Configuration
-  open class WordCountContext : ComputationProvider {
-
-      override fun getStreams(): List<FlowStream<*>> {
-          return listOf(FlowStreams.typed("words", Word::class.java))
-      }
+  @Entity
+  @FlowMessage(streamIds = ["words"])
+  class Word {
+      // fields and constructors...
   }
   ```
 
 {% endlist %}
 
-Spring Boot application entry point:
+The Spring Boot application has one entry point for both roles:
 
 {% list tabs group=lang %}
 
@@ -264,17 +242,14 @@ Spring Boot application entry point:
 
 {% endlist %}
 
-The `getStreams()` method lets you register typed streams via `FlowStreams.typed(...)`, so the SDK automatically serializes and deserializes messages into Java objects.
+`getStreams()` remains available when you want to register typed [streams](../../../flow/concepts/glossary.md#stream-and-computation) with `FlowStreams.typed(...)` instead of annotations.
 
-You need two entry points to run the setup:
-1. **Runner** — starts the C++ pipeline.
-2. **Node companion** — starts the companion (Java or Kotlin) with the processing logic.
-
-Flow doesn’t restrict whether you build two separate JAR files or one with two classes that have `main` methods. All [examples]({{source-root}}/yt/yt/flow/examples/java) use the single-JAR approach.
+The `@SpringBootApplication` class needs no separate runner entry point. In runner mode, the starter collects the declared streams and launches the pipeline without starting the gRPC or monitoring servers, then exits.
 
 ## See also
 
 - [Computation (Java)](../../../flow/java/computation.md)
 - [Working with states (Java)](../../../flow/java/state.md)
 - [Examples](../../../flow/java/examples/wordcount.md)
+- [Spring Boot registration](../../../flow/java/spring.md)
 - [Companion](../../../flow/concepts/companion.md)

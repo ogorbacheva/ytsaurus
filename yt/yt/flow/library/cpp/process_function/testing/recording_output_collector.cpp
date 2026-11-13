@@ -36,13 +36,24 @@ IOutputCollectorPtr TRecordingOutputCollector::SetParents(
     return New<TRecordingOutputCollector>(Sink_, std::move(parentIds));
 }
 
-void TRecordingOutputCollector::AddMessage(TMessage&& message, bool distribute)
+void TRecordingOutputCollector::DoAddMessage(TMessage&& message, TAddMessageOptions options)
 {
     Sink_->Messages.push_back(TRecordedMessage{
         .Message = std::move(message),
-        .Distribute = distribute,
+        .Distribute = options.Distribute,
+        .MessageIdSuffix = std::move(options.MessageIdSuffix),
         .ParentIds = ParentIds_,
     });
+}
+
+void TRecordingOutputCollector::DoAddFailedMessage(const TInputMessageConstPtr& message, const TError& reason)
+{
+    Sink_->FailedMessages.push_back({message, reason});
+}
+
+const std::vector<TFailedMessage>& TRecordingOutputCollector::GetFailedMessages() const
+{
+    return Sink_->FailedMessages;
 }
 
 void TRecordingOutputCollector::AddTimer(TSystemTimestamp triggerTimestamp, std::optional<TSystemTimestamp> eventTimestamp)

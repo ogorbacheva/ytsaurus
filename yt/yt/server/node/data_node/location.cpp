@@ -43,6 +43,7 @@
 #include <yt/yt/core/misc/fs.h>
 #include <yt/yt/core/misc/proc.h>
 #include <yt/yt/core/misc/fair_share_hierarchical_queue.h>
+#include <yt/yt/core/misc/shutdown.h>
 
 #include <yt/yt/core/logging/log_manager.h>
 
@@ -94,8 +95,16 @@ TLocationPerformanceCounters::TLocationPerformanceCounters(const NProfiling::TPr
 
     ThrottledProbingReads = profiler.Counter("/throttled_probing_reads");
     ThrottledProbingWrites = profiler.Counter("/throttled_probing_writes");
-    ThrottledReads = profiler.Counter("/throttled_reads");
-    ThrottledWrites = profiler.Counter("/throttled_writes");
+
+    for (auto reason : TEnumTraits<ELocationReadThrottlingReason>::GetDomainValues()) {
+        auto reasonProfiler = profiler.WithTag("reason", FormatEnum(reason));
+        ThrottledReads[reason] = reasonProfiler.Counter("/throttled_reads");
+    }
+
+    for (auto reason : TEnumTraits<ELocationWriteThrottlingReason>::GetDomainValues()) {
+        auto reasonProfiler = profiler.WithTag("reason", FormatEnum(reason));
+        ThrottledWrites[reason] = reasonProfiler.Counter("/throttled_writes");
+    }
 
     PutBlocksWallTime = profiler.Timer("/put_blocks_wall_time");
     BlobChunkMetaReadTime = profiler.Timer("/blob_chunk_meta_read_time");
@@ -162,9 +171,10 @@ void TLocationPerformanceCounters::ReportThrottledProbingRead()
     ThrottledProbingReads.Increment();
 }
 
-void TLocationPerformanceCounters::ReportThrottledRead()
+void TLocationPerformanceCounters::ReportThrottledRead(ELocationReadThrottlingReason reason)
 {
-    ThrottledReads.Increment();
+    YT_VERIFY(ThrottledReads[reason]);
+    ThrottledReads[reason].Increment();
     LastReadThrottleTime = GetCpuInstant();
 }
 
@@ -173,9 +183,10 @@ void TLocationPerformanceCounters::ReportThrottledProbingWrite()
     ThrottledProbingWrites.Increment();
 }
 
-void TLocationPerformanceCounters::ReportThrottledWrite()
+void TLocationPerformanceCounters::ReportThrottledWrite(ELocationWriteThrottlingReason reason)
 {
-    ThrottledWrites.Increment();
+    YT_VERIFY(ThrottledWrites[reason]);
+    ThrottledWrites[reason].Increment();
     LastWriteThrottleTime = GetCpuInstant();
 }
 
@@ -359,6 +370,12 @@ std::vector<std::pair<std::string, double>> TChunkLocation::BuildFairShareTags(
     auto config = GetRuntimeConfig();
 
     std::vector<std::pair<std::string, double>> tags;
+    auto isSystem = IsSystemWorkloadCategory(category);
+    auto groupWeight = isSystem ? config->FairShareSystemWeight : config->FairShareUserWeight;
+    // Keep Idle at the root so it cannot claim a positive group share.
+    if (groupWeight && category != EWorkloadCategory::Idle) {
+        tags.emplace_back(isSystem ? "system" : "user", *groupWeight);
+    }
     tags.emplace_back(
         ToString(category),
         GetFairShareWorkloadCategoryWeight(category));
@@ -967,7 +984,7 @@ bool TChunkLocation::IsWriteThrottling() const
     return GetCpuInstant() < time + 2 * DurationToCpuDuration(config->ThrottleDuration);
 }
 
-TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckReadThrottling(
+TChunkLocation::TReadThrottlingResult TChunkLocation::CheckReadThrottling(
     const TWorkloadDescriptor& workloadDescriptor,
     bool isProbing,
     bool isReplication) const
@@ -976,21 +993,24 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckReadThrottling(
         GetUsedMemory(EIODirection::Read, workloadDescriptor) +
         GetOutThrottler(workloadDescriptor)->GetQueueTotalAmount();
 
-    bool throttled = true;
     TError error;
+    std::optional<ELocationReadThrottlingReason> reason;
 
     if (readQueueSize > GetReadThrottlingLimit()) {
+        reason = ELocationReadThrottlingReason::WorkloadCategoryPendingIOSizeLimitExceeded;
         error = TError("Pending IO size of workload category exceeds read throttling limit")
             .With("workload_category", workloadDescriptor.Category)
             .With("pending_io_size", readQueueSize)
             .With("read_throttling_limit", GetReadThrottlingLimit());
     } else if (IOEngine_->IsInFlightRequestLimitExceeded()) {
+        reason = ELocationReadThrottlingReason::TotalInFlightRequestLimitExceeded;
         error = TError("In flight IO requests count exceeds total request limit")
             .With("in_flight_requests", IOEngine_->GetInFlightRequestCount())
             .With("in_flight_write_requests", IOEngine_->GetInFlightWriteRequestCount())
             .With("in_flight_read_requests", IOEngine_->GetInFlightReadRequestCount())
             .With("total_request_limit", IOEngine_->GetTotalRequestLimit());
     } else if (IOEngine_->IsInFlightReadRequestLimitExceeded()) {
+        reason = ELocationReadThrottlingReason::ReadInFlightRequestLimitExceeded;
         error = TError("In flight IO read request count exceeds read request limit")
             .With("in_flight_read_request_count", IOEngine_->GetInFlightReadRequestCount())
             .With("read_requests_limit", IOEngine_->GetReadRequestLimit());
@@ -998,6 +1018,7 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckReadThrottling(
         readMemoryLimit = GetReadMemoryLimit();
         usedMemory > readMemoryLimit)
     {
+        reason = ELocationReadThrottlingReason::ReadMemoryLimitExceeded;
         error = TError(
             "Location memory of category %Qlv exceeds memory limit",
             EMemoryCategory::PendingDiskRead)
@@ -1008,36 +1029,38 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckReadThrottling(
         memoryLimit = GetTotalMemoryLimit();
         usedMemory > memoryLimit)
     {
+        reason = ELocationReadThrottlingReason::TotalMemoryLimitExceeded;
         error = TError(
             "Location memory exceeds memory limit")
             .With("bytes_used", usedMemory)
             .With("bytes_limit", memoryLimit);
     } else if (ReadMemoryTracker_->IsExceeded()) {
+        reason = ELocationReadThrottlingReason::ReadMemoryTrackerLimitExceeded;
         error = TError(
             "Memory of category %Qlv exceeds memory limit",
             EMemoryCategory::PendingDiskRead)
             .With("bytes_used", ReadMemoryTracker_->GetUsed())
             .With("bytes_limit", ReadMemoryTracker_->GetLimit());
-    } else {
-        throttled = false;
     }
 
-    throttled = throttled || ShouldAlwaysThrottle();
+    if (!reason && ShouldAlwaysThrottle()) {
+        reason = ELocationReadThrottlingReason::AlwaysThrottleLocation;
+    }
 
-    if (throttled) {
+    if (reason) {
         if (isReplication) {
             ReportThrottledReplicationRead();
         } else if (isProbing) {
             ReportThrottledProbingRead();
         } else {
-            ReportThrottledRead();
+            ReportThrottledRead(*reason);
         }
     }
 
-    return TDiskThrottlingResult{
-        .Enabled = throttled,
+    return TReadThrottlingResult{
         .QueueSize = readQueueSize,
         .Error = std::move(error),
+        .Reason = reason,
     };
 }
 
@@ -1051,9 +1074,9 @@ void TChunkLocation::ReportThrottledProbingRead() const
     PerformanceCounters_->ReportThrottledProbingRead();
 }
 
-void TChunkLocation::ReportThrottledRead() const
+void TChunkLocation::ReportThrottledRead(ELocationReadThrottlingReason reason) const
 {
-    PerformanceCounters_->ReportThrottledRead();
+    PerformanceCounters_->ReportThrottledRead(reason);
 }
 
 void TChunkLocation::ReportThrottledProbingWrite() const
@@ -1065,16 +1088,17 @@ bool TChunkLocation::ShouldAlwaysThrottle() const {
     return DynamicConfigManager_->GetConfig()->DataNode->TestingOptions->AlwaysThrottleLocation;
 }
 
-TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckWriteThrottling(
+TChunkLocation::TWriteThrottlingResult TChunkLocation::CheckWriteThrottling(
     const TWorkloadDescriptor& workloadDescriptor,
     bool blocksWindowShifted,
     bool withProbing) const
 {
-    bool throttled = true;
     bool memoryOvercommit = false;
     TError error;
+    std::optional<ELocationWriteThrottlingReason> reason;
 
     if (!withProbing && WriteMemoryTracker_->IsExceeded() && blocksWindowShifted) {
+        reason = ELocationWriteThrottlingReason::WriteMemoryTrackerLimitExceeded;
         error = TError(
             NChunkClient::EErrorCode::WriteThrottlingActive,
             "Memory of category %Qlv exceeds memory limit",
@@ -1086,6 +1110,7 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckWriteThrottling(
         writeMemoryLimit = GetWriteMemoryLimit();
         !withProbing && usedMemory > writeMemoryLimit && blocksWindowShifted)
     {
+        reason = ELocationWriteThrottlingReason::WorkloadCategoryWriteMemoryLimitExceeded;
         error = TError(
             NChunkClient::EErrorCode::WriteThrottlingActive,
             "Location memory of category %Qlv exceeds memory limit",
@@ -1097,6 +1122,7 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckWriteThrottling(
         writeMemoryLimit = GetWriteMemoryLimit();
         !withProbing && usedMemory > writeMemoryLimit && blocksWindowShifted)
     {
+        reason = ELocationWriteThrottlingReason::WriteMemoryLimitExceeded;
         error = TError(
             NChunkClient::EErrorCode::WriteThrottlingActive,
             "Location memory of category %Qlv exceeds memory limit",
@@ -1109,11 +1135,13 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckWriteThrottling(
         memoryLimit = GetTotalMemoryLimit();
         !withProbing && usedMemory > memoryLimit)
     {
+        reason = ELocationWriteThrottlingReason::TotalMemoryLimitExceeded;
         error = TError(
             "Location memory exceeds memory limit")
             .With("bytes_used", usedMemory)
             .With("bytes_limit", memoryLimit);
     } else if (IOEngine_->IsInFlightRequestLimitExceeded()) {
+        reason = ELocationWriteThrottlingReason::TotalInFlightRequestLimitExceeded;
         error = TError(
             NChunkClient::EErrorCode::WriteThrottlingActive,
             "In flight IO requests count exceeds total request limit")
@@ -1122,28 +1150,27 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckWriteThrottling(
             .With("in_flight_read_requests", IOEngine_->GetInFlightReadRequestCount())
             .With("total_request_limit", IOEngine_->GetTotalRequestLimit());
     } else if (IOEngine_->IsInFlightWriteRequestLimitExceeded()) {
+        reason = ELocationWriteThrottlingReason::WriteInFlightRequestLimitExceeded;
         error = TError(
             NChunkClient::EErrorCode::WriteThrottlingActive,
             "In flight IO write request count exceeds write request limit")
             .With("in_flight_write_requests", IOEngine_->GetInFlightWriteRequestCount())
             .With("write_request_limit", IOEngine_->GetWriteRequestLimit());
-    } else {
-        throttled = false;
     }
 
-    if (!throttled && ShouldAlwaysThrottle()) {
+    if (!reason && ShouldAlwaysThrottle()) {
+        reason = ELocationWriteThrottlingReason::AlwaysThrottleLocation;
         error = TError("Location is forced to always throttle (testing option)");
     }
 
-    return TDiskThrottlingResult{
-        .Enabled = throttled || ShouldAlwaysThrottle(),
+    return TWriteThrottlingResult{
         .MemoryOvercommit = memoryOvercommit,
-        .QueueSize = 0L,
         .Error = std::move(error),
+        .Reason = reason,
     };
 }
 
-TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckWriteThrottling(
+TChunkLocation::TWriteThrottlingResult TChunkLocation::CheckWriteThrottling(
     TChunkId chunkId,
     const TWorkloadDescriptor& workloadDescriptor,
     bool blocksWindowShifted,
@@ -1151,25 +1178,25 @@ TChunkLocation::TDiskThrottlingResult TChunkLocation::CheckWriteThrottling(
 {
     auto diskThrottlingResult = CheckWriteThrottling(workloadDescriptor, blocksWindowShifted, withProbing);
 
-    if (diskThrottlingResult.Enabled &&
+    if (diskThrottlingResult.IsEnabled() &&
         diskThrottlingResult.MemoryOvercommit &&
         ChunkStoreHost_->CanPassSessionOutOfTurn(chunkId))
     {
-        YT_LOG_WARNING("Session passed out of turn with possible overcommit (Chunkd: %v)",
-            chunkId);
-        diskThrottlingResult.Enabled = false;
+        YT_TLOG_WARNING("Session passed out of turn with possible overcommit")
+            .With("ChunkId", chunkId);
+        diskThrottlingResult.Reason.reset();
     }
 
-    if (diskThrottlingResult.Enabled) {
-        ReportThrottledWrite();
+    if (diskThrottlingResult.IsEnabled()) {
+        ReportThrottledWrite(*diskThrottlingResult.Reason);
     }
 
     return diskThrottlingResult;
 }
 
-void TChunkLocation::ReportThrottledWrite() const
+void TChunkLocation::ReportThrottledWrite(ELocationWriteThrottlingReason reason) const
 {
-    PerformanceCounters_->ReportThrottledWrite();
+    PerformanceCounters_->ReportThrottledWrite(reason);
 }
 
 i64 TChunkLocation::GetReadThrottlingLimit() const
@@ -1211,14 +1238,14 @@ void TChunkLocation::UpdateMediumDescriptor(const NChunkClient::TMediumDescripto
         ChunkStore_->ChangeLocationMedium(this, oldDescriptor->GetIndex());
     }
 
-    YT_LOG_INFO("Location medium descriptor %v (LocationId: %v, LocationUuid: %v, LocationIndex: %v, MediumName: %v, MediumIndex: %v, Priority: %v)",
-        onInitialize ? "set" : "changed",
-        GetId(),
-        GetUuid(),
-        GetIndex(),
-        newDescriptor->Name(),
-        newDescriptor->GetIndex(),
-        newDescriptor->GetPriority());
+    YT_TLOG_INFO("Location medium descriptor updated")
+        .With("OnInitialize", onInitialize)
+        .With("LocationId", GetId())
+        .With("LocationUuid", GetUuid())
+        .With("LocationIndex", GetIndex())
+        .With("MediumName", newDescriptor->Name())
+        .With("MediumIndex", newDescriptor->GetIndex())
+        .With("Priority", newDescriptor->GetPriority());
 }
 
 const TChunkStorePtr& TChunkLocation::GetChunkStore() const
@@ -1306,7 +1333,7 @@ private:
         i64 DiskWritten = 0;
     };
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, CountersLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, CountersLock_);
     std::optional<NFS::TDeviceId> DeviceId_;
     TInstant LastUpdateTime_;
     std::optional<TCounters> LastCounters_;
@@ -1508,7 +1535,7 @@ TErrorOr<double> TStoreLocation::EvaluateIOWeight(const NOrm::NQuery::IExpressio
     if (value.IsOK() && value.Value().Type == NTableClient::EValueType::Double) {
         return value.Value().Data.Double;
     } else {
-        return TError("Failure in evaluation of IO weight formula").With(value);
+        return TError("Failure in evaluation of IO weight formula").WithIf(!value.IsOK(), value);
     }
 }
 
@@ -1590,10 +1617,10 @@ bool TStoreLocation::IsFull() const
     auto full = available < watermark;
     auto expected = !full;
     if (Full_.compare_exchange_strong(expected, full)) {
-        YT_LOG_DEBUG("Location is %v full (AvailableSpace: %v, WatermarkSpace: %v)",
-            full ? "now" : "no longer",
-            available,
-            watermark);
+        YT_TLOG_DEBUG("Location fullness changed")
+            .With("Full", full)
+            .With("AvailableSpace", available)
+            .With("WatermarkSpace", watermark);
     }
     return full;
 }
@@ -1723,7 +1750,7 @@ void TStoreLocation::CheckTrashTtl()
 {
     auto config = GetRuntimeConfig();
     auto deadline = TInstant::Now() - config->MaxTrashTtl;
-    while (true) {
+    while (!IsShutdownStarted()) {
         TTrashChunkEntry entry;
         {
             auto guard = Guard(TrashMapSpinLock_);
@@ -1743,6 +1770,10 @@ void TStoreLocation::CheckTrashTtl()
 
 void TStoreLocation::CheckTrashWatermark()
 {
+    if (IsShutdownStarted()) {
+        return;
+    }
+
     auto config = GetRuntimeConfig();
 
     bool needsCleanup;
@@ -1761,7 +1792,7 @@ void TStoreLocation::CheckTrashWatermark()
     YT_TLOG_INFO("Low available disk space, starting trash cleanup")
         .With("AvailableSpace", availableSpace);
 
-    while (availableSpace < config->TrashCleanupWatermark) {
+    while (!IsShutdownStarted() && availableSpace < config->TrashCleanupWatermark) {
         TTrashChunkEntry entry;
         {
             auto guard = Guard(TrashMapSpinLock_);
@@ -1961,19 +1992,19 @@ std::optional<TChunkDescriptor> TStoreLocation::RepairBlobChunk(TChunkId chunkId
         }
         // EXT4 specific thing.
         // See https://bugs.launchpad.net/ubuntu/+source/linux/+bug/317781
-        YT_LOG_WARNING("Chunk meta file %v is empty, removing chunk files",
-            metaFileName);
+        YT_TLOG_WARNING("Chunk meta file is empty, removing chunk files")
+            .With("MetaFileName", metaFileName);
         NFS::Remove(dataFileName);
         NFS::Remove(metaFileName);
     } else if (!hasMeta && hasData) {
-        YT_LOG_WARNING("Chunk meta file %v is missing, moving data file %v to trash",
-            metaFileName,
-            dataFileName);
+        YT_TLOG_WARNING("Chunk meta file is missing, moving data file to trash")
+            .With("MetaFileName", metaFileName)
+            .With("DataFileName", dataFileName);
         NFS::Replace(dataFileName, trashDataFileName);
     } else if (!hasData && hasMeta) {
-        YT_LOG_WARNING("Chunk data file %v is missing, moving meta file %v to trash",
-            dataFileName,
-            metaFileName);
+        YT_TLOG_WARNING("Chunk data file is missing, moving meta file to trash")
+            .With("DataFileName", dataFileName)
+            .With("MetaFileName", metaFileName);
         NFS::Replace(metaFileName, trashMetaFileName);
     }
     return {};
@@ -1986,11 +2017,14 @@ std::optional<TChunkDescriptor> TStoreLocation::RepairJournalChunk(TChunkId chun
 
     auto dataFileName = fileName;
     auto indexFileName = fileName + "." + ChangelogIndexExtension;
+    auto sealedFileName = fileName + "." + SealedFlagExtension;
 
     auto trashIndexFileName = trashFileName + "." + ChangelogIndexExtension;
+    auto trashSealedFileName = trashFileName + "." + SealedFlagExtension;
 
     bool hasData = NFS::Exists(dataFileName);
     bool hasIndex = NFS::Exists(indexFileName);
+    bool hasSealed = NFS::Exists(sealedFileName);
 
     if (hasData) {
         const auto& dispatcher = ChunkContext_->JournalDispatcher;
@@ -2019,11 +2053,20 @@ std::optional<TChunkDescriptor> TStoreLocation::RepairJournalChunk(TChunkId chun
         }
 
         return descriptor;
-    } else if (!hasData && hasIndex) {
-        YT_LOG_WARNING("Journal data file %v is missing, moving index file %v to trash",
-            dataFileName,
-            indexFileName);
+    }
+
+    if (hasIndex) {
+        YT_TLOG_WARNING("Journal data file is missing, moving index file to trash")
+            .With("DataFileName", dataFileName)
+            .With("IndexFileName", indexFileName);
         NFS::Replace(indexFileName, trashIndexFileName);
+    }
+
+    if (hasSealed) {
+        YT_TLOG_WARNING("Journal data file is missing, moving seal file to trash")
+            .With("DataFileName", dataFileName)
+            .With("SealedFileName", sealedFileName);
+        NFS::Replace(sealedFileName, trashSealedFileName);
     }
 
     return {};
@@ -2115,8 +2158,6 @@ void TStoreLocation::DoScanTrash()
 
     YT_TLOG_INFO("Started scanning location trash");
 
-    ForceHashDirectories(GetTrashPath());
-
     THashSet<TChunkId> trashChunkIds;
     {
         // Enumerate files under the location's trash directory.
@@ -2160,6 +2201,8 @@ void TStoreLocation::DoAsyncScanTrash()
 
 std::vector<TChunkDescriptor> TStoreLocation::DoScan()
 {
+    ForceHashDirectories(GetTrashPath());
+
     auto result = TChunkLocation::DoScan();
 
     DoAsyncScanTrash();
@@ -2197,7 +2240,7 @@ TError TStoreLocation::CheckWritable() const
 
     if (DynamicConfigManager_->GetConfig()->DataNode->EnableWriteThrottlingWritableCheck.value_or(false)) {
         auto throttlingResult = CheckWriteThrottling(TWorkloadDescriptor{}, /*blocksWindowShifted*/ true, /*withProbing*/ false);
-        if (throttlingResult.Enabled) {
+        if (throttlingResult.IsEnabled()) {
             return throttlingResult.Error;
         }
     } else {

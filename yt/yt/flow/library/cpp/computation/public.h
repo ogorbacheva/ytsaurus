@@ -15,11 +15,6 @@ class TComputationBase;
 DECLARE_REFCOUNTED_STRUCT(IMessageFilter);
 DECLARE_REFCOUNTED_STRUCT(IOutputCollector);
 
-DECLARE_REFCOUNTED_STRUCT(TOutputStoreStreamOrchidState);
-DECLARE_REFCOUNTED_STRUCT(TUniversalComputationOrchidState);
-DECLARE_REFCOUNTED_STRUCT(TUniversalComputationDynamicPartitionSpec);
-DECLARE_REFCOUNTED_STRUCT(TUniversalComputationPartitionStatus);
-
 DECLARE_REFCOUNTED_CLASS(TRootOutputCollector);
 DECLARE_REFCOUNTED_STRUCT(IOutputCollector);
 
@@ -36,6 +31,7 @@ DECLARE_REFCOUNTED_STRUCT(TWatermarkGeneratorState);
 DECLARE_REFCOUNTED_STRUCT(IWatermarkGenerator);
 
 DECLARE_REFCOUNTED_STRUCT(TSwiftOrderedSourceTimestampMemory);
+DECLARE_REFCOUNTED_STRUCT(TReadDelayStatus);
 
 DECLARE_REFCOUNTED_STRUCT(TSimpleExternalStateManagerSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicSimpleExternalStateManagerSpec);
@@ -63,7 +59,14 @@ DEFINE_ENUM(EProcessingMode,
     ((AtLeastOnceConsistent)    (1))
 );
 
+DEFINE_ENUM(EFailureHandlerMode,
+    ((Unsupported) (0))
+    ((Disabled)    (1))
+    ((Enabled)     (2))
+);
+
 DECLARE_REFCOUNTED_STRUCT(TUniversalComputationControllerState);
+DECLARE_REFCOUNTED_STRUCT(TUniversalComputationControllerPartitioningState);
 DECLARE_REFCOUNTED_CLASS(TUniversalComputationController);
 
 DECLARE_REFCOUNTED_STRUCT(TKeyVisitorInterval);

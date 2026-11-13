@@ -7,10 +7,13 @@ PEERDIR(
     yql/essentials/parser/common
 )
 
+SRCS(
+    common.cpp
+)
+
 END()
 
 RECURSE(
-    antlr3
     antlr4
     collect_issues
     gen

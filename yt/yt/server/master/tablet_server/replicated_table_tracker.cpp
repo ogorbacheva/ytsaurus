@@ -1,5 +1,6 @@
 #include "private.h"
 #include "replicated_table_tracker.h"
+#include "tablet_cell_bundle.h"
 #include "tablet_manager.h"
 
 #include <yt/yt/core/concurrency/thread_pool.h>
@@ -58,11 +59,10 @@
 
 #include <yt/yt/core/ypath/token.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
+#include <library/cpp/yt/system/traceless_guard.h>
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
-
-#include <library/cpp/yt/threading/traceless_guard.h>
 
 namespace NYT::NTabletServer {
 
@@ -476,7 +476,7 @@ private:
 
         std::atomic<i64> IterationsWithoutAcceptableBundleHealth_ = 0;
         std::atomic<TInstant> LastUpdateTime_;
-        NThreading::TAtomicObject<TFuture<std::string>> AsyncTabletCellBundleName_ = MakeFuture<std::string>(TError("<unknown>"));
+        TAtomicObject<TFuture<std::string>> AsyncTabletCellBundleName_ = MakeFuture<std::string>(TError("<unknown>"));
 
         TFuture<void> CheckClusterState()
         {
@@ -851,7 +851,7 @@ private:
         TReplicatedTableOptionsPtr Config_;
         TTableCollocationId CollocationId_;
 
-        YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+        YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
         std::vector<TReplicaPtr> Replicas_;
 
         TFuture<TCheckResult> CheckFuture_;
@@ -859,7 +859,7 @@ private:
 
     using TTablePtr = TIntrusivePtr<TTable>;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     THashMap<TObjectId, TTablePtr> Tables_;
 
     struct TClusterConnectionInfo
@@ -868,7 +868,7 @@ private:
         NApi::IClientPtr Client;
     };
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ClusterToConnectionLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ClusterToConnectionLock_);
     THashMap<std::string, TClusterConnectionInfo> ClusterToConnection_;
 
     TPeriodicExecutorPtr UpdaterExecutor_;
@@ -913,7 +913,7 @@ private:
         Enabled_ = true;
     }
 
-    IClientPtr CreateClient(const std::string& clusterName, IConnectionPtr connection, const TGuard<NThreading::TSpinLock>& /*guard*/)
+    IClientPtr CreateClient(const std::string& clusterName, IConnectionPtr connection, const TGuard<TSpinLock>& /*guard*/)
     {
         YT_VERIFY(connection);
 
@@ -938,8 +938,8 @@ private:
             const auto& [clusterName, connectionInfo] = *jt;
             auto connection = static_cast<NApi::IConnectionPtr>(ClusterDirectory_->FindConnection(clusterName));
             if (!connection) {
-                YT_LOG_WARNING("Removed unknown cluster %v from replicated table tracker",
-                    clusterName);
+                YT_TLOG_WARNING("Removed unknown cluster from replicated table tracker")
+                    .With("ClusterName", clusterName);
                 ClusterToConnection_.erase(jt);
             } else if (connection != connectionInfo.Connection) {
                 CreateClient(clusterName, std::move(connection), guard);
@@ -1173,7 +1173,7 @@ private:
             if (it == Tables_.end()) {
                 table = New<TTable>(
                     id,
-                    object->TabletCellBundle()->ProfilingCounters().ReplicaModeSwitch,
+                    object->GetTabletCellBundle()->ProfilingCounters().ReplicaModeSwitch,
                     config,
                     collocationId);
                 Tables_.emplace(id, table);
@@ -1242,19 +1242,16 @@ private:
             ETableReplicaContentType::Data,
             std::ssize(replicas));
 
-        YT_LOG_DEBUG("Table %v "
-            "(TableId: %v, CollocationId: %v, "
-            "Replicas: %v, SyncReplicas: %v, AsyncReplicas: %v, SkippedReplicas: %v, "
-            "DesiredMaxSyncReplicaCount: %v, DesiredMinSyncReplicaCount: %v)",
-            newTable ? "added" : "updated",
-            object->GetId(),
-            collocationId,
-            object->Replicas().size(),
-            syncReplicas,
-            asyncReplicas,
-            skippedReplicas,
-            maxSyncReplicaCount,
-            minSyncReplicaCount);
+        YT_TLOG_DEBUG("Table registered in replicated table tracker")
+            .With("New", newTable)
+            .With("TableId", object->GetId())
+            .With("CollocationId", collocationId)
+            .With("Replicas", object->Replicas().size())
+            .With("SyncReplicas", syncReplicas)
+            .With("AsyncReplicas", asyncReplicas)
+            .With("SkippedReplicas", skippedReplicas)
+            .With("DesiredMaxSyncReplicaCount", maxSyncReplicaCount)
+            .With("DesiredMinSyncReplicaCount", minSyncReplicaCount);
 
         table->SetConfig(config);
         table->SetReplicas(replicas);
@@ -1372,7 +1369,7 @@ public:
         TTrackerStateRevision revision,
         bool snapshotRequested) override
     {
-        auto drainQueueGuard = NThreading::TracelessTryGuard(DrainQueueLock_);
+        auto drainQueueGuard = TracelessTryGuard(DrainQueueLock_);
         if (!drainQueueGuard.WasAcquired()) {
             THROW_ERROR_EXCEPTION(NReplicatedTableTrackerClient::EErrorCode::RttServiceDisabled,
                 "Failed to acquire update queue spinlock");
@@ -1536,12 +1533,12 @@ private:
 
     using TUpdateAction = NReplicatedTableTrackerClient::NProto::TTrackerStateUpdateAction;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, DrainQueueLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, DrainQueueLock_);
     TTrackerStateRevision ClientRevision_ = InvalidTrackerStateRevision;
 
     std::atomic<TTrackerStateRevision> Revision_ = NullTrackerStateRevision;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ActionQueueLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ActionQueueLock_);
     std::deque<TUpdateAction> ActionQueue_;
 
     std::atomic<bool> StateMonitoringEnabled_ = false;

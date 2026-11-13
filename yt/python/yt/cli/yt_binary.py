@@ -54,7 +54,7 @@ import fnmatch
 import shlex
 import signal
 import time
-from argparse import ArgumentParser, Action, RawDescriptionHelpFormatter
+from argparse import ArgumentParser, Action, RawDescriptionHelpFormatter, SUPPRESS
 from datetime import datetime
 from typing import Optional
 
@@ -444,7 +444,7 @@ def find(**kwargs):
 def add_find_parser(add_parser):
     parser = add_parser("find", yt.search)
     add_ypath_argument(parser, "path", hybrid=True)
-    parser.add_argument("--name", "-name", help="pattern of node name, use shell-style wildcards: *, ?, [seq], [!seq]")
+    parser.add_argument("--name", "-name", help="pattern of node name, use shell-style wildcards: ``*, ?, [seq], [!seq]``")
     add_type_argument(parser, "--type")
     parser.add_argument("--account")
     parser.add_argument("--owner")
@@ -1112,6 +1112,7 @@ def add_select_rows_parser(add_parser):
     group.add_argument("--forbid-join-without-index", dest="allow_join_without_index",
                        default=None, action="store_false")
     parser.add_argument("--execution-pool", type=str)
+    parser.add_argument("--replica-consistency", type=str, choices=["none", "sync"])
     parser.add_argument("--format", action=ParseFormat)
     parser.add_argument("--print-statistics", default=None, action="store_true")
     parser.add_argument("--syntax-version", type=int)
@@ -1165,6 +1166,7 @@ def add_lookup_rows_parser(add_parser):
     add_format_argument(parser, help="input format")
     parser.add_argument("--timestamp", type=int)
     parser.add_argument("--versioned", action="store_true", help="return all versions of the requested rows")
+    parser.add_argument("--replica-consistency", type=str, choices=["none", "sync"])
     parser.add_argument("--column-name", action="append", help="column name to lookup", dest="column_names")
     parser.set_defaults(input_stream=get_binary_std_stream(sys.stdin))
 
@@ -1799,7 +1801,7 @@ def operation_id_args(parser, **kwargs):
 
 
 def _make_operation_id_or_alias_action(alias_dest):
-    """Create argparse Action that routes positional values starting with '*' to operation_alias."""
+    """Create argparse Action that routes positional values starting with ``*`` to operation_alias."""
     class _Action(Action):
         def __call__(self, parser, namespace, values, option_string=None):
             if values and isinstance(values, str) and values.startswith("*"):
@@ -1824,7 +1826,7 @@ def operation_id_or_alias_args(parser, dest="operation_id", alias_dest="operatio
     if dest != "operation":
         opt_kwargs["dest"] = dest
     add_argument(parser=group, name="--operation", help="operation id", **opt_kwargs)
-    group.add_argument("--operation-alias", dest=alias_dest, help="operation alias (e.g. *my_alias)")
+    group.add_argument("--operation-alias", dest=alias_dest, help="operation alias (e.g. ``*my_alias``)")
 
 
 def add_abort_op_parser(add_parser):
@@ -2655,7 +2657,7 @@ def add_dirtable_parser(root_subparsers):
 
 
 def add_livy_parser(add_parser):
-    parser = add_parser("livy", pythonic_help="SPYT Livy commands")
+    parser = add_parser("livy", pythonic_help="SPYT Livy commands. Deprecated and unavailable starting with SPYT 2.10.0.")
     livy_subparsers = parser.add_subparsers(metavar="livy_command", **SUBPARSER_KWARGS)
     add_spyt_liyv_subparser = add_subparser(livy_subparsers, params_argument=False)
     add_strawberry_ctl_parser(add_spyt_liyv_subparser, "livy")
@@ -2808,6 +2810,10 @@ def add_flow_parser(root_subparsers):
     add_flow_get_pipeline_dynamic_spec_parser(add_flow_subparser)
     add_flow_set_pipeline_dynamic_spec_parser(add_flow_subparser)
     add_flow_remove_pipeline_dynamic_spec_parser(add_flow_subparser)
+    add_flow_get_pipeline_dynamic_spec_patches_parser(add_flow_subparser)
+    add_flow_patch_pipeline_dynamic_spec_parser(add_flow_subparser)
+    add_flow_cancel_pipeline_dynamic_spec_patch_parser(add_flow_subparser)
+    add_flow_reset_pipeline_dynamic_spec_parser(add_flow_subparser)
     add_flow_get_pipeline_state_parser(add_flow_subparser)
     add_flow_get_flow_view_parser(add_flow_subparser)
     add_flow_show_logs_parser(add_flow_subparser)
@@ -2897,6 +2903,16 @@ def add_flow_get_pipeline_dynamic_spec_parser(add_parser):
     add_ypath_argument(parser, "pipeline_path", hybrid=True)
     add_structured_format_argument(parser, default=output_format)
     parser.add_argument("--spec-path", help="Path inside pipeline dynamic spec yson struct, starting with /")
+    parser.add_argument("--view", choices=("effective", "base"), default="effective")
+    parser.add_argument("--blame", action="store_true", help="Include patch provenance for changed fields")
+
+
+def show_flow_dynamic_spec_update(yt_method):
+    @copy_docstring_from(yt_method)
+    def inner(**kwargs):
+        print_to_output(dump_data(yt_method(**kwargs)))
+
+    return inner
 
 
 def add_flow_set_pipeline_dynamic_spec_parser(add_parser):
@@ -2918,6 +2934,66 @@ def add_flow_remove_pipeline_dynamic_spec_parser(add_parser):
     parser.add_argument("--expected-version", type=int,
                         help="Pipeline spec expected version")
     parser.add_argument("--spec-path", help="Path inside pipeline dynamic spec yson struct, starting with /")
+
+
+def add_flow_get_pipeline_dynamic_spec_patches_parser(add_parser):
+    parser = add_parser(
+        "get-pipeline-dynamic-spec-patches",
+        get_helper(yt.get_pipeline_dynamic_spec_patches),
+        help="Get active DynamicSpec patches and the current version",
+    )
+    add_ypath_argument(parser, "pipeline_path", hybrid=True)
+    add_structured_format_argument(parser, default=output_format)
+    parser.add_argument("--patch", type=int, help="ID of one active patch")
+
+
+def get_flow_dynamic_spec_patch(**kwargs):
+    if kwargs["set"] is not None:
+        changes = kwargs.pop("set")
+        if changes and isinstance(changes[0], str):
+            changes = [changes]
+        if len(changes) == 1:
+            path, value = changes[0]
+            kwargs["set"] = (path, value.encode("utf-8"))
+        else:
+            kwargs["set_changes"] = [(path, value.encode("utf-8")) for path, value in changes]
+    print_to_output(dump_data(yt.patch_pipeline_dynamic_spec(**kwargs)))
+
+
+def add_flow_patch_pipeline_dynamic_spec_parser(add_parser):
+    parser = add_parser(
+        "patch-pipeline-dynamic-spec",
+        get_flow_dynamic_spec_patch,
+        help="Create or update a durable DynamicSpec patch",
+    )
+    add_ypath_argument(parser, "pipeline_path", hybrid=True)
+    add_structured_format_argument(parser, default=YT_STRUCTURED_DATA_FORMAT)
+    parser.add_argument("--set", nargs=2, action="append", metavar=("PATH", "VALUE"),
+                        help="Set a DynamicSpec subtree; repeat to update several paths in one patch")
+    parser.add_argument("--patch", type=int, help="ID of an active patch to update")
+    parser.add_argument("--comment", help="Reason for the patch")
+    parser.add_argument("--expected-version", type=int, required=True, help="Current DynamicSpec state version")
+
+
+def add_flow_cancel_pipeline_dynamic_spec_patch_parser(add_parser):
+    parser = add_parser(
+        "cancel-pipeline-dynamic-spec-patch",
+        show_flow_dynamic_spec_update(yt.cancel_pipeline_dynamic_spec_patch),
+        help="Cancel a DynamicSpec patch",
+    )
+    add_ypath_argument(parser, "pipeline_path", hybrid=True)
+    parser.add_argument("--patch", type=int, required=True, help="ID of the patch to cancel")
+    parser.add_argument("--expected-version", type=int, required=True, help="Current DynamicSpec state version")
+
+
+def add_flow_reset_pipeline_dynamic_spec_parser(add_parser):
+    parser = add_parser(
+        "reset-pipeline-dynamic-spec",
+        show_flow_dynamic_spec_update(yt.reset_pipeline_dynamic_spec),
+        help="Cancel all DynamicSpec patches and inherit the release base",
+    )
+    add_ypath_argument(parser, "pipeline_path", hybrid=True)
+    parser.add_argument("--expected-version", type=int, required=True, help="Current DynamicSpec state version")
 
 
 @copy_docstring_from(yt.get_pipeline_state)
@@ -3187,6 +3263,14 @@ def _get_version():
     return "\n".join(result)
 
 
+class _PrintVersionAction(Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        formatter = parser._get_formatter()
+        formatter.add_text(_get_version())
+        parser._print_message(formatter.format_help(), sys.stdout)
+        parser.exit()
+
+
 def _prepare_config_parser():
     config_parser = ArgumentParser(add_help=False)
     config_parser.add_argument("--proxy", help="specify cluster to run command, "
@@ -3214,7 +3298,8 @@ def _prepare_parser():
                             description=DESCRIPTION,
                             epilog=EPILOG)
 
-    parser.add_argument("--version", action="version", version=_get_version())
+    parser.add_argument("--version", action=_PrintVersionAction, nargs=0, default=SUPPRESS,
+                        help="show program's version number and exit")
 
     subparsers = parser.add_subparsers(metavar="command")
     subparsers.required = True

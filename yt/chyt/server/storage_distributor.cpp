@@ -22,7 +22,7 @@
 #include <yt/yt/ytlib/api/native/client.h>
 #include <yt/yt/ytlib/api/native/transaction.h>
 
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 
 #include <yt/yt/ytlib/chunk_pools/chunk_stripe.h>
 
@@ -434,6 +434,7 @@ public:
         TDistributedQueryInfo distributeInfo {
             .ProcessingStage = ProcessingStage_,
             .OutputHeader = std::move(blockHeader),
+            .CoordinatorSortDescription = std::move(CoordinatorSortDescription_),
             .SecondaryQueries = std::move(SecondaryQueries_),
             .CliqueNodes = std::move(CliqueNodes_),
             .TaskIterator = std::move(TaskIterator_)};
@@ -469,6 +470,7 @@ private:
     std::vector<TSubquery> ThreadSubqueries_;
     std::optional<TQueryAnalyzer> QueryAnalyzer_;
     std::optional<TQueryAnalysisResult> QueryAnalysisResult_;
+    DB::SortDescription CoordinatorSortDescription_;
     // TODO(max42): YT-11778.
     // TMiscExt is used for better memory estimation in readers, but it is dropped when using TInputChunk,
     // so for now we store it explicitly in a map inside this struct and use when serializing subquery input.
@@ -521,6 +523,8 @@ private:
         SpecTemplate_.SubqueryOptions.UseDistinctReadOptimization = QueryAnalyzer_->NeedOnlyDistinct();
         SpecTemplate_.SubqueryOptions.UseMinMaxOptimization =
             QueryAnalysisResult_->EnableMinMaxOptimization && SpecTemplate_.TableStatistics.has_value();
+        SpecTemplate_.SubqueryOptions.SortDescription = QueryAnalysisResult_->SubquerySortDescription;
+        CoordinatorSortDescription_ = QueryAnalysisResult_->CoordinatorSortDescription;
 
         auto& tableStatistics = SpecTemplate_.TableStatistics;
         if (tableStatistics.has_value()) {
@@ -679,9 +683,11 @@ private:
             QueryContext_->Host->GetConfig()->Subquery);
 
         // NB: this is important for queries to distribute deterministically across the cluster.
-        std::sort(ThreadSubqueries_.begin(), ThreadSubqueries_.end(), [] (const TSubquery& lhs, const TSubquery& rhs) {
-            return lhs.Cookie < rhs.Cookie;
-        });
+        if (QueryAnalysisResult_->PoolKind != EPoolKind::Sorted) {
+            std::sort(ThreadSubqueries_.begin(), ThreadSubqueries_.end(), [] (const TSubquery& lhs, const TSubquery& rhs) {
+                return lhs.Cookie < rhs.Cookie;
+            });
+        } // else — already sorted by query bounds
 
         size_t totalInputDataWeight = 0;
         size_t totalChunkCount = 0;

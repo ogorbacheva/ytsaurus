@@ -35,10 +35,14 @@ target_link_libraries(flow_server PUBLIC
   build-cow-on
   library-cpp-companion
   library-cpp-computation
+  flow-extensions-http
+  flow-extensions-kafka
   cpp-connectors-queue
+  cpp-connectors-random
   cpp-connectors-servicelog
   cpp-connectors-sorted_dynamic_table
   cpp-connectors-static_table
+  cpp-connectors-static_table_v2
   library-cpp-resources
   library-cpp-runner
 )

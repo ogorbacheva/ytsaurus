@@ -3,6 +3,8 @@ LIBRARY()
 INCLUDE(${ARCADIA_ROOT}/yt/yt/flow/flow.make.inc)
 
 SRCS(
+    key_count_observer.cpp
+    read_delay.cpp
     computation_base.cpp
     computation_tracer.cpp
     controller_base.cpp
@@ -11,21 +13,27 @@ SRCS(
     key_visitor.cpp
     static_table_key_visitor_joiner.cpp
     key_visitor_store.cpp
+    lineage_accumulator.cpp
     message_filter.cpp
     meta_setter.cpp
     ordered_source_computation_base.cpp
     passthrough_computation.cpp
     simple_external_state_manager.cpp
+    processing_observation_accumulator.cpp
+    job_state/job_init_context.cpp
     job_state/state_providers.cpp
     job_state/state_manager.cpp
     stores/compact_output_store.cpp
     stores/input_store.cpp
+    stores/paged_timer_store.cpp
+    stores/timer_page_catalogue.cpp
+    stores/timer_page_data.cpp
+    stores/timer_store_conversion.cpp
     stores/timer_store.cpp
     swift_map_computation.cpp
     swift_ordered_source_computation.cpp
     transform_computation.cpp
     transform_ordered_source_computation.cpp
-    universal_controller_helpers.cpp
     universal_controller.cpp
     watermark_aligner.cpp
     watermark_generator.cpp
@@ -33,6 +41,8 @@ SRCS(
 )
 
 PEERDIR(
+    contrib/libs/pdqsort
+    yt/yt/flow/library/cpp/source_read_delay
     library/cpp/containers/absl
     library/cpp/containers/insert_only_concurrent_cache
     library/cpp/iterator

@@ -6,6 +6,7 @@ from yt_dashboards.master import (
     build_master_global, build_master_local, build_master_node_tracker, build_master_cpu, build_master_merge_jobs,
     build_master_accounts)
 from yt_dashboards.cypress_proxies import build_cypress_proxies
+from yt_dashboards.sequoia_replicas import build_sequoia_replicas
 from yt_dashboards.artemis import (
     build_local_artemis, build_bundle_artemis, build_global_artemis, build_local_artemis_container)
 from yt_dashboards.scheduler_internal import build_scheduler_internal
@@ -15,6 +16,7 @@ from yt_dashboards.scheduler_operation import build_scheduler_operation
 from yt_dashboards.jobs_monitor import build_jobs_monitor
 from yt_dashboards.cluster_resources import build_cluster_resources
 from yt_dashboards.cache import build_cache_with_ghosts
+from yt_dashboards.chaos_bundle import build_chaos_bundle_overview, build_chaos_bundle_runtime
 from yt_dashboards.chyt import build_chyt_monitoring
 from yt_dashboards.key_filter import build_key_filter
 from yt_dashboards.exe_nodes import build_exe_nodes
@@ -50,6 +52,14 @@ logger = logging.getLogger(__name__)
 
 
 dashboards = {
+    "chaos-bundle-overview": {
+        "func": build_chaos_bundle_overview,
+        "monitoring": {},
+    },
+    "chaos-bundle-runtime": {
+        "func": build_chaos_bundle_runtime,
+        "monitoring": {},
+    },
     "cache": {
         "func": build_cache_with_ghosts,
         "monitoring": {},
@@ -131,6 +141,10 @@ dashboards = {
     },
     "per-table-compaction": {
         "func": compaction.build_per_table_compaction,
+        "monitoring": {},
+    },
+    "compaction-digest": {
+        "func": compaction.build_compaction_digest,
         "monitoring": {},
     },
     "bundle-ui-user-load": {
@@ -251,6 +265,11 @@ dashboards = {
         "monitoring": {},
         "grafana": {},
     },
+    "sequoia-replicas": {
+        "func": build_sequoia_replicas,
+        "monitoring": {},
+        "grafana": {"args": ["grafana"]},
+    },
     "cypress-proxy": {
         "func": build_cypress_proxies,
         "monitoring": {},
@@ -266,7 +285,9 @@ dashboards = {
     "exe-nodes": {
         "func": build_exe_nodes,
         "monitoring": {},
-        "grafana": {},
+        "grafana": {
+            "args": ["grafana"],
+        },
     },
     "data-nodes-common": {
         "func": build_data_nodes_common,

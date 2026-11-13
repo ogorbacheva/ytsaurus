@@ -3,6 +3,8 @@
 #include "tablet_cell_bundle.h"
 #include "tablet_base.h"
 
+#include <yt/yt/server/lib/hydra/mutation_context.h>
+
 namespace NYT::NTabletServer {
 
 using namespace NCellMaster;
@@ -109,6 +111,17 @@ TTabletOwnerBase* TTabletOwnerBase::GetTrunkNode()
 const TTabletOwnerBase* TTabletOwnerBase::GetTrunkNode() const
 {
     return TChunkOwnerBase::GetTrunkNode()->As<TTabletOwnerBase>();
+}
+
+TTabletCellBundleRawPtr TTabletOwnerBase::GetTabletCellBundle() const
+{
+    return GetTrunkNode()->TabletCellBundle_.Get();
+}
+
+void TTabletOwnerBase::SetTabletCellBundle(TTabletCellBundle* cellBundle)
+{
+    YT_VERIFY(IsTrunk());
+    TabletCellBundle_.Assign(cellBundle);
 }
 
 TDetailedMasterMemory TTabletOwnerBase::GetDetailedMasterMemoryUsage() const

@@ -88,6 +88,22 @@ void TInflightMetrics::Register(TRegistrar registrar)
         .Default();
 }
 
+void TWeightedRatio::Register(TRegistrar registrar)
+{
+    registrar.Parameter("ratio", &TThis::Ratio)
+        .GreaterThanOrEqual(0);
+    registrar.Parameter("weight", &TThis::Weight)
+        .GreaterThanOrEqual(0);
+}
+
+void TLineageRatio::Register(TRegistrar registrar)
+{
+    registrar.Parameter("count", &TThis::Count)
+        .Default();
+    registrar.Parameter("byte_size", &TThis::ByteSize)
+        .Default();
+}
+
 void InPlaceMergeInflightMetrics(
     const TInflightMetricsPtr& current,
     const TInflightMetricsPtr& other,
@@ -171,19 +187,44 @@ void TStreamTraverseData::Register(TRegistrar registrar)
         .Default(ZeroSystemTimestamp);
     registrar.Parameter("inflight_metrics", &TThis::InflightMetrics)
         .DefaultNew();
+    registrar.Parameter("min_trigger_timestamp", &TThis::MinTriggerTimestamp)
+        .Default();
+    registrar.Parameter("ready_watermark", &TThis::ReadyWatermark)
+        .Default();
+    registrar.Parameter("ready_watermark_unknown", &TThis::ReadyWatermarkUnknown)
+        .Default(false);
 }
+
+////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+////////////////////////////////////////////////////////////////////////////////
+
+template <class T>
+void MergeMin(std::optional<T>* current, const std::optional<T>& other)
+{
+    if (other) {
+        *current = *current ? std::min(**current, *other) : *other;
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 
 TStreamTraverseDataPtr MakeCompletedStreamTraverseData(
     i64 epoch,
-    TSystemTimestamp timestamp)
+    TSystemTimestamp systemWatermark,
+    TSystemTimestamp eventWatermark)
 {
     auto streamTraverseData = New<TStreamTraverseData>();
     streamTraverseData->Epoch = epoch;
     streamTraverseData->State = EStreamState::Completed;
-    streamTraverseData->SystemWatermark = timestamp;
-    streamTraverseData->EventWatermark = timestamp;
+    streamTraverseData->SystemWatermark = systemWatermark;
+    streamTraverseData->EventWatermark = eventWatermark;
     streamTraverseData->InflightMetrics->Count = 0;
     ForEachLifecycleMetric(streamTraverseData->InflightMetrics.Get(), [] (auto& metric) {
         metric = 0;
@@ -212,9 +253,25 @@ TStreamTraverseDataPtr MergeStreamTraverseData(
         mergedStream->SystemWatermark = std::min(mergedStream->SystemWatermark, stream->SystemWatermark);
         mergedStream->EventWatermark = std::min(mergedStream->EventWatermark, stream->EventWatermark);
         mergedStream->State = std::min(mergedStream->State, stream->State);
+        MergeMin(&mergedStream->MinTriggerTimestamp, stream->MinTriggerTimestamp);
 
         InPlaceMergeInflightMetrics(mergedStream->InflightMetrics, stream->InflightMetrics, inflightMerge, allowPartial);
     }
+
+    // The minimum is undetermined if any input is unknown; inputs without a resolved value contribute their system watermark.
+    bool readyWatermarkUnknown = false;
+    bool hasReadyWatermark = false;
+    auto readyWatermark = InfinitySystemTimestamp;
+    for (const auto& stream : streams) {
+        readyWatermarkUnknown |= stream->ReadyWatermarkUnknown;
+        hasReadyWatermark |= stream->ReadyWatermark.has_value();
+        readyWatermark = std::min(readyWatermark, stream->ReadyWatermark.value_or(stream->SystemWatermark));
+    }
+
+    mergedStream->ReadyWatermarkUnknown = readyWatermarkUnknown;
+    mergedStream->ReadyWatermark = hasReadyWatermark && !readyWatermarkUnknown
+        ? std::optional(readyWatermark)
+        : std::nullopt;
 
     return mergedStream;
 }
@@ -270,6 +327,8 @@ void TInflightStreamTraverseData::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("min_event_timestamp", &TThis::MinEventTimestamp)
         .Default();
+    registrar.Parameter("min_trigger_timestamp", &TThis::MinTriggerTimestamp)
+        .Default();
     registrar.Parameter("inflight_metrics", &TThis::InflightMetrics)
         .DefaultNew();
 }
@@ -297,12 +356,17 @@ TStreamTraverseDataPtr ApplyInflightTraverseData(
         consumingStream->EventWatermark = std::min(consumingStream->EventWatermark, *inflight->MinEventTimestamp);
     }
 
+    consumingStream->MinTriggerTimestamp = inflight->MinTriggerTimestamp;
+    consumingStream->ReadyWatermark.reset();
+    consumingStream->ReadyWatermarkUnknown = false;
+
     InPlaceMergeInflightMetrics(consumingStream->InflightMetrics, inflight->InflightMetrics, EInflightMerge::Sum, /*allowPartial*/ true);
     return consumingStream;
 }
 
 TInflightStreamTraverseDataPtr MergeInflightTraverseData(
-    const std::vector<TInflightStreamTraverseDataPtr>& inflights)
+    const std::vector<TInflightStreamTraverseDataPtr>& inflights,
+    bool allowPartial)
 {
     if (inflights.empty()) {
         return New<TInflightStreamTraverseData>();
@@ -312,6 +376,8 @@ TInflightStreamTraverseDataPtr MergeInflightTraverseData(
 
     for (i64 i = 1; i < std::ssize(inflights); ++i) {
         const auto& part = inflights[i];
+        merged->Empty = merged->Empty && part->Empty;
+        merged->Suspended = merged->Suspended && part->Suspended;
         if (part->MinSystemTimestamp) {
             if (merged->MinSystemTimestamp) {
                 merged->MinSystemTimestamp = std::min(*merged->MinSystemTimestamp, *part->MinSystemTimestamp);
@@ -328,7 +394,7 @@ TInflightStreamTraverseDataPtr MergeInflightTraverseData(
             }
         }
 
-        InPlaceMergeInflightMetrics(merged->InflightMetrics, part->InflightMetrics, EInflightMerge::Sum);
+        InPlaceMergeInflightMetrics(merged->InflightMetrics, part->InflightMetrics, EInflightMerge::Sum, allowPartial);
     }
 
     return merged;
@@ -421,7 +487,10 @@ TFromPartitionTraverseDataPtr MakeCompletedPartitionTraverseData(
     traverseData->Node->ReportTime = timestamp;
 
     for (const auto& streamId : spec->AllStreamIds) {
-        traverseData->Node->Streams[streamId] = MakeCompletedStreamTraverseData(epoch, timestamp);
+        traverseData->Node->Streams[streamId] = MakeCompletedStreamTraverseData(
+            epoch,
+            /*systemWatermark*/ timestamp,
+            /*eventWatermark*/ timestamp);
     }
 
     return traverseData;

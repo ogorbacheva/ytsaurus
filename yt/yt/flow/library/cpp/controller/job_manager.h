@@ -7,6 +7,8 @@
 #include <yt/yt/client/api/public.h>
 #include <yt/yt/client/cache/cache.h>
 
+#include <yt/yt/core/http/public.h>
+
 namespace NYT::NFlow::NController {
 
 // TODO(mikari): revise naming
@@ -17,6 +19,7 @@ struct TJobManagerContext
     : public TRefCounted
 {
     NClient::NCache::IClientsCachePtr ClientsCache;
+    NHttp::IClientPtr HttpClient;
     NYPath::TRichYPath PipelinePath;
     IInvokerPtr Invoker;
     IInvokerPtr MainCycleInvoker;
@@ -32,6 +35,8 @@ DEFINE_REFCOUNTED_TYPE(TJobManagerContext);
 struct IJobManager
     : public TRefCounted
 {
+    virtual void BeginIteration(const TFlowViewPtr& committedFlowView) = 0;
+
     virtual void CheckCompletedPartitions(const TFlowViewPtr& flowView) = 0;
     virtual void RemoveFailedJobs(const TFlowViewPtr& flowView) = 0;
 
@@ -62,6 +67,8 @@ struct IJobManager
 
     virtual TJobManagerStatePtr GetState() = 0;
     virtual void Commit(const TFlowViewPtr& flowView) = 0;
+
+    virtual const THashMap<TComputationId, IComputationControllerPtr>& GetComputationControllers() const = 0;
 
     virtual void Reconfigure(TDynamicPipelineSpecPtr dynamicSpec) = 0;
 };

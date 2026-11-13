@@ -26,16 +26,15 @@ import yt.yson as yson
 from yt.wrapper.errors import YtResponseError
 
 from yt.yt.flow.library.python.pipeline_tables import PIPELINE_FILE_PRESET
+from yt.yt.flow.library.python.pipeline_tables import PIPELINE_NODES
 from yt.yt.flow.library.python.pipeline_tables import PIPELINE_ORDERED_TABLE_PRESET
-from yt.yt.flow.library.python.pipeline_tables import PIPELINE_QUEUES
 from yt.yt.flow.library.python.pipeline_tables import PIPELINE_QUEUES_PRESET
 from yt.yt.flow.library.python.pipeline_tables import PIPELINE_SORTED_TABLE_PRESET
-from yt.yt.flow.library.python.pipeline_tables import PIPELINE_TABLES
 from yt.yt.flow.library.python.pipeline_tables import PIPELINE_TABLES_PRESET
+from yt.yt.flow.library.python.pipeline_tables.definitions import _get_pipeline_table_definitions
 
 log = logging.getLogger(__name__)
 
-# Pipeline-map-node attribute.
 PIPELINE_FORMAT_VERSION_ATTRIBUTE = "pipeline_format_version"
 CURRENT_PIPELINE_FORMAT_VERSION = 1
 
@@ -99,6 +98,19 @@ RETRY_INTERVAL: float = 3.0
 # Key under which a spec dict lists parent presets to merge in first.
 PRESET_MERGE_KEY = "$merge_presets"
 
+# The shared preset carries ``reed_solomon_3_3`` for Yandex-internal
+# deployments, but writing an erasure chunk needs six online data nodes;
+# on a smaller cluster every tablet flush fails forever and unflushed
+# dynamic stores pile up in tablet-node memory. This bootstrap helper
+# targets small clusters, so it strips erasure; opt back in on a large
+# cluster by setting ``@erasure_codec`` / ``@hunk_erasure_codec`` on the
+# pipeline tables after bootstrap.
+_PIPELINE_SORTED_TABLE_PRESET_NO_ERASURE = copy.deepcopy(PIPELINE_SORTED_TABLE_PRESET)
+_no_erasure_attrs = _PIPELINE_SORTED_TABLE_PRESET_NO_ERASURE["clusters"]["_all_data_clusters"]["attributes"]
+_no_erasure_attrs["erasure_codec"] = "none"
+_no_erasure_attrs["hunk_erasure_codec"] = "none"
+del _no_erasure_attrs
+
 # Local registry consumed by :func:`_resolve_attributes`, and the single
 # list of preset names known to yt_sync_mini (easy_mode validates every
 # referenced preset name against it). Any ``$merge_presets`` name referenced
@@ -111,7 +123,7 @@ LOCAL_PRESETS = {
         "$merge_presets": ["builtin:storage_preset"],
         "clusters": {"_all_clusters": {"attributes": {"dynamic": True}}},
     },
-    "builtin:pipeline_sorted_table_preset": PIPELINE_SORTED_TABLE_PRESET,
+    "builtin:pipeline_sorted_table_preset": _PIPELINE_SORTED_TABLE_PRESET_NO_ERASURE,
     "builtin:pipeline_ordered_table_preset": PIPELINE_ORDERED_TABLE_PRESET,
     "builtin:pipeline_file_preset": PIPELINE_FILE_PRESET,
     "builtin:consumer_preset": {
@@ -201,15 +213,20 @@ def _build_schema(columns):
     (``controller_logs``) is strict but not unique-keyed (no sort columns).
     """
     has_key_columns = any(column.get("sort_order") for column in columns)
+    attributes = copy.deepcopy(getattr(columns, "attributes", {}))
+    attributes.setdefault("strict", True)
+    attributes.setdefault("unique_keys", has_key_columns)
     return yson.to_yson_type(
         list(columns),
-        attributes={"strict": True, "unique_keys": has_key_columns},
+        attributes=attributes,
     )
 
 
-def _table_attributes(name, schema_columns, table_preset):
+def _table_attributes(name, schema_columns, table_preset, common_attributes=None):
     """Build the final ``attributes`` dict for a single inner table."""
     attrs = _resolve_attributes(table_preset, LOCAL_PRESETS)
+    if common_attributes:
+        _deep_merge(attrs, common_attributes)
     attrs["schema"] = _build_schema(schema_columns)
     return attrs
 
@@ -307,30 +324,52 @@ def create_pipeline(client, path, *, tablet_cell_bundle=None):
     :param tablet_cell_bundle: bundle for the inner tables; ``None`` leaves the
         attribute unset, so the tables land in the cluster's default bundle.
     """
-    # 1. Pipeline map node.
+    # 1. Pipeline node.
     _retry_on_resolve_error(
         lambda: client.create(
-            "map_node",
+            "pipeline",
             path,
             recursive=True,
             ignore_existing=True,
-            attributes={PIPELINE_FORMAT_VERSION_ATTRIBUTE: CURRENT_PIPELINE_FORMAT_VERSION},
+            attributes={
+                PIPELINE_FORMAT_VERSION_ATTRIBUTE: CURRENT_PIPELINE_FORMAT_VERSION,
+                "initialize_tables": False,
+            },
         ),
         f"create pipeline node {path}",
     )
 
-    # 2. Inner tables, all in a single master transaction (matches
-    # NYT::NFlow::CreatePipelineNode semantics: either all tables are
+    # 2. Inner objects, all in a single master transaction (matches
+    # NYT::NFlow::CreatePipelineNode semantics: either all objects are
     # created and visible to the controller, or none are).
     pipeline_root = path.rstrip("/")
-    items = list(PIPELINE_TABLES.items()) + list(PIPELINE_QUEUES.items())
+    table_definitions, queue_definitions = _get_pipeline_table_definitions()
+    items = list(table_definitions.items()) + list(queue_definitions.items())
     presets = {**PIPELINE_TABLES_PRESET, **PIPELINE_QUEUES_PRESET}
+    inner_paths = list(PIPELINE_NODES) + [name for name, _ in items]
+    node_paths = sorted(
+        set(PIPELINE_NODES)
+        | {name[:slash] for name in inner_paths for slash, character in enumerate(name) if character == "/"}
+    )
 
     def create_inner_tables():
         with client.Transaction(type="master", attributes={"title": f"Create pipeline {path}"}):
+            for name in node_paths:
+                descriptor = PIPELINE_NODES.get(name, {"type": "map_node", "attributes": {}})
+                client.create(
+                    descriptor["type"],
+                    f"{pipeline_root}/{name}",
+                    ignore_existing=True,
+                    attributes=copy.deepcopy(descriptor["attributes"]),
+                )
             for name, descriptor in items:
                 table_preset = presets.get(name, {})
-                attributes = _table_attributes(name, descriptor["schema"], table_preset)
+                attributes = _table_attributes(
+                    name,
+                    descriptor["schema"],
+                    table_preset,
+                    descriptor["attributes"],
+                )
                 if tablet_cell_bundle is not None:
                     attributes["tablet_cell_bundle"] = tablet_cell_bundle
                 client.create(

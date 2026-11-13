@@ -20,8 +20,8 @@
 #include <yt/yt/ytlib/sequoia_client/connection.h>
 #include <yt/yt/ytlib/sequoia_client/transaction.h>
 
-#include <yt/yt/ytlib/sequoia_client/records/chunk_replicas.record.h>
 #include <yt/yt/ytlib/sequoia_client/records/chunk_refresh_queue.record.h>
+#include <yt/yt/ytlib/sequoia_client/records/chunk_replicas.record.h>
 #include <yt/yt/ytlib/sequoia_client/records/location_replicas.record.h>
 
 #include <yt/yt/client/api/transaction.h>
@@ -201,17 +201,13 @@ public:
         const auto& sequoiaReplicasConfig = GetDynamicConfig()->SequoiaChunkReplicas;
         if (std::ssize(LocationsAwaitingRefresh_) > sequoiaReplicasConfig->MaxLocationsAwaitingRefresh) {
             if (!Status_.GlobalRefreshEnabled) {
-                YT_LOG_ALERT(
-                    "Too many locations awaiting Sequoia location refresh, can not trigger global Sequoia chunk refresh "
-                    "LocationsAwaitingRefresh: %v, MaxLocationsAwaitingRefresh: %v",
-                    LocationsAwaitingRefresh_.size(),
-                    sequoiaReplicasConfig->MaxLocationsAwaitingRefresh);
+                YT_TLOG_ALERT("Too many locations awaiting Sequoia location refresh, cannot trigger global Sequoia chunk refresh")
+                    .With("LocationsAwaitingRefresh", LocationsAwaitingRefresh_.size())
+                    .With("MaxLocationsAwaitingRefresh", sequoiaReplicasConfig->MaxLocationsAwaitingRefresh);
             } else {
-                YT_LOG_WARNING(
-                    "Too many locations awaiting Sequoia location refresh, will trigger global Sequoia chunk refresh "
-                    "LocationsAwaitingRefresh: %v, MaxLocationsAwaitingRefresh: %v",
-                    LocationsAwaitingRefresh_.size(),
-                    sequoiaReplicasConfig->MaxLocationsAwaitingRefresh);
+                YT_TLOG_WARNING("Too many locations awaiting Sequoia location refresh, will trigger global Sequoia chunk refresh")
+                    .With("LocationsAwaitingRefresh", LocationsAwaitingRefresh_.size())
+                    .With("MaxLocationsAwaitingRefresh", sequoiaReplicasConfig->MaxLocationsAwaitingRefresh);
                 StartNewGlobalRefreshEpoch(guard);
             }
         }
@@ -263,7 +259,7 @@ public:
 private:
     TBootstrap* Bootstrap_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     TSequoiaChunkRefresherStatus Status_;
 
     NConcurrency::TPeriodicExecutorPtr SequoiaChunkRefreshExecutor_;
@@ -297,7 +293,7 @@ private:
     }
 
     void UpdateShards(
-        const TGuard<NThreading::TSpinLock>&,
+        const TGuard<TSpinLock>&,
         bool deactivateAllShards)
     {
         const auto& incumbentManager = Bootstrap_->GetIncumbentManager();
@@ -326,7 +322,7 @@ private:
     }
 
     void UpdateAndStartSequoiaChunkRefresh(
-        const TGuard<NThreading::TSpinLock>&,
+        const TGuard<TSpinLock>&,
         TDynamicSequoiaChunkReplicasConfigPtr sequoiaReplicasConfig)
     {
         VerifyPersistentStateRead();
@@ -352,7 +348,7 @@ private:
         }
     }
 
-    void StopSequoiaChunkRefresh(const TGuard<NThreading::TSpinLock>&)
+    void StopSequoiaChunkRefresh(const TGuard<TSpinLock>&)
     {
         if (Status_.SequoiaChunkRefreshEnabled) {
             YT_TLOG_DEBUG("Stopping Sequoia chunk refresh");
@@ -366,7 +362,7 @@ private:
     }
 
     void UpdateAndStartGlobalRefresh(
-        const TGuard<NThreading::TSpinLock>& guard,
+        const TGuard<TSpinLock>& guard,
         TDynamicSequoiaChunkReplicasConfigPtr sequoiaReplicasConfig)
     {
         VerifyPersistentStateRead();
@@ -390,7 +386,7 @@ private:
         }
     }
 
-    void StartNewGlobalRefreshEpoch(const TGuard<NThreading::TSpinLock>&)
+    void StartNewGlobalRefreshEpoch(const TGuard<TSpinLock>&)
     {
         Status_.GlobalRefreshEnabled = true;
         ++Status_.GlobalRefreshEpoch;
@@ -409,7 +405,7 @@ private:
         UnsuccessfulGlobalRefreshIterations_ = 0;
     }
 
-    void StopGlobalRefresh(const TGuard<NThreading::TSpinLock>&)
+    void StopGlobalRefresh(const TGuard<TSpinLock>&)
     {
         if (Status_.GlobalRefreshEnabled) {
             YT_TLOG_DEBUG("Stopping global Sequoia chunk refresh");
@@ -430,7 +426,7 @@ private:
     }
 
     void UpdateAndStartLocationRefresh(
-        const TGuard<NThreading::TSpinLock>&,
+        const TGuard<TSpinLock>&,
         TDynamicSequoiaChunkReplicasConfigPtr sequoiaReplicasConfig)
     {
         MaxConcurrentLocationsToRefresh_ = sequoiaReplicasConfig->MaxConcurrentLocationsToRefresh;
@@ -452,7 +448,7 @@ private:
         }
     }
 
-    void StopLocationRefresh(const TGuard<NThreading::TSpinLock>&)
+    void StopLocationRefresh(const TGuard<TSpinLock>&)
     {
         if (Status_.LocationRefreshEnabled) {
             YT_TLOG_DEBUG("Stopping Sequoia location refresh");
@@ -466,29 +462,25 @@ private:
     }
 
     bool ShouldAbortRefreshIterationCausedByShardsChange(
-        const TGuard<NThreading::TSpinLock>&,
+        const TGuard<TSpinLock>&,
         const std::array<TSequoiaChunkRefresherShardStatus, ChunkShardCount>& shards,
         const std::string& executorName)
     {
         for (int shardIndex = 0; shardIndex < ChunkShardCount; ++shardIndex) {
             if (shards[shardIndex].Active != Status_.Shards[shardIndex].Active) {
-                YT_LOG_DEBUG(
-                    "Aborting iteration, shard active mismatch "
-                    "(ExecutorName: %Qv, ShardIndex: %v, RefreshIterationShardActive: %v, ActualShardActive: %v)",
-                    executorName,
-                    shardIndex,
-                    shards[shardIndex].Active,
-                    Status_.Shards[shardIndex].Active);
+                YT_TLOG_DEBUG("Aborting iteration, shard active mismatch")
+                    .With("ExecutorName", executorName)
+                    .With("ShardIndex", shardIndex)
+                    .With("RefreshIterationShardActive", shards[shardIndex].Active)
+                    .With("ActualShardActive", Status_.Shards[shardIndex].Active);
                 return true;
             }
             if (shards[shardIndex].Epoch != Status_.Shards[shardIndex].Epoch) {
-                YT_LOG_DEBUG(
-                    "Aborting iteration, shard epoch mismatch "
-                    "(ExecutorName: %Qv,ShardIndex: %v, RefreshIterationEpoch: %v, ActualShardEpoch: %v)",
-                    executorName,
-                    shardIndex,
-                    shards[shardIndex].Epoch,
-                    Status_.Shards[shardIndex].Epoch);
+                YT_TLOG_DEBUG("Aborting iteration, shard epoch mismatch")
+                    .With("ExecutorName", executorName)
+                    .With("ShardIndex", shardIndex)
+                    .With("RefreshIterationEpoch", shards[shardIndex].Epoch)
+                    .With("ActualShardEpoch", Status_.Shards[shardIndex].Epoch);
                 return true;
             }
         }
@@ -533,7 +525,7 @@ private:
         }
 
         auto shouldAbortRefreshIteration = [this, this_ = MakeStrong(this)] (
-            const TGuard<NThreading::TSpinLock>& guard,
+            const TGuard<TSpinLock>& guard,
             int epoch,
             const auto& shards)
         {
@@ -747,7 +739,7 @@ private:
                 batchSize));
         }
 
-        auto shouldAbortRefreshIteration = [&] (const TGuard<NThreading::TSpinLock>& guard) {
+        auto shouldAbortRefreshIteration = [&] (const TGuard<TSpinLock>& guard) {
             if (!Status_.GlobalRefreshEnabled) {
                 YT_TLOG_DEBUG("Aborting global Sequoia chunk refresh iteration, global Sequoia chunk refresh is disabled");
                 return true;
@@ -954,7 +946,7 @@ private:
         }
 
         auto rescheduleLocationsRefresh = [&](
-            const TGuard<NThreading::TSpinLock>& guard,
+            const TGuard<TSpinLock>& guard,
             bool increaseFailedAttempts) {
             for (auto& location : locations) {
                 if (increaseFailedAttempts) {
@@ -970,12 +962,11 @@ private:
                                 .With("MaxFailedAttemptsAllowed", MaxUnsuccessfulLocationRefreshAttempts_);
                             return;
                         }
-                        YT_LOG_ALERT("Sequoia location refresh failed for location, can not trigger new global Sequoia chunk refresh "
-                            "(NodeId: %v, LocationIndex: %v, FailedAttempts: %v, MaxFailedAttemptsAllowed: %v)",
-                            location.NodeId,
-                            location.LocationIndex,
-                            location.FailedAttempts,
-                            MaxUnsuccessfulLocationRefreshAttempts_);
+                        YT_TLOG_ALERT("Sequoia location refresh failed for location, cannot trigger new global Sequoia chunk refresh")
+                            .With("NodeId", location.NodeId)
+                            .With("LocationIndex", location.LocationIndex)
+                            .With("FailedAttempts", location.FailedAttempts)
+                            .With("MaxFailedAttemptsAllowed", MaxUnsuccessfulLocationRefreshAttempts_);
                     }
                 }
 

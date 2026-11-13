@@ -36,15 +36,19 @@ void Serialize(const TExpectedTransactionSignatureInfo& signatureInfo, NYson::IY
 
 ////////////////////////////////////////////////////////////////////////////////
 
+using TTransactionCommitApprovalCounts = THashMap<TCellId, int>;
+
+////////////////////////////////////////////////////////////////////////////////
+
 DEFINE_ENUM(ECommitState,
     ((Start)                     (0))
     ((Prepare)                   (1))
     ((GeneratingCommitTimestamps)(2)) // transient only
+    ((CommitTimestampKnown)      (7))
     ((Commit)                    (3))
     ((Aborting)                  (4)) // transient only
     ((Abort)                     (5))
     ((Finishing)                 (6)) // transient only
-    ((ReadyToCommit)             (7))
 );
 
 class TCommit
@@ -57,6 +61,7 @@ public:
     DEFINE_BYVAL_RO_PROPERTY(NTracing::TTraceId, TraceId);
     DEFINE_BYREF_RO_PROPERTY(std::vector<TCellId>, ParticipantCellIds);
     DEFINE_BYREF_RO_PROPERTY(TExpectedTransactionSignatureInfo, ExpectedPrepareSignatures);
+    DEFINE_BYREF_RO_PROPERTY(TTransactionCommitApprovalCounts, TargetCommitApprovalCounts);
     DEFINE_BYREF_RO_PROPERTY(std::vector<TCellId>, PrepareOnlyParticipantCellIds);
     DEFINE_BYREF_RO_PROPERTY(std::vector<TCellId>, CellIdsToSyncWithBeforePrepare);
     DEFINE_BYVAL_RO_PROPERTY(bool, Distributed);
@@ -64,7 +69,7 @@ public:
     DEFINE_BYVAL_RO_PROPERTY(bool, InheritCommitTimestamp);
     DEFINE_BYVAL_RO_PROPERTY(NApi::ETransactionCoordinatorPrepareMode, CoordinatorPrepareMode);
     DEFINE_BYVAL_RO_PROPERTY(NApi::ETransactionCoordinatorCommitMode, CoordinatorCommitMode);
-    DEFINE_BYREF_RO_PROPERTY(TStrongOrderingTagsMap, StrongOrderingTags);
+    DEFINE_BYREF_RO_PROPERTY(TCellIdToStrongOrderingTagList, StrongOrderingTags);
 
     DEFINE_BYVAL_RW_PROPERTY(TTimestamp, MaxAllowedCommitTimestamp);
     DEFINE_BYVAL_RW_PROPERTY(bool, Persistent);
@@ -83,6 +88,7 @@ public:
         NRpc::TMutationId mutationId,
         std::vector<TCellId> participantCellIds,
         TExpectedTransactionSignatureInfo expectedPrepareSignatures,
+        TTransactionCommitApprovalCounts targetCommitApprovalCounts,
         std::vector<TCellId> prepareOnlyParticipantCellIds,
         std::vector<TCellId> cellIdsToSyncWithBeforePrepare,
         bool distributed,
@@ -90,7 +96,7 @@ public:
         bool inheritCommitTimestamp,
         NApi::ETransactionCoordinatorPrepareMode coordinatorPrepareMode,
         NApi::ETransactionCoordinatorCommitMode coordinatorCommitMode,
-        TStrongOrderingTagsMap strongOrderingTags,
+        TCellIdToStrongOrderingTagList strongOrderingTags,
         TTimestamp maxAllowedCommitTimestamp,
         NRpc::TAuthenticationIdentity identity);
 
@@ -106,6 +112,10 @@ public:
 
     bool IsStronglyOrderedForCell(TCellId cellId) const;
     std::vector<std::string> GetStrongOrderingTagsForCell(TCellId cellId) const;
+
+    // Unfortunately, new tags can appear during the phase one of the commit, and they need
+    // to be saved.
+    void AddStrongOrderingTagsForCell(const THashSet<std::string>& tags, TCellId cellId);
 
 private:
     TPromise<TSharedRefArray> ResponseMessagePromise_ = NewPromise<TSharedRefArray>();

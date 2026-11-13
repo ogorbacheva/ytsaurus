@@ -77,14 +77,14 @@ public:
         const TTableWriterOptions& /*options*/))
 
     // Queues
-    UNIMPLEMENTED_METHOD(TFuture<NQueueClient::IQueueRowsetPtr>, PullQueue, (
+    UNIMPLEMENTED_METHOD(TFuture<TPullQueueResult>, PullQueue, (
         const NYPath::TRichYPath& /*queuePath*/,
         i64 /*offset*/,
         int /*partitionIndex*/,
         const NQueueClient::TQueueRowBatchReadOptions& /*rowBatchReadOptions*/,
         const TPullQueueOptions& /*options*/))
 
-    UNIMPLEMENTED_METHOD(TFuture<NQueueClient::IQueueRowsetPtr>, PullQueueConsumer, (
+    UNIMPLEMENTED_METHOD(TFuture<TPullQueueResult>, PullQueueConsumer, (
         const NYPath::TRichYPath& /*consumerPath*/,
         const NYPath::TRichYPath& /*queuePath*/,
         std::optional<i64> /*offset*/,
@@ -284,6 +284,10 @@ public:
     UNIMPLEMENTED_METHOD(TFuture<IPrerequisitePtr>, AttachChaosLease, (
         NChaosClient::TChaosLeaseId /*chaosLeaseId*/,
         const TChaosLeaseAttachOptions& /*options*/));
+
+    UNIMPLEMENTED_METHOD(TFuture<void>, PingChaosLease, (
+        NChaosClient::TChaosLeaseId /*chaosLeaseId*/,
+        const TChaosLeasePingOptions& /*options*/));
 
     UNIMPLEMENTED_METHOD(TFuture<void>, SetUserBanned, (
         const std::string& /*user*/,

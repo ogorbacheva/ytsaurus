@@ -9,8 +9,10 @@
 
 #include <yt/yt/client/ypath/rich.h>
 
+#include <array>
 #include <map>
 #include <set>
+#include <string_view>
 
 namespace NYT::NFlow::NDescribe {
 
@@ -87,6 +89,16 @@ void TMessage::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("level", &TThis::Level)
         .Default(ELogLevel::Info);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TCurrentResourceUsage::Register(TRegistrar registrar)
+{
+    registrar.Parameter("cpu_usage_cores", &TThis::CpuUsageCores)
+        .Default(0.0);
+    registrar.Parameter("memory_usage", &TThis::MemoryUsage)
+        .Default(0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -262,9 +274,13 @@ void AppendPartitionStats(TPartitionsStats& stats, const TPartitionIntermediateD
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void ValidateSpecs(TPipelineSpecPtr pipelineSpec, TDynamicPipelineSpecPtr dynamicPipelineSpec, std::vector<TMessage>& messages)
+void ValidateSpecs(
+    TPipelineSpecPtr pipelineSpec,
+    TDynamicPipelineSpecPtr dynamicPipelineSpec,
+    std::vector<TMessage>& messages,
+    TParsedPipelineParameters* parsedParameters)
 {
-    auto staticSpecErrors = TRegistry::Get()->ValidatePipelineSpecParseability(ConvertTo<IMapNodePtr>(pipelineSpec));
+    auto staticSpecErrors = TRegistry::Get()->ValidatePipelineSpecParseability(ConvertTo<IMapNodePtr>(pipelineSpec), parsedParameters);
     auto dynamicSpecErrors = TRegistry::Get()->ValidateDynamicPipelineSpecParseability(pipelineSpec, ConvertTo<IMapNodePtr>(dynamicPipelineSpec));
 
     for (auto& error : staticSpecErrors) {
@@ -391,8 +407,6 @@ void FillRetryableErrors(const THashMap<std::string, TError>& errors, std::vecto
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
 namespace {
 
 double GetMostStableCpuUsage(const TNodePerformanceMetricsPtr& metrics)
@@ -402,12 +416,7 @@ double GetMostStableCpuUsage(const TNodePerformanceMetricsPtr& metrics)
 
 i64 GetMostStableMemoryUsage(const TNodePerformanceMetricsPtr& metrics)
 {
-    for (i64 value : {metrics->MemoryUsage10m, metrics->MemoryUsage30s, metrics->MemoryUsageCurrent}) {
-        if (value) {
-            return value;
-        }
-    }
-    return 0;
+    return metrics->MemoryUsage10m.value_or(metrics->MemoryUsage30s.value_or(metrics->MemoryUsageCurrent.value_or(0)));
 }
 
 } // namespace
@@ -416,13 +425,16 @@ i64 GetMostStableMemoryUsage(const TNodePerformanceMetricsPtr& metrics)
 
 THashMap<TComputationId, TComputationDescription> MakeComputationDescriptions(
     const TFlowViewPtr& flowView,
-    const THashMap<TComputationId, std::vector<TPartitionIntermediateDescription>>& intermediateDescriptions)
+    const THashMap<TComputationId, std::vector<TPartitionIntermediateDescription>>& intermediateDescriptions,
+    const THashMap<std::string, TError>& controllerErrors,
+    TCurrentResourceUsage* currentResourceUsage)
 {
     THashMap<TComputationId, TComputationDescription> computationDescriptions;
 
     auto layout = flowView->State->ExecutionSpec->Layout;
     auto spec = flowView->State->ExecutionSpec->PipelineSpec->GetValue();
     auto dynamicSpec = flowView->State->ExecutionSpec->DynamicPipelineSpec->GetValue();
+    auto pipelineState = flowView->State->ExecutionSpec->PipelineState->GetValue();
 
     TDescribeTraitsContext describeTraitsContext{.PipelinePath = flowView->EphemeralState->PipelinePath};
 
@@ -443,6 +455,16 @@ THashMap<TComputationId, TComputationDescription> MakeComputationDescriptions(
         THashMap<std::string, TError> retryableErrors;
         THashMap<EJobFinishReason, TError> jobFailErrors;
         for (const auto& intermediatePartition : intermediatePartitions) {
+            if (currentResourceUsage &&
+                intermediatePartition.Job &&
+                intermediatePartition.PartitionJobStatus &&
+                intermediatePartition.PartitionJobStatus->CurrentJobStatus &&
+                !intermediatePartition.PartitionJobStatus->CurrentJobStatus->IsFinished)
+            {
+                const auto& performanceMetrics = intermediatePartition.PartitionJobStatus->CurrentJobStatus->PerformanceMetrics;
+                currentResourceUsage->CpuUsageCores += performanceMetrics->CpuUsageCurrent.value_or(0.0);
+                currentResourceUsage->MemoryUsage += performanceMetrics->MemoryUsageCurrent.value_or(0);
+            }
             if (intermediatePartition.PartitionJobStatus && intermediatePartition.PartitionJobStatus->CurrentJobStatus) {
                 const auto& currentJobStatus = intermediatePartition.PartitionJobStatus->CurrentJobStatus;
                 NodePerformanceMetricsAdd(computationDescription.Metrics, currentJobStatus->PerformanceMetrics);
@@ -469,11 +491,13 @@ THashMap<TComputationId, TComputationDescription> MakeComputationDescriptions(
         }
         FillJobFailErrors(jobFailErrors, computationDescription.Messages, &computationDescription.Status);
         FillRetryableErrors(retryableErrors, computationDescription.Messages, &computationDescription.Status);
-        FillPartitionsWithoutJob(
-            intermediatePartitions,
-            flowView->Feedback->UpdateTime,
-            computationDescription.Messages,
-            &computationDescription.Status);
+        if (pipelineState == EPipelineState::Working || pipelineState == EPipelineState::Draining) {
+            FillPartitionsWithoutJob(
+                intermediatePartitions,
+                flowView->Feedback->UpdateTime,
+                computationDescription.Messages,
+                &computationDescription.Status);
+        }
 
         // Specs and group by schema.
         {
@@ -497,6 +521,33 @@ THashMap<TComputationId, TComputationDescription> MakeComputationDescriptions(
                 computationDescription.GroupBySchemaStr += column.Name();
             }
         }
+    }
+
+    static const std::array<std::string_view, 2> ComputationComponentPrefixes = {
+        "/job_manager/computation_controllers/",
+        "/job_manager/partitioning/",
+    };
+    THashMap<TComputationId, THashMap<std::string, TError>> computationControllerErrors;
+    for (const auto& [component, error] : controllerErrors) {
+        auto prefixIt = std::find_if(ComputationComponentPrefixes.begin(), ComputationComponentPrefixes.end(), [&] (std::string_view prefix) {
+            return component.starts_with(prefix);
+        });
+        if (prefixIt == ComputationComponentPrefixes.end()) {
+            continue;
+        }
+
+        auto computationIdEnd = component.find('/', prefixIt->size());
+        auto computationId = TComputationId(component.substr(
+            prefixIt->size(),
+            computationIdEnd - prefixIt->size()));
+        if (computationId.Underlying().empty() || !computationDescriptions.contains(computationId)) {
+            continue;
+        }
+        computationControllerErrors[computationId].emplace(component, error);
+    }
+    for (const auto& [computationId, errors] : computationControllerErrors) {
+        auto& computationDescription = GetOrCrash(computationDescriptions, computationId);
+        FillRetryableErrors(errors, computationDescription.Messages, &computationDescription.Status);
     }
 
     // Cpu and memory usage.
@@ -555,7 +606,7 @@ void FillPartitionDescription(
 
         const auto& performanceMetrics = jobStatus->PerformanceMetrics;
         description.CpuUsage = GetMostStableCpuUsage(performanceMetrics);
-        description.MemoryUsage = performanceMetrics->MemoryUsage10m;
+        description.MemoryUsage = GetMostStableMemoryUsage(performanceMetrics);
 
         if (jobStatus->InputMetrics) {
             description.MessagesPerSecond += jobStatus->InputMetrics->Global.MessagesPerSecond;

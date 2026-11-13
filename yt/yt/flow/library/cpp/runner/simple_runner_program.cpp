@@ -6,13 +6,18 @@
 #include "root_clients_cache.h"
 
 #include <yt/yt/flow/library/cpp/common/internal_urls.h>
+#include <yt/yt/flow/library/cpp/common/process_function_graph.h>
 #include <yt/yt/flow/library/cpp/common/registry.h>
 #include <yt/yt/flow/library/cpp/common/spec.h>
 #include <yt/yt/flow/library/cpp/common/yson_message.h>
+#include <yt/yt/flow/library/cpp/pipeline_helpers/flow_execute/flow_execute.h>
 #include <yt/yt/flow/library/cpp/pipeline_helpers/pipeline.h>
 
+#include <yt/yt/client/api/client.h>
+#include <yt/yt/client/api/connection.h>
 #include <yt/yt/client/api/options.h>
 
+#include <yt/yt/core/concurrency/scheduler_api.h>
 #include <yt/yt/core/logging/log_manager.h>
 #include <yt/yt/core/net/address.h>
 
@@ -78,6 +83,8 @@ void TSimpleRunnerConfig::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("set_flow_core_target", &TThis::SetFlowCoreTarget)
         .Default(true);
+    registrar.Parameter("direct_controller_commands", &TThis::DirectControllerCommands)
+        .DefaultNew();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -125,6 +132,11 @@ void TSimpleRunnerProgram::DoRun()
         WarnForUnrecognizedOptions(Logger(), config);
     }
 
+    if (PrepareSpecCallback_) {
+        PrepareSpecCallback_(config->Spec, config->DynamicSpec);
+    }
+    ResolveProcessFunctionGraphs(config->Spec);
+
     {
         auto specErrors = TRegistry::Get()->ValidatePipelineSpecParseability(ConvertTo<IMapNodePtr>(config->Spec));
         auto dynamicSpecErrors = TRegistry::Get()->ValidateDynamicPipelineSpecParseability(config->Spec, ConvertTo<IMapNodePtr>(config->DynamicSpec));
@@ -135,20 +147,6 @@ void TSimpleRunnerProgram::DoRun()
         if (config->AbortOnSpecsParseabilityErrors && specErrors.size() + dynamicSpecErrors.size() > 0) {
             YT_ABORT(Format("Found specs parseability errors (ErrorCount: %v)", specErrors.size() + dynamicSpecErrors.size()));
         }
-    }
-
-    if (PrepareSpecCallback_) {
-        PrepareSpecCallback_(config->Spec, config->DynamicSpec);
-    }
-
-    // Validate the full spec before any side effects (vanilla operation submission, prior-op
-    // shutdown, pipeline spec update) so an invalid spec fails fast with nothing changed.
-    ValidatePipelineSpec(config->Spec);
-    ValidateDynamicPipelineSpec(config->DynamicSpec);
-
-    if (ValidateOnly_) {
-        YT_TLOG_INFO("Pipeline spec is valid; exiting without side effects because run with --validate-only");
-        return;
     }
 
     NYPath::TRichYPath pipelinePath(config->Path);
@@ -162,8 +160,37 @@ void TSimpleRunnerProgram::DoRun()
         .Parameters = config->ClientsCacheFactory,
     });
 
+    auto client = clientsCache->GetClient(config->ClusterUrl);
+    THROW_ERROR_EXCEPTION_UNLESS(client,
+        "Root clients cache returned no client for cluster %Qv",
+        config->ClusterUrl);
+
+    // Validate the full spec before any side effects (vanilla operation submission, prior-op
+    // shutdown, pipeline spec update) so an invalid spec fails fast with nothing changed.
+    // The pipeline cluster is the one #RunPipeline() validates with: the client's cluster name.
+    ValidatePipelineSpec(config->Spec, client->GetConnection()->GetClusterName());
+    ValidateDynamicPipelineSpec(config->DynamicSpec);
+    ValidateProcessFunctionGraphDynamicSpec(config->Spec, config->DynamicSpec);
+
+    if (ValidateOnly_) {
+        YT_TLOG_INFO("Pipeline spec is valid; exiting without side effects because run with --validate-only");
+        return;
+    }
+
+    TFlowExecuteTarget target(client, config->DirectControllerCommands);
+    if (target.IsDirect()) {
+        YT_TLOG_INFO("Pipeline commands go directly to the leader controller")
+            .With("Pipeline", pipelinePath);
+    }
+
+    std::optional<TVanillaOperationHandle> vanillaOperation;
     if (config->Vanilla && config->Vanilla->Enable) {
-        LaunchInVanillaJob(pipelinePath, config->ProxyRole, config->Vanilla, clientsCache);
+        vanillaOperation = LaunchInVanillaJob(
+            pipelinePath,
+            config->ProxyRole,
+            config->Vanilla,
+            clientsCache,
+            config->DirectControllerCommands);
     }
 
     bool setFlowCoreTarget = true;
@@ -179,22 +206,21 @@ void TSimpleRunnerProgram::DoRun()
         setFlowCoreTarget = false;
     }
 
-    auto client = clientsCache->GetClient(config->ClusterUrl);
-    THROW_ERROR_EXCEPTION_UNLESS(client,
-        "Root clients cache returned no client for cluster %Qv",
-        config->ClusterUrl);
-
     RunPipeline(
-        client,
+        target,
         config->Path,
         config->Spec,
         config->DynamicSpec,
-        setFlowCoreTarget);
+        setFlowCoreTarget,
+        /*graceful*/ {},
+        DefaultWaitPipelineTimeout,
+        /*enablePipelineStopOrPause*/ true,
+        vanillaOperation);
 
     PrintPipelineUiUrl(config->ClusterUrl, config->Path);
 
     if (FromString<bool>(GetEnv("YT_FLOW_WAIT", "1"))) {
-        WaitPipeline(client, pipelinePath);
+        WaitPipeline(target, pipelinePath, DefaultWaitPipelineTimeout, vanillaOperation);
     }
 }
 

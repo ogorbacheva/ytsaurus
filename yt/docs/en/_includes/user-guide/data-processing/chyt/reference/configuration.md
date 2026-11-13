@@ -37,7 +37,7 @@ The {{product-name}} part of the instance configuration resides in the `yt_confi
 - `settings`: CHYT‑specific default query [settings](../../../../../user-guide/data-processing/chyt/reference/settings.md). Changing the setting in this section changes the default value for this setting for all queries in the clique.
 - `table_writer`: [Table Writer configuration](../../../../../user-guide/storage/io-configuration.md#table_writer).
 - `table_attribute_cache`: Table attribute cache configuration. This cache significantly improves the responsiveness of CHYT, though at the moment it may lead to non‑consistent reads (when data has already appeared in the table, but CHYT does not see it yet). To disable this cache, use the following configuration:
-  ```
+  ```yson
   {read_from=follower;expire_after_successful_update_time=0;expire_after_failed_update_time=0;refresh_time=0;expire_after_access_time=0}
   ```
 - `create_table_default_attributes` [`{optimize_for = scan}`]: The default attributes with which tables will be created during `CREATE` queries in CHYT.
@@ -54,7 +54,7 @@ The {{product-name}} part of the instance configuration resides in the `yt_confi
   — `period` [60000]: The test triggering period in milliseconds.
   — `timeout` [`0.9 * period / len(queries)`]: The triggering timeout for each of the configured queries. If the query does not fit into the timeout, it is considered `failed`.
 
-- `subquery`: The configuration of the main system part which coordinates the execution of ClickHouse queries on top of {{product-name}} tables. Before configuring this part, read the article about [query execution within a clique](../../../../../user-guide/data-processing/chyt/queries/anatomy.md#query-execution).
+- `subquery`: The configuration of the main system part which coordinates the execution of ClickHouse queries on top of {{product-name}} tables. Before configuring this part, read the article about [query execution within a clique](../../../../../user-guide/data-processing/chyt/queries/anatomy.md#query_execution).
 
   — `min_data_weight_per_thread` [64 MiB]: (in bytes) When splitting the input into subqueries, the coordinator will try to give no less than the given amount to each core of each instance.
   — `max_data_weight_per_subquery` [50 GiB]: (in bytes) The maximum allowable amount of data to be processed on one core of one instance. This restriction is protective and protects clique users from accidentally running a huge query that processes petabytes. The constant of 50 GiB is selected, because such amount is processed on a single core in about dozens of minutes.
@@ -98,7 +98,7 @@ Below is an example of converting an artificial XML configuration into a YSON co
 <baz>hi!</baz>
 ```
 
-```json
+```yson
 {
     foo = 42;
     bar = "qwe";
@@ -149,7 +149,7 @@ select dictGet('OS', 'OS', toUInt64(38)) as os_name,
 
 Below is an example of a complete configuration that can be set by the `set-speclet` command.
 
-```json
+```yson
 {
     instance_count = 1;
     query_settings = {

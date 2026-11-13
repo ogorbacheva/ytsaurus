@@ -5,6 +5,7 @@ INCLUDE(${ARCADIA_ROOT}/yt/ya_cpp.make.inc)
 ALLOCATOR(TCMALLOC)
 
 SRCS(
+    causal_state_registry_ut.cpp
     checkpointable_stream_ut.cpp
     file_changelog_index_ut.cpp
     hydra_janitor_helpers_ut.cpp
@@ -12,12 +13,14 @@ SRCS(
     changelog_ut.cpp
     hostname_sanitization_ut.cpp
     unbuffered_file_changelog_ut.cpp
+    snapshot_load_ut.cpp
 )
 
 INCLUDE(${ARCADIA_ROOT}/yt/opensource.inc)
 
 PEERDIR(
     yt/yt/server/lib/hydra
+    yt/yt/server/lib/hydra/mock
 )
 
 SIZE(MEDIUM)

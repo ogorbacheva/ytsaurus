@@ -40,11 +40,14 @@ public:
     { }
 
     void handleRequest(
-        DB::HTTPServerRequest& /*request*/,
+        DB::HTTPServerRequest& request,
         DB::HTTPServerResponse& response,
         const ProfileEvents::Event& /*write_event*/) override
     {
         try {
+            // Closing with an unread body makes the peer see an RST instead of this response.
+            DB::drainRequestIfNeeded(request, response);
+
             response.set("X-ClickHouse-Server-Display-Name", Server_.config().getString("display_name", getFQDNOrHostName()));
             response.setStatusAndReason(DB::HTTPResponse::HTTP_MOVED_PERMANENTLY);
             (*response.send()) << "Instance moved or is moving from this address.\n";
@@ -157,11 +160,6 @@ public:
                     Host_->GetConfig()->QuerySampling->QuerySamplingRate));
             return;
         }
-
-        YT_TLOG_DEBUG("Preparing clickhouse user")
-            .With("UserName", userName);
-        Host_->PrepareClickHouseUser(userName);
-        YT_TLOG_DEBUG("User prepared");
 
         DB::HTTPHandler::handleRequest(request, response, writeEvent);
     }

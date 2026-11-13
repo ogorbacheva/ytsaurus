@@ -185,8 +185,6 @@ void TReplicationReaderConfig::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("partial_peer_probing_timeouts", &TThis::PartialPeerProbingTimeouts)
         .Default();
-    registrar.Parameter("io_consumed_report_window", &TThis::IoConsumedReportWindow)
-        .Default(TDuration::Minutes(5));
     registrar.Parameter("io_fair_share_weight", &TThis::IoFairShareWeight)
         .Default();
 
@@ -344,6 +342,8 @@ void TReplicationWriterConfig::Register(TRegistrar registrar)
         .Default(false);
     registrar.Parameter("sync_on_close", &TThis::SyncOnClose)
         .Default(true);
+    registrar.Parameter("use_direct_io", &TThis::UseDirectIO)
+        .Default(false);
     registrar.Parameter("enable_early_finish", &TThis::EnableEarlyFinish)
         .Default(false);
     registrar.Parameter("allocate_write_targets_backoff_time", &TThis::AllocateWriteTargetsBackoffTime)
@@ -361,12 +361,11 @@ void TReplicationWriterConfig::Register(TRegistrar registrar)
         .Default(false);
 
     registrar.Parameter("use_send_blocks", &TThis::UseSendBlocks)
-        .Default(true);
+        .Default(true)
+        .DontSerializeDefault();
 
     registrar.Parameter("preallocate_disk_space", &TThis::PreallocateDiskSpace)
         .Default(false);
-    registrar.Parameter("io_consumed_report_window", &TThis::IoConsumedReportWindow)
-        .Default(TDuration::Minutes(1));
     registrar.Parameter("io_fair_share_weight", &TThis::IoFairShareWeight)
         .Default();
 

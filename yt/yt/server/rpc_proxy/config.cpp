@@ -120,9 +120,6 @@ void TProxyBootstrapConfig::Register(TRegistrar registrar)
     registrar.Parameter("memory_limits", &TThis::MemoryLimits)
         .DefaultNew();
 
-    registrar.Parameter("enable_shuffle_service", &TThis::EnableShuffleService)
-        .Default(false);
-
     registrar.Parameter("heap_profiler", &TThis::HeapProfiler)
         .DefaultNew();
 
@@ -218,6 +215,11 @@ void TProxyDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("worker_thread_pool_size", &TThis::WorkerThreadPoolSize)
         .GreaterThan(0)
         .Optional();
+
+    registrar.Parameter("use_worker_pool_for_bus_xfer", &TThis::UseWorkerPoolForBusXfer)
+        .Default(false);
+    registrar.Parameter("use_worker_pool_for_rpc", &TThis::UseWorkerPoolForRpc)
+        .Default(false);
 
     registrar.Parameter("memory_tracker", &TThis::MemoryTracker)
         .DefaultNew();

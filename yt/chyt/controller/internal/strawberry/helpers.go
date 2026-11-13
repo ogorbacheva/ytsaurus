@@ -2,14 +2,14 @@ package strawberry
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"hash"
 	"reflect"
 	"regexp"
 	"text/template"
 
-	"golang.org/x/xerrors"
-
-	"go.ytsaurus.tech/yt/go/guid"
 	"go.ytsaurus.tech/yt/go/ypath"
 	"go.ytsaurus.tech/yt/go/yson"
 	"go.ytsaurus.tech/yt/go/yt"
@@ -17,10 +17,36 @@ import (
 )
 
 var (
+	unknownOperationAliasRE   = regexp.MustCompile("^Operation alias is unknown$")
 	noSuchOperationRE         = regexp.MustCompile("[Nn]o such operation")
 	aliasAlreadyUsedRE        = regexp.MustCompile("alias is already used by an operation")
 	prerequisiteCheckFailedRE = regexp.MustCompile("[Pp]rerequisite check failed")
 )
+
+type YsonHashEncoder struct {
+	*yson.Encoder
+	hasher hash.Hash
+}
+
+func (encoder *YsonHashEncoder) Sum() string {
+	return hex.EncodeToString(encoder.hasher.Sum(nil))
+}
+
+func NewYsonHashEncoder() YsonHashEncoder {
+	hasher := sha256.New()
+	return YsonHashEncoder{
+		Encoder: yson.NewEncoderWriter(
+			yson.NewWriterConfig(
+				hasher,
+				yson.WriterConfig{
+					Format: yson.FormatBinary,
+					Kind:   yson.StreamListFragment,
+				},
+			),
+		),
+		hasher: hasher,
+	}
+}
 
 func containsAnyErrorCode(err error, brokenStateSignalErrorCodes []yterrors.ErrorCode) bool {
 	for _, code := range brokenStateSignalErrorCodes {
@@ -62,20 +88,6 @@ func toOperationACL(acl []yt.ACE) []yt.ACE {
 	return result
 }
 
-func extractOpID(err error) yt.OperationID {
-	var ytErr *yterrors.Error
-	if ok := xerrors.As(err, &ytErr); !ok {
-		panic(fmt.Errorf("cannot convert error to YT error: %v", err))
-	}
-	// TODO(max42): there must be a way better to do this...
-	ytErr = ytErr.InnerErrors[0].InnerErrors[0]
-	opID, parseErr := guid.ParseString(ytErr.Attributes["operation_id"].(string))
-	if parseErr != nil {
-		panic(fmt.Errorf("malformed YT operation ID in error attributes: %v", parseErr))
-	}
-	return yt.OperationID(opID)
-}
-
 type FieldDiff struct {
 	OldValue any `yson:"old_value" json:"old_value"`
 	NewValue any `yson:"new_value" json:"new_value"`
@@ -87,7 +99,7 @@ func specletDiff(oldSpeclet, newSpeclet any) map[string]FieldDiff {
 	}
 	diff := make(map[string]FieldDiff)
 	for _, field := range reflect.VisibleFields(reflect.TypeOf(oldSpeclet)) {
-		if field.Anonymous {
+		if field.Anonymous || !field.IsExported() {
 			continue
 		}
 		if field.Tag.Get("requires_restart") == "false" {
@@ -128,6 +140,41 @@ func getYSONTimePointerOrNil(t yson.Time) *yson.Time {
 		return nil
 	} else {
 		return &t
+	}
+}
+
+func ApplyControllerConfigOverrides(ctlCfgYson, overridesYson yson.RawValue) (yson.RawValue, error) {
+	if len(overridesYson) == 0 {
+		return ctlCfgYson, nil
+	}
+
+	var ctlCfg map[string]any
+	if len(ctlCfgYson) > 0 {
+		if err := yson.Unmarshal(ctlCfgYson, &ctlCfg); err != nil {
+			return nil, fmt.Errorf("failed to parse controller config: %w", err)
+		}
+	}
+	if ctlCfg == nil {
+		ctlCfg = make(map[string]any)
+	}
+
+	var overrides map[string]any
+	if err := yson.Unmarshal(overridesYson, &overrides); err != nil {
+		return nil, fmt.Errorf("failed to parse controller overrides: %w", err)
+	}
+	mergeConfigMaps(ctlCfg, overrides)
+	return yson.Marshal(ctlCfg)
+}
+
+func mergeConfigMaps(config, overrides map[string]any) {
+	for key, value := range overrides {
+		configMap, configIsMap := config[key].(map[string]any)
+		overridesMap, overridesIsMap := value.(map[string]any)
+		if configIsMap && overridesIsMap {
+			mergeConfigMaps(configMap, overridesMap)
+		} else {
+			config[key] = value
+		}
 	}
 }
 

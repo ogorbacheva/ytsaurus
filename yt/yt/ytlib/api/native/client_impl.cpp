@@ -224,6 +224,11 @@ const TClientCounters& TClient::GetCounters() const
     return Counters_;
 }
 
+const IMemoryUsageTrackerPtr& TClient::GetHeavyRequestMemoryUsageTracker() const
+{
+    return HeavyRequestMemoryUsageTracker_;
+}
+
 IFunctionRegistryPtr TClient::GetFunctionRegistry()
 {
     return FunctionRegistry_.Get();
@@ -355,7 +360,10 @@ void TClient::InitChannelsOrThrow(EMasterChannelKind kind, TCellTag cellTag)
     }
 
     {
-        auto wrappedCypressChannel = WrapChannel(Connection_->GetCypressChannelOrThrow(kind, cellTag));
+        auto cypressChannel = Options_.CypressProxyChannelOverride
+            ? Connection_->WrapAsCypressChannelOrThrow(Options_.CypressProxyChannelOverride, kind, cellTag)
+            : Connection_->GetCypressChannelOrThrow(kind, cellTag);
+        auto wrappedCypressChannel = WrapChannel(std::move(cypressChannel));
         auto guard = WriterGuard(CypressChannelsLock_);
         CypressChannels_[kind][cellTag] = std::move(wrappedCypressChannel);
     }

@@ -43,6 +43,8 @@ struct TVanillaTaskSpec
     //! Extra environment variables for the job, in addition to YT_FLOW_MODE (e.g.
     //! YT_PROXY_URL_ALIASING_CONFIG, or a YT_FLOW_CONFIG override for external launchers).
     THashMap<std::string, std::string> Environment;
+    bool SetContainerCpuLimit = false;
+    bool EnableRpcProxyInJobProxy = false;
 };
 
 //! Operation-level description of a flow vanilla operation.

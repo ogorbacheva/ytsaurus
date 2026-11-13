@@ -1,6 +1,7 @@
 package sleep
 
 import (
+	"bytes"
 	"context"
 
 	"go.ytsaurus.tech/library/go/core/log"
@@ -25,25 +26,24 @@ type controllerSnapshot struct {
 	ControllerParameter string `yson:"controller_parameter,omitempty"`
 }
 
-func (c Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
-	spec map[string]any, description map[string]any, annotations map[string]any, runAsUser bool, err error) {
-	err = nil
-	spec = map[string]any{
+func (c Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (*strawberry.PrepareResult, error) {
+	result := &strawberry.PrepareResult{}
+	result.Spec = map[string]any{
 		"tasks": map[string]any{
 			"main": map[string]any{
 				"command":   "sleep 10000",
 				"job_count": 1,
 			},
 		}}
-	description = map[string]any{
+	result.Description = map[string]any{
 		"sleeper_foo": "I am sleeper, look at me!",
 	}
-	annotations = map[string]any{
+	result.Annotations = map[string]any{
 		"sleeper_bar":          "Actually I'd like to wake up :)",
 		"controller_parameter": c.controllerParameter,
 	}
-	runAsUser = false
-	return
+	result.RunAsUser = false
+	return result, nil
 }
 
 func (c Controller) Family() string {
@@ -92,6 +92,14 @@ func (c *Controller) GetControllerSnapshot() (yson.RawValue, error) {
 	return yson.MarshalFormat(snapshot, yson.FormatBinary)
 }
 
+func (c *Controller) IsControllerSnapshotOutdated(snapshot yson.RawValue, _ *strawberry.Oplet) (bool, error) {
+	current, err := c.GetControllerSnapshot()
+	if err != nil {
+		return false, err
+	}
+	return !bytes.Equal(snapshot, current), nil
+}
+
 func (c *Controller) DescribeOptions(parsedSpeclet any) []strawberry.OptionGroupDescriptor {
 	speclet := parsedSpeclet.(Speclet)
 
@@ -118,12 +126,6 @@ func (c *Controller) GetOpBriefAttributes(parsedSpeclet any, opletInfo yson.RawV
 
 func (c *Controller) GetScalerTarget(ctx context.Context, opletInfo strawberry.OpletInfoForScaler) (*strawberry.ScalerTarget, error) {
 	return nil, nil
-}
-
-type sleepOpletInfo struct{}
-
-func (c *Controller) GetOpletInfo(ctx context.Context, oplet *strawberry.Oplet) (any, error) {
-	return sleepOpletInfo{}, nil
 }
 
 func NewController(l log.Logger, ytc yt.Client, root ypath.Path, cluster string, config yson.RawValue) strawberry.Controller {

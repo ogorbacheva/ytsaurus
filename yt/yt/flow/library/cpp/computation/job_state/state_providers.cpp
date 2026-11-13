@@ -9,9 +9,12 @@
 #include <yt/yt/flow/library/cpp/tables/partition_states.h>
 #include <yt/yt/flow/library/cpp/tables/state.h>
 
+#include <yt/yt/flow/library/cpp/misc/destruction_context.h>
 #include <yt/yt/flow/library/cpp/misc/retryable_transaction.h>
 
 #include <yt/yt/flow/library/cpp/serializer/state.h>
+
+#include <utility>
 
 namespace NYT::NFlow {
 
@@ -107,6 +110,13 @@ NYsonSerializer::TStateMutation TRemoteState::FlushMutation()
 i64 TRemoteState::GetWeight() const
 {
     return TableState_->GetSize();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TJobStateCacheValue::Compress()
+{
+    TDestructionContextGuard::Add(std::exchange(State, {}));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -286,9 +296,21 @@ IStateHolderPtr TJobMutableStateKeyProvider::GetState(const TKey& key)
         States_[key] = state;
         return state;
     }
+    THROW_ERROR_EXCEPTION_IF(Erased_.contains(key),
+        "State %Qv for key %v was erased in this epoch",
+        Name_,
+        key);
     THROW_ERROR_EXCEPTION("State is not loaded")
         .With("name", Name_)
         .With("key", key);
+}
+
+void TJobMutableStateKeyProvider::EraseKeyState(const TKey& key)
+{
+    // Dropped, not cleared, so a later GetState cannot turn the deletion back into a write.
+    States_.erase(key);
+    RemoteStates_.erase(key);
+    Erased_.insert(key);
 }
 
 TFuture<void> TJobMutableStateKeyProvider::PreloadKeyStates(const THashSet<TKey>& keys)
@@ -297,7 +319,7 @@ TFuture<void> TJobMutableStateKeyProvider::PreloadKeyStates(const THashSet<TKey>
         THashSet<NTables::IKeyStates::TTableKey> toLoad;
         {
             for (const auto& key : keys) {
-                if (RemoteStates_.contains(key)) {
+                if (RemoteStates_.contains(key) || Erased_.contains(key)) {
                     continue;
                 }
                 if (Context_->StateCache) {
@@ -354,8 +376,16 @@ void TJobMutableStateKeyProvider::Sync(IRetryableTransactionPtr transaction)
             Context_->StateCache->Insert(key, New<TJobStateCacheValue>(remoteState, state));
         }
     }
+    for (const auto& key : Erased_) {
+        mutations[NTables::IKeyStates::TTableKey{Context_->ComputationId, key, Name_}] = NYsonSerializer::TEraseMutation{};
+        if (Context_->StateCache) {
+            // Evict the cached row: it would outlive the deletion.
+            Context_->StateCache->Extract(key);
+        }
+    }
     RemoteStates_.clear();
     States_.clear();
+    Erased_.clear();
     Table_->Write(transaction, mutations);
 }
 

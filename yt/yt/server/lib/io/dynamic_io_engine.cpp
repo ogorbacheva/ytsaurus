@@ -32,7 +32,7 @@ public:
         YT_TLOG_INFO("Dynamic IO engine initialized")
             .With("Type", defaultEngineType);
 
-        for (auto engineType : GetSupportedIOEngineTypes()) {
+        for (auto engineType : TEnumTraits<EIOEngineType>::GetDomainValues()) {
             Profiler_
                 .WithRequiredTag("engine_type", FormatEnum(engineType))
                 .AddFuncGauge("/engine_enabled", MakeStrong(this), [this, engineType] {
@@ -255,7 +255,7 @@ private:
     const NProfiling::TProfiler Profiler_;
     const NLogging::TLogger Logger;
 
-    YT_DECLARE_SPIN_LOCK(mutable NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(mutable TSpinLock, Lock_);
 
     struct TEngineEntry
     {

@@ -42,7 +42,7 @@ Parameters:
 
 | Method | Description |
 | --- | --- |
-| `get()` | Get the current state value (`Optional<T>`) |
+| `get()` | Get the current state value (`T`, `null` when there is no value) |
 | `set(T value)` | Set a new state value |
 | `getOrDefault(T defaultValue)` | Get the value or return the default value |
 | `clear()` | Delete the state for the current key |
@@ -165,7 +165,7 @@ Annotate the state class with `@YTreeObject` to serialize it to YSON:
 
 | Method | Description |
 | --- | --- |
-| `get()` | Get the current state value (`Optional<Payload>`) |
+| `get()` | Get the current state value (`Payload`, `null` when there is no value) |
 | `getOrDefault()` | Get the value or an empty `Payload` |
 | `set(Payload value)` | Set a new state value |
 | `clear()` | Delete the state for the current key |
@@ -245,7 +245,7 @@ When you process timers, the state is available via the `timer` object, which co
       ExternalStateAccessor stateAccessor =
               ctx.getExternalStateAccessor("join-state", timer);
 
-      Payload joinState = stateAccessor.get().orElseThrow();
+      Payload joinState = Objects.requireNonNull(stateAccessor.get());
 
       // process the state and generate output messages
       var messageBuilder = ctx.createMessageBuilder("output_stream");
@@ -264,7 +264,7 @@ When you process timers, the state is available via the `timer` object, which co
   override fun onTimer(timer: Timer, output: OutputCollector, ctx: RuntimeContext) {
       val stateAccessor = ctx.getExternalStateAccessor("join-state", timer)
 
-      val joinState = stateAccessor.get().orElseThrow()
+      val joinState = stateAccessor.get()!!
 
       // process the state and generate output messages
       val messageBuilder = ctx.createMessageBuilder("output_stream")
@@ -283,7 +283,9 @@ The `clear()` method removes the state for the given key. Make sure to call it a
 
 ## Binding to group_by_schema {#group-by}
 
-The key that you use to access the state is defined by the `group_by_schema` field in the computation spec. The state accessor automatically extracts the key from the provided message or timer.
+In `TTransformCompanionComputation`, the key used to access state is defined by `group_by_schema` in the computation spec. The state accessor extracts it from the message or timer.
+
+`TTransformOrderedSourceCompanionComputation` does not support `group_by_schema`. Its internal state uses the source partition key, so messages from one partition share that state. See [Computation (Java)](../../../flow/java/computation.md#sourcecomputation) for choosing a SourceComputation class.
 
 For more details on `group_by_schema` and its impact on state handling, see the [Stateful computations](../../../flow/concepts/stateful.md) section.
 

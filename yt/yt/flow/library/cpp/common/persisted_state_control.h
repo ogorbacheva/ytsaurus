@@ -212,7 +212,7 @@ private:
     //! Pointer holder of transactional states.
     std::deque<TPersistedStateCheckpointPtr> CheckpointDeque_;
     //! The mutex that is locked in CommitTransaction.
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, TransactionalLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, TransactionalLock_);
     bool PersistInProgress_ = false;
     std::vector<TPersistedStateTransactionPtr> PersistPendingTransactions_;
     ssize_t PersistFailureEpoch_ = 0;
@@ -240,7 +240,10 @@ public:
     //! Get the greatest known sequence ID.
     TSequenceId GetSequenceId() const;
     //! Get a portion of rows for a replica to apply with.
-    std::vector<TStorageRow> Follow(TSequenceId sequenceIdFrom, ssize_t limit = std::numeric_limits<ssize_t>::max());
+    std::vector<TStorageRow> Follow(
+        TSequenceId sequenceIdFrom,
+        ssize_t limit = std::numeric_limits<ssize_t>::max(),
+        std::optional<TSequenceId> expectedSequenceId = std::nullopt);
 
     //! Create snapshot of all states and start a new consistent transaction.
     //! If `copyWritesFrom` is set (must be a transaction of this control), the new transaction is seeded with a
@@ -264,7 +267,7 @@ private:
     void AbortTransaction(TTransaction& transaction);
 
     //! Call ValidateTransaction for all states.
-    void ValidateTransaction(TTransaction& transaction, TGuard<NThreading::TSpinLock>& guard);
+    void ValidateTransaction(TTransaction& transaction, TGuard<TSpinLock>& guard);
 
     //! Call PrepareTransaction for all states.
     void PrepareTransaction(TTransaction& transaction, TPersistedStateCommitContext* commitContext);
@@ -287,10 +290,10 @@ private:
     void Apply(const TStorageRow& row, std::deque<TSequenceId>* droppedIds);
 
     //! Helpers for managing checkpoints.
-    void RegisterAsReader(TTransaction& transaction, TGuard<NThreading::TSpinLock>& guard);
-    void UnregisterAsReader(TTransaction& transaction, TGuard<NThreading::TSpinLock>& guard);
-    void RegisterAsWriter(TTransaction& transaction, TGuard<NThreading::TSpinLock>& guard);
-    void CleanupCheckpoints(TGuard<NThreading::TSpinLock>& guard);
+    void RegisterAsReader(TTransaction& transaction, TGuard<TSpinLock>& guard);
+    void UnregisterAsReader(TTransaction& transaction, TGuard<TSpinLock>& guard);
+    void RegisterAsWriter(TTransaction& transaction, TGuard<TSpinLock>& guard);
+    void CleanupCheckpoints(TGuard<TSpinLock>& guard);
 };
 
 template <class TDBKey, class TDBValue = TDBKey, class TDefaultSerializer = TSpecifySerializerInCreateState>

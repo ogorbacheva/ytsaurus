@@ -49,21 +49,8 @@ DEFINE_REFCOUNTED_TYPE(TFileChangelogConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TFileChangelogDispatcherConfig
-    : public virtual NYTree::TYsonStruct
-{
-    TDuration FlushQuantum;
-
-    REGISTER_YSON_STRUCT(TFileChangelogDispatcherConfig);
-
-    static void Register(TRegistrar registrar);
-};
-
-DEFINE_REFCOUNTED_TYPE(TFileChangelogDispatcherConfig)
-
 struct TFileChangelogStoreConfig
     : public TFileChangelogConfig
-    , public TFileChangelogDispatcherConfig
 {
     //! A path where changelogs are stored.
     std::string Path;
@@ -297,9 +284,26 @@ DEFINE_REFCOUNTED_TYPE(TDynamicDistributedHydraManagerConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TCausalStateRegistryConfig
+    : public NYTree::TYsonStruct
+{
+    TDuration EvictionPeriod;
+    TDuration ExpirationTimeout;
+
+    REGISTER_YSON_STRUCT(TCausalStateRegistryConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TCausalStateRegistryConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TDistributedHydraManagerConfig
     : public virtual NYTree::TYsonStruct
 {
+    TCausalStateRegistryConfigPtr CausalStateRegistry;
+
     //! Timeout for various control RPC requests.
     TDuration ControlRpcTimeout;
 
@@ -440,7 +444,7 @@ struct TDistributedHydraManagerConfig
     bool EnableStateHashChecker;
 
     //! If set, stores all (sequenceNumber, stateHash) pairs in state hash checker
-    // and enables state hash reporting during recovery.
+    //! and enables state hash reporting during recovery.
     bool EnableStateHashCheckerDuringRecovery;
 
     //! Maximum number of entries stored in state hash checker.
@@ -515,12 +519,15 @@ struct TDistributedHydraManagerConfig
     //! The default value of this flag is passed through TDistributedHydraManagerOptions.
     std::optional<bool> ReportReignChange;
 
-    //! Sets log level at which the exceptions which are not marked as acceptible
+    //! Sets log level at which the exceptions which are not marked as acceptable
     //! and thrown from mutation handlers are logged.
     NLogging::ELogLevel MutationHandlerFailureLogLevel;
 
     //! Sets per-mutation overrides for the log level above.
     THashMap<std::string, NLogging::ELogLevel> MutationHandlerFailureLogLevelOverrides;
+
+    //! Sets log level at which unknown automaton parts on snapshot load are reported.
+    NLogging::ELogLevel UnknownAutomatonPartsLogLevel;
 
     TDistributedHydraManagerConfigPtr ApplyDynamic(const TDynamicDistributedHydraManagerConfigPtr& dynamicConfig) const;
     void ApplyDynamicInplace(const TDynamicDistributedHydraManagerConfig& dynamicConfig);

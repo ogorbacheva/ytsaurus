@@ -69,6 +69,9 @@ struct TCypressSynchronizerDynamicConfig
     //! stage for crt-objects in the dynamic config.
     std::string ChaosReplicatedTableQueueAgentStage;
 
+    //! List of objects to ignore in the cypress synchronizer.
+    std::vector<NYPath::TRichYPath> IgnoredObjectList;
+
     REGISTER_YSON_STRUCT(TCypressSynchronizerDynamicConfig);
 
     static void Register(TRegistrar registrar);
@@ -165,6 +168,9 @@ struct TQueueExporterDynamicConfig
 
     //! If true, the queue exporter will check that #LastChunk and #RowCount in tablet progress refer to the same chunk.
     bool EnableRowCountCheck;
+
+    //! Maximum number of hunk chunks in a batch to fetch their attributes from master.
+    int MaxHunkChunkCountPerFetch;
 
     NConcurrency::TPeriodicExecutorOptions GetPeriodicExecutorOptions() const;
 
@@ -305,6 +311,9 @@ struct TQueueAgentBootstrapConfig
     NQueueClient::TQueueAgentDynamicStateConfigPtr DynamicState;
 
     NYTree::IMapNodePtr CypressAnnotations;
+
+    //! Discovery group id used by queue agents to register and discover each other.
+    std::string GroupId;
 
     NCypressElection::TCypressElectionManagerConfigPtr CypressSynchronizerElectionManager;
 

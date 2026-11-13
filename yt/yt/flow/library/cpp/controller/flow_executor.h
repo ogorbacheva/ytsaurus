@@ -18,6 +18,9 @@ struct IFlowExecutor
 {
     virtual NYson::TYsonString Execute(const std::string& command, const NYson::TYsonString& argument, const std::string& user) = 0;
 
+    //! Throws unless |user| holds the pipeline permission |command| requires.
+    virtual void AuthorizeCommand(const std::string& command, const std::string& user) = 0;
+
     virtual TGetFlowViewResult GetFlowView(const TGetFlowViewArg& argument) = 0;
 
     virtual TGetPipelineDynamicSpecResult GetPipelineDynamicSpec(const TGetPipelineDynamicSpecArg& argument) = 0;
@@ -34,6 +37,8 @@ struct IFlowExecutor
     virtual TGetFlowCoreTargetResult GetFlowCoreTarget(const TGetFlowCoreTargetArg& argument) = 0;
     virtual TSetFlowCoreTargetResult SetFlowCoreTarget(const TSetFlowCoreTargetArg& argument) = 0;
 };
+
+IFlowExecutorPtr CreateFlowExecutor(IFlowExecutorRuntimePtr runtime);
 
 IFlowExecutorPtr CreateFlowExecutor(
     IControllerPtr controller,

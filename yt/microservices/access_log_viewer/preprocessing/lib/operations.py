@@ -214,9 +214,9 @@ class AccessLogDeduplicator(yt.TypedJob):
 
 @yt.reduce_aggregator
 class AccessLogReducer(yt.TypedJob):
-    def __init__(self, cluster, id_path_resolve_table, cluster_to_idx, logger=logger.getChild("reducer")):
+    def __init__(self, node_id_dict_cluster, id_path_resolve_table, cluster_to_idx, logger=logger.getChild("reducer")):
         self._logger = logger
-        self.cluster = cluster
+        self.node_id_dict_cluster = node_id_dict_cluster
         self.id_path_resolve_table = id_path_resolve_table
         self.cluster_to_idx = cluster_to_idx
         self.fields = {field.name for field in dataclasses.fields(OutputRecord)}
@@ -230,7 +230,7 @@ class AccessLogReducer(yt.TypedJob):
         config["backend"] = "rpc"
         config["dynamic_table_retries"] = {"count": 3}
 
-        self.client = yt.YtClient(proxy=self.cluster,
+        self.client = yt.YtClient(proxy=self.node_id_dict_cluster,
                                   token=os.environ.get("YT_SECURE_VAULT_yt_token"),
                                   config=config)
         self.resolver = NodeIdResolver(self.client, self.id_path_resolve_table, logger=self._logger)
@@ -280,9 +280,11 @@ def remove_tables(cluster, token, result_root, excess):
     batch_client.commit_batch()
 
 
-def import_table(cluster, network_project, pool, token, log_root, tmp_root, out_root, log_duration, log_name, node_id_dict_path, users_to_ignore, recompute_stale):
+def import_table(cluster, network_project, pool, token, log_root, tmp_root, out_root, log_duration, log_name, node_id_dict_cluster, node_id_dict_path, users_to_ignore, recompute_stale):
     if token is None:
         raise Exception("YT_TOKEN is empty")
+    if node_id_dict_cluster is None:
+        node_id_dict_cluster = cluster
     client = yt.YtClient(cluster, token=token, config=yt.default_config.get_config_from_env())
     log_dir = log_root
     tmp_dir = tmp_root
@@ -410,7 +412,7 @@ def import_table(cluster, network_project, pool, token, log_root, tmp_root, out_
                 .spec(op_spec)  # noqa: E131
                 .command(
                     AccessLogReducer(
-                        cluster,
+                        node_id_dict_cluster,
                         node_id_dict_path,
                         {out_cluster: idx for idx, out_cluster in enumerate(all_clusters)}
                     )
@@ -441,7 +443,7 @@ def import_table(cluster, network_project, pool, token, log_root, tmp_root, out_
                 .spec(op_spec)  # noqa: E131
                 .command(
                     AccessLogReducer(
-                        cluster,
+                        node_id_dict_cluster,
                         node_id_dict_path,
                         {out_cluster: idx for idx, out_cluster in enumerate(all_clusters)}
                     )
@@ -483,7 +485,7 @@ def import_table(cluster, network_project, pool, token, log_root, tmp_root, out_
                 .spec(op_spec)
                 .command(
                     AccessLogReducer(
-                        cluster,
+                        node_id_dict_cluster,
                         node_id_dict_path,
                         {out_cluster: idx for idx, out_cluster in enumerate(all_clusters)}
                     )
@@ -567,6 +569,18 @@ def import_table(cluster, network_project, pool, token, log_root, tmp_root, out_
     )
 
 
+def get_store_from(store_for):
+    """
+    :param store_for: None, or retention period of 1d tables in months
+    :return: None, or the name of the oldest 1d table within the retention period
+    """
+    if store_for is None:
+        return None
+    return (
+        datetime.datetime.now() - dateutil.relativedelta.relativedelta(months=store_for)
+    ).strftime("%Y-%m-%d")
+
+
 def find_diff(cluster, token, log_root, res_root, period, store_from, check_stale):
     """
     :param cluster: YT cluster
@@ -581,13 +595,13 @@ def find_diff(cluster, token, log_root, res_root, period, store_from, check_stal
     """
 
     def path_filter(path, period, store_from=None):
-        if period is None:
-            return True
         if store_from is not None:
             table_date = path.rsplit("/", 1)[-1]
             if "T" not in table_date:
                 if table_date < store_from:
                     return False
+        if period is None:
+            return True
         return path.rsplit("/", 2)[-2] == period
 
     def list_log_tables(root):
@@ -667,10 +681,12 @@ def find_diff(cluster, token, log_root, res_root, period, store_from, check_stal
     return sorted(missing), sorted(excess), sorted(stale)
 
 
-def bulk(cluster, log_root, tmp_root, result_root, n_threads, period, pool, max_tables, store_for, network_project, node_id_dict_path, users_to_ignore, token_env_variable, recompute_stale):
-    store_from = None
-    if store_for is not None:
-        store_from = (datetime.datetime.now() + dateutil.relativedelta(months=-6)).strftime("%Y-%m-%d")
+def bulk(
+    cluster, log_root, tmp_root, result_root, n_threads, period, pool, max_tables, store_for,
+    network_project, node_id_dict_cluster, node_id_dict_path, users_to_ignore, token_env_variable,
+    recompute_stale, keep_1d,
+):
+    store_from = get_store_from(store_for)
     logger.addHandler(logging.StreamHandler())
     logger.level = logging.DEBUG
     token = os.environ.get(token_env_variable)
@@ -684,11 +700,16 @@ def bulk(cluster, log_root, tmp_root, result_root, n_threads, period, pool, max_
         logger.info("Stale in dst:\n%s", "\n".join(f"    {str(item)}" for item in stale))
     to_process = (new + stale)[:max_tables]
     logger.info("Process:\n%s", "\n".join(f"    {str(item)}" for item in to_process))
+    if keep_1d:
+        excess = [
+            table for table in excess
+            if table[1] != "1d" or (store_from is not None and table[2] < store_from)
+        ]
     remove_tables(cluster, token, result_root, excess)
     aops.PipelineWatcher(
         aops.Parallel(
             *(
-                import_table(cluster, network_project, pool, token, log_root, tmp_root, result_root, *path, node_id_dict_path, users_to_ignore, recompute_stale)
+                import_table(cluster, network_project, pool, token, log_root, tmp_root, result_root, *path, node_id_dict_cluster, node_id_dict_path, users_to_ignore, recompute_stale)
                 for path in to_process
             ),
             title="Import new access-logs.",
@@ -698,20 +719,20 @@ def bulk(cluster, log_root, tmp_root, result_root, n_threads, period, pool, max_
     ).wait(abort_concurrent_on_fail=False)
 
 
-def import_single(cluster, pool, log_root, tmp_root, result_root, n_threads, path, network_project, node_id_dict_path, users_to_ignore, token_env_variable, recompute_stale):
+def import_single(cluster, pool, log_root, tmp_root, result_root, n_threads, path, network_project, node_id_dict_cluster, node_id_dict_path, users_to_ignore, token_env_variable, recompute_stale):
     logger.addHandler(logging.StreamHandler())
     logger.level = logging.DEBUG
     token = os.environ.get(token_env_variable)
     aops.PipelineWatcher(
         import_table(
-            cluster, network_project, pool, token, log_root, tmp_root, result_root, *(path.rsplit("/", 2)[-2:]), node_id_dict_path, users_to_ignore, recompute_stale
+            cluster, network_project, pool, token, log_root, tmp_root, result_root, *(path.rsplit("/", 2)[-2:]), node_id_dict_cluster, node_id_dict_path, users_to_ignore, recompute_stale
         ),
         logger,
         max_concurrent_operations=n_threads,
     ).wait(abort_concurrent_on_fail=False)
 
 
-def clear(cluster, log_root, result_root, store_from, token_env_variable):
+def clear(cluster, log_root, result_root, store_for, token_env_variable):
     token = os.environ.get(token_env_variable)
-    _, excess, _ = find_diff(cluster, token, log_root, result_root, None, store_from, False)
+    _, excess, _ = find_diff(cluster, token, log_root, result_root, None, get_store_from(store_for), False)
     remove_tables(cluster, token, result_root, excess)

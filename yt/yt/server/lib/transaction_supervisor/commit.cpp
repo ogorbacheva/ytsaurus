@@ -6,6 +6,8 @@
 
 #include <yt/yt/core/misc/serialize.h>
 
+#include <yt/yt/core/rpc/dispatcher.h>
+
 #include <yt/yt/core/ytree/fluent.h>
 
 namespace NYT::NTransactionSupervisor {
@@ -47,6 +49,7 @@ TCommit::TCommit(
     TMutationId mutationId,
     std::vector<TCellId> participantCellIds,
     TExpectedTransactionSignatureInfo expectedPrepareSignatures,
+    TTransactionCommitApprovalCounts targetCommitApprovalCounts,
     std::vector<TCellId> prepareOnlyParticipantCellIds,
     std::vector<TCellId> cellIdsToSyncWithBeforePrepare,
     bool distributed,
@@ -54,13 +57,14 @@ TCommit::TCommit(
     bool inheritCommitTimestamp,
     NApi::ETransactionCoordinatorPrepareMode coordinatorPrepareMode,
     NApi::ETransactionCoordinatorCommitMode coordinatorCommitMode,
-    TStrongOrderingTagsMap strongOrderingTags,
+    TCellIdToStrongOrderingTagList strongOrderingTags,
     TTimestamp maxAllowedCommitTimestamp,
     NRpc::TAuthenticationIdentity identity)
     : TransactionId_(transactionId)
     , MutationId_(mutationId)
     , ParticipantCellIds_(std::move(participantCellIds))
     , ExpectedPrepareSignatures_(std::move(expectedPrepareSignatures))
+    , TargetCommitApprovalCounts_(std::move(targetCommitApprovalCounts))
     , PrepareOnlyParticipantCellIds_(std::move(prepareOnlyParticipantCellIds))
     , CellIdsToSyncWithBeforePrepare_(std::move(cellIdsToSyncWithBeforePrepare))
     , Distributed_(distributed)
@@ -80,7 +84,11 @@ TFuture<TSharedRefArray> TCommit::GetAsyncResponseMessage()
 
 void TCommit::SetResponseMessage(TSharedRefArray message)
 {
-    ResponseMessagePromise_.TrySet(std::move(message));
+    BIND([promise = ResponseMessagePromise_, message = std::move(message)] () mutable {
+        promise.TrySet(std::move(message));
+    })
+        .Via(NRpc::TDispatcher::Get()->GetHeavyInvoker())
+        .Run();
 }
 
 bool TCommit::IsPrepareOnlyParticipant(TCellId cellId) const
@@ -99,6 +107,7 @@ void TCommit::Save(TSaveContext& context) const
     Save(context, MutationId_);
     Save(context, ParticipantCellIds_);
     Save(context, ExpectedPrepareSignatures_);
+    Save(context, TargetCommitApprovalCounts_);
     Save(context, PrepareOnlyParticipantCellIds_);
     Save(context, CellIdsToSyncWithBeforePrepare_);
     Save(context, Distributed_);
@@ -111,8 +120,7 @@ void TCommit::Save(TSaveContext& context) const
     Save(context, CoordinatorPrepareMode_);
     Save(context, CoordinatorCommitMode_);
     Save(context, MaxAllowedCommitTimestamp_);
-    Save(context, AuthenticationIdentity_.User);
-    Save(context, AuthenticationIdentity_.UserTag);
+    Save(context, AuthenticationIdentity_);
     Save(context, StrongOrderingTags_);
 }
 
@@ -133,6 +141,10 @@ void TCommit::Load(TLoadContext& context)
             ParticipantCellIds_.size(),
             FinalTransactionSignature);
     }
+    // COMPAT(kvk1920)
+    if (contextVersion >= ETransactionSupervisorReign::CommitApprovalCount) {
+        Load(context, TargetCommitApprovalCounts_);
+    }
     Load(context, PrepareOnlyParticipantCellIds_);
     Load(context, CellIdsToSyncWithBeforePrepare_);
     Load(context, Distributed_);
@@ -145,8 +157,7 @@ void TCommit::Load(TLoadContext& context)
     Load(context, CoordinatorPrepareMode_);
     Load(context, CoordinatorCommitMode_);
     Load(context, MaxAllowedCommitTimestamp_);
-    Load(context, AuthenticationIdentity_.User);
-    Load(context, AuthenticationIdentity_.UserTag);
+    Load(context, AuthenticationIdentity_);
 
     // COMPAT(h0pless): StrongOrderingTags.
     if (ETransactionSupervisorReign::Sequencer <= contextVersion && contextVersion < ETransactionSupervisorReign::StrongOrderingTags) {
@@ -215,6 +226,18 @@ std::vector<std::string> TCommit::GetStrongOrderingTagsForCell(TCellId cellId) c
     }
 
     return it->second;
+}
+
+void TCommit::AddStrongOrderingTagsForCell(const THashSet<std::string>& tags, TCellId cellId)
+{
+    if (tags.empty()) {
+        return;
+    }
+
+    std::ranges::move(
+        tags,
+        std::back_inserter(StrongOrderingTags_[cellId]));
+    SortUnique(StrongOrderingTags_[cellId]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -51,8 +51,6 @@
 #include <yt/yt/core/rpc/service_detail.h>
 #include <yt/yt/core/rpc/authentication_identity.h>
 
-#include <yt/yt/core/misc/public.h>
-
 #include <yt/yt/core/ytree/composite_map.h>
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/helpers.h>
@@ -144,7 +142,8 @@ public:
         TCompositeAutomatonPart::RegisterMethod(
             BIND_NO_PROPAGATE(&TTransactionSupervisor::HydraParticipantPrepareTransaction, Unretained(this)));
         TCompositeAutomatonPart::RegisterMethod(
-            BIND_NO_PROPAGATE(&TTransactionSupervisor::HydraParticipantMakeTransactionReadyToCommit, Unretained(this)));
+            BIND_NO_PROPAGATE(&TTransactionSupervisor::HydraParticipantRecordCommitTimestamp, Unretained(this)),
+            /*aliases*/ {"NYT.NTransactionSupervisor.NProto.TReqParticipantMakeTransactionReadyToCommit"});
         TCompositeAutomatonPart::RegisterMethod(
             BIND_NO_PROPAGATE(&TTransactionSupervisor::HydraParticipantCommitTransaction, Unretained(this)));
         TCompositeAutomatonPart::RegisterMethod(
@@ -182,6 +181,7 @@ public:
                 transactionId,
                 /*participantCellIds*/ {},
                 /*expectedPrepareSignatures*/ {},
+                /*targetCommitApprovalCounts*/ {},
                 /*prepareOnlyParticipantCellIds*/ {},
                 /*cellIdsToSyncWithBeforePrepare*/ {},
                 /*force2PC*/ false,
@@ -387,7 +387,8 @@ private:
                     cellIdsToSyncWith = commit->CellIdsToSyncWithBeforePrepare(),
                     identity = commit->AuthenticationIdentity(),
                     strongOrderingTags = commit->GetStrongOrderingTagsForCell(CellId_),
-                    expectedPrepareSignature
+                    expectedPrepareSignature,
+                    targetCommitApprovalCount = GetOrDefault(commit->TargetCommitApprovalCounts(), CellId_, 0)
                 ]
                 (const ITransactionParticipantPtr& participant) {
                     auto prepareTimestamp = GeneratePrepareTimestamp(
@@ -402,11 +403,12 @@ private:
                         std::move(strongOrderingTags),
                         cellIdsToSyncWith,
                         identity,
-                        expectedPrepareSignature);
+                        expectedPrepareSignature,
+                        targetCommitApprovalCount);
                 });
         }
 
-        TFuture<void> MakeTransactionReadyToCommit(TCommit* commit)
+        TFuture<void> RecordCommitTimestamp(TCommit* commit)
         {
             return EnqueueRequest(
                 true,
@@ -423,7 +425,7 @@ private:
                 (const ITransactionParticipantPtr& participant) {
                     auto cellTag = CellTagFromId(participant->GetCellId());
                     auto commitTimestamp = commitTimestamps.GetTimestamp(cellTag);
-                    return participant->MakeTransactionReadyToCommit(
+                    return participant->RecordCommitTimestamp(
                         transactionId,
                         commitTimestamp,
                         GetTimestampClusterTag(participant, inheritCommitTimestamp),
@@ -842,10 +844,13 @@ private:
             // COMPAT(h0pless): Remove this flag after 26.1.
             auto stronglyOrdered = request->strongly_ordered();
 
-            TStrongOrderingTagsMap strongOrderingTags;
+            TCellIdToStrongOrderingTagList strongOrderingTags;
             for (const auto& entry : request->strong_ordering_tags_map()) {
                 auto cellId = FromProto<TCellId>(entry.cell_id());
-                EmplaceOrCrash(strongOrderingTags, cellId, FromProto<std::vector<std::string>>(entry.strong_ordering_tags()));
+                if (!strongOrderingTags.emplace(cellId, FromProto<std::vector<std::string>>(entry.strong_ordering_tags())).second) {
+                    THROW_ERROR_EXCEPTION("Duplicate cell %v in strong ordering tags map",
+                        cellId);
+                }
             }
 
             auto expectedPrepareSignatures = BuildExpectedPrepareSignaturesFromRequest(*request, participantCellIds.size());
@@ -855,7 +860,17 @@ private:
                 .With("ParticipantCount", participantCellIds.size())
                 .With("SignatureCount", expectedPrepareSignatures.Participants.size());
 
-            YT_VERIFY(GetPrerequisiteTransactionIds(context->GetRequestHeader()).empty());
+            TTransactionCommitApprovalCounts targetCommitApprovalCounts;
+            targetCommitApprovalCounts.reserve(request->commit_approval_infos_size());
+            for (const auto& info : request->commit_approval_infos()) {
+                targetCommitApprovalCounts.emplace(
+                    FromProto<TCellId>(info.cell_id()),
+                    info.target_commit_approval_count());
+            }
+
+            if (!GetPrerequisiteTransactionIds(context->GetRequestHeader()).empty()) {
+                THROW_ERROR_EXCEPTION("Prerequisite transactions are not supported for transaction commit");
+            }
 
             if (coordinatorPrepareMode == ETransactionCoordinatorPrepareMode::Late &&
                 coordinatorCommitMode == ETransactionCoordinatorCommitMode::Lazy)
@@ -877,25 +892,23 @@ private:
                     .With("coordinator_clock_cluster_tag", owner->SelfClockClusterTag_);
             }
 
-            context->SetRequestInfo("TransactionId: %v, ParticipantCellIds: %v, PrepareOnlyParticipantCellIds: %v, CellIdsToSyncWithBeforePrepare: %v, "
-                "Force2PC: %v, GeneratePrepareTimestamp: %v, InheritCommitTimestamp: %v, ClockClusterTag: %v, CoordinatorPrepareMode: %v, "
-                "CoordinatorCommitMode: %v, StronglyOrdered: %v, MaxAllowedCommitTimestamp: %v, StrongOrderingTags: %v, "
-                "CoordinatorExpectedPrepareSignature: %v, ParticipantExpectedPrepareSignatures: %v",
-                transactionId,
-                participantCellIds,
-                prepareOnlyParticipantCellIds,
-                cellIdsToSyncWithBeforePrepare,
-                force2PC,
-                generatePrepareTimestamp,
-                inheritCommitTimestamp,
-                clockClusterTag,
-                coordinatorPrepareMode,
-                coordinatorCommitMode,
-                stronglyOrdered,
-                maxAllowedCommitTimestamp,
-                MakeShrunkFormattableView(strongOrderingTags, TDefaultFormatter(), /*limit*/ 100),
-                expectedPrepareSignatures.Coordinator,
-                expectedPrepareSignatures.Participants);
+            context->AnnotateRequest()
+                .With("TransactionId", transactionId)
+                .With("ParticipantCellIds", participantCellIds)
+                .With("PrepareOnlyParticipantCellIds", prepareOnlyParticipantCellIds)
+                .With("CellIdsToSyncWithBeforePrepare", cellIdsToSyncWithBeforePrepare)
+                .With("Force2PC", force2PC)
+                .With("GeneratePrepareTimestamp", generatePrepareTimestamp)
+                .With("InheritCommitTimestamp", inheritCommitTimestamp)
+                .With("ClockClusterTag", clockClusterTag)
+                .With("CoordinatorPrepareMode", coordinatorPrepareMode)
+                .With("CoordinatorCommitMode", coordinatorCommitMode)
+                .With("StronglyOrdered", stronglyOrdered)
+                .With("MaxAllowedCommitTimestamp", maxAllowedCommitTimestamp)
+                .With("StrongOrderingTags", MakeShrunkFormattableView(strongOrderingTags, TDefaultFormatter(), /*limit*/ 100))
+                .With("CoordinatorExpectedPrepareSignature", expectedPrepareSignatures.Coordinator)
+                .With("ParticipantExpectedPrepareSignatures", expectedPrepareSignatures.Participants)
+                .With("TargetCommitApprovalCounts", targetCommitApprovalCounts);
 
             // COMPAT(h0pless): Remove this after CTxS will be used by clients to manipulate Cypress transactions.
             if (owner->TransactionManager_->CommitTransaction(context)) {
@@ -927,7 +940,8 @@ private:
                 asyncResponseMessage = owner->CoordinatorCommitTransaction(
                     transactionId,
                     participantCellIds,
-                    expectedPrepareSignatures,
+                    std::move(expectedPrepareSignatures),
+                    std::move(targetCommitApprovalCounts),
                     prepareOnlyParticipantCellIds,
                     cellIdsToSyncWithBeforePrepare,
                     force2PC,
@@ -947,12 +961,14 @@ private:
                         =,
                         owner = std::move(owner),
                         strongOrderingTags = std::move(strongOrderingTags),
-                        expectedPrepareSignatures = std::move(expectedPrepareSignatures)
+                        expectedPrepareSignatures = std::move(expectedPrepareSignatures),
+                        targetCommitApprovalCounts = std::move(targetCommitApprovalCounts)
                     ] () mutable {
                         return owner->CoordinatorCommitTransaction(
                             transactionId,
                             participantCellIds,
                             std::move(expectedPrepareSignatures),
+                            std::move(targetCommitApprovalCounts),
                             prepareOnlyParticipantCellIds,
                             cellIdsToSyncWithBeforePrepare,
                             force2PC,
@@ -977,9 +993,9 @@ private:
             auto transactionId = FromProto<TTransactionId>(request->transaction_id());
             bool force = request->force();
 
-            context->SetRequestInfo("TransactionId: %v, Force: %v",
-                transactionId,
-                force);
+            context->AnnotateRequest()
+                .With("TransactionId", transactionId)
+                .With("Force", force);
 
             auto owner = GetOwnerOrThrow();
 
@@ -1005,9 +1021,9 @@ private:
             auto transactionId = FromProto<TTransactionId>(request->transaction_id());
             bool pingAncestors = request->ping_ancestors();
 
-            context->SetRequestInfo("TransactionId: %v, PingAncestors: %v",
-                transactionId,
-                pingAncestors);
+            context->AnnotateRequest()
+                .With("TransactionId", transactionId)
+                .With("PingAncestors", pingAncestors);
 
             auto owner = GetOwnerOrThrow();
             context->ReplyFrom(owner->TransactionManager_->PingTransaction(transactionId, pingAncestors, /*pingerAddress*/ std::nullopt));
@@ -1015,8 +1031,8 @@ private:
 
         DECLARE_RPC_SERVICE_METHOD(NProto::NTransactionSupervisor, PingTransactions)
         {
-            context->SetRequestInfo("TransactionCount: %v",
-                request->subrequests_size());
+            context->AnnotateRequest()
+                .With("TransactionCount", request->subrequests_size());
 
             auto owner = GetOwnerOrThrow();
 
@@ -1050,8 +1066,8 @@ private:
         {
             auto cellIds = FromProto<std::vector<TCellId>>(request->cell_ids());
 
-            context->SetRequestInfo("CellCount: %v",
-                cellIds.size());
+            context->AnnotateRequest()
+                .With("CellCount", cellIds.size());
 
             auto owner = GetOwnerOrThrow();
             auto downedCellIds = owner->GetDownedParticipants(cellIds);
@@ -1059,8 +1075,8 @@ private:
             auto* responseCellIds = context->Response().mutable_cell_ids();
             ToProto(responseCellIds, downedCellIds);
 
-            context->SetResponseInfo("DownedCellCount: %v",
-                downedCellIds.size());
+            context->AnnotateResponse()
+                .With("DownedCellCount", downedCellIds.size());
 
             context->Reply();
         }
@@ -1079,11 +1095,15 @@ private:
         {
             TServiceBase::RegisterMethod(RPC_SERVICE_METHOD_DESC(PrepareTransaction)
                 .SetHeavy(true));
-            TServiceBase::RegisterMethod(RPC_SERVICE_METHOD_DESC(MakeTransactionReadyToCommit)
+            TServiceBase::RegisterMethod(RPC_SERVICE_METHOD_DESC(RecordCommitTimestamp)
                 .SetHeavy(true));
             TServiceBase::RegisterMethod(RPC_SERVICE_METHOD_DESC(CommitTransaction)
                 .SetHeavy(true));
             TServiceBase::RegisterMethod(RPC_SERVICE_METHOD_DESC(AbortTransaction)
+                .SetHeavy(true));
+
+            // COMPAT(h0pless): Deprecated. Can be removed after 26.2.
+            TServiceBase::RegisterMethod(RPC_SERVICE_METHOD_DESC(MakeTransactionReadyToCommit)
                 .SetHeavy(true));
         }
 
@@ -1100,16 +1120,15 @@ private:
             auto expectedPrepareSignature = request->has_expected_prepare_signature()
                 ? FromProto<TTransactionSignature>(request->expected_prepare_signature())
                 : FinalTransactionSignature;
+            auto targetCommitApprovalCount = request->target_commit_approval_count();
 
-            context->SetRequestInfo(
-                "TransactionId: %v, PrepareTimestamp: %v@%v, CellIdsToSyncWith: %v, "
-                "StrongOrderingTags: %v, ExpectedPrepareSignature: %v",
-                transactionId,
-                prepareTimestamp,
-                prepareTimestampClusterTag,
-                cellIdsToSyncWith,
-                MakeShrunkFormattableView(strongOrderingTags, TDefaultFormatter(), /*limit*/ 100),
-                expectedPrepareSignature);
+            context->AnnotateRequest()
+                .With("TransactionId", transactionId)
+                .WithFormat("PrepareTimestamp", "%v@%v", prepareTimestamp, prepareTimestampClusterTag)
+                .With("CellIdsToSyncWith", cellIdsToSyncWith)
+                .With("StrongOrderingTags", MakeShrunkFormattableView(strongOrderingTags, TDefaultFormatter(), /*limit*/ 100))
+                .With("ExpectedPrepareSignature", expectedPrepareSignature)
+                .With("target_commit_approval_count", targetCommitApprovalCount);
 
             auto owner = GetOwnerOrThrow();
             if (owner->HydraManager_->IsEnteringReadOnlyMode() && !strongOrderingTags.empty()) {
@@ -1125,6 +1144,7 @@ private:
             hydraRequest.set_prepare_timestamp_cluster_tag(prepareTimestampClusterTag);
             ToProto(hydraRequest.mutable_strong_ordering_tags(), strongOrderingTags);
             hydraRequest.set_expected_prepare_signature(expectedPrepareSignature);
+            hydraRequest.set_target_commit_approval_count(targetCommitApprovalCount);
             NRpc::WriteAuthenticationIdentityToProto(&hydraRequest, NRpc::GetCurrentAuthenticationIdentity());
 
             auto readyEvent = owner->TransactionManager_->GetReadyToPrepareTransactionCommit(
@@ -1151,7 +1171,19 @@ private:
             }
         }
 
+        DECLARE_RPC_SERVICE_METHOD(NProto::NTransactionParticipant, RecordCommitTimestamp)
+        {
+            RecordCommitTimestampImpl(request, context);
+        }
+
         DECLARE_RPC_SERVICE_METHOD(NProto::NTransactionParticipant, MakeTransactionReadyToCommit)
+        {
+            RecordCommitTimestampImpl(request, context);
+        }
+
+        void RecordCommitTimestampImpl(
+            auto* request,
+            const auto& context)
         {
             ValidatePeer(EPeerKind::Leader);
 
@@ -1159,12 +1191,11 @@ private:
             auto commitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->commit_timestamp());
             auto commitTimestampClusterTag = request->commit_timestamp_cluster_tag();
 
-            context->SetRequestInfo("TransactionId: %v, CommitTimestamp: %v@%v",
-                transactionId,
-                commitTimestamp,
-                commitTimestampClusterTag);
+            context->AnnotateRequest()
+                .With("TransactionId", transactionId)
+                .WithFormat("CommitTimestamp", "%v@%v", commitTimestamp, commitTimestampClusterTag);
 
-            NTransactionSupervisor::NProto::TReqParticipantMakeTransactionReadyToCommit hydraRequest;
+            NTransactionSupervisor::NProto::TReqParticipantRecordCommitTimestamp hydraRequest;
             ToProto(hydraRequest.mutable_transaction_id(), transactionId);
             hydraRequest.set_commit_timestamp(ToProto(commitTimestamp));
             hydraRequest.set_commit_timestamp_cluster_tag(commitTimestampClusterTag);
@@ -1183,13 +1214,14 @@ private:
             auto transactionId = FromProto<TTransactionId>(request->transaction_id());
             auto commitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->commit_timestamp());
             auto commitTimestampClusterTag = request->commit_timestamp_cluster_tag();
+
+            // Safe to remove after 26.3.
             auto stronglyOrdered = request->strongly_ordered();
 
-            context->SetRequestInfo("TransactionId: %v, CommitTimestamp: %v@%v, StronglyOrdered: %v",
-                transactionId,
-                commitTimestamp,
-                commitTimestampClusterTag,
-                stronglyOrdered);
+            context->AnnotateRequest()
+                .With("TransactionId", transactionId)
+                .WithFormat("CommitTimestamp", "%v@%v", commitTimestamp, commitTimestampClusterTag)
+                .With("StronglyOrdered", stronglyOrdered);
 
             NTransactionSupervisor::NProto::TReqParticipantCommitTransaction hydraRequest;
             ToProto(hydraRequest.mutable_transaction_id(), transactionId);
@@ -1218,11 +1250,13 @@ private:
             ValidatePeer(EPeerKind::Leader);
 
             auto transactionId = FromProto<TTransactionId>(request->transaction_id());
+
+            // Safe to remove after 26.3.
             auto stronglyOrdered = request->strongly_ordered();
 
-            context->SetRequestInfo("TransactionId: %v, StronglyOrdered: %v",
-                transactionId,
-                stronglyOrdered);
+            context->AnnotateRequest()
+                .With("TransactionId", transactionId)
+                .With("StronglyOrdered", stronglyOrdered);
 
             NTransactionSupervisor::NProto::TReqParticipantAbortTransaction hydraRequest;
             ToProto(hydraRequest.mutable_transaction_id(), transactionId);
@@ -1396,6 +1430,7 @@ private:
         TTransactionId transactionId,
         std::vector<TCellId> participantCellIds,
         TExpectedTransactionSignatureInfo expectedPrepareSignatures,
+        TTransactionCommitApprovalCounts targetCommitApprovalCounts,
         std::vector<TCellId> prepareOnlyParticipantCellIds,
         std::vector<TCellId> cellIdsToSyncWithBeforePrepare,
         bool force2PC,
@@ -1403,7 +1438,7 @@ private:
         bool inheritCommitTimestamp,
         ETransactionCoordinatorPrepareMode coordinatorPrepareMode,
         ETransactionCoordinatorCommitMode coordinatorCommitMode,
-        TStrongOrderingTagsMap strongOrderingTags,
+        TCellIdToStrongOrderingTagList strongOrderingTags,
         TTimestamp maxAllowedCommitTimestamp,
         TMutationId mutationId,
         const TAuthenticationIdentity& identity)
@@ -1421,6 +1456,7 @@ private:
             transactionId,
             mutationId,
             std::move(expectedPrepareSignatures),
+            std::move(targetCommitApprovalCounts),
             std::move(participantCellIds),
             std::move(prepareOnlyParticipantCellIds),
             std::move(cellIdsToSyncWithBeforePrepare),
@@ -1465,6 +1501,7 @@ private:
                 .PrepareTimestamp = prepareTimestamp,
                 .PrepareTimestampClusterTag = SelfClockClusterTag_,
                 .ExpectedPrepareSignature = commit->ExpectedPrepareSignatures().Coordinator,
+                .TargetCommitApprovalCount = GetOrDefault(commit->TargetCommitApprovalCounts(), SelfCellId_, 0),
             };
             TransactionManager_->PrepareTransactionCommit(
                 transactionId,
@@ -1521,10 +1558,18 @@ private:
         request.set_coordinator_commit_mode(ToProto(commit->GetCoordinatorCommitMode()));
         request.set_coordinator_prepare_mode(ToProto(commit->GetCoordinatorPrepareMode()));
 
+        request.mutable_strong_ordering_tags_map()->Reserve(commit->StrongOrderingTags().size());
         for (const auto& [cellId, tags] : commit->StrongOrderingTags()) {
             auto* entry = request.add_strong_ordering_tags_map();
             ToProto(entry->mutable_cell_id(), cellId);
             ToProto(entry->mutable_strong_ordering_tags(), tags);
+        }
+
+        request.mutable_commit_approval_infos()->Reserve(commit->TargetCommitApprovalCounts().size());
+        for (const auto& [cellId, targetCommitApprovalCount] : commit->TargetCommitApprovalCounts()) {
+            auto* entry = request.add_commit_approval_infos();
+            ToProto(entry->mutable_cell_id(), cellId);
+            entry->set_target_commit_approval_count(targetCommitApprovalCount);
         }
 
         request.set_prepare_timestamp(ToProto(prepareTimestamp));
@@ -1720,6 +1765,7 @@ private:
                 transactionId,
                 mutationId,
                 /*expectedPrepareSignatures*/ TExpectedTransactionSignatureInfo{ .Coordinator = expectedPrepareSignature },
+                /*targetCommitApprovalCounts*/ {},
                 /*participantCellIds*/ {},
                 /*prepareOnlyParticipantCellIds*/ {},
                 /*cellIdsToSyncWithBeforePrepare*/ {},
@@ -1758,7 +1804,7 @@ private:
         auto prepareTimestampClusterTag = FromProto<TClusterTag>(request->prepare_timestamp_cluster_tag());
         auto maxAllowedCommitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->max_allowed_commit_timestamp());
 
-        TStrongOrderingTagsMap strongOrderingTags;
+        TCellIdToStrongOrderingTagList strongOrderingTags;
         for (const auto& entry : request->strong_ordering_tags_map()) {
             auto cellId = FromProto<TCellId>(entry.cell_id());
             EmplaceOrCrash(strongOrderingTags, cellId, FromProto<std::vector<std::string>>(entry.strong_ordering_tags()));
@@ -1771,6 +1817,12 @@ private:
             .With("TransactionId", transactionId)
             .With("ParticipantCount", participantCellIds.size())
             .With("SignatureCount", expectedPrepareSignatures.Participants.size());
+
+        TTransactionCommitApprovalCounts targetCommitApprovalCounts;
+        targetCommitApprovalCounts.reserve(request->commit_approval_infos_size());
+        for (const auto& entry : request->commit_approval_infos()) {
+            targetCommitApprovalCounts.emplace(FromProto<TCellId>(entry.cell_id()), entry.target_commit_approval_count());
+        }
 
         auto identity = NRpc::ParseAuthenticationIdentityFromProto(*request);
         NRpc::TCurrentAuthenticationIdentityGuard identityGuard(&identity);
@@ -1787,7 +1839,7 @@ private:
 
             YT_TLOG_ALERT_AND_THROW_UNLESS(
                 StrongOrderingManager_.IsUniqueClockSource(prepareTimestampClusterTag),
-                "Clocks for strong ordered transactions are not unique")
+                "Clocks for strongly ordered transactions are not unique")
                 .With("TransactionId", transactionId)
                 .With("PrepareTimestampClusterTag", prepareTimestampClusterTag)
                 .With("ExpectedClusterTag", StrongOrderingManager_.GetClockSourceClusterTag());
@@ -1801,6 +1853,7 @@ private:
                 mutationId,
                 participantCellIds,
                 expectedPrepareSignatures,
+                targetCommitApprovalCounts,
                 prepareOnlyParticipantCellIds,
                 cellIdsToSyncWithBeforePrepare,
                 true,
@@ -1846,6 +1899,9 @@ private:
             return;
         }
 
+        commit->AddStrongOrderingTagsForCell(
+            TransactionManager_->GenerateStrongOrderingTags(transactionId),
+            SelfCellId_);
         if (commit->IsStronglyOrderedForCell(SelfCellId_)) {
             // Technically, transaction should be registered before attempting to run prepare,
             // and unregistered iff prepare fails. But since it all hapens in one mutation
@@ -1854,7 +1910,7 @@ private:
                 transactionId,
                 prepareTimestamp,
                 /*isCoordinator*/ true,
-                strongOrderingTags[SelfCellId_]);
+                commit->GetStrongOrderingTagsForCell(SelfCellId_));
         }
 
         ChangeCommitPersistentState(commit, ECommitState::Prepare);
@@ -1912,18 +1968,18 @@ private:
                 commitTimestamp,
                 SelfClockClusterTag_,
                 /*isCoordinator*/ true,
-                ECommitState::ReadyToCommit,
+                ECommitState::CommitTimestampKnown,
                 prepareTimestamp);
             CommitStronglyOrderedTransactions(transactionsToCommit);
 
             // Commit transient state might've changed if transaction failed to prepare
             // in late prepare mode, or if it was allowed to be committed straight away.
-            // In either of those cases, ReadyToCommit stage is redundant.
+            // In either of those cases, CommitTimestampKnown stage is redundant.
             if (commit->GetTransientState() == ECommitState::GeneratingCommitTimestamps) {
-                ChangeCommitTransientState(commit, ECommitState::ReadyToCommit);
+                ChangeCommitTransientState(commit, ECommitState::CommitTimestampKnown);
             } else {
                 // COMPAT(h0pless): StopSendingUnnecessaryRequests. Can be removed once stable.
-                YT_TLOG_DEBUG("Transient state of a transaction is past the expected one; skipping ReadyToCommit transition")
+                YT_TLOG_DEBUG("Transient state of a transaction is past the expected one; skipping CommitTimestampKnown transition")
                     .With("ExpectedState", ECommitState::GeneratingCommitTimestamps)
                     .With("TransactionId", transactionId)
                     .With("TransientState", commit->GetTransientState())
@@ -1934,10 +1990,10 @@ private:
             // is ok. The only situation when it's possible is if commit in late prepare mode
             // has failed.
             if (commit->GetPersistentState() == ECommitState::Prepare) {
-                ChangeCommitPersistentState(commit, ECommitState::ReadyToCommit);
+                ChangeCommitPersistentState(commit, ECommitState::CommitTimestampKnown);
             } else {
                 // COMPAT(h0pless): StopSendingUnnecessaryRequests. Can be removed once stable.
-                YT_TLOG_DEBUG("Persistent state of a transaction is past the expected one; skipping ReadyToCommit transition")
+                YT_TLOG_DEBUG("Persistent state of a transaction is past the expected one; skipping CommitTimestampKnown transition")
                     .With("ExpectedState", ECommitState::Prepare)
                     .With("TransactionId", transactionId)
                     .With("TransientState", commit->GetTransientState())
@@ -1946,8 +2002,8 @@ private:
         } else {
             // Even if coordinator is not committing this transaction in strongly
             // ordered mode, some other cell might be. But Commit call without
-            // ReadyToCommit is still ok, so let's not send more requests than
-            // necessary.
+            // CommitTimestampKnown call is still ok, so let's not send more
+            // requests than necessary.
             ChangeCommitPersistentState(commit, ECommitState::Commit);
             ChangeCommitTransientState(commit, ECommitState::Commit);
 
@@ -1976,7 +2032,7 @@ private:
         YT_VERIFY(commit->GetDistributed());
         YT_VERIFY(commit->GetPersistent());
 
-        if (commit->GetPersistentState() != ECommitState::Prepare && commit->GetPersistentState() != ECommitState::ReadyToCommit) {
+        if (commit->GetPersistentState() != ECommitState::Prepare && commit->GetPersistentState() != ECommitState::CommitTimestampKnown) {
             YT_TLOG_ERROR("Requested to execute phase two abort for transaction in wrong state; ignored")
                 .With("TransactionId", transactionId)
                 .With("State", commit->GetPersistentState());
@@ -2098,14 +2154,15 @@ private:
     }
 
 
-    // Possible persistent states:
+    // Possible persistent transaction states:
     // Active -- ok
-    // PersistentCommitPrepared (Prepare on supervisor) -- throw (probably should just do nothing?)
-    // PersistentCommitPrepared (ReadyToCommit on supervisor) -- throw (probably should just do nothing?)
+    // PersistentCommitPrepared (ECommitState::Prepare on supervisor) -- throw (probably should just do nothing?)
+    // PersistentCommitPrepared (ECommitState::CommitTimestampKnown on supervisor) -- throw (probably should just do nothing?)
     // Committed -- throw (probably should just do nothing?)
     // Aborted -- throw (probably should just do nothing?)
 
-    // None -> Prepared
+    // Commit state:
+    // None -> Prepare
     void HydraParticipantPrepareTransaction(NTransactionSupervisor::NProto::TReqParticipantPrepareTransaction* request)
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
@@ -2117,6 +2174,7 @@ private:
         auto expectedPrepareSignature = request->has_expected_prepare_signature()
             ? request->expected_prepare_signature()
             : FinalTransactionSignature;
+        auto targetCommitApprovalCount = request->target_commit_approval_count();
 
         auto identity = NRpc::ParseAuthenticationIdentityFromProto(*request);
         NRpc::TCurrentAuthenticationIdentityGuard identityGuard(&identity);
@@ -2124,7 +2182,7 @@ private:
         if (!strongOrderingTags.empty()) {
             YT_TLOG_ALERT_AND_THROW_UNLESS(
                 StrongOrderingManager_.IsUniqueClockSource(prepareTimestampClusterTag),
-                "Clocks for strong ordered transactions are not unique")
+                "Clocks for strongly ordered transactions are not unique")
                 .With("TransactionId", transactionId)
                 .With("PrepareTimestampClusterTag", prepareTimestampClusterTag)
                 .With("ExpectedClusterTag", StrongOrderingManager_.GetClockSourceClusterTag());
@@ -2137,6 +2195,7 @@ private:
                 .PrepareTimestamp = prepareTimestamp,
                 .PrepareTimestampClusterTag = prepareTimestampClusterTag,
                 .ExpectedPrepareSignature = expectedPrepareSignature,
+                .TargetCommitApprovalCount = targetCommitApprovalCount,
             };
             // PrepareTransactionCommit validates that transaction is Active and throws if it is not.
             TransactionManager_->PrepareTransactionCommit(
@@ -2152,7 +2211,13 @@ private:
             THROW_ERROR WrapHydraError(ex);
         }
 
+        std::ranges::move(
+            TransactionManager_->GenerateStrongOrderingTags(transactionId),
+            std::back_inserter(strongOrderingTags));
+
         if (!strongOrderingTags.empty()) {
+            SortUnique(strongOrderingTags);
+
             StrongOrderingManager_.OnCommitPrepare(
                 transactionId,
                 prepareTimestamp,
@@ -2166,14 +2231,16 @@ private:
             .With("AuthenticationIdentity", NRpc::GetCurrentAuthenticationIdentity());
     }
 
+    // Possible persistent transaction states:
     // Active -- throw (wait for prepare)
-    // PersistentCommitPrepared (Prepare on supervisor) -- ok
-    // PersistentCommitPrepared (ReadyToCommit on supervisor) -- do nothing
+    // PersistentCommitPrepared (ECommitState::Prepare on supervisor) -- ok
+    // PersistentCommitPrepared (ECommitState::CommitTimestampKnown on supervisor) -- do nothing
     // Committed -- do nothing
     // Aborted -- do nothing
 
-    // Prepared -> ReadyToCommit
-    void HydraParticipantMakeTransactionReadyToCommit(NTransactionSupervisor::NProto::TReqParticipantMakeTransactionReadyToCommit* request)
+    // Commit state:
+    // Prepare -> CommitTimestampKnown
+    void HydraParticipantRecordCommitTimestamp(NTransactionSupervisor::NProto::TReqParticipantRecordCommitTimestamp* request)
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
@@ -2197,28 +2264,30 @@ private:
 
         YT_TLOG_ALERT_AND_THROW_UNLESS(
             StrongOrderingManager_.IsUniqueClockSource(commitTimestampClusterTag),
-            "Clocks for strong ordered transactions are not unique")
+            "Clocks for strongly ordered transactions are not unique")
             .With("TransactionId", transactionId)
             .With("CommitTimestampClusterTag", commitTimestampClusterTag)
             .With("ExpectedClusterTag", StrongOrderingManager_.GetClockSourceClusterTag());
 
-        YT_TLOG_DEBUG("Strongly ordered transaction is ready to commit at participant")
+        YT_TLOG_DEBUG("Commit timestamp of a strongly ordered transaction has been recorded at participant")
             .With("TransactionId", transactionId);
 
-        auto transactionsToCommit = StrongOrderingManager_.OnCommitReadyToCommit(
+        auto transactionsToCommit = StrongOrderingManager_.OnCommitCommitTimestampKnown(
             transactionId,
             commitTimestamp,
             commitTimestampClusterTag);
         CommitStronglyOrderedTransactions(transactionsToCommit);
     }
 
+    // Possible persistent transaction states:
     // Active -- throw (should wait for prepare)
-    // PersistentCommitPrepared (Prepare on supervisor) -- ok
-    // PersistentCommitPrepared (ReadyToCommit on supervisor) -- ok, but different
+    // PersistentCommitPrepared (ECommitState::Prepare on supervisor) -- ok
+    // PersistentCommitPrepared (ECommitState::CommitTimestampKnown on supervisor) -- ok, but different
     // Committed -- do nothing
     // Aborted -- throw (probably should just do nothing?)
 
-    // Prepared -> Committed or ReadyToCommit -> Committed
+    // Commit state:
+    // Prepare -> Commit or CommitTimestampKnown -> Commit
     void HydraParticipantCommitTransaction(NTransactionSupervisor::NProto::TReqParticipantCommitTransaction* request)
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
@@ -2226,12 +2295,11 @@ private:
         auto transactionId = FromProto<TTransactionId>(request->transaction_id());
         auto commitTimestamp = FromProto<NTransactionClient::TTimestamp>(request->commit_timestamp());
         auto commitTimestampClusterTag = FromProto<TClusterTag>(request->commit_timestamp_cluster_tag());
-        auto stronglyOrdered = request->strongly_ordered();
 
         auto identity = NRpc::ParseAuthenticationIdentityFromProto(*request);
         NRpc::TCurrentAuthenticationIdentityGuard identityGuard(&identity);
 
-        if (stronglyOrdered) {
+        if (StrongOrderingManager_.IsTransactionPresent(transactionId)) {
             auto state = InvokeAndWrapHydraException(
                 &ITransactionManager::GetTransactionStateOrThrow,
                 TransactionManager_,
@@ -2252,7 +2320,7 @@ private:
 
             YT_TLOG_ALERT_AND_THROW_UNLESS(
                 StrongOrderingManager_.IsUniqueClockSource(commitTimestampClusterTag),
-                "Clocks for strong ordered transactions are not unique")
+                "Clocks for strongly ordered transactions are not unique")
                 .With("TransactionId", transactionId)
                 .With("CommitTimestampClusterTag", commitTimestampClusterTag)
                 .With("ExpectedClusterTag", StrongOrderingManager_.GetClockSourceClusterTag());
@@ -2314,23 +2382,24 @@ private:
             .With("AuthenticationIdentity", NRpc::GetCurrentAuthenticationIdentity());
     }
 
-    // Active -- ok (was do nothing before, but we should still do transactionManager->Abort())
-    // PersistentCommitPrepared (Prepare on supervisor) -- ok
-    // PersistentCommitPrepared (ReadyToCommit on supervisor) -- ok
+    // Possible persistent transaction states:
+    // Active -- ok (transactionManager->Abort() should still be called)
+    // PersistentCommitPrepared (ECommitState::Prepare on supervisor) -- ok
+    // PersistentCommitPrepared (ECommitState::CommitTimestampKnown on supervisor) -- ok
     // Committed -- throw (probably should just do nothing?)
     // Aborted -- do nothing
 
-    // Start -> Aborted or Prepared -> Aborted or ReadyToCommit -> Aborted
+    // Commit state:
+    // Start -> Abort or Prepare -> Abort or CommitTimestampKnown -> Abort
     void HydraParticipantAbortTransaction(NTransactionSupervisor::NProto::TReqParticipantAbortTransaction* request)
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
         auto transactionId = FromProto<TTransactionId>(request->transaction_id());
-        auto stronglyOrdered = request->strongly_ordered();
-
         auto identity = NRpc::ParseAuthenticationIdentityFromProto(*request);
         NRpc::TCurrentAuthenticationIdentityGuard identityGuard(&identity);
 
+        auto stronglyOrdered = StrongOrderingManager_.IsTransactionPresent(transactionId);
         if (stronglyOrdered) {
             auto state = InvokeAndWrapHydraException(
                 &ITransactionManager::GetTransactionStateOrThrow,
@@ -2358,7 +2427,7 @@ private:
             };
             TransactionManager_->AbortTransaction(transactionId, options);
         } catch (const std::exception& ex) {
-            YT_TLOG_EVENT(Logger(), stronglyOrdered ? NLogging::ELogLevel::Alert : NLogging::ELogLevel::Debug, "Participant failure")
+            YT_TLOG_EVENT(Logger(), stronglyOrdered ? NLogging::ELogLevel::Fatal : NLogging::ELogLevel::Debug, "Participant failure")
                 .With("TransactionId", transactionId)
                 .With("State", ECommitState::Abort)
                 .With("AuthenticationIdentity", NRpc::GetCurrentAuthenticationIdentity())
@@ -2403,6 +2472,7 @@ private:
         TTransactionId transactionId,
         TMutationId mutationId,
         TExpectedTransactionSignatureInfo expectedPrepareSignatures,
+        TTransactionCommitApprovalCounts targetCommitApprovalCounts,
         std::vector<TCellId> participantCellIds,
         std::vector<TCellId> prepareOnlyParticipantCellIds,
         std::vector<TCellId> cellIdsToSyncWithBeforePrepare,
@@ -2411,7 +2481,7 @@ private:
         bool inheritCommitTimestamp,
         ETransactionCoordinatorPrepareMode coordinatorPrepareMode,
         ETransactionCoordinatorCommitMode coordinatorCommitMode,
-        TStrongOrderingTagsMap strongOrderingTags,
+        TCellIdToStrongOrderingTagList strongOrderingTags,
         TTimestamp maxAllowedCommitTimestamp,
         NRpc::TAuthenticationIdentity identity)
     {
@@ -2420,6 +2490,7 @@ private:
             mutationId,
             std::move(participantCellIds),
             std::move(expectedPrepareSignatures),
+            std::move(targetCommitApprovalCounts),
             std::move(prepareOnlyParticipantCellIds),
             std::move(cellIdsToSyncWithBeforePrepare),
             distributed,
@@ -2438,6 +2509,7 @@ private:
         TMutationId mutationId,
         std::vector<TCellId> participantCellIds,
         TExpectedTransactionSignatureInfo expectedPrepareSignatures,
+        TTransactionCommitApprovalCounts targetCommitApprovalCounts,
         std::vector<TCellId> prepareOnlyParticipantCellIds,
         std::vector<TCellId> cellIdsToSyncWithBeforePrepare,
         bool distributed,
@@ -2445,7 +2517,7 @@ private:
         bool inheritCommitTimestamp,
         ETransactionCoordinatorPrepareMode coordinatorPrepareMode,
         ETransactionCoordinatorCommitMode coordinatorCommitMode,
-        TStrongOrderingTagsMap strongOrderingTags,
+        TCellIdToStrongOrderingTagList strongOrderingTags,
         TTimestamp maxAllowedCommitTimestamp,
         NRpc::TAuthenticationIdentity identity)
     {
@@ -2464,6 +2536,7 @@ private:
                 mutationId,
                 std::move(participantCellIds),
                 std::move(expectedPrepareSignatures),
+                std::move(targetCommitApprovalCounts),
                 std::move(prepareOnlyParticipantCellIds),
                 std::move(cellIdsToSyncWithBeforePrepare),
                 distributed,
@@ -2554,6 +2627,7 @@ private:
                 .PrepareTimestamp = commit->PrepareTimestamp(),
                 .PrepareTimestampClusterTag = commit->PrepareTimestampClusterTag(),
                 .ExpectedPrepareSignature = commit->ExpectedPrepareSignatures().Coordinator,
+                .TargetCommitApprovalCount = GetOrDefault(commit->TargetCommitApprovalCounts(), SelfCellId_, 0),
             };
             TransactionManager_->PrepareTransactionCommit(
                 transactionId,
@@ -2722,14 +2796,17 @@ private:
         TransientAbortMap_.erase(transactionId);
     }
 
-
-    void GenerateCommitTimestamps(TCommit* commit)
+    TFuture<std::vector<std::pair<TCellTag, TTimestamp>>> DoGenerateCommitTimestamps(
+        TTransactionId transactionId,
+        bool inheritCommitTimestamp,
+        std::vector<TCellId> participantCellIds)
     {
-        auto transactionId = commit->GetTransactionId();
+        YT_ASSERT_THREAD_AFFINITY_ANY();
 
         TFuture<TTimestamp> asyncCoordinatorTimestamp;
         std::vector<TFuture<std::pair<TCellTag, TTimestamp>>> asyncTimestamps;
         THashSet<TCellTag> timestampProviderCellTags;
+
         auto generateFor = [&] (TCellId cellId) {
             try {
                 auto cellTag = CellTagFromId(cellId);
@@ -2737,11 +2814,8 @@ private:
                     return;
                 }
 
-                auto participant = GetParticipant(cellId);
-                auto timestampProvider = participant->GetTimestampProviderOrThrow();
-
                 TFuture<TTimestamp> asyncTimestamp;
-                if (commit->GetInheritCommitTimestamp() && cellId != SelfCellId_) {
+                if (inheritCommitTimestamp && cellId != SelfCellId_) {
                     YT_TLOG_DEBUG("Inheriting commit timestamp")
                         .With("TransactionId", transactionId)
                         .With("ParticipantCellId", cellId);
@@ -2765,11 +2839,32 @@ private:
         };
 
         generateFor(SelfCellId_);
-        for (auto cellId : commit->ParticipantCellIds()) {
+        for (auto cellId : participantCellIds) {
             generateFor(cellId);
         }
 
-        AllSucceeded(asyncTimestamps)
+        return AllSucceeded(asyncTimestamps);
+    }
+
+    void GenerateCommitTimestamps(TCommit* commit)
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        auto transactionId = commit->GetTransactionId();
+
+        GetParticipant(SelfCellId_);
+        for (auto cellId : commit->ParticipantCellIds()) {
+            GetParticipant(cellId);
+        }
+
+        BIND(
+            &TTransactionSupervisor::DoGenerateCommitTimestamps,
+            MakeStrong(this),
+            commit->GetTransactionId(),
+            commit->GetInheritCommitTimestamp(),
+            commit->ParticipantCellIds())
+            .AsyncVia(NRpc::TDispatcher::Get()->GetHeavyInvoker())
+            .Run()
             .Subscribe(BIND(&TTransactionSupervisor::OnCommitTimestampsGenerated, MakeStrong(this), transactionId)
                 .Via(EpochAutomatonInvoker_));
     }
@@ -2904,7 +2999,7 @@ private:
                 break;
 
             case ECommitState::Prepare:
-            case ECommitState::ReadyToCommit:
+            case ECommitState::CommitTimestampKnown:
             case ECommitState::Commit:
             case ECommitState::Abort:
                 SendParticipantRequests(commit);
@@ -2973,8 +3068,8 @@ private:
                 response = participant->PrepareTransaction(commit);
                 break;
 
-            case ECommitState::ReadyToCommit:
-                response = participant->MakeTransactionReadyToCommit(commit);
+            case ECommitState::CommitTimestampKnown:
+                response = participant->RecordCommitTimestamp(commit);
                 break;
 
             case ECommitState::Commit:
@@ -3080,7 +3175,7 @@ private:
 
                 case ECommitState::Commit:
                 case ECommitState::Abort:
-                case ECommitState::ReadyToCommit:
+                case ECommitState::CommitTimestampKnown:
                     YT_TLOG_DEBUG("Coordinator observes participant failure; will retry")
                         .With("TransactionId", commit->GetTransactionId())
                         .With("ParticipantCellId", participantCellId)
@@ -3105,7 +3200,7 @@ private:
     {
         if (commit->RespondedCellIds().size() == commit->ParticipantCellIds().size()) {
             auto state = commit->GetTransientState();
-            if (state != ECommitState::ReadyToCommit) {
+            if (state != ECommitState::CommitTimestampKnown) {
                 ChangeCommitTransientState(commit, GetNewCommitState(state));
             }
         }

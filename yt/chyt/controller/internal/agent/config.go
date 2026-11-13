@@ -6,6 +6,7 @@ import (
 	"go.ytsaurus.tech/library/go/core/metrics"
 	"go.ytsaurus.tech/yt/go/ypath"
 	"go.ytsaurus.tech/yt/go/yson"
+	"go.ytsaurus.tech/yt/go/yt"
 	"go.ytsaurus.tech/yt/go/yterrors"
 )
 
@@ -44,6 +45,8 @@ type Config struct {
 	// It is used to check permission to the pool during setting "pool" option.
 	RobotUsername string `yson:"robot_username"`
 
+	BaseACL []yt.ACE
+
 	// PassWorkerNumber is the number of workers used to process oplets.
 	PassWorkerNumber *int `yson:"pass_worker_number"`
 
@@ -69,6 +72,9 @@ type Config struct {
 	UseFamilyPrefixInOpAlias bool `yson:"use_family_prefix_in_op_alias"`
 
 	JobCheckerConfig *JobCheckerConfig `yson:"job_checker_config"`
+	// MaxUnavailableJobsRatio is the maximum allowed ratio of simultaneously
+	// unavailable jobs to the number of configured jobs in an operation.
+	MaxUnavailableJobsRatio *float64 `yson:"max_unavailable_jobs_ratio"`
 
 	// MetricsConfig enables and configures agent sensors.
 	// If it is not set, the agent exports no metrics.
@@ -148,6 +154,7 @@ const (
 	DefaultAssignAdministerToCreator        = true
 	DefaultScaleWorkerNumber                = 1
 	DefaultScalePeriod                      = yson.Duration(60 * time.Second)
+	DefaultMaxUnavailableJobsRatio          = 0.75
 
 	DefaultTimeHistogramMin    = yson.Duration(0)
 	DefaultTimeHistogramMax    = yson.Duration(3 * time.Minute)
@@ -257,6 +264,13 @@ func (c *Config) JobCheckerConfigOrDefault() *JobCheckerConfig {
 		return c.JobCheckerConfig
 	}
 	return nil
+}
+
+func (c *Config) MaxUnavailableJobsRatioOrDefault() float64 {
+	if c.MaxUnavailableJobsRatio != nil {
+		return *c.MaxUnavailableJobsRatio
+	}
+	return DefaultMaxUnavailableJobsRatio
 }
 
 func (c *Config) MetricsConfigOrDefault() *MetricsConfig {

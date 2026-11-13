@@ -16,9 +16,13 @@
 
 #include <yt/yt/ytlib/chunk_client/config.h>
 
+#include <yt/yt/ytlib/distributed_chunk_session_client/public.h>
+
 #include <yt/yt/ytlib/event_log/public.h>
 
 #include <yt/yt/ytlib/node_tracker_client/public.h>
+
+#include <yt/yt/ytlib/push_based_shuffle_client/public.h>
 
 #include <yt/yt/ytlib/scheduler/cluster_name.h>
 #include <yt/yt/ytlib/scheduler/config.h>
@@ -30,6 +34,8 @@
 #include <yt/yt/library/server_program/config.h>
 
 #include <yt/yt/library/program/config.h>
+
+#include <yt/yt/library/nbd/journal/config.h>
 
 #include <yt/yt/library/re2/public.h>
 
@@ -66,10 +72,6 @@ struct TTestingOptions
     //! Testing option that enables snapshot build/load cycle after operation materialization.
     bool EnableSnapshotCycleAfterMaterialization;
 
-    //! If this option is set, these layers are used in all the user jobs
-    //! and all the rootfs's become writable.
-    std::vector<NYPath::TRichYPath> RootfsTestLayers;
-
     //! If this option is set, controller agent sleeps for this duration before performing actual unregistration.
     std::optional<TDuration> DelayInUnregistration;
 
@@ -79,6 +81,7 @@ struct TTestingOptions
     bool AbortOutputTransactionAfterCompletionTransactionCommit;
 
     bool EnableEventsOnFs;
+    bool EnableCypressSleepState;
 
     REGISTER_YSON_STRUCT(TTestingOptions);
 
@@ -296,11 +299,59 @@ DEFINE_REFCOUNTED_TYPE(TDataBalancerOptions)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TPushBasedShuffleOptions
+    : public NYTree::TYsonStruct
+{
+    double SealFallbackCompressionRatio;
+    i64 SealFallbackRowCountPerRecord;
+
+    //! Controller-side estimates that size the partition job writer memory budget.
+    i64 PerPartitionMetadataEstimate;
+    i64 PerSequencerConnectionEstimate;
+    i64 TargetUncompressedRecordSize;
+
+    NPushBasedShuffleClient::TShuffleWriterConfigPtr ShuffleWriterConfig;
+    NPushBasedShuffleClient::TPartitionReaderConfigPtr PartitionReaderConfig;
+    NPushBasedShuffleClient::TSortReaderConfigPtr SortReaderConfig;
+    int SortThreadCount;
+
+    NApi::TJournalChunkWriterConfigPtr JournalWriterConfig;
+    NDistributedChunkSessionClient::TDistributedChunkSessionPoolConfigPtr SessionPoolConfig;
+    NDistributedChunkSessionClient::TDistributedChunkSessionControllerConfigPtr SessionControllerConfig;
+
+    REGISTER_YSON_STRUCT(TPushBasedShuffleOptions);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TPushBasedShuffleOptions)
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TJournalNbdOptions
+    : public NNbd::NJournal::TJournalBlockDeviceConfig
+{
+    //! RW NBD disks use the journal backend instead of the chunk backend.
+    bool Enable;
+
+    std::optional<i64> BlockSize;
+
+    REGISTER_YSON_STRUCT(TJournalNbdOptions);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TJournalNbdOptions)
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TUserJobOptions
     : public NYTree::TYsonStruct
 {
     //! Thread limit for the user job container as a function of cpu (variable "cpu" = ceil(job cpu_limit)).
     TArithmeticFormula ThreadLimitFormula;
+
+    TJournalNbdOptionsPtr JournalNbd;
 
     REGISTER_YSON_STRUCT(TUserJobOptions);
 
@@ -435,6 +486,9 @@ DEFINE_REFCOUNTED_TYPE(TSimpleOperationOptions)
 struct TMapOperationOptions
     : public TSimpleOperationOptions
 {
+    bool EnableMapJobSizeAdjustment;
+    bool EnableOrderedMapJobSizeAdjustment;
+
     REGISTER_YSON_STRUCT(TMapOperationOptions);
 
     static void Register(TRegistrar registrar);
@@ -537,9 +591,13 @@ struct TSortOperationOptionsBase
     i64 MaxValueCountPerSimpleSortJob;
     NChunkPools::TJobSizeAdjusterConfigPtr PartitionJobSizeAdjuster;
     NChunkPools::TJobSizeAdjusterConfigPtr SortedMergeJobSizeAdjuster;
+    bool EnablePartitionMapJobSizeAdjustment;
+    bool EnableOrderedPartitionMapJobSizeAdjustment;
+    bool EnableSortedMergeInSortJobSizeAdjustment;
     TDataBalancerOptionsPtr DataBalancer;
     i64 DefaultPartitionDataWeightForMerging;
     bool EnableFinalPartitionsMergingByDefault;
+    TPushBasedShuffleOptionsPtr PushBasedShuffle;
 
     REGISTER_YSON_STRUCT(TSortOperationOptionsBase);
 
@@ -784,6 +842,22 @@ DEFINE_REFCOUNTED_TYPE(TJobTrackerConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TPushBasedShuffleConfig
+    : public NYTree::TYsonStruct
+{
+    int ThreadCount;
+
+    NDistributedChunkSessionClient::TDistributedChunkSessionSealMonitorConfigPtr SealMonitor;
+
+    REGISTER_YSON_STRUCT(TPushBasedShuffleConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TPushBasedShuffleConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TDockerRegistryConfig
     : public NYTree::TYsonStruct
 {
@@ -864,6 +938,8 @@ struct TControllerAgentConfig
 
     //! Desired number of chunks to release in one batch.
     int DesiredChunkListsPerRelease;
+
+    bool EnableUnstageChunkTreesBatching;
 
     //! Number of the master cells to use for intermediate data storage.
     int IntermediateOutputMasterCellCount;
@@ -1061,17 +1137,6 @@ struct TControllerAgentConfig
     //! Maximum number of foreign chunks to locate per request.
     int MaxChunksPerLocateRequest;
 
-    //! Enables dynamic change of job sizes.
-    bool EnablePartitionMapJobSizeAdjustment;
-
-    //! Enables dynamic change of job sizes.
-    bool EnableOrderedPartitionMapJobSizeAdjustment;
-
-    bool EnableSortedMergeInSortJobSizeAdjustment;
-
-    bool EnableMapJobSizeAdjustment;
-    bool EnableOrderedMapJobSizeAdjustment;
-
     //! Enables splitting of long jobs.
     // TODO(gritukan): Remove it.
     bool EnableJobSplitting;
@@ -1238,6 +1303,7 @@ struct TControllerAgentConfig
     bool EnableVersionedRemoteCopy;
     bool EnableHunksRemoteCopy;
     bool EnableCompressionDictionaryRemoteCopy;
+    bool EnableHunkChunkReplicaPrefetch;
 
     NScheduler::EEnablePorto DefaultEnablePorto;
 
@@ -1309,6 +1375,8 @@ struct TControllerAgentConfig
 
     TJobTrackerConfigPtr JobTracker;
 
+    TPushBasedShuffleConfigPtr PushBasedShuffle;
+
     THashSet<std::string> NetworkProjectsAllowedForOffloading;
 
     bool EnableNetworkInOperationDemand;
@@ -1353,6 +1421,9 @@ struct TControllerAgentConfig
 
     //! If |true|, operations on tables whose primary medium is S3 (offshore) are forbidden.
     bool ForbidOperationsOnOffshoreMedia;
+
+    // COMPAT(kvk1920)
+    bool UseLazyTransactionExternalization;
 
     REGISTER_YSON_STRUCT(TControllerAgentConfig);
 

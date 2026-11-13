@@ -1,5 +1,6 @@
 #include "host.h"
 
+#include "chunk_spec_cache.h"
 #include "clickhouse_invoker.h"
 #include "clickhouse_service_proxy.h"
 #include "config.h"
@@ -25,8 +26,7 @@
 #include <yt/yt/server/lib/misc/address_helpers.h>
 
 #include <yt/yt/ytlib/api/native/client.h>
-
-#include <yt/yt/ytlib/node_tracker_client/node_directory_synchronizer.h>
+#include <yt/yt/ytlib/api/native/connection.h>
 
 #include <yt/yt/ytlib/table_client/table_columnar_statistics_cache.h>
 
@@ -51,10 +51,15 @@
 #include <yt/yt/core/misc/crash_handler.h>
 #include <yt/yt/core/misc/protobuf_helpers.h>
 
-#include <yt/yt/core/net/local_address.h>
+#include <yt/yt/core/net/address.h>
 
 #include <yt/yt/core/rpc/bus/channel.h>
 #include <yt/yt/core/rpc/caching_channel_factory.h>
+
+#include <yt/yt/core/ytree/fluent.h>
+#include <yt/yt/core/ytree/ypath_client.h>
+
+#include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
 #include <Access/AccessControl.h>
 #include <Access/User.h>
@@ -113,8 +118,6 @@ static const std::vector<std::string> DiscoveryAttributes{
     "clique_incarnation",
 };
 
-static const TString SysClickHouse = "//sys/clickhouse";
-
 ////////////////////////////////////////////////////////////////////////////////
 
 class THost::TImpl
@@ -124,14 +127,14 @@ public:
     TImpl(
         THost* owner,
         IInvokerPtr controlInvoker,
-        TYtConfigPtr config,
-        TConnectionCompoundConfigPtr connectionConfig,
-        TPorts ports)
+        NNative::IConnectionPtr connection,
+        TPorts ports,
+        TYtConfigPtr config)
         : Owner_(owner)
         , ControlInvoker_(std::move(controlInvoker))
         , Config_(std::move(config))
+        , Connection_(std::move(connection))
         , Ports_(ports)
-        , ConnectionConfig_(std::move(connectionConfig))
         , GossipExecutor_(New<TPeriodicExecutor>(
             ControlInvoker_,
             BIND(&TImpl::MakeGossip, MakeWeak(this)),
@@ -149,6 +152,7 @@ public:
         , TaskPullerThreadPool_(CreateThreadPool(Config_->TaskPullerThreadCount, "TaskPuller"))
         , ClickHouseTaskPullerInvoker_(CreateClickHouseInvoker(TaskPullerThreadPool_->GetInvoker()))
         , SystemLogTableExporterActionQueue_(New<TActionQueue>("SystemLogTableExporter"))
+        , EffectiveConfig_(Config_)
         , InstanceCookie_(std::stoi(GetEnv("YT_JOB_COOKIE", /*default =*/ "0")))
     {
         TableAttributesToFetch_ = TableAttributesToFetch;
@@ -178,7 +182,7 @@ public:
 
         if (Config_->CypressObjectRepository) {
             CypressObjectRepository_ = New<TCypressObjectRepository>(
-                DictionariesClient_,
+                SqlObjectsClient_,
                 Config_->CypressObjectRepository,
                 FetcherInvoker_);
         }
@@ -239,6 +243,16 @@ public:
             AttributeFetchTimeCounter_ = ClickHouseYtProfiler().Timer("/object_attribute_fetch/execution");
         }
         AttributeFetchBatchSizeCounter_ = ClickHouseYtProfiler().Summary("/object_attribute_fetch/batch_size");
+
+        if (timeHistogramConfig && timeHistogramConfig->ExponentialBounds) {
+            const auto& exponentialBounds = *timeHistogramConfig->ExponentialBounds;
+            ChunkSpecsFetchTimeCounter_ = ClickHouseYtProfiler().TimeHistogram("/chunk_specs_fetch/execution", exponentialBounds->Min, exponentialBounds->Max);
+        } else if (timeHistogramConfig && timeHistogramConfig->CustomBounds) {
+            const auto& customBounds = *timeHistogramConfig->CustomBounds;
+            ChunkSpecsFetchTimeCounter_ = ClickHouseYtProfiler().TimeHistogram("/chunk_specs_fetch/execution", customBounds);
+        } else {
+            ChunkSpecsFetchTimeCounter_ = ClickHouseYtProfiler().Timer("/chunk_specs_fetch/execution");
+        }
     }
 
     void SetContext(DB::ContextMutablePtr context_)
@@ -278,6 +292,15 @@ public:
     DB::ContextMutablePtr GetContext() const
     {
         return getContext();
+    }
+
+    void Reconfigure(const TYtDynamicConfigPtr& dynamicConfig)
+    {
+        YT_ASSERT_INVOKER_AFFINITY(GetControlInvoker());
+
+        auto config = CloneYsonStruct(Config_);
+        config->QuerySettings = dynamicConfig->QuerySettings;
+        EffectiveConfig_.Store(std::move(config));
     }
 
     void Start()
@@ -631,7 +654,16 @@ public:
 
     bool IsLeader() const
     {
-        return !ElectionManager_ || ElectionManager_->IsLeader();
+        return GetLeadershipTransactionId().has_value();
+    }
+
+    std::optional<NTransactionClient::TTransactionId> GetLeadershipTransactionId() const
+    {
+        if (!ElectionManager_) {
+            return NTransactionClient::NullTransactionId;
+        }
+        auto transactionId = ElectionManager_->GetPrerequisiteTransactionId();
+        return transactionId ? std::optional(transactionId) : std::nullopt;
     }
 
     const IInvokerPtr& GetControlInvoker() const
@@ -725,11 +757,21 @@ public:
         return DictionaryAccessControl_ ? DictionariesClient_ : RootClient_;
     }
 
+    NApi::NNative::IClientPtr GetSqlObjectsClient() const
+    {
+        return SqlObjectsClient_;
+    }
+
     NApi::NNative::IClientPtr CreateClient(const std::string& user) const
     {
         auto identity = NRpc::TAuthenticationIdentity(user);
         auto options = NApi::NNative::TClientOptions::FromAuthenticationIdentity(identity);
         return ClientCache_->Get(identity, options);
+    }
+
+    NApi::NNative::IConnectionPtr GetConnection() const
+    {
+        return Connection_;
     }
 
     void HandleSigint()
@@ -742,9 +784,14 @@ public:
         return QueryRegistry_;
     }
 
-    TYtConfigPtr GetConfig() const
+    const TYtConfigPtr& GetConfig() const
     {
         return Config_;
+    }
+
+    TYtConfigPtr GetEffectiveConfig() const
+    {
+        return EffectiveConfig_.Acquire();
     }
 
     EInstanceState GetInstanceState() const
@@ -774,6 +821,16 @@ public:
     NTableClient::TTableColumnarStatisticsCachePtr GetTableColumnarStatisticsCache() const
     {
         return TableColumnarStatisticsCache_;
+    }
+
+    TChunkSpecCachePtr GetChunkSpecCache() const
+    {
+        return ChunkSpecCache_;
+    }
+
+    NProfiling::TEventTimer& GetChunkSpecsFetchTimeCounter()
+    {
+        return ChunkSpecsFetchTimeCounter_;
     }
 
     bool HasUserDefinedSqlObjectStorage() const
@@ -973,8 +1030,8 @@ private:
     THost* const Owner_;
     const IInvokerPtr ControlInvoker_;
     const TYtConfigPtr Config_;
+    const NNative::IConnectionPtr Connection_;
     TPorts Ports_;
-    const TConnectionCompoundConfigPtr ConnectionConfig_;
     THealthCheckerPtr HealthChecker_;
     TMemoryWatchdogPtr MemoryWatchdog_;
     TQueryRegistryPtr QueryRegistry_;
@@ -990,17 +1047,19 @@ private:
     IInvokerPtr ClickHouseTaskPullerInvoker_;
     TActionQueuePtr SystemLogTableExporterActionQueue_;
 
-    NApi::NNative::IConnectionPtr Connection_;
-
     NApi::NNative::IClientPtr RootClient_;
     NApi::NNative::IClientPtr CacheClient_;
     NApi::NNative::IClientPtr DictionariesClient_;
+    NApi::NNative::IClientPtr SqlObjectsClient_;
     NApi::NNative::TClientCachePtr ClientCache_;
+
+    TAtomicIntrusivePtr<TYtConfig> EffectiveConfig_;
 
     TPermissionCachePtr PermissionCache_;
     TObjectAttributeCachePtr TableAttributeCache_;
     NTableClient::TTableColumnarStatisticsCachePtr TableColumnarStatisticsCache_;
     TTableSchemaCachePtr TableSchemaCache_;
+    TChunkSpecCachePtr ChunkSpecCache_;
 
     std::vector<std::string> TableAttributesToFetch_;
 
@@ -1022,22 +1081,13 @@ private:
 
     NProfiling::TEventTimer AttributeFetchTimeCounter_;
     NProfiling::TSummary AttributeFetchBatchSizeCounter_;
+    NProfiling::TEventTimer ChunkSpecsFetchTimeCounter_;
 
     std::atomic<int> SigintCounter_ = {0};
 
     void InitializeClients()
     {
-        NApi::NNative::TConnectionOptions connectionOptions;
-        connectionOptions.RetryRequestQueueSizeLimitExceeded = true;
-
-        Connection_ = NApi::NNative::CreateConnection(
-            ConnectionConfig_,
-            connectionOptions);
         ChannelFactory_ = Connection_->GetChannelFactory();
-
-        // Kick-start node directory synchronizing; otherwise it will start only with first query.
-        Connection_->GetNodeDirectorySynchronizer()->Start();
-
         ClientCache_ = New<NApi::NNative::TClientCache>(Config_->ClientCache, Connection_);
 
         auto getClientForUser = [&] (const std::string& user) {
@@ -1048,6 +1098,7 @@ private:
         RootClient_ = getClientForUser(Config_->User);
         CacheClient_ = getClientForUser(CacheUserName);
         DictionariesClient_ = getClientForUser(DictionariesUserName);
+        SqlObjectsClient_ = getClientForUser(ChytSqlObjectsUserName);
     }
 
     void InitializeCaches()
@@ -1076,6 +1127,16 @@ private:
             TableSchemaCache_ = New<TTableSchemaCache>(
                 Config_->TableSchemaCache,
                 ClickHouseYtProfiler().WithPrefix("/table_schema_cache"));
+        }
+
+        if (Config_->Subquery->ChunkSpecCache) {
+            ChunkSpecCache_ = New<TChunkSpecCache>(
+                Config_->Subquery->ChunkSpecCache,
+                Config_->Subquery->MaxChunksPerFetch,
+                Config_->Subquery->MaxChunksPerLocateRequest,
+                FetcherInvoker_,
+                Logger(),
+                ClickHouseYtProfiler().WithPrefix("/chunk_specs_cache"));
         }
     }
 
@@ -1243,7 +1304,11 @@ private:
 
     void CreateOrchidNode()
     {
-        const auto& host = NNet::GetLocalHostName();
+        if (Config_->OrchidRoot.empty()) {
+            return;
+        }
+
+        const auto& host = *Config_->Address;
         NApi::TCreateNodeOptions options;
         options.Recursive = true;
         options.Force = true;
@@ -1251,7 +1316,7 @@ private:
         attributes->Set("remote_addresses", GetLocalAddresses({{"default", host}}, Ports_.Rpc));
         options.Attributes = std::move(attributes);
 
-        auto path = SysClickHouse + "/orchids/" + ToString(Config_->CliqueId) + "/" + ToString(InstanceCookie_);
+        auto path = Format("%v/%v", Config_->OrchidRoot, InstanceCookie_);
 
         WaitFor(RootClient_->CreateNode(path, EObjectType::Orchid, options))
             .ThrowOnError();
@@ -1281,16 +1346,21 @@ private:
 
 THost::THost(
     IInvokerPtr controlInvoker,
+    NNative::IConnectionPtr connection,
     TPorts ports,
-    TYtConfigPtr config,
-    TConnectionCompoundConfigPtr connectionConfig)
+    TYtConfigPtr config)
     : Impl_(New<TImpl>(
         this,
         std::move(controlInvoker),
-        std::move(config),
-        std::move(connectionConfig),
-        ports))
+        std::move(connection),
+        ports,
+        std::move(config)))
 { }
+
+void THost::Reconfigure(const TYtDynamicConfigPtr& dynamicConfig)
+{
+    Impl_->Reconfigure(dynamicConfig);
+}
 
 void THost::Start()
 {
@@ -1421,6 +1491,11 @@ bool THost::IsLeader() const
     return Impl_->IsLeader();
 }
 
+std::optional<NTransactionClient::TTransactionId> THost::GetLeadershipTransactionId() const
+{
+    return Impl_->GetLeadershipTransactionId();
+}
+
 void THost::HandleCrashSignal() const
 {
     return Impl_->HandleCrashSignal();
@@ -1446,9 +1521,19 @@ NApi::NNative::IClientPtr THost::GetDictionariesClient() const
     return Impl_->GetDictionariesClient();
 }
 
+NApi::NNative::IClientPtr THost::GetSqlObjectsClient() const
+{
+    return Impl_->GetSqlObjectsClient();
+}
+
 NApi::NNative::IClientPtr THost::CreateClient(const std::string& user) const
 {
     return Impl_->CreateClient(user);
+}
+
+NApi::NNative::IConnectionPtr THost::GetConnection() const
+{
+    return Impl_->GetConnection();
 }
 
 TFuture<void> THost::GetIdleFuture() const
@@ -1461,9 +1546,14 @@ TQueryRegistryPtr THost::GetQueryRegistry() const
     return Impl_->GetQueryRegistry();
 }
 
-TYtConfigPtr THost::GetConfig() const
+const TYtConfigPtr& THost::GetConfig() const
 {
     return Impl_->GetConfig();
+}
+
+TYtConfigPtr THost::GetEffectiveConfig() const
+{
+    return Impl_->GetEffectiveConfig();
 }
 
 EInstanceState THost::GetInstanceState() const
@@ -1504,6 +1594,16 @@ void THost::InitSingletones()
 NTableClient::TTableColumnarStatisticsCachePtr THost::GetTableColumnarStatisticsCache() const
 {
     return Impl_->GetTableColumnarStatisticsCache();
+}
+
+TChunkSpecCachePtr THost::GetChunkSpecCache() const
+{
+    return Impl_->GetChunkSpecCache();
+}
+
+NProfiling::TEventTimer& THost::GetChunkSpecsFetchTimeCounter() const
+{
+    return Impl_->GetChunkSpecsFetchTimeCounter();
 }
 
 THost::~THost() = default;

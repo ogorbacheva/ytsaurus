@@ -1,6 +1,6 @@
 #include "ordered_source_computation_base.h"
 
-#include "message_filter.h"
+#include "read_delay.h"
 
 #include <yt/yt/flow/library/cpp/connectors/common/ordered_source.h>
 
@@ -28,27 +28,12 @@ TOrderedSourceComputationBase::TOrderedSourceComputationBase(
         OrderedSource_ = DynamicPointerCast<IOrderedSource>(ActiveSource_);
         THROW_ERROR_EXCEPTION_UNLESS(OrderedSource_, "Expected IOrderedSource for source %Qv in computation %Qv", ActiveSourceStreamId_, GetComputationId());
     }
-    Filter_ = CreateMessageFilter(GetDynamicSpec()->SkipIfExpression);
     SkippedByExpressionCounter_ = GetContext()->Profiler.WithPrefix("/source_streams").Counter("/skipped_by_expression_count");
-    SubscribeOnReconfigure(
-        BIND([this] {
-            Filter_->Reconfigure(GetDynamicSpec()->SkipIfExpression);
-        }),
-        EWatchReconfigure::DynamicComputationSpec);
 }
 
 void TOrderedSourceComputationBase::DoPrepare(const IComputationRunContextPtr& context)
 {
     InitOutputStoreDistribution(context);
-}
-
-TComputationOrchidStatePtr TOrderedSourceComputationBase::GetOrchidState()
-{
-    auto state = TUniversalComputationBase::GetOrchidState();
-    auto universalState = DynamicPointerCast<TUniversalComputationOrchidState>(state);
-    YT_VERIFY(universalState);
-    universalState->PartitionDescription = Format("SourceKey: %v", *GetContext()->Partition->SourceKey);
-    return universalState;
 }
 
 void TOrderedSourceComputationBase::DoInit(IJobInitContextPtr /*initContext*/)
@@ -105,14 +90,11 @@ void TOrderedSourceComputationBase::ValidateOrderedSourceSpec(const TComputation
 
 TSystemTimestamp TOrderedSourceComputationBase::GetReadDelayThreshold()
 {
-    auto threshold = InfinitySystemTimestamp;
-    if (GetSpec()->WatermarkStrategy->WatermarkAlignment && GetSpec()->WatermarkStrategy->WatermarkAlignment->ReadDelays) {
-        for (const auto& [streamId, delay] : *GetSpec()->WatermarkStrategy->WatermarkAlignment->ReadDelays) {
-            auto watermark = GetEpochEventWatermark(streamId);
-            threshold = std::min(threshold, TSystemTimestamp(std::max(watermark.Underlying(), delay.Seconds()) - delay.Seconds()));
-        }
-    }
-    return threshold;
+    return NFlow::GetReadDelayThreshold(
+        GetSpec()->WatermarkStrategy->WatermarkAlignment,
+        BIND([this] (const TStreamId& streamId) {
+            return GetEpochEventWatermark(streamId);
+        }));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

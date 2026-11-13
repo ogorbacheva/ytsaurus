@@ -22,7 +22,7 @@ from yt.yql.tests.common.test_framework.test_utils import infer_yt_schema
 from yt.yql.tests.sql.runners.common import DATA_PATH, resolve_langver, maybe_append_table_attr_canon, iter_out_tables_for_canon
 from yt.yql.tests.sql.runners.yt_setup import upload_yt_files
 
-YTFILERUN_PATH = yql_binary_path('yt/yql/tools/ytfilerun/ytfilerun')
+YTFILERUN_PATH = yql_binary_path('yt/yql/tools/ytfilerun/impl/ytfilerun')
 YSONDIFF_PATH = yql_binary_path('yql/essentials/tools/ysondiff/ysondiff')
 
 
@@ -91,7 +91,9 @@ def run_test(provider, prepare, suite, case, cfg, tmpdir, tmpdir_module, mongo, 
     if no_detailed:
         log('will ignore detailed plan differences')
 
-    assert not get_gateway_cfg_patch(config), 'Patching yt test is not supported yet'
+    if get_gateway_cfg_patch(config):
+        pytest.skip('Gateways patch is not supported')
+
     # YT run
     yql_api.set_table_prefix('//' + get_test_prefix() + '/')
 
@@ -108,9 +110,22 @@ def run_test(provider, prepare, suite, case, cfg, tmpdir, tmpdir_module, mongo, 
         pretty_plan=False,
         parameters=parameters)
 
+    for item in config:
+        if item[0] == 'yt_out_table_attr':
+            _, table, attribute, expected = item
+            path = '//{}/{}/@{}'.format(get_test_prefix(), table, attribute)
+            actual = yt.yt_client.get(path)
+            assert str(actual) == expected, \
+                'OUT_TABLE_ATTR_DIFFER: %(path)s\n' \
+                'Expected: %(expected)s\n' \
+                'Actual: %(actual)s\n' % locals()
+
     if xfail:
         log('XFail errors: ' + yt_res.std_err)
         do_custom_error_check(yt_res, sql_query)
+        return None
+
+    if 'ytfile can not' in sql_query and any(item[0] == 'yt_out_table_attr' for item in config):
         return None
 
     yt_res_yson = yt_res.results.get('data', [])

@@ -18,7 +18,6 @@ import yt.wrapper as yt_wrapper
 from yt.recipe.basic.lib import get_yt_clusters
 from yt.wrapper import yson
 from yt.wrapper.constants import UI_ADDRESS_PATTERN
-from yt.wrapper.flow_commands import get_controller_logs
 from yt.common import wait, WaitFailed
 
 from . import default_config_parameters
@@ -26,6 +25,39 @@ from .helpers import dump_yson_config, get_yson_config
 from .monitoring_stack import MonitoringStack, MONITORING_STACK_ENABLED
 
 log = logging.getLogger("flow_process")
+
+
+def _load_local_yt_clusters(environ):
+    proxy = environ.get("YT_PROXY")
+    if proxy is not None and not proxy:
+        raise ValueError("YT_PROXY must not be empty")
+    aliases = yson.loads(environ.get("YT_PROXY_URL_ALIASING_CONFIG", "{}").encode("utf-8"))
+    if not isinstance(aliases, dict) or any(
+        not isinstance(address, str) or not address for address in aliases.values()
+    ):
+        raise ValueError("YT_PROXY_URL_ALIASING_CONFIG must map cluster names to nonempty addresses")
+    proxy_address = aliases.get(proxy, proxy)
+    try:
+        clusters = {cluster.yt_id: cluster.get_proxy_address() for cluster in get_yt_clusters()}
+    except FileNotFoundError:
+        if not proxy:
+            raise ValueError("Without yt_cluster_info.json, set YT_PROXY")
+        names = [proxy] if proxy in aliases else [name for name, address in aliases.items() if address == proxy]
+        if len(names) != 1:
+            raise ValueError(
+                "Cannot derive a unique cluster identity: use an unambiguous YT_PROXY alias or yt_cluster_info.json"
+            )
+        clusters = {names[0]: proxy_address}
+    if not clusters:
+        raise ValueError("yt_cluster_info.json must contain at least one cluster")
+
+    primary = next(iter(clusters))
+    if proxy is not None and proxy_address != clusters[primary]:
+        raise ValueError("YT_PROXY conflicts with the primary cluster address in yt_cluster_info.json")
+    for name, address in clusters.items():
+        if name in aliases and aliases[name] != address:
+            raise ValueError(f"YT_PROXY_URL_ALIASING_CONFIG conflicts with the address of cluster {name!r}")
+    return clusters
 
 
 ##################################################################
@@ -190,7 +222,12 @@ def _enable_proxy_signatures_for_cluster(client, cluster_name: str) -> None:
 
     # Wait for proxies to apply the new dynamic config and publish a key.
     wait(
-        lambda: client.exists("//sys/public_keys/by_owner") and len(client.list("//sys/public_keys/by_owner")) > 0,
+        lambda: all(
+            client.exists(f"//sys/public_keys/by_owner/{proxy}")
+            for kind, _ in _PROXY_KINDS
+            if client.exists(f"//sys/{kind}")
+            for proxy in client.list(f"//sys/{kind}")
+        ),
         timeout=60,
     )
 
@@ -236,12 +273,16 @@ class FlowTestBase:
         cls.external_yt_config = _load_external_yt_config()
 
         if cls.external_yt_config is None:
-            clusters = get_yt_clusters()
-
-            cls.primary_cluster_name = clusters.primary_cluster.yt_id
-            cls.remote_cluster_names = [c.yt_id for c in clusters.replica_clusters]
-            cls.cluster_name_to_client = {c.yt_id: c.get_yt_client() for c in clusters}
-            cls.cluster_name_to_url = {c.yt_id: c.get_proxy_address() for c in clusters}
+            # Hide the credentials of the user launching local tests before creating clients.
+            os.environ["YT_USER"] = "root"
+            # Tokens from env are replaced in output logs, so use some random string.
+            os.environ["YT_TOKEN"] = "test986104827492"
+            cls.cluster_name_to_url = _load_local_yt_clusters(os.environ)
+            cls.primary_cluster_name, *cls.remote_cluster_names = cls.cluster_name_to_url
+            cls.cluster_name_to_client = {
+                name: yt_wrapper.YtClient(proxy=proxy, token=os.environ["YT_TOKEN"])
+                for name, proxy in cls.cluster_name_to_url.items()
+            }
             cls.base_work_yt_path = "//tmp/test"
             cls.tablet_cell_bundle = "default"
             cls.primary_medium = "default"
@@ -293,12 +334,7 @@ class FlowTestBase:
 
         # Standard environ variables with current local yt setup.
 
-        if cls.external_yt_config is None:
-            # Hide the environ variables of the user launching tests.
-            os.environ["YT_USER"] = "root"
-            # Tokens from env are replaced in output logs, so use some random string.
-            os.environ["YT_TOKEN"] = "test986104827492"
-        else:
+        if cls.external_yt_config is not None:
             # The local YT recipe stubs YT_TOKEN/YT_USER for its own cluster; clear them so
             # yt-wrapper falls back to the developer's credentials (~/.yt/token).
             os.environ.pop("YT_USER", None)
@@ -418,6 +454,7 @@ class FlowTestBase:
         workers_count: int,
         secret_env: list[str] | None = None,
         runtime_cluster: str | None = None,
+        config_patch: dict | None = None,
     ):
         """Patches the pipeline-config YSON in-place to enable a vanilla-jobs launch."""
         config_path = pipeline_binary_args.get("--config")
@@ -448,6 +485,8 @@ class FlowTestBase:
             pipeline_config["vanilla"]["runtime_cluster"] = runtime_cluster
             # All clusters of the test federation expose the same proxy role.
             pipeline_config["vanilla"]["runtime_proxy_role"] = self.RPC_PROXY_ROLE
+        if config_patch:
+            pipeline_config["vanilla"].update(config_patch)
         dump_yson_config(pipeline_config, config_path)
 
     @contextmanager
@@ -468,11 +507,18 @@ class FlowTestBase:
         use_vanilla_jobs: bool = False,
         vanilla_secret_env: list[str] | None = None,
         vanilla_runtime_cluster: str | None = None,
+        vanilla_config_patch: dict | None = None,
         patch_node_config: bool = True,
         additional_env: dict[str, str] | None = None,
         worker_node_config_overrides: list[dict] | None = None,
         leader_wait_timeout: Optional[int] = None,
+        wait_pipeline: bool = True,
     ):
+        """Start the controllers, the workers and (unless run_pipeline is False) the runner.
+
+        wait_pipeline=False skips the pipeline state waits, which go through the RPC proxy;
+        for clusters where the proxy cannot reach the controller.
+        """
         if node_config is None:
             node_config = {}
         if binary_path is None:
@@ -495,7 +541,9 @@ class FlowTestBase:
             leader_wait_timeout = max(leader_wait_timeout, 120)
 
         if use_vanilla_jobs:
-            self._inject_vanilla_block(pipeline_binary_args, workers_count, vanilla_secret_env, vanilla_runtime_cluster)
+            self._inject_vanilla_block(
+                pipeline_binary_args, workers_count, vanilla_secret_env, vanilla_runtime_cluster, vanilla_config_patch
+            )
 
         if problems:
             if controller_problems_config is None:
@@ -524,6 +572,7 @@ class FlowTestBase:
             use_vanilla_jobs=use_vanilla_jobs,
             worker_node_config_overrides=worker_node_config_overrides,
             client=self.client,
+            dump_pipeline_state=self._try_dump_pipeline_state,
         ) as federation:
             monitoring = (
                 MonitoringStack(self.path_to_flow_logs, self.port_manager) if MONITORING_STACK_ENABLED else None
@@ -538,22 +587,21 @@ class FlowTestBase:
                         lambda: self.client.exists(f"{self.pipeline_path}/@leader_controller_address"),
                         timeout=leader_wait_timeout,
                     )
-                if run_pipeline:
-                    self.wait_pipeline_state(["working", "completed"])
-                else:
-                    wait(
-                        lambda: self.client.get_pipeline_state(self.pipeline_path) != "",
-                        timeout=180,
-                        ignore_exceptions=True,
-                    )
+                if wait_pipeline:
+                    if run_pipeline:
+                        self.wait_pipeline_state(["working", "completed"])
+                    else:
+                        wait(
+                            lambda: self.client.get_pipeline_state(self.pipeline_path) != "",
+                            timeout=180,
+                            ignore_exceptions=True,
+                        )
                 yield federation
             except WaitFailed:
                 debug_hang = True
                 raise
             finally:
-                self._try_dump_flow_view()
-                self._try_dump_description()
-                federation.try_dump_processes_state(debug_hang=debug_hang)
+                federation.try_dump_final_state(debug_hang=debug_hang)
                 # Pause before teardown so the pipeline stays up for inspection. Requested explicitly
                 # via PAUSE_BEFORE_FLOW_PROCESS_FEDERATION_TEARDOWN, or implicitly whenever the
                 # monitoring stack actually came up (its whole point is to browse the live metrics) --
@@ -567,6 +615,10 @@ class FlowTestBase:
                     monitoring.notify_hold()
                 while pause_before_teardown:
                     time.sleep(1)
+
+    def _try_dump_pipeline_state(self):
+        self._try_dump_flow_view()
+        self._try_dump_description()
 
     def _try_dump_flow_view(self):
         try:
@@ -584,28 +636,15 @@ class FlowTestBase:
         except Exception as e:
             log.error("Can't dump flow description", exc_info=e)
 
-    def _get_recent_controller_messages(self, count=5, scan_count=1000):
-        """Return the last `count` error-level and last `count` warning-level lines
-        from the controller public log (errors first)."""
-        try:
-            rows, _ = get_controller_logs(self.pipeline_path, count=scan_count, client=self.client)
-        except Exception as e:
-            log.warning("Can't read controller logs for timeout error enrichment", exc_info=e)
-            return []
-
-        errors = []
-        warnings = []
-        for row in rows:
-            data = row.get("data", "")
-            # Log line format: "<datetime>\t<level>\t<category>\t<message>...".
-            fields = data.split("\t")
-            if len(fields) < 2:
-                continue
-            if fields[1] == "E":
-                errors.append(data)
-            elif fields[1] == "W":
-                warnings.append(data)
-        return errors[-count:] + warnings[-count:]
+    def read_internal_key_states(self, computation_id):
+        response = self.client.read_states(
+            self.pipeline_path, computation_id=computation_id, target="key_state", limit=10000
+        )
+        return [
+            {"computation_id": row["computation_id"], "key": row["key"], "name": name, "state": state}
+            for row in response["key_states"]
+            for name, state in row["states"].items()
+        ]
 
     def wait_pipeline_state(self, state, timeout=180):
         """Wait until the pipeline reaches the given state (or one of the given states).
@@ -613,8 +652,8 @@ class FlowTestBase:
         Tolerates transient errors (e.g. "Cannot connect to pipeline controller leader")
         that occur while the controller is starting up or restarting.
 
-        On timeout the raised error is enriched with the last controller error and warning
-        log lines, so a stuck pipeline (e.g. a repeatedly failing job) shows its cause directly.
+        On timeout the original error is enriched with server-aggregated pipeline warnings
+        and errors when they are available.
 
         Args:
             state: a string (e.g. "completed") or a list of strings (e.g. ["working", "completed"]).
@@ -628,15 +667,38 @@ class FlowTestBase:
                 timeout=timeout,
                 ignore_exceptions=True,
             )
-        except WaitFailed:
-            messages = self._get_recent_controller_messages()
-            if not messages:
-                raise
-            raise WaitFailed(
-                "Pipeline did not reach state {} in {}s. Recent controller errors and warnings:\n{}".format(
-                    state, timeout, "\n".join(messages)
+        except WaitFailed as error:
+            try:
+                description = self.client.flow_execute(
+                    self.pipeline_path,
+                    flow_command="describe-pipeline",
+                    flow_argument={"status_only": True},
                 )
+                messages = [
+                    message
+                    for message in description["messages"]
+                    if yson.get_bytes(message["level"]).decode("utf-8").lower()
+                    in {"warning", "error", "alert", "fatal"}
+                ]
+                if messages:
+                    rendered_messages = yson.dumps(messages, yson_format="pretty").decode("utf-8")
+                    error.add_note(f"Pipeline warnings and errors:\n{rendered_messages.rstrip()}")
+            except Exception:
+                pass
+            raise
+
+    def wait_jobs_initialized(self, timeout=180):
+        def jobs_initialized():
+            statuses = self.client.get_flow_view(
+                self.pipeline_path,
+                view_path="/feedback/partition_job_statuses",
+                cache=False,
             )
+            return bool(statuses) and all(
+                status.get("current_job_status", {}).get("inited_time") is not None for status in statuses.values()
+            )
+
+        wait(jobs_initialized, timeout=timeout, ignore_exceptions=True)
 
     def ask_key_visitor_to_complete(self, computation_id, stream_id):
         """Ask a running key visitor to finish sweeping.
@@ -653,21 +715,22 @@ class FlowTestBase:
         )
 
     def wait_for_pipeline_error(self, error_substring, timeout=60):
-        """Wait until an error containing the given substring appears in the flow view."""
+        """Wait until the pipeline description contains the given error substring."""
 
-        # TODO: Search only in feedback/retryable_errors instead of the entire flow view.
         def check():
-            view = self.client.get_flow_view(self.pipeline_path, cache=False)
-            return error_substring in str(view)
+            description = self.client.flow_execute(
+                self.pipeline_path,
+                flow_command="describe-pipeline",
+            )
+            return error_substring in str(description)
 
         wait(check, timeout=timeout, ignore_exceptions=True)
 
     def get_processing_watermark(self):
-        epoch = self.client.get_flow_view(self.pipeline_path, view_path="/state/epoch")
         united_stream = self.client.get_flow_view(self.pipeline_path, view_path="/state/traverse_data/united_stream")
-        if epoch == united_stream.get("epoch", -1):
-            return united_stream.get("event_watermark", 0)
-        return 0
+        # Job restarts can leave stream traverses on mixed spec generations.
+        # Their watermarks remain monotonic.
+        return united_stream.get("event_watermark", 0)
 
     def run_yt_sync_ensure(self, yt_sync_binary_path, extra_env=None):
         env = dict(os.environ)

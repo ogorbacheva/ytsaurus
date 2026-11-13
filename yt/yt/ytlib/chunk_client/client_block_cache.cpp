@@ -142,6 +142,8 @@ public:
             profiler)
         , Type_(type)
         , MemoryUsageTracker_(std::move(memoryUsageTracker))
+        , LookupHitCounter_(profiler.Counter("/lookup_hit_count"))
+        , LookupMissCounter_(profiler.Counter("/lookup_miss_count"))
     {
         ChunkShards_.reset(new TChunkShard[Config_->ShardCount]);
     }
@@ -177,11 +179,20 @@ public:
 
         auto block = TAsyncSlruCacheBase::Find(id);
         if (block) {
+            const auto& cachedBlock = block->CachedBlock();
+            if (cachedBlock) {
+                LookupHitCounter_.Increment();
+            } else {
+                LookupMissCounter_.Increment();
+            }
+
             YT_TLOG_TRACE("Block cache hit")
                 .With("BlockId", id)
                 .With("BlockType", Type_);
-            return block->CachedBlock();
+            return cachedBlock;
         } else {
+            LookupMissCounter_.Increment();
+
             YT_TLOG_TRACE("Block cache miss")
                 .With("BlockId", id)
                 .With("BlockType", Type_);
@@ -229,12 +240,15 @@ public:
 private:
     struct TChunkShard
     {
-        YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ShardLock);
+        YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ShardLock);
         THashMap<TChunkId, THashSet<TBlockInfo>> ChunkToBlocks;
     };
 
     const EBlockType Type_;
     const IMemoryUsageTrackerPtr MemoryUsageTracker_;
+
+    const NProfiling::TCounter LookupHitCounter_;
+    const NProfiling::TCounter LookupMissCounter_;
 
     std::unique_ptr<TChunkShard[]> ChunkShards_;
 

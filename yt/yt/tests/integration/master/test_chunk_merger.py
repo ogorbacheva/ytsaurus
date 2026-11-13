@@ -1,4 +1,4 @@
-from yt_env_setup import YTEnvSetup
+from yt_env_setup import YTEnvSetup, with_portals_dir
 
 from yt_commands import (
     authors, raises_yt_error, wait, create, ls, get, set, copy, remove,
@@ -8,7 +8,7 @@ from yt_commands import (
     sync_create_cells, sync_mount_table, update_nodes_dynamic_config,
     start_transaction, abort_transaction, commit_transaction,
     sync_unmount_table, create_dynamic_table, wait_for_sys_config_sync,
-    get_singular_chunk_id, get_driver)
+    get_singular_chunk_id, get_driver, get_table_columnar_statistics)
 
 from yt.test_helpers import assert_items_equal
 
@@ -225,6 +225,28 @@ class TestChunkMerger(YTEnvSetup):
 
         chunk_id = get_singular_chunk_id("//tmp/t")
         assert get("#{}/@data_weight".format(chunk_id)) > 0
+
+    @authors("apollo1321")
+    @pytest.mark.parametrize("merge_mode", ["deep", "shallow"])
+    def test_heavy_column_statistics_are_preserved(self, merge_mode):
+        create("table", "//tmp/t")
+        self._remove_merge_quotas("//tmp/t")
+
+        write_table("<append=true>//tmp/t", {"a": "b" * 100})
+        write_table("<append=true>//tmp/t", {"a": "c" * 200})
+        write_table("<append=true>//tmp/t", {"a": "d" * 300})
+        write_table("<append=true>//tmp/t", {"a": "e" * 400})
+
+        def get_master_statistics():
+            return get_table_columnar_statistics('["//tmp/t{a}";]', fetcher_mode="from_master")[0]
+
+        assert get_master_statistics()["column_data_weights"]["a"] > 0
+        assert get_master_statistics()["legacy_chunks_data_weight"] == 0
+
+        _wait_for_merge("//tmp/t", merge_mode)
+
+        assert get_master_statistics()["column_data_weights"]["a"] > 0
+        assert get_master_statistics()["legacy_chunks_data_weight"] == 0
 
     @authors("aleksandra-zh", "cherepashka")
     @pytest.mark.parametrize("transactional", [False, True])
@@ -1156,12 +1178,6 @@ class TestChunkMerger(YTEnvSetup):
         assert read_table("//tmp/t{c, b}") == read_table("//tmp/t1{c, b}")
         assert read_table("//tmp/t{zzzzz}") == read_table("//tmp/t1{zzzzz}")
 
-        assert read_table("//tmp/t{a}") == read_table("//tmp/t1{a}")
-        assert read_table("//tmp/t{a, }") == read_table("//tmp/t1{a, }")
-        assert read_table("//tmp/t{a, a}") == read_table("//tmp/t1{a, a}")
-        assert read_table("//tmp/t{c, b}") == read_table("//tmp/t1{c, b}")
-        assert read_table("//tmp/t{zzzzz}") == read_table("//tmp/t1{zzzzz}")
-
     @authors("babenko", "h0pless")
     @pytest.mark.parametrize(
         "optimize_for, merge_mode",
@@ -1471,22 +1487,23 @@ class TestChunkMerger(YTEnvSetup):
     @authors("cherepashka")
     @pytest.mark.parametrize("merge_mode", ["auto", "deep", "shallow"])
     @pytest.mark.parametrize("operation", [copy, move])
+    @with_portals_dir
     def test_inherit_chunk_merger_mode_after_copy(self, merge_mode, operation):
         create("map_node", "//tmp/d")
         set("//tmp/d/@chunk_merger_mode", merge_mode)
         assert get("//tmp/d/@chunk_merger_mode") == merge_mode
 
-        create("table", "//aba/d1/d2/t", recursive=True)
-        set("//aba/d1/d2/t/@chunk_merger_mode", "none")
-        self._remove_merge_quotas("//aba/d1/d2/t")
-        operation("//aba/d1", "//tmp/d/d1")
+        create("table", "//portals/d1/d2/t", recursive=True)
+        set("//portals/d1/d2/t/@chunk_merger_mode", "none")
+        self._remove_merge_quotas("//portals/d1/d2/t")
+        # Keep the account whose merge quotas were zeroed.
+        operation("//portals/d1", "//tmp/d/d1", preserve_account=True)
         assert get("//tmp/d/d1/d2/t/@chunk_merger_mode") == merge_mode
 
         write_table("<append=true>//tmp/d/d1/d2/t", {"a": "b"})
         write_table("<append=true>//tmp/d/d1/d2/t", {"a": "c"})
         write_table("<append=true>//tmp/d/d1/d2/t", {"a": "d"})
         _wait_for_merge("//tmp/d/d1/d2/t", None)
-        remove("//aba", force=True)
 
     @authors("kazachonok")
     def test_shallow_merge_cancellation(self):
@@ -1596,6 +1613,7 @@ class TestChunkMergerPortal(TestChunkMergerMulticell):
 
     @authors("cherepashka")
     @pytest.mark.parametrize("merge_mode", ["deep", "shallow"])
+    @with_portals_dir
     def test_cross_portal_merge(self, merge_mode):
         create("table", "//tmp/t1")
         self._remove_merge_quotas("//tmp/t1")
@@ -1606,9 +1624,9 @@ class TestChunkMergerPortal(TestChunkMergerMulticell):
         write_table("<append=true>//tmp/t1", {"a": "e"})
         set("//tmp/t1/@chunk_merger_mode", merge_mode)
 
-        copy("//tmp/t1", "//home/t2", recursive=True)
+        copy("//tmp/t1", "//portals/t2")
 
-        _wait_for_merge("//home/t2", None)
+        _wait_for_merge("//portals/t2", None)
 
 
 class TestChunkMergerSequoia(TestChunkMergerMulticell):

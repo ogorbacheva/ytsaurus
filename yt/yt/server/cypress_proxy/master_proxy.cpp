@@ -7,10 +7,14 @@
 
 #include <yt/yt/server/lib/sequoia/helpers.h>
 
+#include <yt/yt/server/lib/table_server/proto/table_manager.pb.h>
+
 #include <yt/yt/ytlib/object_client/master_ypath_proxy.h>
 #include <yt/yt/ytlib/object_client/object_service_proxy.h>
 
 #include <yt/yt/ytlib/object_client/proto/master_ypath.pb.h>
+
+#include <yt/yt/ytlib/transaction_client/action.h>
 
 #include <yt/yt/client/cypress_client/public.h>
 
@@ -48,11 +52,13 @@ public:
     using TNodeProxyBase::TNodeProxyBase;
 
 protected:
+    DECLARE_YPATH_SERVICE_METHOD(NObjectClient::NProto, CreateObject);
     DECLARE_YPATH_SERVICE_METHOD(NObjectClient::NProto, MaterializeCopyPrerequisites);
     DECLARE_YPATH_SERVICE_METHOD(NObjectClient::NProto, MaterializeNode);
 
     bool DoInvoke(const ISequoiaServiceContextPtr& context) override
     {
+        DISPATCH_YPATH_SERVICE_METHOD(CreateObject);
         DISPATCH_YPATH_SERVICE_METHOD(MaterializeCopyPrerequisites);
         DISPATCH_YPATH_SERVICE_METHOD(MaterializeNode);
 
@@ -71,6 +77,66 @@ protected:
     }
 };
 
+DEFINE_YPATH_SERVICE_METHOD(TMasterProxy, CreateObject)
+{
+    auto type = FromProto<EObjectType>(request->type());
+    if (type != EObjectType::SecondaryIndex) {
+        InvokeResult_ = TForwardToMasterPayload{};
+        return;
+    }
+
+    context->AnnotateRequest()
+        .With("Type", type);
+
+    THROW_ERROR_EXCEPTION_IF(SequoiaSession_->GetCurrentCypressTransactionId(),
+        "Cannot create secondary index within a transaction");
+
+    auto attributes = request->has_object_attributes()
+        ? NYTree::FromProto(request->object_attributes())
+        : nullptr;
+
+    THROW_ERROR_EXCEPTION_UNLESS(attributes, "Attributes missing during secondary index creation");
+
+    auto tableId = attributes->Get<TTableId>("table_id");
+    auto indexTableId = attributes->Get<TTableId>("index_table_id");
+    auto tableCellTag = CellTagFromId(tableId);
+    auto indexTableCellTag = CellTagFromId(indexTableId);
+
+    SequoiaSession_->AcquireCypressLockInSequoia(
+        tableId,
+        ELockMode::Exclusive);
+
+    SequoiaSession_->AcquireCypressLockInSequoia(
+        indexTableId,
+        ELockMode::Exclusive);
+
+    const auto& transaction = SequoiaSession_->SequoiaTransaction();
+
+    auto hintId = transaction->GenerateObjectId(type, tableCellTag, /*sequoia*/ true);
+
+    NTableServer::NProto::TReqCreateSecondaryIndex req;
+    ToProto(req.mutable_object_attributes(), *attributes);
+    ToProto(req.mutable_hint_id(), hintId);
+
+    // Secondary index is instantiated on indexed table native cell (1) and
+    // index table native cell (2), creation is replicated to
+    // the indexed table external cell (3) and from that point
+    // changes to the object and its removal are replicated from (1) to (2) and (3).
+    transaction->AddTransactionAction(
+        tableCellTag,
+        NTransactionClient::MakeTransactionActionData(req));
+    if (tableCellTag != indexTableCellTag) {
+        transaction->AddTransactionAction(
+            indexTableCellTag,
+            NTransactionClient::MakeTransactionActionData(req));
+    }
+
+    // We totally rely on master accepting the hint here.
+    ToProto(response->mutable_object_id(), hintId);
+
+    FinishSequoiaSessionAndReply(context, CellIdFromObjectId(tableId), /*commitSession*/ true);
+}
+
 DEFINE_YPATH_SERVICE_METHOD(TMasterProxy, MaterializeCopyPrerequisites)
 {
     if (!request->sequoia_destination()) {
@@ -82,14 +148,10 @@ DEFINE_YPATH_SERVICE_METHOD(TMasterProxy, MaterializeCopyPrerequisites)
 
     auto transactionId = SequoiaSession_->GetCurrentCypressTransactionId();
 
-    context->SetRequestInfo("TransactionId: %v, SchemaCount: %v, OldSchemaIds: %v",
-        transactionId,
-        request->schema_descriptors_size(),
-        std::views::transform(
-            request->schema_descriptors(),
-            [] (const auto& entry) {
-                return FromProto<TMasterTableSchemaId>(entry.schema_id());
-            }));
+    context->AnnotateRequest()
+        .With("TransactionId", transactionId)
+        .With("SchemaCount", request->schema_descriptors_size())
+        .With("OldSchemaIds", std::views::transform( request->schema_descriptors(), [] (const auto& entry) { return FromProto<TMasterTableSchemaId>(entry.schema_id()); }));
 
     auto addNodeIdMapping = [&response] (TNodeId nodeId, TCellTag cellTag) {
         auto* nodeIdMapping = response->add_node_id_to_cell_tag();
@@ -111,7 +173,9 @@ DEFINE_YPATH_SERVICE_METHOD(TMasterProxy, MaterializeCopyPrerequisites)
         }
 
         auto [_, emplaced] = schemaDescriptors.emplace(schemaId, entry.mutable_schema());
-        YT_TLOG_ALERT_AND_THROW_UNLESS(emplaced, "Duplicate schema ID received during copy prerequisite materialization")
+        YT_TLOG_ALERT_AND_THROW_UNLESS(
+            emplaced,
+            "Duplicate schema ID received during copy prerequisite materialization")
             .With("SchemaId", schemaId);
     }
 
@@ -164,29 +228,9 @@ DEFINE_YPATH_SERVICE_METHOD(TMasterProxy, MaterializeCopyPrerequisites)
         }
     }
 
-    context->SetResponseInfo("SchemaIdMapping: %v, NodeIdToDstCellTagMapping: %v",
-        MakeShrunkFormattableView(
-            response->old_to_new_schema_id(),
-            [] (
-                TStringBuilderBase* builder,
-                const auto& entry
-            ) {
-                auto oldId = FromProto<TMasterTableSchemaId>(entry.old_schema_id());
-                auto newId = FromProto<TMasterTableSchemaId>(entry.new_schema_id());
-                builder->AppendFormat("%v -> %v", oldId, newId);
-            },
-            /*limit*/ 100),
-        MakeShrunkFormattableView(
-            response->node_id_to_cell_tag(),
-            [] (
-                TStringBuilderBase* builder,
-                const auto& entry
-            ) {
-                auto nodeId = FromProto<TNodeId>(entry.node_id());
-                auto cellTag = FromProto<TCellTag>(entry.cell_tag());
-                builder->AppendFormat("%v -> %v", nodeId, cellTag);
-            },
-            /*limit*/ 100));
+    context->AnnotateResponse()
+        .With("SchemaIdMapping", MakeShrunkFormattableView( response->old_to_new_schema_id(), [] ( TStringBuilderBase* builder, const auto& entry ) { auto oldId = FromProto<TMasterTableSchemaId>(entry.old_schema_id()); auto newId = FromProto<TMasterTableSchemaId>(entry.new_schema_id()); builder->AppendFormat("%v -> %v", oldId, newId); }, /*limit*/ 100))
+        .With("NodeIdToDstCellTagMapping", MakeShrunkFormattableView( response->node_id_to_cell_tag(), [] ( TStringBuilderBase* builder, const auto& entry ) { auto nodeId = FromProto<TNodeId>(entry.node_id()); auto cellTag = FromProto<TCellTag>(entry.cell_tag()); builder->AppendFormat("%v -> %v", nodeId, cellTag); }, /*limit*/ 100));
 
     FinishSequoiaSessionAndReply(context, NullCellId, /*commitSession*/ false);
 }
@@ -216,20 +260,18 @@ DEFINE_YPATH_SERVICE_METHOD(TMasterProxy, MaterializeNode)
         ? FromProto<TCellTag>(request->cell_tag_hint())
         : InvalidCellTag;
 
-    context->SetRequestInfo("OldNodeId: %v, Mode: %v, Version: %v, InheritedAttributesOverride: %v, "
-        "PreserveAccount: %v, PreserveCreationTime: %v, PreserveExpirationTime: %v, "
-        "PreserveExpirationTimeout: %v, PreserveOwner: %v, PessimisticQuotaCheck: %v, TransactionId: %v",
-        oldNodeId,
-        FromProto<ENodeCloneMode>(request->mode()),
-        request->version(),
-        inheritedAttributesOverride->ListPairs(),
-        !request->has_new_account_id(),
-        request->preserve_creation_time(),
-        request->preserve_expiration_time(),
-        request->preserve_expiration_timeout(),
-        request->preserve_owner(),
-        request->pessimistic_quota_check(),
-        SequoiaSession_->GetCurrentCypressTransactionId());
+    context->AnnotateRequest()
+        .With("OldNodeId", oldNodeId)
+        .With("Mode", FromProto<ENodeCloneMode>(request->mode()))
+        .With("Version", request->version())
+        .With("InheritedAttributesOverride", inheritedAttributesOverride->ListPairs())
+        .With("PreserveAccount", !request->has_new_account_id())
+        .With("PreserveCreationTime", request->preserve_creation_time())
+        .With("PreserveExpirationTime", request->preserve_expiration_time())
+        .With("PreserveExpirationTimeout", request->preserve_expiration_timeout())
+        .With("PreserveOwner", request->preserve_owner())
+        .With("PessimisticQuotaCheck", request->pessimistic_quota_check())
+        .With("TransactionId", SequoiaSession_->GetCurrentCypressTransactionId());
 
     auto originalType = TypeFromId(oldNodeId);
     auto type = MaybeConvertToSequoiaType(originalType);
@@ -253,9 +295,8 @@ DEFINE_YPATH_SERVICE_METHOD(TMasterProxy, MaterializeNode)
     ToProto(response->mutable_old_node_id(), oldNodeId);
     ToProto(response->mutable_new_node_id(), newNodeId);
 
-    context->SetResponseInfo("OldNodeId: %v, NewNodeId: %v",
-        oldNodeId,
-        newNodeId);
+    context->AnnotateResponse()
+        .With("NewNodeId", newNodeId);
 
     FinishSequoiaSessionAndReply(context, CellIdFromObjectId(newNodeId), /*commitSession*/ true);
 }

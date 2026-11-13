@@ -4,7 +4,8 @@
 
 #include <yt/yt/server/lib/nbd/block_device.h>
 #include "chunk_handler.h"
-#include "config.h"
+
+#include <yt/yt/library/nbd/chunk/config.h>
 
 #include <yt/yt/core/actions/future.h>
 #include <yt/yt/core/concurrency/periodic_executor.h>
@@ -122,7 +123,7 @@ private:
     const i64 MaxInflightWriteRequests_;
     const NLogging::TLogger Logger;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     TPageMap Pages_;
     //! LRU list of clean pages only (DataGeneration == WritebackGeneration).
     //! Only pages in this list are evictable, so EvictCleanPages walks this list

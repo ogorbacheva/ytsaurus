@@ -1,6 +1,7 @@
 #include "account.h"
 #include "private.h"
 #include "helpers.h"
+#include "security_manager.h"
 
 #include <yt/yt/server/master/cell_master/serialize.h>
 
@@ -41,6 +42,11 @@ void TAccountStatistics::Persist(const NCellMaster::TPersistenceContext& context
     using NYT::Persist;
     Persist(context, ResourceUsage);
     Persist(context, CommittedResourceUsage);
+}
+
+bool TAccountStatistics::IsPersistentlyEmpty() const
+{
+    return ResourceUsage.IsPersistentlyEmpty() && CommittedResourceUsage.IsPersistentlyEmpty();
 }
 
 void ToProto(NProto::TAccountStatistics* protoStatistics, const TAccountStatistics& statistics)
@@ -135,7 +141,6 @@ void SubtractFromAccountMulticellStatistics(
         lhs[cellTag] -= accountStatistics;
     }
 }
-
 
 TAccountMulticellStatistics AddAccountMulticellStatistics(
     const TAccountMulticellStatistics& lhs,

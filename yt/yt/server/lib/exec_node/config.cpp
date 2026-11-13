@@ -2,6 +2,8 @@
 
 #include <yt/yt/ytlib/exec_node/public.h>
 
+#include <yt/yt/library/nbd/chunk/public.h>
+
 #include <yt/yt/library/tracing/jaeger/sampler.h>
 
 #include <yt/yt/library/profiling/solomon/config.h>
@@ -224,7 +226,7 @@ void TLayerCacheDynamicConfig::Register(TRegistrar registrar)
     registrar.Parameter("layer_import_concurrency", &TThis::LayerImportConcurrency)
         .Default(2)
         .GreaterThan(0)
-        .LessThanOrEqual(10);
+        .LessThanOrEqual(64);
 
     registrar.Parameter("enable_async_layer_removal", &TThis::EnableAsyncLayerRemoval)
         .Default(true);
@@ -276,6 +278,17 @@ void TChunkCacheDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("test_disable_on_out_of_disk_space", &TThis::TestDisableOnOutOfDiskSpace)
         .Default(false);
+
+    registrar.Parameter("enable_pending_downloads_tracker", &TThis::EnablePendingDownloadsTracker)
+        .Default(true);
+
+    registrar.Parameter("enforce_cache_quota", &TThis::EnforceCacheQuota)
+        .Default(false);
+
+    registrar.Parameter("disk_space_gap_ratio", &TThis::DiskSpaceGapRatio)
+        .GreaterThanOrEqual(0.0)
+        .LessThanOrEqual(1.0)
+        .Default(0.02);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -487,6 +500,8 @@ void TControllerAgentConnectorDynamicConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("resend_full_job_info", &TThis::ResendFullJobInfo)
         .Default(true);
+    registrar.Parameter("omit_data_statistics_from_yson", &TThis::OmitDataStatisticsFromYson)
+        .Default(false);
 }
 
 void FormatValue(TStringBuilderBase* builder, const TControllerAgentConnectorDynamicConfig& config, TStringBuf spec)
@@ -712,6 +727,10 @@ void TJobCommonConfig::Register(TRegistrar registrar)
     registrar.Parameter("job_prepare_time_limit", &TThis::JobPrepareTimeLimit)
         .Default();
 
+    registrar.Parameter("job_host_name_prefix_pattern", &TThis::JobHostNamePrefixPattern)
+        .Default("slot-$(SlotIndex)")
+        .NonEmpty();
+
     registrar.Parameter("test_job_error_truncation", &TThis::TestJobErrorTruncation)
         .Default(false);
 
@@ -743,7 +762,8 @@ void TJobCommonConfig::Register(TRegistrar registrar)
         .Default("root");
 
     registrar.Parameter("statistics_output_table_count_limit", &TThis::StatisticsOutputTableCountLimit)
-        .Default();
+        .Default()
+        .GreaterThanOrEqual(0);
 
     registrar.Parameter("job_throttler", &TThis::JobThrottler)
         .DefaultNew();
@@ -800,7 +820,7 @@ void TJobControllerDynamicConfig::Register(TRegistrar registrar)
         .Default(TDuration::Seconds(60));
 
     registrar.Parameter("job_proxy_build_info_update_period", &TThis::JobProxyBuildInfoUpdatePeriod)
-        .Default(TDuration::Seconds(5));
+        .Default(TDuration::Minutes(1));
 
     registrar.Parameter("disable_job_proxy_profiling", &TThis::DisableJobProxyProfiling)
         .Default(false);
@@ -840,7 +860,7 @@ void TNbdClientConfig::Register(TRegistrar registrar)
     registrar.Parameter("reconnect_timeout", &TThis::ReconnectTimeout)
         .Default(TDuration::Seconds(10));
     registrar.Parameter("connection_count", &TThis::ConnectionCount)
-        .Default(DefaultNbdMultiplexingParallelism);
+        .Default(NNbd::NChunk::DefaultNbdMultiplexingParallelism);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -908,9 +928,6 @@ void TJobProxyConfig::Register(TRegistrar registrar)
         .Default(TDuration::Seconds(5));
 
     registrar.Parameter("job_proxy_send_heartbeat_before_abort", &TThis::JobProxySendHeartbeatBeforeAbort)
-        .Default(false);
-
-    registrar.Parameter("test_root_fs", &TThis::TestRootFS)
         .Default(false);
 
     registrar.Parameter("test_poll_job_shell", &TThis::TestPollJobShell)

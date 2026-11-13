@@ -71,6 +71,7 @@
 
 #include <yt/yt/core/concurrency/delayed_executor.h>
 #include <yt/yt/core/concurrency/periodic_executor.h>
+#include <yt/yt/core/concurrency/prioritized_invoker.h>
 #include <yt/yt/core/concurrency/thread_pool.h>
 
 #include <yt/yt/core/misc/protobuf_helpers.h>
@@ -310,17 +311,16 @@ private:
         options.PreallocateDiskSpace = GetDynamicConfig()->PreallocateDiskSpace && request->preallocate_disk_space();
         options.UseDirectIo = request->use_direct_io();
 
-        context->SetRequestInfo("SessionId: %v, Workload: %v, SyncOnClose: %v, EnableMultiplexing: %v, PlacementId: %v,"\
-            "DisableSendBlocks: %v, UseProbePutBlocks: %v, PreallocateDiskSpace: %v, UseDirectIo: %v",
-            sessionId,
-            options.WorkloadDescriptor,
-            options.SyncOnClose,
-            options.EnableMultiplexing,
-            options.PlacementId,
-            options.DisableSendBlocks,
-            options.UseProbePutBlocks,
-            options.PreallocateDiskSpace,
-            options.UseDirectIo);
+        context->AnnotateRequest()
+            .With("SessionId", sessionId)
+            .With("Workload", options.WorkloadDescriptor)
+            .With("SyncOnClose", options.SyncOnClose)
+            .With("EnableMultiplexing", options.EnableMultiplexing)
+            .With("PlacementId", options.PlacementId)
+            .With("DisableSendBlocks", options.DisableSendBlocks)
+            .With("UseProbePutBlocks", options.UseProbePutBlocks)
+            .With("PreallocateDiskSpace", options.PreallocateDiskSpace)
+            .With("UseDirectIo", options.UseDirectIo);
 
         ValidateOnline();
 
@@ -345,12 +345,12 @@ private:
         auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
         auto fairShareState = MakeIOFairShareState(ioConsumed, ioFairShareWeight);
 
-        context->SetRequestInfo("ChunkId: %v, BlockCount: %v, IgnoreMissingSession: %v, IOConsumed: %v, IOFairShareWeight: %v",
-            chunkId,
-            blockCount,
-            ignoreMissingSession,
-            ioConsumed,
-            ioFairShareWeight);
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("BlockCount", blockCount)
+            .With("IgnoreMissingSession", ignoreMissingSession)
+            .With("IOConsumed", ioConsumed)
+            .With("IOFairShareWeight", ioFairShareWeight);
 
         ValidateOnline();
 
@@ -413,8 +413,8 @@ private:
         auto sessionId = FromProto<TSessionId>(request->session_id());
         bool waitForCancelation = request->wait_for_cancelation();
 
-        context->SetRequestInfo("ChunkId: %v",
-            sessionId);
+        context->AnnotateRequest()
+            .With("ChunkId", sessionId);
 
         const auto& config = GetDynamicConfig()->TestingOptions;
         if (config->ChunkCancellationDelay) {
@@ -443,8 +443,8 @@ private:
     {
         auto sessionId = FromProto<TSessionId>(request->session_id());
         auto chunkId = sessionId.ChunkId;
-        context->SetRequestInfo("ChunkId: %v",
-            chunkId);
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId);
 
         const auto& sessionManager = Bootstrap_->GetSessionManager();
         auto session = sessionManager->GetSessionOrThrow(chunkId);
@@ -463,22 +463,19 @@ private:
             response->mutable_probe_put_blocks_state()->set_requested_cumulative_block_size(maxRequestedCumulativeBlockSize);
             response->mutable_probe_put_blocks_state()->set_approved_cumulative_block_size(approvedCumulativeBlockSize);
 
-            context->SetResponseInfo("SessionId: %v, CloseDemanded: %v, "
-                "RequestedCumulativeBlockSize: %v, "
-                "ApprovedCumulativeBlockSize: %v, "
-                "NetThrottling: %v, NetQueueSize: %v",
-                sessionId,
-                closeDemanded,
-                maxRequestedCumulativeBlockSize,
-                approvedCumulativeBlockSize,
-                netThrottling.Enabled,
-                netThrottling.QueueSize);
+            context->AnnotateResponse()
+                .With("SessionId", sessionId)
+                .With("CloseDemanded", closeDemanded)
+                .With("RequestedCumulativeBlockSize", maxRequestedCumulativeBlockSize)
+                .With("ApprovedCumulativeBlockSize", approvedCumulativeBlockSize)
+                .With("NetThrottling", netThrottling.Enabled)
+                .With("NetQueueSize", netThrottling.QueueSize);
         } else {
-            context->SetResponseInfo("SessionId: %v, CloseDemanded: %v, NetThrottling: %v, NetQueueSize: %v",
-                sessionId,
-                closeDemanded,
-                netThrottling.Enabled,
-                netThrottling.QueueSize);
+            context->AnnotateResponse()
+                .With("SessionId", sessionId)
+                .With("CloseDemanded", closeDemanded)
+                .With("NetThrottling", netThrottling.Enabled)
+                .With("NetQueueSize", netThrottling.QueueSize);
         }
 
         // Inform writer about net state on data node.
@@ -494,12 +491,11 @@ private:
         auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
         auto fairShareState = MakeIOFairShareState(ioConsumed, ioFairShareWeight);
 
-        context->SetRequestInfo(
-            "SessionId: %v, CumulativeBlockSize: %v, IOConsumed: %v, IOFairShareWeight: %v",
-            request->session_id(),
-            request->cumulative_block_size(),
-            ioConsumed,
-            ioFairShareWeight);
+        context->AnnotateRequest()
+            .With("SessionId", request->session_id())
+            .With("CumulativeBlockSize", request->cumulative_block_size())
+            .With("IOConsumed", ioConsumed)
+            .With("IOFairShareWeight", ioFairShareWeight);
 
         const auto chunkId = FromProto<TSessionId>(request->session_id()).ChunkId;
         const auto cumulativeBlockSize = request->cumulative_block_size();
@@ -515,10 +511,9 @@ private:
         response->mutable_probe_put_blocks_state()->set_requested_cumulative_block_size(maxRequestedCumulativeBlockSize);
         response->mutable_probe_put_blocks_state()->set_approved_cumulative_block_size(approvedCumulativeBlockSize);
 
-        context->SetResponseInfo("SessionId: %v, MaxRequestedCumulativeBlockSize: %v, ApprovedCumulativeBlockSize: %v",
-            request->session_id(),
-            maxRequestedCumulativeBlockSize,
-            approvedCumulativeBlockSize);
+        context->AnnotateResponse()
+            .With("MaxRequestedCumulativeBlockSize", maxRequestedCumulativeBlockSize)
+            .With("ApprovedCumulativeBlockSize", approvedCumulativeBlockSize);
         context->Reply();
     }
 
@@ -544,20 +539,17 @@ private:
         auto options = session->GetSessionOptions();
         auto blocksWindowShifted = cumulativeBlockSize == 0 || cumulativeBlockSize != 0 && firstBlockIndex >= session->GetWindowSize();
 
-        context->SetRequestInfo(
-            "ChunkId: %v, Blocks: %v, PopulateCache: %v, "
-            "FlushBlocks: %v, Medium: %v, "
-            "DisableSendBlocks: %v, CumulativeBlockSize: %v, BlocksWindowShifted: %v, IoConsumed: %v, IoFairShareWeight: %v",
-            chunkId,
-            FormatBlocks(firstBlockIndex, lastBlockIndex),
-            populateCache,
-            flushBlocks,
-            location->GetMediumName(),
-            options.DisableSendBlocks,
-            cumulativeBlockSize,
-            blocksWindowShifted,
-            ioConsumed,
-            ioFairShareWeight);
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("Blocks", FormatBlockIndexRange(firstBlockIndex, lastBlockIndex))
+            .With("PopulateCache", populateCache)
+            .With("FlushBlocks", flushBlocks)
+            .With("Medium", location->GetMediumName())
+            .With("DisableSendBlocks", options.DisableSendBlocks)
+            .With("CumulativeBlockSize", cumulativeBlockSize)
+            .With("BlocksWindowShifted", blocksWindowShifted)
+            .With("IoConsumed", ioConsumed)
+            .With("IoFairShareWeight", ioFairShareWeight);
 
         auto throttlingResult = location->CheckWriteThrottling(
             session->GetChunkId(),
@@ -643,14 +635,13 @@ private:
         auto ioFairShareWeight = YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight);
         auto fairShareState = MakeIOFairShareState(ioConsumed, ioFairShareWeight);
 
-        context->SetRequestInfo(
-            "ChunkId: %v, Blocks: %v, CumulativeBlockSize: %v, Target: %v, IoConsumed: %v, IoFairShareWeight: %v",
-            chunkId,
-            FormatBlocks(firstBlockIndex, lastBlockIndex),
-            cumulativeBlockSize,
-            targetDescriptor,
-            ioConsumed,
-            ioFairShareWeight);
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("Blocks", FormatBlockIndexRange(firstBlockIndex, lastBlockIndex))
+            .With("CumulativeBlockSize", cumulativeBlockSize)
+            .With("Target", targetDescriptor)
+            .With("IoConsumed", ioConsumed)
+            .With("IoFairShareWeight", ioFairShareWeight);
 
         ValidateOnline();
 
@@ -668,11 +659,9 @@ private:
         auto enableSendBlocksNetThrottling = GetDynamicConfig()->EnableSendBlocksNetThrottling.value_or(Config_->EnableSendBlocksNetThrottling);
 
         if (enableSendBlocksNetThrottling && netThrottling.Enabled) {
-            context->SetResponseInfo(
-                "NetThrottling: %v, "
-                "NetQueueSize: %v",
-                netThrottling.Enabled,
-                netThrottling.QueueSize);
+            context->AnnotateResponse()
+                .With("NetThrottling", netThrottling.Enabled)
+                .With("NetQueueSize", netThrottling.QueueSize);
             context->Reply();
             return;
         }
@@ -690,11 +679,9 @@ private:
             .Apply(BIND([=] (const TErrorOr<ISession::TSendBlocksResult>& rspOrError) {
                 if (rspOrError.IsOK()) {
                     const auto& rsp = rspOrError.Value();
-                    context->SetResponseInfo(
-                        "NetThrottling: %v, "
-                        "NetQueueSize: %v",
-                        rsp.NetThrottling,
-                        netThrottling.QueueSize);
+                    context->AnnotateResponse()
+                        .With("NetThrottling", rsp.NetThrottling)
+                        .With("NetQueueSize", netThrottling.QueueSize);
                     if (rsp.NetThrottling) {
                         response->set_net_throttling(true);
                         return TError();
@@ -718,9 +705,9 @@ private:
         auto chunkId = FromProto<TSessionId>(request->session_id()).ChunkId;
         int blockIndex = request->block_index();
 
-        context->SetRequestInfo("ChunkId: %v, Block: %v",
-            chunkId,
-            blockIndex);
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("Block", blockIndex);
 
         ValidateOnline();
 
@@ -753,6 +740,9 @@ private:
             }
 
             ToProto(response->mutable_chunk_writer_statistics(), chunkWriterStatistics);
+            if (result.CumulativeIOConsumed) {
+                response->set_cumulative_io_consumed(*result.CumulativeIOConsumed);
+            }
         }));
 
         context->ReplyFrom(voidResult);
@@ -761,10 +751,10 @@ private:
     DECLARE_RPC_SERVICE_METHOD(NChunkClient::NProto, UpdateP2PBlocks)
     {
         auto sessionId = FromProto<TGuid>(request->session_id());
-        context->SetRequestInfo("SessionId: %v, Iteration: %v, ReceivedBlockCount: %v",
-            sessionId,
-            request->iteration(),
-            request->block_indexes_size());
+        context->AnnotateRequest()
+            .With("SessionId", sessionId)
+            .With("Iteration", request->iteration())
+            .With("ReceivedBlockCount", request->block_indexes_size());
 
         ValidateOnline();
 
@@ -894,9 +884,9 @@ private:
         auto workloadDescriptor = GetRequestWorkloadDescriptor(context);
 
         auto chunkCount = request->chunk_ids_size();
-        context->SetRequestInfo("ChunkCount: %v, Workload: %v",
-            chunkCount,
-            workloadDescriptor);
+        context->AnnotateRequest()
+            .With("ChunkCount", chunkCount)
+            .With("Workload", workloadDescriptor);
 
         ValidateOnline();
 
@@ -922,15 +912,16 @@ private:
 
             auto diskThrottling = chunk
                 ? chunk->GetLocation()->CheckReadThrottling(workloadDescriptor, /*isProbing*/ true)
-                : TChunkLocation::TDiskThrottlingResult{.Enabled = false, .QueueSize = 0};
-            subresponse->set_disk_throttling(diskThrottling.Enabled);
+                : TChunkLocation::TReadThrottlingResult{};
+            subresponse->set_disk_throttling(diskThrottling.IsEnabled());
             subresponse->set_disk_queue_size(diskThrottling.QueueSize);
 
             if (chunk) {
                 subresponse->set_medium_index(chunk->GetLocation()->GetMediumIndex());
             }
 
-            YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), diskThrottling.Error);
+            YT_TLOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), "Disk throttling detected")
+                .With(diskThrottling.Error);
 
             const auto& allyReplicaManager = Bootstrap_->GetAllyReplicaManager();
             if (auto allyReplicas = allyReplicaManager->GetAllyReplicas(chunkId)) {
@@ -958,13 +949,10 @@ private:
         response->set_net_throttling(netThrottling.Enabled);
         response->set_net_queue_size(netThrottling.QueueSize);
 
-        context->SetResponseInfo(
-            "ChunkCount: %v, CompleteChunkCount: %v, "
-            "NetThrottling: %v, NetQueueSize: %v",
-            chunkCount,
-            completeChunkCount,
-            netThrottling.Enabled,
-            netThrottling.QueueSize);
+        context->AnnotateResponse()
+            .With("CompleteChunkCount", completeChunkCount)
+            .With("NetThrottling", netThrottling.Enabled)
+            .With("NetQueueSize", netThrottling.QueueSize);
 
         context->Reply();
     }
@@ -977,11 +965,11 @@ private:
         bool enableP2P = request->enable_p2p();
         bool fetchNodeDescriptors = request->fetch_node_descriptors();
 
-        context->SetRequestInfo("ChunkId: %v, Blocks: %v, BlockCount: %v, Workload: %v",
-            chunkId,
-            MakeCompactIntervalView(blockIndexes),
-            blockIndexes.size(),
-            workloadDescriptor);
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("Blocks", MakeCompactIntervalView(blockIndexes))
+            .With("BlockCount", blockIndexes.size())
+            .With("Workload", workloadDescriptor);
 
         ValidateOnline();
 
@@ -997,15 +985,16 @@ private:
 
         auto diskThrottling = chunk
             ? chunk->GetLocation()->CheckReadThrottling(workloadDescriptor, /*isProbing*/ true)
-            : TChunkLocation::TDiskThrottlingResult{.Enabled = false, .QueueSize = 0};
-        response->set_disk_throttling(diskThrottling.Enabled);
+            : TChunkLocation::TReadThrottlingResult{};
+        response->set_disk_throttling(diskThrottling.IsEnabled());
         response->set_disk_queue_size(diskThrottling.QueueSize);
 
         if (chunk) {
             response->set_medium_index(chunk->GetLocation()->GetMediumIndex());
         }
 
-        YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), diskThrottling.Error);
+        YT_TLOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), "Disk throttling detected")
+            .With(diskThrottling.Error);
 
         auto netThrottling = CheckNetOutThrottling(
             context,
@@ -1052,21 +1041,15 @@ private:
             }
         }
 
-        context->SetResponseInfo(
-            "ChunkId: %v, HasCompleteChunk: %v, "
-            "NetThrottling: %v, NetQueueSize: %v, "
-            "DiskThrottling: %v, DiskQueueSize: %v, "
-            "PeerDescriptorCount: %v, CachedBlockCount: %v, "
-            "CachedBlockSize: %v",
-            chunkId,
-            hasCompleteChunk,
-            netThrottling.Enabled,
-            netThrottling.QueueSize,
-            diskThrottling.Enabled,
-            diskThrottling.QueueSize,
-            response->peer_descriptors_size(),
-            response->cached_blocks_size(),
-            cachedBlockSize);
+        context->AnnotateResponse()
+            .With("HasCompleteChunk", hasCompleteChunk)
+            .With("NetThrottling", netThrottling.Enabled)
+            .With("NetQueueSize", netThrottling.QueueSize)
+            .With("DiskThrottling", diskThrottling.IsEnabled())
+            .With("DiskQueueSize", diskThrottling.QueueSize)
+            .With("PeerDescriptorCount", response->peer_descriptors_size())
+            .With("CachedBlockCount", response->cached_blocks_size())
+            .With("CachedBlockSize", cachedBlockSize);
 
         context->Reply();
     }
@@ -1165,24 +1148,18 @@ private:
             response->Attachments().end(),
             [] (const auto& block) -> bool { return static_cast<bool>(block); });
 
-        context->SetResponseInfo(
-            "ChunkId: %v, HasCompleteChunk: %v, "
-            "NetThrottling: %v, NetQueueSize: %v, "
-            "DiskThrottling: %v, DiskQueueSize: %v, "
-            "ThrottledLargeBlock: %v, "
-            "BlocksWithData: %v, BlocksSize: %v, "
-            "DataBytesReadFromDisk: %v, DataBytesReadFromCache: %v",
-            responseTemplate.ChunkId,
-            hasCompleteChunk,
-            netThrottling,
-            responseTemplate.NetQueueSize,
-            responseTemplate.DiskThrottling,
-            responseTemplate.DiskQueueSize,
-            responseTemplate.ThrottledLargeBlock,
-            blocksWithData,
-            blocksSize,
-            chunkReaderStatistics->DataBytesReadFromDisk.load(),
-            chunkReaderStatistics->DataBytesReadFromCache.load());
+        context->AnnotateResponse()
+            .With("ChunkId", responseTemplate.ChunkId)
+            .With("HasCompleteChunk", hasCompleteChunk)
+            .With("NetThrottling", netThrottling)
+            .With("NetQueueSize", responseTemplate.NetQueueSize)
+            .With("DiskThrottling", responseTemplate.DiskThrottling)
+            .With("DiskQueueSize", responseTemplate.DiskQueueSize)
+            .With("ThrottledLargeBlock", responseTemplate.ThrottledLargeBlock)
+            .With("BlocksWithData", blocksWithData)
+            .With("BlocksSize", blocksSize)
+            .With("DataBytesReadFromDisk", chunkReaderStatistics->DataBytesReadFromDisk.load())
+            .With("DataBytesReadFromCache", chunkReaderStatistics->DataBytesReadFromCache.load());
 
         if (blocksSize == 0) {
             return OKFuture;
@@ -1217,12 +1194,10 @@ private:
                     response->Attachments().clear();
 
                     // Override response info.
-                    context->SetResponseInfo(
-                        "ChunkId: %v, HasCompleteChunk: %v,"
-                        "NetThrottling: %v",
-                        responseTemplate.ChunkId,
-                        hasCompleteChunk,
-                        true);
+                    context->AnnotateResponse()
+                        .With("ChunkId", responseTemplate.ChunkId)
+                        .With("HasCompleteChunk", hasCompleteChunk)
+                        .With("NetThrottling", true);
                 }
 
                 // Directly hold current request context.
@@ -1301,18 +1276,15 @@ private:
         bool enableP2P = request->enable_p2p();
         bool fetchNodeDescriptors = request->fetch_node_descriptors();
 
-        context->SetRequestInfo(
-            "ChunkId: %v, Blocks: %v, "
-            "PopulateCache: %v, FetchFromCache: %v, "
-            "FetchFromDisk: %v, Workload: %v, IoConsumed: %v, IoFairShareWeight: %v",
-            chunkId,
-            MakeCompactIntervalView(blockIndexes),
-            populateCache,
-            fetchFromCache,
-            fetchFromDisk,
-            workloadDescriptor,
-            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
-            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("Blocks", MakeCompactIntervalView(blockIndexes))
+            .With("PopulateCache", populateCache)
+            .With("FetchFromCache", fetchFromCache)
+            .With("FetchFromDisk", fetchFromDisk)
+            .With("Workload", workloadDescriptor)
+            .With("IoConsumed", YT_OPTIONAL_FROM_PROTO(*request, io_consumed))
+            .With("IoFairShareWeight", YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
@@ -1324,11 +1296,12 @@ private:
 
         auto diskThrottling = chunk
             ? chunk->GetLocation()->CheckReadThrottling(workloadDescriptor)
-            : TChunkLocation::TDiskThrottlingResult{.Enabled = false, .QueueSize = 0};
-        response->set_disk_throttling(diskThrottling.Enabled);
+            : TChunkLocation::TReadThrottlingResult{};
+        response->set_disk_throttling(diskThrottling.IsEnabled());
         response->set_disk_queue_size(diskThrottling.QueueSize);
 
-        YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), diskThrottling.Error);
+        YT_TLOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), "Disk throttling detected")
+            .With(diskThrottling.Error);
 
         auto netThrottling = CheckNetOutThrottling(context, workloadDescriptor);
         if (GetDynamicConfig()->TestingOptions->SimulateNetworkThrottlingForGetBlockSet) {
@@ -1358,7 +1331,7 @@ private:
                     request,
                     chunk,
                     fetchFromCache && !netThrottling.Enabled,
-                    fetchFromDisk && !netThrottling.Enabled && !diskThrottling.Enabled,
+                    fetchFromDisk && !netThrottling.Enabled && !diskThrottling.IsEnabled(),
                     chunkReaderStatistics);
 
                 if (!chunk && options.FetchFromCache && enableP2P) {
@@ -1429,7 +1402,7 @@ private:
                     .HasCompleteChunk = hasCompleteChunk,
                     .NetThrottling = netThrottling.Enabled,
                     .NetQueueSize = netThrottling.QueueSize,
-                    .DiskThrottling = diskThrottling.Enabled,
+                    .DiskThrottling = diskThrottling.IsEnabled(),
                     .DiskQueueSize = diskThrottling.QueueSize,
                     .ThrottledLargeBlock = throttledLargeBlock,
                     .ChunkReaderStatistics = chunkReaderStatistics,
@@ -1448,14 +1421,13 @@ private:
         int blockCount = request->block_count();
         bool populateCache = request->populate_cache();
 
-        context->SetRequestInfo(
-            "ChunkId: %v, Blocks: %v, PopulateCache: %v, Workload: %v, IoConsumed: %v, IoFairShareWeight: %v",
-            chunkId,
-            FormatBlocks(firstBlockIndex, firstBlockIndex + blockCount - 1),
-            populateCache,
-            workloadDescriptor,
-            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
-            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("Blocks", FormatBlockIndexRange(firstBlockIndex, firstBlockIndex + blockCount - 1))
+            .With("PopulateCache", populateCache)
+            .With("Workload", workloadDescriptor)
+            .With("IoConsumed", YT_OPTIONAL_FROM_PROTO(*request, io_consumed))
+            .With("IoFairShareWeight", YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
@@ -1467,11 +1439,12 @@ private:
 
         auto diskThrottling = chunk
             ? chunk->GetLocation()->CheckReadThrottling(workloadDescriptor)
-            : TChunkLocation::TDiskThrottlingResult{.Enabled = false, .QueueSize = 0};
-        response->set_disk_throttling(diskThrottling.Enabled);
+            : TChunkLocation::TReadThrottlingResult{};
+        response->set_disk_throttling(diskThrottling.IsEnabled());
         response->set_disk_queue_size(diskThrottling.QueueSize);
 
-        YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), diskThrottling.Error);
+        YT_TLOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), "Disk throttling detected")
+            .With(diskThrottling.Error);
 
         auto netThrottling = CheckNetOutThrottling(context, workloadDescriptor);
         response->set_net_throttling(netThrottling.Enabled);
@@ -1483,7 +1456,7 @@ private:
             request,
             chunk,
             !netThrottling.Enabled,
-            !netThrottling.Enabled && !diskThrottling.Enabled,
+            !netThrottling.Enabled && !diskThrottling.IsEnabled(),
             chunkReaderStatistics);
 
         auto blocksFuture = chunk
@@ -1510,7 +1483,7 @@ private:
                     .HasCompleteChunk = hasCompleteChunk,
                     .NetThrottling = netThrottling.Enabled,
                     .NetQueueSize = netThrottling.QueueSize,
-                    .DiskThrottling = diskThrottling.Enabled,
+                    .DiskThrottling = diskThrottling.IsEnabled(),
                     .DiskQueueSize = diskThrottling.QueueSize,
                     .ThrottledLargeBlock = false,
                     .ChunkReaderStatistics = chunkReaderStatistics,
@@ -1677,15 +1650,12 @@ private:
 
             auto totalFragmentSize = GetByteSize(response->Attachments());
 
-            context->SetResponseInfo(
-                "ReadSessionId: %v, Workload: %v, "
-                "TotalFragmentSize: %v, DataBytesReadFromCache: %v, BytesReadFromDisk: %v, IORequests: %v",
-                readSessionId,
-                workloadDescriptor,
-                totalFragmentSize,
-                chunkReaderStatistics->DataBytesReadFromCache.load(std::memory_order::relaxed),
-                bytesReadFromDisk,
-                ioRequests);
+            context->AnnotateResponse()
+                .With("ReadSessionId", readSessionId)
+                .With("TotalFragmentSize", totalFragmentSize)
+                .With("DataBytesReadFromCache", chunkReaderStatistics->DataBytesReadFromCache.load(std::memory_order::relaxed))
+                .With("BytesReadFromDisk", bytesReadFromDisk)
+                .With("IORequests", ioRequests);
 
             const auto& netThrottler = Bootstrap_->GetOutThrottler(workloadDescriptor);
             if (netThrottler->IsOverdraft()) {
@@ -1728,15 +1698,13 @@ private:
             }
         }
 
-        context->SetRequestInfo("ReadSessionId: %v, Workload: %v, ReadAndCacheWholeBlocks: %v, BlockCountToPrecache: %v, "
-            "SubrequestCount: %v, FragmentsSize: %v/%v",
-            readSessionId,
-            workloadDescriptor,
-            readAndCacheWholeBlocks,
-            blockCountToPrecache,
-            request->subrequests_size(),
-            totalFragmentSize,
-            totalFragmentCount);
+        context->AnnotateRequest()
+            .With("ReadSessionId", readSessionId)
+            .With("Workload", workloadDescriptor)
+            .With("ReadAndCacheWholeBlocks", readAndCacheWholeBlocks)
+            .With("BlockCountToPrecache", blockCountToPrecache)
+            .With("SubrequestCount", request->subrequests_size())
+            .WithFormat("FragmentsSize", "%v/%v", totalFragmentSize, totalFragmentCount);
 
         ValidateOnline();
 
@@ -1745,9 +1713,9 @@ private:
 
         auto enableThrottling = GetDynamicConfig()->EnableGetChunkFragmentSetThrottling;
         if (enableThrottling && netThrottling.Enabled) {
-            context->SetResponseInfo("NetThrottling: %v, NetQueueSize: %v",
-                netThrottling.Enabled,
-                netThrottling.QueueSize);
+            context->AnnotateResponse()
+                .With("NetThrottling", netThrottling.Enabled)
+                .With("NetQueueSize", netThrottling.QueueSize);
             context->Reply();
             return;
         }
@@ -1791,11 +1759,11 @@ private:
 
             auto diskThrottling = chunk
                 ? chunk->GetLocation()->CheckReadThrottling(workloadDescriptor)
-                : TChunkLocation::TDiskThrottlingResult{ .Enabled = false };
-            YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(),
-                diskThrottling.Error);
+                : TChunkLocation::TReadThrottlingResult{};
+            YT_TLOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), "Disk throttling detected")
+                .With(diskThrottling.Error);
 
-            auto diskThrottlingActive = enableThrottling && diskThrottling.Enabled;
+            auto diskThrottlingActive = enableThrottling && diskThrottling.IsEnabled();
 
             bool chunkAvailable = false;
             if (chunk) {
@@ -2034,14 +2002,13 @@ private:
         auto enableHashChunkIndex = request->enable_hash_chunk_index();
         const auto& schemaData = request->schema_data();
 
-        context->SetRequestInfo("ChunkId: %v, ReadSessionId: %v, Workload: %v, "
-            "PopulateCache: %v, EnableHashChunkIndex: %v, ContainsSchema: %v",
-            chunkId,
-            readSessionId,
-            workloadDescriptor,
-            populateCache,
-            enableHashChunkIndex,
-            schemaData.has_schema());
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("ReadSessionId", readSessionId)
+            .With("Workload", workloadDescriptor)
+            .With("PopulateCache", populateCache)
+            .With("EnableHashChunkIndex", enableHashChunkIndex)
+            .With("ContainsSchema", schemaData.has_schema());
 
         ValidateOnline();
 
@@ -2058,12 +2025,8 @@ private:
         if (!tableSchema) {
             response->set_fetched_rows(false);
             response->set_request_schema(true);
-            context->SetResponseInfo(
-                "ChunkId: %v, ReadSessionId: %v, Workload: %v, SchemaRequested: %v",
-                chunkId,
-                readSessionId,
-                workloadDescriptor,
-                schemaRequested);
+            context->AnnotateResponse()
+                .With("SchemaRequested", schemaRequested);
             context->Reply();
             return;
         }
@@ -2071,15 +2034,16 @@ private:
 
         auto diskThrottling = chunk
             ? chunk->GetLocation()->CheckReadThrottling(workloadDescriptor)
-            : TChunkLocation::TDiskThrottlingResult{.Enabled = false, .QueueSize = 0};
+            : TChunkLocation::TReadThrottlingResult{};
         // COMPAT(akozhikhov): For YT-18378. Drop this after all tablet nodes are updated.
-        if (diskThrottling.Enabled) {
+        if (diskThrottling.IsEnabled()) {
             ++diskThrottling.QueueSize;
         }
-        response->set_disk_throttling(diskThrottling.Enabled);
+        response->set_disk_throttling(diskThrottling.IsEnabled());
         response->set_disk_queue_size(diskThrottling.QueueSize);
 
-        YT_LOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), diskThrottling.Error);
+        YT_TLOG_DEBUG_UNLESS(diskThrottling.Error.IsOK(), "Disk throttling detected")
+            .With(diskThrottling.Error);
 
         auto netThrottling = CheckNetOutThrottling(context, workloadDescriptor);
         response->set_net_throttling(netThrottling.Enabled);
@@ -2107,16 +2071,11 @@ private:
             enableHashChunkIndex,
             useDirectIO);
 
-        context->SetResponseInfo(
-            "ChunkId: %v, ReadSessionId: %v, Workload: %v, "
-            "DiskThrottling: %v, DiskQueueSize: %v, NetThrottling: %v, NetQueueSize: %v",
-            chunkId,
-            readSessionId,
-            workloadDescriptor,
-            diskThrottling.Enabled,
-            diskThrottling.QueueSize,
-            netThrottling.Enabled,
-            netThrottling.QueueSize);
+        context->AnnotateResponse()
+            .With("DiskThrottling", diskThrottling.IsEnabled())
+            .With("DiskQueueSize", diskThrottling.QueueSize)
+            .With("NetThrottling", netThrottling.Enabled)
+            .With("NetQueueSize", netThrottling.QueueSize);
 
         context->ReplyFrom(chunkReadSession->Lookup(request->Attachments())
             .Apply(BIND([=, this, this_ = MakeStrong(this), chunk = std::move(chunk)] (const TSharedRef& result) {
@@ -2165,22 +2124,22 @@ private:
         bool enableThrottling = request->enable_throttling();
         auto supportedChunkFeatures = FromProto<NChunkClient::EChunkFeatures>(request->supported_chunk_features());
 
-        context->SetRequestInfo("ChunkId: %v, ExtensionTags: %v, PartitionTags: %v, Workload: %v, EnableThrottling: %v, IoConsumed: %v, IoFairShareWeight: %v",
-            chunkId,
-            extensionTags,
-            partitionTags,
-            workloadDescriptor,
-            enableThrottling,
-            YT_OPTIONAL_FROM_PROTO(*request, io_consumed),
-            YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
+        context->AnnotateRequest()
+            .With("ChunkId", chunkId)
+            .With("ExtensionTags", extensionTags)
+            .With("PartitionTags", partitionTags)
+            .With("Workload", workloadDescriptor)
+            .With("EnableThrottling", enableThrottling)
+            .With("IoConsumed", YT_OPTIONAL_FROM_PROTO(*request, io_consumed))
+            .With("IoFairShareWeight", YT_OPTIONAL_FROM_PROTO(*request, io_fair_share_weight));
 
         ValidateOnline();
 
         auto netThrottling = CheckNetOutThrottling(context, workloadDescriptor);
         response->set_net_throttling(netThrottling.Enabled);
 
-        context->SetResponseInfo("NetThrottling: %v",
-            netThrottling.Enabled);
+        context->AnnotateResponse()
+            .With("NetThrottling", netThrottling.Enabled);
 
         if (enableThrottling && netThrottling.Enabled) {
             context->Reply();
@@ -2217,7 +2176,8 @@ private:
 
             if (readMetaResult.Throttled) {
                 response->set_net_throttling(true);
-                context->SetResponseInfo("NetThrottling: %v", true);
+                context->AnnotateResponse()
+                    .With("NetThrottling", true);
                 return;
             }
 
@@ -2251,7 +2211,9 @@ private:
 
             ToProto(response->mutable_chunk_reader_statistics(), options.ChunkReaderStatistics);
             ToProto(response->mutable_location_uuid(), chunk->GetLocation()->GetUuid());
-        }).AsyncVia(Bootstrap_->GetStorageHeavyInvoker())));
+        }).AsyncVia(CreateFixedPriorityInvoker(
+            Bootstrap_->GetStorageHeavyInvoker(),
+            options.WorkloadDescriptor.GetPriority()))));
     }
 
     template <class TContext, class TRequests>
@@ -2282,9 +2244,9 @@ private:
         auto requestCount = request->chunk_requests_size();
         auto workloadDescriptor = GetRequestWorkloadDescriptor(context);
 
-        context->SetRequestInfo("RequestCount: %v, Workload: %v",
-            requestCount,
-            workloadDescriptor);
+        context->AnnotateRequest()
+            .With("RequestCount", requestCount)
+            .With("Workload", workloadDescriptor);
 
         ValidateOnline();
 
@@ -2331,7 +2293,9 @@ private:
                 }
 
                 context->Reply();
-        }).Via(Bootstrap_->GetStorageHeavyInvoker()));
+            }).Via(CreateFixedPriorityInvoker(
+                Bootstrap_->GetStorageHeavyInvoker(),
+                workloadDescriptor.GetPriority())));
     }
 
     void ProcessSliceSize(
@@ -2379,10 +2343,9 @@ private:
         auto requestCount = request->slice_requests_size();
         auto workloadDescriptor = GetRequestWorkloadDescriptor(context);
 
-        context->SetRequestInfo(
-            "RequestCount: %v, Workload: %v",
-            requestCount,
-            workloadDescriptor);
+        context->AnnotateRequest()
+            .With("RequestCount", requestCount)
+            .With("Workload", workloadDescriptor);
 
         ValidateOnline();
 
@@ -2415,7 +2378,9 @@ private:
                 response->Attachments().push_back(keysWriter->Finish());
                 response->Attachments().push_back(keyBoundsWriter->Finish());
                 context->Reply();
-            }).Via(Bootstrap_->GetStorageHeavyInvoker()));
+            }).Via(CreateFixedPriorityInvoker(
+                Bootstrap_->GetStorageHeavyInvoker(),
+                workloadDescriptor.GetPriority())));
     }
 
     void ProcessSlice(
@@ -2468,11 +2433,11 @@ private:
         auto maxSampleSize = request->max_sample_size();
         auto workloadDescriptor = GetRequestWorkloadDescriptor(context);
 
-        context->SetRequestInfo("SamplingPolicy: %v, KeyColumns: %v, RequestCount: %v, Workload: %v",
-            samplingPolicy,
-            keyColumns,
-            requestCount,
-            workloadDescriptor);
+        context->AnnotateRequest()
+            .With("SamplingPolicy", samplingPolicy)
+            .With("KeyColumns", keyColumns)
+            .With("RequestCount", requestCount)
+            .With("Workload", workloadDescriptor);
 
         ValidateOnline();
 
@@ -2505,7 +2470,9 @@ private:
 
                 response->Attachments().push_back(keySetWriter->Finish());
                 context->Reply();
-            }).Via(Bootstrap_->GetStorageHeavyInvoker()));
+            }).Via(CreateFixedPriorityInvoker(
+                Bootstrap_->GetStorageHeavyInvoker(),
+                workloadDescriptor.GetPriority())));
     }
 
     void ProcessChunkSamples(
@@ -2601,7 +2568,8 @@ private:
                 chunkId,
                 keyColumns,
                 chunkKeyColumns);
-            YT_LOG_WARNING(error);
+            YT_TLOG_WARNING("Failed to process partitioning samples")
+                .With(error);
             ToProto(chunkSamples->mutable_error(), error);
             return;
         }
@@ -2726,11 +2694,10 @@ private:
             earlyFinishTimeout = *context->GetTimeout() * GetDynamicConfig()->TestingOptions->ColumnarStatisticsReadTimeoutFraction;
         }
 
-        context->SetRequestInfo(
-            "SubrequestCount: %v, Workload: %v, EarlyFinishTimeout: %v",
-            request->subrequests_size(),
-            workloadDescriptor,
-            earlyFinishTimeout);
+        context->AnnotateRequest()
+            .With("SubrequestCount", request->subrequests_size())
+            .With("Workload", workloadDescriptor)
+            .With("EarlyFinishTimeout", earlyFinishTimeout);
 
         ValidateOnline();
 
@@ -2747,7 +2714,9 @@ private:
             response->add_subresponses();
         }
 
-        const auto& heavyInvoker = Bootstrap_->GetStorageHeavyInvoker();
+        auto heavyInvoker = CreateFixedPriorityInvoker(
+            Bootstrap_->GetStorageHeavyInvoker(),
+            workloadDescriptor.GetPriority());
         for (int index = 0; index < request->subrequests_size(); ++index) {
             const auto& subrequest = request->subrequests(index);
             auto chunkId = FromProto<TChunkId>(subrequest.chunk_id());
@@ -2758,7 +2727,8 @@ private:
                     NChunkClient::EErrorCode::NoSuchChunk,
                     "No such chunk %v",
                     chunkId);
-                YT_LOG_WARNING(error);
+                YT_TLOG_WARNING("No such chunk")
+                    .With("ChunkId", chunkId);
                 ToProto(response->mutable_subresponses(index)->mutable_error(), error);
                 continue;
             }
@@ -2815,11 +2785,11 @@ private:
         auto locationManager = Bootstrap_->GetLocationManager();
         auto locationUuids = FromProto<std::vector<TGuid>>(request->location_uuids());
 
-        context->SetRequestInfo("LocationUuids: %v", locationUuids);
+        context->AnnotateRequest()
+            .With("LocationUuids", locationUuids);
 
         context->ReplyFrom(locationManager->DisableChunkLocations({locationUuids.begin(), locationUuids.end()})
             .Apply(BIND([=] (const std::vector<TGuid>& locationUuids) {
-                context->SetResponseInfo("LocationUuids: %v", locationUuids);
 
                 ToProto(response->mutable_location_uuids(), locationUuids);
             })));
@@ -2831,15 +2801,14 @@ private:
         auto recoverUnlinkedDisks = request->recover_unlinked_disks();
         auto locationUuids = FromProto<std::vector<TGuid>>(request->location_uuids());
 
-        context->SetRequestInfo("RecoverUnlinkedDisks: %v, LocationUuids: %v",
-            recoverUnlinkedDisks,
-            locationUuids);
+        context->AnnotateRequest()
+            .With("RecoverUnlinkedDisks", recoverUnlinkedDisks)
+            .With("LocationUuids", locationUuids);
 
         context->ReplyFrom(locationManager->DestroyChunkLocations(
             recoverUnlinkedDisks,
             {locationUuids.begin(), locationUuids.end()})
             .Apply(BIND([=] (const std::vector<TGuid>& locationUuids) {
-                context->SetResponseInfo("LocationUuids: %v", locationUuids);
 
                 ToProto(response->mutable_location_uuids(), locationUuids);
             })));
@@ -2850,11 +2819,11 @@ private:
         auto locationManager = Bootstrap_->GetLocationManager();
         auto locationUuids = FromProto<std::vector<TGuid>>(request->location_uuids());
 
-        context->SetRequestInfo("LocationUuids: %v", locationUuids);
+        context->AnnotateRequest()
+            .With("LocationUuids", locationUuids);
 
         context->ReplyFrom(locationManager->ResurrectChunkLocations({locationUuids.begin(), locationUuids.end()})
             .Apply(BIND([=] (const std::vector<TGuid>& locationUuids) {
-                context->SetResponseInfo("LocationUuids: %v", locationUuids);
 
                 ToProto(response->mutable_location_uuids(), locationUuids);
             })));
@@ -2890,11 +2859,10 @@ private:
             }
         }
 
-        context->SetResponseInfo(
-            "SuccessCount: %v, TimeoutCount: %v, ErrorCount: %v",
-            successCount,
-            timeoutCount,
-            errorCount);
+        context->AnnotateResponse()
+            .With("SuccessCount", successCount)
+            .With("TimeoutCount", timeoutCount)
+            .With("ErrorCount", errorCount);
     }
 
     static void FillColumnarStatisticsFromChunkMeta(
@@ -2973,8 +2941,11 @@ private:
             YT_TLOG_DEBUG("Columnar statistics extracted from chunk meta")
                 .With("ChunkId", chunkId);
         } catch (const std::exception& ex) {
-            auto error = TError("Error fetching columnar statistics for chunk %v", chunkId).With(ex);
-            YT_LOG_WARNING(error);
+            YT_TLOG_WARNING("Error fetching columnar statistics")
+                .With("ChunkId", chunkId)
+                .With(ex);
+            auto error = TError("Error fetching columnar statistics for chunk %v", chunkId)
+                .With(ex);
             ToProto(subresponse->mutable_error(), error);
         }
 
@@ -2989,9 +2960,9 @@ private:
 
     DECLARE_RPC_SERVICE_METHOD(NChunkClient::NProto, AnnounceChunkReplicas)
     {
-        context->SetRequestInfo("SubrequestCount: %v, SourceNodeId: %v",
-            request->announcements_size(),
-            request->source_node_id());
+        context->AnnotateRequest()
+            .With("SubrequestCount", request->announcements_size())
+            .With("SourceNodeId", request->source_node_id());
 
         const auto& allyReplicaManager = Bootstrap_->GetAllyReplicaManager();
         allyReplicaManager->OnAnnouncementsReceived(

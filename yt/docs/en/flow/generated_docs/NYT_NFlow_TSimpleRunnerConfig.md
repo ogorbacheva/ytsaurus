@@ -29,6 +29,7 @@ Source: [yt/yt/flow/library/cpp/runner/simple_runner_program.h]({{source-root}}/
             "enable_host_field" = %false;
             "enable_native_tags" = %false;
             "enable_source_location" = %false;
+            "enable_span_id_field" = %false;
             "enable_system_fields" = %true;
             "format" = "plain_text";
             "type" = "stderr";
@@ -55,7 +56,7 @@ Logging settings. ||
  ||
 || `cluster_url` | **Type**: `std::string`
 **Required parameter**
-Name of the cluster where the pipeline is located. The tail after the last `/` is treated as a proxy role and takes precedence over `proxy_role` &mdash; e.g. `hahn/flow` means cluster `hahn` with role `flow`. ||
+Name of the cluster where the pipeline is located. The tail after the last `/` is treated as a proxy role and takes precedence over `proxy_role` &mdash; e.g. `example-cluster/flow` means cluster `example-cluster` with role `flow`. ||
 || `proxy_role` | **Type**: `std::optional<std::string>`
 **Required parameter**
 The [proxy role](../../user-guide/proxy/about#rpc_proxy) to use for performing operations on the pipeline. ||
@@ -78,6 +79,9 @@ Dynamic spec with which to start the pipeline. ||
 If set and `enable=%true`, the runner starts a vanilla operation on {{product-name}} and runs the federation inside it, instead of starting the controller/workers locally. ||
 || `set_flow_core_target` | **Type**: `bool`
 **Default value**: `true`
+ ||
+|| `direct_controller_commands` | **Type**: `NYT::TIntrusivePtr<`[NYT::NFlow::TDirectControllerCommandsConfig](./all_yson_structs#NYT_NFlow_TDirectControllerCommandsConfig)`>`
+**Default value**: `{}`
  ||
 |#
 

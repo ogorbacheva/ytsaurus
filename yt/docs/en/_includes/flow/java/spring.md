@@ -1,8 +1,12 @@
 # Spring Boot integration in {{product-name}} Flow (Java)
 
-The Java SDK Flow (supports Kotlin) provides a [Spring Boot Starter](https://docs.spring.io/spring-boot/reference/using/build-systems.html#using.build-systems.starters) to simplify configuring and launching the companion process. The Starter automatically creates the necessary beans and manages the gRPC server’s lifecycle. The same starter works from Kotlin code without changes thanks to `WITH_KOTLINC_ALLOPEN(preset=spring)`.
+The Java SDK Flow (supports Kotlin) provides a [Spring Boot Starter](https://docs.spring.io/spring-boot/reference/using/build-systems.html#using.build-systems.starters) to simplify configuring and launching the pipeline. The Starter automatically creates the necessary beans and manages the gRPC server’s lifecycle. The same starter works from Kotlin code without changes thanks to `WITH_KOTLINC_ALLOPEN(preset=spring)`.
+
+One `@SpringBootApplication` class serves both roles: `YT_FLOW_MODE` selects the runner or companion, as described in [Entry point](../../../flow/java/getting-started.md#entry-point). You do not need a separate runner class.
 
 [Source code for flow-spring-boot-starter]({{source-root}}/yt/java/flow/flow-spring-boot-starter)
+
+To register companion resources, provide a `ResourceProvider` bean whose `getResourceClasses()` maps explicit implementation names to factories. Each factory must return a fresh resource, including when the provider itself is a singleton. See [Companion resources: Spring Boot and Kotlin](../../../flow/java/resources.md#spring-and-kotlin) for lifecycle and naming rules.
 
 ## Connecting
 
@@ -12,7 +16,7 @@ To connect the Spring Boot Starter, you need to add the `flow-spring-boot-starte
 
 ### 1. Create a Spring Boot application
 
-Use a class with a `main` method to launch the companion:
+Use one class with a `main` method as the pipeline entry point:
 
 {% list tabs group=lang %}
 
@@ -20,9 +24,9 @@ Use a class with a `main` method to launch the companion:
 
   ```java
   @SpringBootApplication
-  public class NodeCompanionMain {
+  public class PipelineMain {
       public static void main(String[] args) throws Exception {
-          new SpringApplicationBuilder(NodeCompanionMain.class)
+          new SpringApplicationBuilder(PipelineMain.class)
                   .run(args);
       }
   }
@@ -32,17 +36,25 @@ Use a class with a `main` method to launch the companion:
 
   ```kotlin
   @SpringBootApplication
-  open class NodeCompanionMain {
+  open class PipelineMain {
       companion object {
           @JvmStatic
           fun main(args: Array<String>) {
-              SpringApplicationBuilder(NodeCompanionMain::class.java).run(*args)
+              SpringApplicationBuilder(PipelineMain::class.java).run(*args)
           }
       }
   }
   ```
 
 {% endlist %}
+
+Launch the pipeline through the same class:
+
+```bash
+./run.sh com.example.pipeline.PipelineMain --config pipeline.yson --flow-bin flow_server
+```
+
+Use the fully qualified class name: `run.sh` passes its first argument directly to `java`.
 
 ### 2. Register computations {#registration}
 
@@ -122,11 +134,11 @@ Declare streams as Spring beans `FlowStream<?>` — they’re automatically regi
 
 {% endlist %}
 
-As an alternative to separate beans, you can declare streams in one place by implementing the `ComputationProvider` interface (the `getStreams()` method) — see [ComputationProvider interface](#computation-provider).
+As an alternative to separate beans, you can declare streams in one place by implementing the `ComputationProvider` interface (the `getStreams()` method) — see [ComputationProvider interface](#computation-provider). The same interface declares the proto (profile) states of the pipeline (`getStates()`), so the runner can describe them to the worker; `StateDescriptor<?>` beans are collected as well.
 
 That’s all you need to start. The Spring Boot Starter automatically:
 
-1. Creates `PipelineContext` and registers `Computation` objects (from annotated classes) and streams in it.
+1. Creates `PipelineContext` and registers `Computation` objects (from annotated classes), streams and states in it.
 2. Creates and configures `GrpcServerExecution`.
 3. Starts the gRPC server when the application launches.
 4. Stops the server correctly when the application shuts down.
@@ -173,7 +185,7 @@ Example from [Logbroker Wait Click Join](../../../yandex-specific/flow/java/exam
 
 [Source code]({{source-root}}/yt/java/flow/flow-spring-boot-starter/src/main/java/tech/ytsaurus/flow/spring/ComputationProvider.java)
 
-`ComputationProvider` lets you declare pipeline streams imperatively in one place — as an alternative to separate `FlowStream<?>` beans. Implement it and register it as a Spring `@Configuration`. Computations aren’t registered through this interface — use `@FlowComputation` / `@FlowSourceComputation` annotations for them.
+`ComputationProvider` lets you declare pipeline streams and states imperatively in one place — as an alternative to separate `FlowStream<?>` and `StateDescriptor<?>` beans. Implement it and register it as a Spring `@Configuration`. Computations aren’t registered through this interface — use `@FlowComputation` / `@FlowSourceComputation` annotations for them.
 
 {% list tabs group=lang %}
 
@@ -185,6 +197,11 @@ Example from [Logbroker Wait Click Join](../../../yandex-specific/flow/java/exam
        * Returns the list of streams to register in the pipeline.
        */
       List<FlowStream<?>> getStreams();
+
+      /**
+       * Returns the states the pipeline declares; empty by default.
+       */
+      default List<StateDescriptor<?>> getStates() { return List.of(); }
   }
   ```
 
@@ -196,10 +213,17 @@ Example from [Logbroker Wait Click Join](../../../yandex-specific/flow/java/exam
        * Returns the list of streams to register in the pipeline.
        */
       fun getStreams(): List<FlowStream<*>>
+
+      /**
+       * Returns the states the pipeline declares; empty by default.
+       */
+      fun getStates(): List<StateDescriptor<*>> = emptyList()
   }
   ```
 
 {% endlist %}
+
+`getStates()` declares the proto (profile) states of the pipeline: the runner fills their descriptor sets into the spec from the declared message classes, so the spec names no descriptors of its own. States of one name share a type — the owner of a state and the computations joining it declare it under one name — and states of different types need different names.
 
 ### Using Spring DI in ProcessFunction
 
@@ -275,16 +299,27 @@ In a production environment, the port is passed via the `YT_FLOW_COMPANION_CONFI
 
 [Source code for FlowAutoConfiguration]({{source-root}}/yt/java/flow/flow-spring-boot-starter/src/main/java/tech/ytsaurus/flow/spring/FlowAutoConfiguration.java)
 
-The Spring Boot Starter automatically creates the following beans:
+The Spring Boot Starter automatically creates these beans:
 
 | Bean | Creation condition | Description |
 |-----|-------------------|----------|
-| `PipelineContext` | There is an annotated bean (`@FlowComputation`/`@FlowSourceComputation`) or a `ComputationProvider` | The pipeline context with registered `Computation` objects and streams |
-| `CompanionExecutionConfig` | There is an annotated bean or a `ComputationProvider` | The gRPC server configuration (port) |
-| `GrpcServerExecution` | There is a `PipelineContext` | Manages the gRPC server |
-| `FlowCompanionLifecycle` | There is a `GrpcServerExecution` | Manages the server’s lifecycle |
+| `PipelineContext` | An annotated bean (`@FlowComputation`/`@FlowSourceComputation`), a `ComputationProvider`, or a `ResourceProvider` exists | Pipeline context with registered `Computation` objects and streams |
+| `FlowRunnerBootstrap` | Runner mode | Starts the pipeline and exits with the `flow_server` return code |
+| `CompanionExecutionConfig` | Companion mode with an annotated bean, `ComputationProvider`, or `ResourceProvider` | gRPC server configuration (port) |
+| `GrpcServerExecution` | Companion mode with a `PipelineContext` | Manages the gRPC server |
+| `FlowCompanionLifecycle` | Companion mode with a `GrpcServerExecution` | Manages the server lifecycle |
 
-The auto-configuration activation condition is described in `OnFlowComponentsCondition`: the starter is enabled if the context contains at least one `ComputationProvider` bean or a bean marked with `@FlowComputation` or `@FlowSourceComputation`.
+`PipelineContext` is built the same way in both modes, so unit tests that inject it through `@SpringBootTest` work without selecting a mode. `FlowRunnerBootstrap` itself does not depend on that bean: it collects only streams when an actual launch begins. It does not instantiate computation beans or their caches and clients just to submit a spec.
+
+Neither the gRPC nor the monitoring server starts in runner mode. Their configuration arrives from the worker through `YT_FLOW_COMPANION_CONFIG` and does not exist outside the companion. To avoid eagerly starting unrelated application beans, the starter defaults to `spring.main.web-application-type=none`, `spring.main.keep-alive=false`, and `spring.main.lazy-initialization=true` in runner mode. You can override these settings; test contexts keep normal Spring behavior.
+
+`OnFlowComponentsCondition` enables the starter when the context has a `ComputationProvider` or `ResourceProvider` bean or a bean annotated with `@FlowComputation` or `@FlowSourceComputation`. `YT_FLOW_MODE` chooses the role. For tests that cannot set an environment variable in their JVM, `flow.run-mode` accepts `Worker` or `runner`, ignoring case, only when `YT_FLOW_MODE` is unset. If both are set and disagree, context startup fails. `flow.run-mode` does not control `spring.main.*`: those settings are selected earlier from `YT_FLOW_MODE`.
+
+Streams and computations are collected only from the current context; beans in a `SpringApplicationBuilder.parent(...)` context do not enter the spec or companion.
+
+`FlowRunnerBootstrap` runs at the lowest `ApplicationRunner` priority and exits the JVM after launching. Give any application runner that must run before it an explicit `@Order` below `Ordered.LOWEST_PRECEDENCE`; runners with the same lowest priority have no guaranteed order.
+
+A test context does not launch a pipeline: `FlowRunnerBootstrap` detects common test frameworks, including JUnit, TestNG, Spring TestContext, and Cucumber. Set `flow.runner.enabled=false` for another framework. Outside tests, a launch without `--config` fails instead of silently doing nothing.
 
 All beans are created with the `@ConditionalOnMissingBean` annotation, which lets you override any of them if needed.
 
@@ -372,10 +407,9 @@ Project structure:
 
   ```
   src/main/java/
-  ├── NodeCompanionMain.java          # @SpringBootApplication
+  ├── PipelineMain.java               # @SpringBootApplication, only entry point
   ├── JoinProcessFunction.java        # @FlowComputation(id = "join") implements RowFunction
   ├── StreamConfiguration.java        # @Configuration with FlowStream<?> beans
-  ├── RunnerMain.java                 # SimpleRunnerProgram.runPipeline(args)
   └── model/
       ├── Hit.java                    # @Entity POJO
       ├── Action.java                 # @Entity POJO
@@ -388,10 +422,9 @@ Project structure:
 
   ```
   src/main/kotlin/
-  ├── NodeCompanionMain.kt            # @SpringBootApplication
+  ├── PipelineMain.kt                 # @SpringBootApplication, only entry point
   ├── JoinProcessFunction.kt          # @FlowComputation(id = "join") : RowFunction
   ├── StreamConfiguration.kt          # @Configuration with FlowStream<?> beans
-  ├── RunnerMain.kt                   # SimpleRunnerProgram.runPipeline(args)
   └── model/
       ├── Hit.kt                      # @Entity POJO
       ├── Action.kt                   # @Entity POJO

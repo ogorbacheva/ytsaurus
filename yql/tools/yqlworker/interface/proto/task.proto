@@ -17,6 +17,7 @@ enum ESyntax {
     YTORM_QL = 10;
     PG = 11;
     SPYT = 12;
+    SPARK_SQL = 13;
 }
 
 enum ETaskAction {
@@ -114,10 +115,20 @@ message TTaskFile {
 message TUserAuthData {
     optional string OauthToken = 1;
     optional string BlackboxSessionIdCookie = 2;
+    optional bytes QueryIdentityToken = 3;
+}
+
+message TProjectSettings {
+    message TPragma {
+        optional string Name = 1;     // e.g. "yt.StaticPool"
+        repeated string Value = 2;    // multi-value
+    }
+    repeated TPragma Pragmas = 1;
 }
 
 message TProjectData {
     optional string AbcServiceSlug = 1;
+    optional TProjectSettings Settings = 2;
 }
 
 message TGrant {
@@ -204,6 +215,8 @@ message TTaskData {
     optional TUserRoles UserRoles = 30;
     optional string DefaultTranslationCluster = 31;
     optional string Runner = 32;
+    optional string Host = 33;
+    optional bool StrictConfigValidation = 34 [default = false];
 }
 
 message TTaskError {
@@ -282,4 +295,3 @@ message TTaskResult {
     optional bool KeepRunning = 11 [default = false];
     optional bool RequiresPruning = 12 [default = false];
 }
-

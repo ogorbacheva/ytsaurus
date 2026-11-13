@@ -1,12 +1,45 @@
 #include "companion_computation_base.h"
 
-#include <yt/yt/flow/library/cpp/common/state_client.h>
-
-#include <yt/yt/flow/library/cpp/computation/simple_external_state_manager.h>
+#include <yt/yt/flow/library/cpp/common/companion_state_adapter.h>
+#include <yt/yt/flow/library/cpp/common/spec.h>
 
 #include <yt/yt/core/misc/collection_helpers.h>
 
 namespace NYT::NFlow::NCompanion {
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TCompanionFunctionParameters::Register(TRegistrar registrar)
+{
+    registrar.Parameter("function_ids", &TThis::FunctionIds)
+        .Default();
+
+    registrar.Postprocessor([] (TThis* parameters) {
+        if (!parameters->FunctionIds) {
+            return;
+        }
+        THROW_ERROR_EXCEPTION_IF(parameters->FunctionIds->empty(), "\"function_ids\" cannot be empty");
+        THashSet<std::string> functions;
+        for (const auto& function : *parameters->FunctionIds) {
+            THROW_ERROR_EXCEPTION_UNLESS(
+                functions.insert(function).second,
+                "\"function_ids\" lists function %Qv more than once",
+                function);
+        }
+    });
+}
+
+void ValidateCompanionFunctionIds(
+    const TCompanionFunctionParameters& parameters,
+    const TCompanionComputationInfo& computationInfo)
+{
+    // A companion that does not resolve the IDs would silently run only the function of the computation ID.
+    THROW_ERROR_EXCEPTION_UNLESS(
+        !parameters.FunctionIds || computationInfo.SupportsFunctionIds,
+        "Companion does not support \"function_ids\"; update the companion SDK or remove the parameter")
+        .With("computation_id", computationInfo.ComputationId)
+        .With("function_ids", *parameters.FunctionIds);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -42,30 +75,48 @@ TCompanionResponsePtr ProcessWithCompanionHealing(
 
 void AddJoinedExternalStates(
     const TCompanionProcessRequestPtr& request,
-    const THashMap<std::string, TJoinedStateKeyClient<TSimpleExternalState>>& joiners,
+    const THashMap<std::string, ICompanionStateAdapterPtr>& joiners,
     const IInputContextPtr& input)
 {
-    for (const auto& [stateName, stateClient] : joiners) {
-        for (const auto& key : stateClient.ExtractKeys(input)) {
-            auto stateHandle = stateClient.GetState(key);
-            const auto* joinedState = stateHandle.Get();
-            if (!joinedState) {
+    for (const auto& [stateName, adapter] : joiners) {
+        auto keys = adapter->ExtractKeys(input);
+        auto descriptor = adapter->Describe();
+        // A filtered first batch may precede schema discovery for a row joiner.
+        if (keys.empty() && descriptor.Format == EStateFormat::SimpleRow && !descriptor.Schema) {
+            continue;
+        }
+        // Keep the descriptor even when every profile in the batch is absent.
+        auto& holder = GetOrInsert(
+            request->JoinedExternalStates,
+            stateName,
+            [&] {
+                return TStateHolder<TSharedRef>{
+                    .StateName = stateName,
+                    .Schema = descriptor.Schema,
+                    .Format = descriptor.Format,
+                    .ProtoType = descriptor.ProtoType,
+                };
+            });
+        for (const auto& key : keys) {
+            auto payload = adapter->EncodeState(key);
+            if (!payload) {
                 continue;
             }
-            GetOrInsert(
-                request->JoinedExternalStates,
-                stateName,
-                [&] {
-                    return TStateHolder<TPayload>{
-                        .StateName = stateName,
-                        .Schema = joinedState->Schema,
-                    };
-                })
-                .StateItems.push_back({
-                    .Key = key,
-                    .State = joinedState->Payload,
-                });
+            holder.StateItems.push_back({
+                .Key = key,
+                .State = std::move(payload),
+            });
         }
+    }
+}
+
+void ValidateExternalStateManagersAutoPreload(const TComputationSpec& spec)
+{
+    for (const auto& [name, managerSpec] : spec.ExternalStateManagers) {
+        THROW_ERROR_EXCEPTION_IF(!managerSpec->AutoPreload,
+            "External state manager %Qv has auto_preload disabled, which a companion computation "
+            "cannot honor: companion states are shipped with the batch and cannot be preloaded on demand",
+            name);
     }
 }
 

@@ -161,33 +161,18 @@ YT_PREVENT_TLS_CACHING void TIOEngineSensors::UpdateKernelStatistics()
 ////////////////////////////////////////////////////////////////////////////////
 
 TRequestStatsGuard::TRequestStatsGuard(TIOEngineSensors::TRequestSensors sensors)
-    : TRequestStatsGuard(std::move(sensors), false)
-{ }
-
-TRequestStatsGuard::TRequestStatsGuard(TIOEngineSensors::TRequestSensors sensors, bool usingHugePages)
     : Sensors_(std::move(sensors))
-    , UsingHugePages_(usingHugePages)
 {
     Sensors_.Counter.Increment();
     Sensors_.InflightCounter.Increment();
-
-    if (UsingHugePages_) {
-        Sensors_.HugePageInflightCounter.Increment();
-    }
 }
-
 
 TRequestStatsGuard::~TRequestStatsGuard()
 {
     auto duration = Timer_.GetElapsedTime();
-    Sensors_.Timer.Record(duration);
+    Sensors_.ExecTimer.Record(duration);
     Sensors_.TotalTimeCounter.Add(duration);
     Sensors_.InflightCounter.Decrement();
-
-    if (UsingHugePages_) {
-        Sensors_.HugePageTimer.Record(duration);
-        Sensors_.HugePageInflightCounter.Decrement();
-    }
 }
 
 TDuration TRequestStatsGuard::GetElapsedTime() const
@@ -455,7 +440,10 @@ TCloseResponse TIOEngineBase::DoClose(const TCloseRequest& request, EWorkloadCat
     NFS::WrapIOErrors([&] {
         NTracing::TNullTraceContextGuard nullTraceContextGuard;
         if (request.Size) {
-            request.Handle->Resize(*request.Size);
+            YT_TLOG_ERROR_IF(!request.Handle->Resize(*request.Size), "Failed to resize file on close")
+                .With("handle", *request.Handle)
+                .With("size", request.Size)
+                .With(TError::FromSystem());
         }
         if (request.Flush && StaticConfig_->EnableSync) {
             TRequestStatsGuard statsGuard(Sensors_->SyncSensors[category]);
@@ -569,6 +557,22 @@ std::vector<TSharedRef> TIOEngineBase::PrepareDirectIOWriteBuffers(
     return {std::move(writeBlob)};
 }
 
+TSharedMutableRef TIOEngineBase::AllocateWriteStagingBlob(
+    i64 size,
+    i64 directIoBlockSize)
+{
+    auto hugePageBlob = AllocateHugeBlob();
+    if (hugePageBlob &&
+        reinterpret_cast<i64>(hugePageBlob.Begin()) % directIoBlockSize == 0 &&
+        static_cast<i64>(hugePageBlob.Size()) >= directIoBlockSize)
+    {
+        return hugePageBlob;
+    }
+
+    size = AlignUp(size, directIoBlockSize);
+    return TSharedMutableRef::AllocateAligned(size, directIoBlockSize, {.InitializeStorage = false}, {});
+}
+
 TSharedMutableRef TIOEngineBase::AllocateHugeBlob()
 {
     TSharedMutableRef hugePageBlob;
@@ -605,8 +609,10 @@ void TIOEngineBase::DoResize(const TResizeRequest& request)
     });
 }
 
-void TIOEngineBase::AddWriteWaitTimeSample(TDuration duration)
+void TIOEngineBase::AddWriteWaitTimeSample(TDuration duration, EWorkloadCategory category)
 {
+    Sensors_->WriteSensors[category].WaitTimer.Record(duration);
+
     auto config = Config_.Acquire();
     if (config->SickWriteTimeThreshold && config->SickWriteTimeWindow && config->SicknessExpirationTimeout && !Sick_) {
         if (duration > *config->SickWriteTimeThreshold) {
@@ -627,8 +633,10 @@ void TIOEngineBase::AddWriteWaitTimeSample(TDuration duration)
     }
 }
 
-void TIOEngineBase::AddReadWaitTimeSample(TDuration duration)
+void TIOEngineBase::AddReadWaitTimeSample(TDuration duration, EWorkloadCategory category)
 {
+    Sensors_->ReadSensors[category].WaitTimer.Record(duration);
+
     auto config = Config_.Acquire();
     if (config->SickReadTimeThreshold && config->SickReadTimeWindow && config->SicknessExpirationTimeout && !Sick_) {
         if (duration > *config->SickReadTimeThreshold) {
@@ -678,18 +686,23 @@ void TIOEngineBase::InitProfilerSensors()
     Sensors_->KernelWrittenBytesCounter = Profiler.Counter("/kernel_written_bytes");
     Sensors_->KernelReadBytesCounter = Profiler.Counter("/kernel_read_bytes");
 
-    auto makeRequestSensors = [] (TProfiler profiler) {
+    auto makeRequestSensors = [] (TProfiler profiler, TStringBuf execTimerName) {
         TIOEngineSensors::TRequestSensors sensors;
-        sensors.Timer = profiler.Timer("/time");
-        sensors.HugePageTimer = profiler.Timer("/huge_page_time");
+        sensors.ExecTimer = profiler.Timer(execTimerName);
         sensors.TotalTimeCounter = profiler.TimeCounter("/total_time");
         sensors.Counter = profiler.Counter("/request_count");
         sensors.InflightCounter = TInflightCounter::Create(profiler, "/inflight_count");
-        sensors.HugePageInflightCounter = TInflightCounter::Create(profiler, "/huge_page_inflight_count");
         return sensors;
     };
 
-    Sensors_->IOSubmitSensors = makeRequestSensors(Profiler.WithPrefix("/uring_io_submit"));
+    auto makeReadWriteSensors = [&] (TProfiler profiler) {
+        auto sensors = makeRequestSensors(profiler, "/time/exec");
+        sensors.WaitTimer = profiler.Timer("/time/wait");
+        sensors.TotalTimer = profiler.Timer("/time/total");
+        return sensors;
+    };
+
+    Sensors_->IOSubmitSensors = makeRequestSensors(Profiler.WithPrefix("/uring_io_submit"), "/time");
 
     for (auto category : TEnumTraits<EWorkloadCategory>::GetDomainValues()) {
         auto profilerCategory = Profiler.WithTag("category", FormatEnum(category));
@@ -700,10 +713,10 @@ void TIOEngineBase::InitProfilerSensors()
         Sensors_->WrittenBytesCounter[category] = profilerCategory.Counter("/written_bytes");
         Sensors_->ReadBytesCounter[category] = profilerCategory.Counter("/read_bytes");
 
-        Sensors_->ReadSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/read"));
-        Sensors_->WriteSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/write"));
-        Sensors_->SyncSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/sync"));
-        Sensors_->DataSyncSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/datasync"));
+        Sensors_->ReadSensors[category] = makeReadWriteSensors(profilerCategory.WithPrefix("/read"));
+        Sensors_->WriteSensors[category] = makeReadWriteSensors(profilerCategory.WithPrefix("/write"));
+        Sensors_->SyncSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/sync"), "/time");
+        Sensors_->DataSyncSensors[category] = makeRequestSensors(profilerCategory.WithPrefix("/datasync"), "/time");
     }
 }
 

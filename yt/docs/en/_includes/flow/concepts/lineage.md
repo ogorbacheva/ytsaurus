@@ -15,30 +15,29 @@ In most cases, you don’t need to manage lineage explicitly—the framework aut
 
 | Function type | Parent of the output message |
 | --- | --- |
-| `RowFunction` / `DoProcessMessage` | The current input message |
-| `BatchFunction` / `DoProcess` | All messages in the current batch |
+| `IProcessFunction::ProcessMessage` / `RowFunction` | The current input message |
+| `IBatchProcessFunction::Process` / `BatchFunction` | All messages in the current batch |
 | Timer handler | The current timer |
 
 ## When to set lineage explicitly {#explicit-lineage}
 
-The parents to specify are the input messages of the **current call** of the batch function that the given output was actually derived from (in companion SDKs, their `message_id`); messages from other batches cannot be parents.
+By default, the entire current batch is considered the parent of the output message. Setting lineage explicitly lets you narrow this set to a specific subset of input objects. This makes the computation of `EventTimestamp` and `AlignmentTimestamp` more precise.
 
-Whether this is mandatory depends on the computation type:
-
-- **Swift**: every output message must have **exactly one parent**, so in a batch function with more than one message in the batch setting lineage is **mandatory** — narrow the parents down to a single input message. With the "whole batch" default, processing fails with the error `Message should have exactly one parent message`. Multiple parents per output message are allowed only with the [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees) parameter enabled.
-- **Transform**: setting lineage is optional, but with the "whole batch" default the `EventTimestamp` of every output message (unless set explicitly when building it) equals the minimum over the whole batch, which skews event time and [watermarks](../../../flow/concepts/watermarks.md). Narrow the parents if your pipeline relies on event time.
-
-In row functions (`RowFunction` / `DoProcessMessage`) explicit lineage is not needed: the framework sets the current input message as the parent automatically.
+In a Swift computation the narrowing is mandatory: every output message must have exactly one parent (multiple only with [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees)). With per-message processing the framework assigns the parent automatically; in batch processing user code sets it. In a Transform computation explicit lineage is optional.
 
 ## API {#api}
 
 You set lineage using the `SetParents` / `set_parent_ids` / `setParentIds` / `WithParentIDs` method on the `OutputCollector` object. The method returns a **new** collector with the lineage context attached. All calls to `AddMessage` / `add_message` / `addMessage` on this collector will carry that lineage.
 
 For more details on how to use this in each language:
-- [C++](../../../flow/cpp/computation.md#output-collector)
+- [C++](../../../flow/cpp/process-functions.md)
 - [Java](../../../flow/java/computation.md#output-collector)
 - [Python](../../../flow/python/computation.md#output-collector)
 - [Go](../../../flow/go/computation.md#output-collector)
+
+## Conversion statistics {#conversion-statistics}
+
+Flow estimates the output-to-input ratio for each stream pair, separately for message count and byte size. These statistics describe processed messages, not guaranteed deliveries.
 
 ## See also
 

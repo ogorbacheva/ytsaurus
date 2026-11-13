@@ -1,9 +1,10 @@
 -- Подготовка данных потребления для кубика assign_pod_sizes.
 --
 -- Что делает:
---   1. Склеивает per-host витрину коллег с картой host -> bundle на тот же день
---      и берёт поточечный MAX по хостам бандла. Максимум обязан считаться до
---      квантили: max по хостам с квантилью по времени не коммутирует.
+--   1. Склеивает per-container витрину коллег с картой container -> bundle на
+--      тот же день и берёт поточечный MAX по контейнерам бандла. Максимум
+--      обязан считаться до квантили: max по контейнерам с квантилью по времени
+--      не коммутирует.
 --   2. Режет окно на периоды (по умолчанию 3 недели по 7 дней) и считает
 --      квантиль по времени внутри каждого периода.
 --   3. Отбрасывает периоды с coverage ниже 50% или конфигурацией, отличной от
@@ -27,7 +28,7 @@
 -- значения вместо DECLARE.
 
 PRAGMA AnsiInForEmptyOrNullableItemsCollections;
-USE hahn;
+USE kolmogorov;
 
 -- ==================== параметры ====================
 DECLARE $end_date    AS String;   -- последний день окна, YYYY-MM-DD; "" = вчера (UTC)
@@ -35,10 +36,10 @@ DECLARE $period_days AS Int32;    -- длина одного периода в �
 DECLARE $periods     AS Int32;    -- сколько периодов брать, 1..3 (по числу выходов)
 DECLARE $quantile    AS Double;   -- квантиль по времени внутри периода
 
-DECLARE $usage_nodes   AS String; -- витрина потребления tablet nodes, per-host
-DECLARE $usage_proxies AS String; -- витрина потребления rpc proxy, per-host
-DECLARE $nodes_spec   AS String; -- карта host -> bundle для нод
-DECLARE $proxies_spec AS String; -- карта host -> role для проксей
+DECLARE $usage_nodes   AS String; -- витрина потребления tablet nodes, per-container
+DECLARE $usage_proxies AS String; -- витрина потребления rpc proxy, per-container
+DECLARE $nodes_spec   AS String; -- карта container -> bundle для нод
+DECLARE $proxies_spec AS String; -- карта container -> role для проксей
 DECLARE $bundle_spec   AS String; -- спек-лог бандлов (конфигурация и гарантии)
 
 DECLARE $metrics_0  AS String;
@@ -135,10 +136,12 @@ $confidence_reason = ($valid_periods, $spec_bad, $usage_bad) -> {
     )), ","), "");
 };
 
+-- В разных витринах cluster бывает String или Utf8. На входе приводим его
+-- к Utf8, чтобы JOIN и обе записи в @usage_max использовали один тип.
 -- Гарантии и отпечатки конфигурации по дням: нужны и шагу 1, и шагу 3.
 $spec_by_day = (
     SELECT
-        TableName() AS day, cluster AS cluster, bundle_name AS bundle,
+        TableName() AS day, CAST(cluster AS Utf8) AS cluster, bundle_name AS bundle,
         abc_service_slug,
         abc_service_path,
         value_stream_slug,
@@ -165,86 +168,104 @@ $spec_by_day = (
     WHERE bundle_name IS NOT NULL
 );
 
--- ================= шаг 1: MAX по хостам бандла в каждой точке =================
+-- =============== шаг 1: MAX по контейнерам бандла в каждой точке ===============
 
--- Хост размера не по гарантии бандла — временно назначенный spare или под старой
--- конфигурации; его потребление в максимум бандла не берём. По сети сравниваем
--- только когда лимит известен с обеих сторон: там, где он не включён, спек-лог
--- отдаёт NULL (ноды hahn и arnold) или ноль (их же прокси).
+-- Контейнер размера не по гарантии бандла — временно назначенный spare или под
+-- старой конфигурации; его потребление в максимум бандла не берём. По сети
+-- сравниваем только когда лимит известен с обеих сторон: там, где он не включён,
+-- спек-лог отдаёт NULL (ноды hahn и arnold) или ноль (их же прокси).
 $net_known = ($net) -> { RETURN COALESCE($net, 0) != 0 };
-$same_size = ($h_vcpu, $h_mem, $h_net, $g_vcpu, $g_mem, $g_net) -> {
-    RETURN $h_vcpu == $g_vcpu AND $h_mem == $g_mem
-        AND (NOT $net_known($h_net) OR NOT $net_known($g_net) OR $h_net == $g_net);
+$same_size = ($container_vcpu, $container_mem, $container_net, $g_vcpu, $g_mem, $g_net) -> {
+    RETURN $container_vcpu == $g_vcpu AND $container_mem == $g_mem
+        AND (NOT $net_known($container_net) OR NOT $net_known($g_net) OR $container_net == $g_net);
 };
 
-$node_hosts = (
-    SELECT h.day AS day, h.cluster AS cluster, h.bundle AS bundle, h.host AS host
+-- Топология приходит файлами из того же снимка bundle controller, что и размеры.
+$data_center_rows = ListFlatMap(AsList(/* DATA_CENTER_FILES */), ($yson) -> {
+    RETURN Unwrap(Yson::ConvertTo(
+        Yson::Parse($yson),
+        ParseType("List<Struct<cluster:Utf8,data_center:String>>")
+    ));
+});
+$configured_data_centers = SELECT * FROM AS_TABLE($data_center_rows);
+
+-- Не все кластеры управляются через Nanny: например, у активных инстансов
+-- Keynes nanny_service_id пустой. Поэтому наличие Nanny-сервиса не используем
+-- как признак активности ни для нод, ни для проксей.
+$node_containers = (
+    SELECT c.day AS day, c.cluster AS cluster, c.bundle AS bundle, c.container AS container
     FROM (
-        SELECT TableName() AS day, cluster AS cluster, bundle AS bundle, host AS host,
+        -- В Meta DWH колонка называется host, но содержит FQDN контейнера,
+        -- а не имя физического хоста. За границей внешней схемы используем
+        -- однозначное имя container.
+        SELECT TableName() AS day, CAST(cluster AS Utf8) AS cluster, bundle AS bundle, data_center, host AS container,
                tablet_node_vcpu AS vcpu, tablet_node_memory AS memory,
                tablet_node_net_bytes AS net
         FROM RANGE($nodes_spec, $start_s, $end_s)
-        WHERE nanny_service_id IS NOT NULL AND host IS NOT NULL
-    ) AS h
+        WHERE host IS NOT NULL
+    ) AS c
+    INNER JOIN $configured_data_centers AS dc
+        ON c.cluster == dc.cluster AND c.data_center == dc.data_center
     INNER JOIN $spec_by_day AS s
-        ON h.day == s.day AND h.cluster == s.cluster AND h.bundle == s.bundle
-    WHERE $same_size(h.vcpu, h.memory, h.net, s.node_vcpu, s.node_memory, s.node_net)
+        ON c.day == s.day AND c.cluster == s.cluster AND c.bundle == s.bundle
+    WHERE $same_size(c.vcpu, c.memory, c.net, s.node_vcpu, s.node_memory, s.node_net)
 );
 
 -- Прокси привязываем по bundle (allocated_for_bundle), а не по роли: на cross-dc
 -- кластерах у прокси неактивного ДЦ роль <bundle>_released, и по роли она выпала
 -- бы из бандла на все сутки, хотя до переключения ДЦ несла нагрузку. Простой в
--- максимум по хостам не мешает. У spare-проксей bundle = "spare" даже когда они
+-- максимум по контейнерам не мешает. У spare-проксей bundle = "spare" даже когда они
 -- выданы бандлу, так что они по-прежнему не учитываются.
-$proxy_hosts = (
-    SELECT h.day AS day, h.cluster AS cluster, h.bundle AS bundle, h.host AS host
+$proxy_containers = (
+    SELECT c.day AS day, c.cluster AS cluster, c.bundle AS bundle, c.container AS container
     FROM (
         -- bundle в спек-логе проксей — String, а дальше по конвейеру всё Utf8.
-        SELECT TableName() AS day, cluster AS cluster, CAST(bundle AS Utf8) AS bundle,
-               host AS host, rpc_proxy_vcpu AS vcpu, rpc_proxy_memory AS memory,
+        SELECT TableName() AS day, CAST(cluster AS Utf8) AS cluster, CAST(bundle AS Utf8) AS bundle, data_center,
+               host AS container, rpc_proxy_vcpu AS vcpu, rpc_proxy_memory AS memory,
                rpc_proxy_net_bytes AS net
         FROM RANGE($proxies_spec, $start_s, $end_s)
-        WHERE nanny_service_id IS NOT NULL
-          AND allocated AND bundle IS NOT NULL AND bundle != "" AND host IS NOT NULL
-    ) AS h
+        WHERE allocated AND bundle IS NOT NULL AND bundle != "" AND host IS NOT NULL
+    ) AS c
+    INNER JOIN $configured_data_centers AS dc
+        ON c.cluster == dc.cluster AND c.data_center == dc.data_center
     INNER JOIN $spec_by_day AS s
-        ON h.day == s.day AND h.cluster == s.cluster AND h.bundle == s.bundle
-    WHERE $same_size(h.vcpu, h.memory, h.net, s.proxy_vcpu, s.proxy_memory, s.proxy_net)
+        ON c.day == s.day AND c.cluster == s.cluster AND c.bundle == s.bundle
+    WHERE $same_size(c.vcpu, c.memory, c.net, s.proxy_vcpu, s.proxy_memory, s.proxy_net)
 );
 
 INSERT INTO @usage_max
 SELECT
     "node" AS instance_type,
-    h.cluster AS cluster, h.bundle AS bundle, u.day AS day, u.ts AS ts,
+    c.cluster AS cluster, c.bundle AS bundle, u.day AS day, u.ts AS ts,
     MAX($finite(u.vcpu_usage))        AS cpu_total,
     MAX($finite(u.memory_anon_usage)) AS anon_memory,
     MAX($finite(u.net_tx))            AS net_tx,
     MAX($finite(u.net_rx))            AS net_rx
 FROM (
-    SELECT TableName() AS day, host, ts, memory_anon_usage, net_tx, net_rx,
+    SELECT TableName() AS day, host AS container, ts, memory_anon_usage, net_tx, net_rx,
            vcpu_usage / $cpu_usage_divisor AS vcpu_usage
     FROM RANGE($usage_nodes, $start_s, $end_s)
     WHERE ts IS NOT NULL AND host IS NOT NULL
 ) AS u
-INNER JOIN $node_hosts AS h ON u.day == h.day AND u.host == h.host
-GROUP BY h.cluster AS cluster, h.bundle AS bundle, u.day AS day, u.ts AS ts;
+INNER JOIN $node_containers AS c ON u.day == c.day AND u.container == c.container
+GROUP BY c.cluster AS cluster, c.bundle AS bundle, u.day AS day, u.ts AS ts;
 
 INSERT INTO @usage_max
 SELECT
     "proxy" AS instance_type,
-    h.cluster AS cluster, h.bundle AS bundle, u.day AS day, u.ts AS ts,
+    c.cluster AS cluster, c.bundle AS bundle, u.day AS day, u.ts AS ts,
     MAX($finite(u.vcpu_usage))        AS cpu_total,
     MAX($finite(u.memory_anon_usage)) AS anon_memory,
     MAX($finite(u.net_tx))            AS net_tx,
     MAX($finite(u.net_rx))            AS net_rx
 FROM (
-    SELECT TableName() AS day, host, ts, memory_anon_usage, net_tx, net_rx,
+    SELECT TableName() AS day, host AS container, ts, memory_anon_usage, net_tx, net_rx,
            vcpu_usage / $cpu_usage_divisor AS vcpu_usage
     FROM RANGE($usage_proxies, $start_s, $end_s)
     WHERE ts IS NOT NULL AND host IS NOT NULL
 ) AS u
-INNER JOIN $proxy_hosts AS h ON u.day == h.day AND u.host == h.host
-GROUP BY h.cluster AS cluster, h.bundle AS bundle, u.day AS day, u.ts AS ts;
+INNER JOIN $proxy_containers AS c ON u.day == c.day AND u.container == c.container
+GROUP BY c.cluster AS cluster, c.bundle AS bundle, u.day AS day, u.ts AS ts;
 
 COMMIT;
 
@@ -324,21 +345,11 @@ SELECT * FROM $stats;
 
 COMMIT;
 
--- Зоны доступности кластера: у cross-dc кластеров инстансы бандла разложены по
--- ДЦ и активны не все сразу, у обычных бандл-контроллер отдаёт один "default".
-$zones_by_cluster_day = (
-    SELECT cluster, day, COUNT(DISTINCT data_center) AS availability_zones
-    FROM (
-        SELECT cluster, TableName() AS day, data_center
-        FROM RANGE($nodes_spec, $start_s, $end_s)
-        WHERE data_center IS NOT NULL
-    ) AS daily_zones
-    GROUP BY cluster AS cluster, day AS day
-);
-
+-- Число зон берём из текущей конфигурации, а не из исторических контейнеров.
+-- У однозонных кластеров сборщик явно записывает единственный ДЦ default.
 $zones_by_cluster = (
-    SELECT cluster, MAX(availability_zones) AS availability_zones
-    FROM $zones_by_cluster_day
+    SELECT cluster, COUNT(DISTINCT data_center) AS availability_zones
+    FROM $configured_data_centers
     GROUP BY cluster AS cluster
 );
 

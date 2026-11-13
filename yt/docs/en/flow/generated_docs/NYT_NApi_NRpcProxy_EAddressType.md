@@ -6,11 +6,8 @@
 || Possible values | **Description** ||
 || `internal_rpc` |  ||
 || `monitoring_http` |  ||
-|| `tvm_only_internal_rpc` |  ||
 || `http` |  ||
 || `https` |  ||
-|| `tvm_only_http` |  ||
-|| `tvm_only_https` |  ||
 || `public_rpc` |  ||
 || `chyt_http` |  ||
 || `chyt_https` |  ||

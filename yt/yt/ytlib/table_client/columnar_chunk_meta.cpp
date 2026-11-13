@@ -2,6 +2,7 @@
 
 #include <yt/yt/client/table_client/key.h>
 #include <yt/yt/client/table_client/name_table.h>
+#include <yt/yt/client/table_client/private.h>
 #include <yt/yt/client/table_client/row_buffer.h>
 #include <yt/yt/client/table_client/column_rename_descriptor.h>
 
@@ -163,6 +164,7 @@ i64 TColumnarChunkMeta::GetMemoryUsage() const
         (ColumnGroupInfos_ ? ColumnGroupInfos_->GetSize() * metaMemoryFactor : 0) +
         (ColumnMeta_ ? ColumnMeta_->GetSize() * metaMemoryFactor : 0) +
         ChunkSchema_->GetMemoryUsage() +
+        (ChunkNameTable_ ? ChunkNameTable_->GetByteSize() : 0) +
         (sizeof(HunkChunkRefs_[0]) * HunkChunkRefs_.size()) +
         (sizeof(HunkChunkMetas_[0]) * HunkChunkMetas_.size());
 }

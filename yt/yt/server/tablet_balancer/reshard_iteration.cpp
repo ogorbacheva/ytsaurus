@@ -7,7 +7,7 @@
 
 #include <yt/yt/server/lib/tablet_balancer/balancing_helpers.h>
 #include <yt/yt/server/lib/tablet_balancer/config.h>
-#include <yt/yt/server/lib/tablet_balancer/parameterized_balancing_helpers.h>
+#include <yt/yt/server/lib/tablet_balancer/resharder.h>
 #include <yt/yt/server/lib/tablet_balancer/table.h>
 #include <yt/yt/server/lib/tablet_balancer/tablet_cell.h>
 #include <yt/yt/server/lib/tablet_balancer/tablet_cell_bundle.h>
@@ -327,7 +327,7 @@ public:
             BundleSnapshot_->PerformanceCountersKeys,
             TParameterizedResharderConfig{
                 .EnableReshardByDefault = DynamicConfig_->EnableParameterizedReshardByDefault,
-                .Metric = DynamicConfig_->DefaultParameterizedMetric,
+                .Metrics = {DynamicConfig_->DefaultParameterizedMetric},
             }.MergeWith(groupConfig->Parameterized),
             GroupName_,
             Logger());
@@ -584,7 +584,7 @@ private:
             for (const auto& minorTablePath : minorTablePaths) {
                 auto it = BundleSnapshot_->AlienTablePaths.find(TBundleSnapshot::TAlienTableTag(cluster, minorTablePath));
                 THROW_ERROR_EXCEPTION_IF(it == BundleSnapshot_->AlienTablePaths.end(),
-                    "Not all tables was resolved. Table id for table %v was not found. Check that table path is correct",
+                    "Not all tables were resolved. Table id for table %v was not found. Check that table path is correct",
                     minorTablePath);
 
 

@@ -45,6 +45,11 @@ void TraverseQueryTables(NAst::TQuery* query, TCallback onTableDescriptor)
         },
         [] (const NAst::TExpressionList& /*expression*/) {
             THROW_ERROR_EXCEPTION("Unexpected expression in from clause");
+        },
+        [&] (NAst::TUnionAllClause& unionAll) {
+            for (const auto& subquery : unionAll.Subqueries) {
+                TraverseQueryTables(&subquery->Ast, onTableDescriptor);
+            }
         });
 
     for (auto& join : query->Joins) {
@@ -90,9 +95,9 @@ std::vector<TFuture<TTableMountInfoPtr>> GetQueryTableInfos(
     return asyncTableInfos;
 }
 
-std::vector<NAst::TTableHintPtr> GetQueryTableHints(NAst::TQuery* query)
+std::vector<NAst::TTableHint> GetQueryTableHints(NAst::TQuery* query)
 {
-    std::vector<NAst::TTableHintPtr> hints;
+    std::vector<NAst::TTableHint> hints;
 
     TraverseQueryTables(query, [&] (NAst::TTableDescriptor& table, bool index) {
         if (index) {
@@ -207,7 +212,7 @@ public:
         std::vector<TReplicaSynchronicityList> replicas,
         NAst::TQuery* query,
         std::vector<TTableMountInfoPtr> tableInfos,
-        std::vector<NAst::TTableHintPtr> tableHints,
+        std::vector<NAst::TTableHint> tableHints,
         std::vector<IBannedReplicaTrackerPtr> bannedReplicaTrackers,
         const IConnectionPtr& connection,
         TTimestamp timestamp,
@@ -222,7 +227,7 @@ private:
     const std::vector<TReplicaSynchronicityList> Replicas_;
     NAst::TQuery* const AstQuery_ = nullptr;
     const std::vector<TTableMountInfoPtr> TableInfos_;
-    const std::vector<NAst::TTableHintPtr> TableHints_;
+    const std::vector<NAst::TTableHint> TableHints_;
     const std::vector<IBannedReplicaTrackerPtr> BannedReplicaTrackers_;
     const IConnectionPtr Connection_;
     const TTimestamp Timestamp_ = NullTimestamp;
@@ -237,7 +242,7 @@ TPickReplicaSession::TPickReplicaSession(
     std::vector<TReplicaSynchronicityList> replicas,
     NAst::TQuery* query,
     std::vector<TTableMountInfoPtr> tableInfos,
-    std::vector<NAst::TTableHintPtr> tableHints,
+    std::vector<NAst::TTableHint> tableHints,
     std::vector<IBannedReplicaTrackerPtr> bannedReplicaTrackers,
     const IConnectionPtr& connection,
     TTimestamp timestamp,
@@ -378,7 +383,7 @@ TClusterScoreMap TPickReplicaSession::PickViableClusters(
             Replicas_[index],
             BannedReplicaTrackers_[index],
             bannedReplicaIds,
-            TableHints_[index]->RequireSyncReplica);
+            TableHints_[index].RequireSyncReplica);
 
         if (tableViableClusters.empty()) {
             for (auto id : bannedReplicaIds) {
@@ -449,7 +454,7 @@ std::pair<std::string, TReplicaSynchronicityList> TPickReplicaSession::PickClust
     }
 
     for (int index = 0; index < std::ssize(TableInfos_); ++index) {
-        if (!TableHints_[index]->RequireSyncReplica) {
+        if (!TableHints_[index].RequireSyncReplica) {
             THashMap<std::string, TTimestamp> tableScores;
             for (const auto& replicas : Replicas_[index]) {
                 if (!viableClusters.contains(replicas.ReplicaInfo->ClusterName)) {
@@ -482,7 +487,7 @@ std::pair<std::string, TReplicaSynchronicityList> TPickReplicaSession::PickClust
 
     TReplicaSynchronicityList replicas;
     for (int index = 0; index < std::ssize(Replicas_); ++index) {
-        const auto requireSyncReplica = TableHints_[index]->RequireSyncReplica;
+        const auto requireSyncReplica = TableHints_[index].RequireSyncReplica;
         const auto userTimestamp = Timestamp_;
 
         auto isGoodReplica = [&] (const TReplicaSynchronicity& replica) {
@@ -553,7 +558,7 @@ IPickReplicaSessionPtr CreatePickReplicaSession(
                     table,
                     deadline,
                     options,
-                    !hint->RequireSyncReplica));
+                    !hint.RequireSyncReplica));
         }
     } else {
         for (int index = 0; index < std::ssize(tableInfos); ++index) {
@@ -563,7 +568,7 @@ IPickReplicaSessionPtr CreatePickReplicaSession(
                 connection,
                 table,
                 options,
-                !hint->RequireSyncReplica));
+                !hint.RequireSyncReplica));
         }
     }
 
@@ -574,8 +579,8 @@ IPickReplicaSessionPtr CreatePickReplicaSession(
         .With("TablePaths", MakeFormattableView(tableInfos, [] (TStringBuilderBase* builder, const TTableMountInfoPtr& tableInfo) {
             builder->AppendString(tableInfo->Path);
         }))
-        .With("RequireSyncReplicas", MakeFormattableView(tableHints, [] (TStringBuilderBase* builder, const NAst::TTableHintPtr& tableHint) {
-            builder->AppendFormat("%v", tableHint->RequireSyncReplica);
+        .With("RequireSyncReplicas", MakeFormattableView(tableHints, [] (TStringBuilderBase* builder, const NAst::TTableHint& tableHint) {
+            builder->AppendFormat("%v", tableHint.RequireSyncReplica);
         }))
         .With("ReplicaSynchronicities", replicas)
         .With("Timestamp", timestamp);

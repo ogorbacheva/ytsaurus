@@ -45,6 +45,11 @@ struct TNodeInfoBase
     //! ("ASAN"/"TSAN"/"MSAN"). Empty for nodes from binaries that predate this field.
     std::string BuildType;
 
+    //! PEM-encoded self-signed TLS certificate of the node incarnation. Set on controller nodes only.
+    std::optional<std::string> CertificatePem;
+    //! Uppercase hex SHA-256 of the DER-encoded #CertificatePem.
+    std::optional<std::string> CertificateSha256;
+
     // Name + RpcAddress + IncarnationId.
     std::string GetIdentifyingString() const;
 };
@@ -82,12 +87,18 @@ void RegisterNodeInfoStruct(TRegistrar registrar)
         .Default();
     registrar.BaseClassParameter("vcpu_factor", &TNodeInfoBase::VcpuFactor)
         .Default();
+    registrar.BaseClassParameter("vcpu_limit", &TNodeInfoBase::VcpuLimit)
+        .Default();
     registrar.BaseClassParameter("build_version", &TNodeInfoBase::BuildVersion)
         .Default();
     registrar.BaseClassParameter("flow_core_version", &TNodeInfoBase::FlowCoreVersion)
         .Default();
     registrar.BaseClassParameter("build_type", &TNodeInfoBase::BuildType)
         .Default();
+    registrar.BaseClassParameter("certificate_pem", &TNodeInfoBase::CertificatePem)
+        .Optional();
+    registrar.BaseClassParameter("certificate_sha256", &TNodeInfoBase::CertificateSha256)
+        .Optional();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

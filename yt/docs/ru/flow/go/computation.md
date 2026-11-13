@@ -37,7 +37,7 @@
 
 Компьютейшен создаётся конструктором и регистрируется в `flow.Pipeline` через `pipeline.Add`. Пример из [Shuffle](examples/shuffle.md), где компаньон обслуживает оба конца пайплайна — сорс и трансформ:
 
-{% code '/yt/yt/flow/examples/go/shuffle/main.go' lang='go' %}
+[Исходный код: `main.go`]({{source-root}}/yt/yt/flow/examples/go/shuffle/main.go)
 
 У конструкторов два обязательных параметра:
 
@@ -239,7 +239,7 @@ func (*urlDownloadFunction) OnTimer(
 
 `flow.BatchFunction` получает весь батч сообщений, пришедших от [воркера](../../flow/concepts/glossary.md#worker), одним вызовом метода `OnMessages`. Таймеры и визиты обрабатываются интерфейсами `flow.BatchTimerFunction` (`OnTimers`) и `flow.BatchVisitFunction` (`OnVisits`).
 
-Батч соответствует одному запросу воркера и может содержать сообщения с разными [ключами](../../flow/concepts/glossary.md#key); группировка по ключам при необходимости выполняется в коде функции (см. [Companion](../../flow/concepts/companion.md#schema)).
+Батч соответствует одному запросу воркера и может содержать сообщения с разными [ключами](../../flow/concepts/glossary.md#key); группировка по ключам при необходимости выполняется в пользовательском коде (см. [Companion](../../flow/concepts/companion.md#schema)).
 
 #### Пример batch-функции {#batch-example}
 
@@ -428,6 +428,7 @@ watermark, ok := rt.Watermark("stream_id")
 | Метод | Описание |
 | --- | --- |
 | `out.AddMessage(msg)` | Добавить выходное сообщение (значение `flow.Message`, полученное через `builder.Finish()`) |
+| `out.AddMessage(msg, options)` | Добавить сообщение с `flow.AddMessageOptions`, задающим публикацию и суффикс message ID для Swift |
 | `out.AddUndistributedMessage(msg)` | Добавить source-сообщение с `distribute = false` |
 | `out.AddTimer(timer)` | Поставить [таймер](../../flow/concepts/glossary.md#timer) на обрабатываемый ключ |
 | `out.WithParentIDs(parentIDs...)` | Вернуть коллектор, пишущий в отдельную группу с указанной [родословной](../../flow/concepts/lineage.md) |
@@ -454,6 +455,33 @@ func (*myFunction) OnMessage(
     return nil
 }
 ```
+
+### Суффикс message ID в Swift {#message-id-suffixes}
+
+`out.AddMessage` принимает не более одного `flow.AddMessageOptions`. Поле `Distribute` управляет публикацией: `flow.DistributeDefault` и `flow.DistributeMessage` публикуют сообщение, а `flow.DoNotDistributeMessage` работает для source-фильтрации так же, как `out.AddUndistributedMessage`. В transform-компьютейшене флаг не влияет на публикацию; для фильтрации не добавляйте сообщение.
+
+В Swift-компьютейшене `MessageIDSuffix` выбирает суффикс производного message ID:
+
+```go
+out.AddMessage(hashedMessage, flow.AddMessageOptions{
+    MessageIDSuffix: flow.PayloadHashMessageIDSuffix(),
+})
+
+suffix, err := flow.UserDefinedMessageIDSuffix(semanticKey)
+if err != nil {
+    return err
+}
+out.AddMessage(keyedMessage, flow.AddMessageOptions{
+    Distribute:      flow.DoNotDistributeMessage,
+    MessageIDSuffix: suffix,
+})
+```
+
+- С options по умолчанию или с `flow.SequenceNumberMessageIDSuffix()` используется текущий порядковый номер сообщения для пары «родительский message ID, выходной стрим».
+- `flow.PayloadHashMessageIDSuffix()` использует 128-битный CityHash от канонического wire-представления payload. Одинаковые payload одного родителя и стрима получают одинаковый message ID; теоретическая коллизия хеша возможна.
+- `flow.UserDefinedMessageIDSuffix(value)` отвергает пустое значение. Вызывающий код отвечает за его стабильность и уникальность среди разных логических сообщений одного родителя и стрима.
+
+Хеш payload и пользовательский суффикс поддерживаются только Swift-компьютейшенами. Они позволяют отвязать идентичность сообщения от порядка порождения, но не отменяют [требование детерминированности Swift](../../flow/concepts/swift.md#determinism): одинаковый message ID всё равно должен обозначать один и тот же логический вывод.
 
 Поле `StreamID` в `flow.TimerRequest` выбирает стрим таймеров; пустое значение означает единственный стрим таймеров пайплайна.
 

@@ -1,4 +1,4 @@
-LIBRARY()
+YQL_LIBRARY()
 
 SRCS(
     mkql_block_builder.cpp
@@ -6,6 +6,10 @@ SRCS(
     mkql_block_reader.cpp
     mkql_block_transport.cpp
     mkql_block_trimmer.cpp
+    mkql_bridge.cpp
+    mkql_bridge_inprocess.cpp
+    mkql_bridge_outprocess.cpp
+    mkql_bridge_protocol.cpp
     mkql_computation_node.cpp
     mkql_datum_validate.cpp
     mkql_computation_node_holders.cpp
@@ -18,16 +22,33 @@ SRCS(
     mkql_value_builder.cpp
     mkql_computation_pattern_cache.cpp
     presort.cpp
+    mkql_block_item.cpp
+    mkql_computation_list_adapter.cpp
+    mkql_computation_node_list.cpp
+    mkql_computation_pattern_cache_program_key.cpp
+    mkql_key_payload_value_lru_cache.cpp
+    mkql_method_address_helper.cpp
+    mkql_optional_usage_mask.cpp
+    mkql_spiller.cpp
+    mkql_spiller_adapter.cpp
+    mkql_spiller_factory.cpp
+    mkql_validate_impl.cpp
+    mkql_vector_spiller_adapter.cpp
+    mock_spiller_factory_ut.cpp
+    mock_spiller_ut.cpp
+    presort_impl.cpp
 )
 
 PEERDIR(
     contrib/libs/apache/arrow
+    library/cpp/string_utils/base64
     yql/essentials/public/types
     yql/essentials/parser/pg_wrapper/interface
     yql/essentials/public/udf
     yql/essentials/public/udf/arrow
     yql/essentials/minikql/arrow
     yql/essentials/minikql/runtime_settings
+    yql/essentials/utils
     yql/essentials/utils/meta
 )
 
@@ -38,8 +59,6 @@ CFLAGS(
 )
 
 ENDIF()
-
-YQL_LAST_ABI_VERSION()
 
 END()
 

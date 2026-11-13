@@ -1,16 +1,19 @@
 from yt_env_setup import YTEnvSetup
 
 from yt_commands import (
-    authors, create, create_user, make_ace, remove, write_table, start_transaction, abort_transaction, commit_transaction, lock, link, set)
+    authors, create, create_user, make_ace, remove, write_table,
+    start_transaction, abort_transaction, abort_all_user_transactions,
+    commit_transaction, get, lock, link, set)
 
-from sequoia_reconstructor import check_sequoia_tables_reconstruction
+from sequoia_reconstructor import check_single_cell_sequoia_reconstructor
 
 import pytest
 
 ##################################################################
 
 
-class TestSequoiaReconstructor(YTEnvSetup):
+# TODO(grphil): Add multicell sequoia reconstructor tests.
+class TestSingleCellSequoiaReconstructor(YTEnvSetup):
     ENABLE_MULTIDAEMON = False  # We will build snapshots.
     USE_SEQUOIA = True
     ENABLE_TMP_ROOTSTOCK = True
@@ -21,44 +24,58 @@ class TestSequoiaReconstructor(YTEnvSetup):
         "10": {"roles": ["sequoia_node_host"]},
     }
 
+    DELTA_DYNAMIC_MASTER_CONFIG = {
+        "cypress_manager": {
+            "enable_symlink_backfill": True,
+        },
+    }
+
+    @pytest.fixture
+    def cypress_root(self):
+        path = "//cypress"
+        create("map_node", path, attributes={"account": "tmp"})
+        yield path
+        abort_all_user_transactions()
+        remove(path, recursive=True)
+
     @authors("grphil")
     def test_simple_reconstruction(self):
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         create("table", "//tmp/some_dir/table", recursive=True)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         write_table("//tmp/some_dir/table", [{"x": "hello"}])
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         remove("//tmp/some_dir/table")
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_simple_transactions(self):
         tx = start_transaction(timeout=100000)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         create("map_node", "//tmp/dir", tx=tx)
         create("table", "//tmp/dir/table", tx=tx)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx = start_transaction(timeout=100000)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
         remove("//tmp/dir/table", tx=tx)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
         abort_transaction(tx)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx = start_transaction(timeout=100000)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
         remove("//tmp/dir/table", tx=tx)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
         commit_transaction(tx)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_complex_transactions(self):
@@ -67,28 +84,28 @@ class TestSequoiaReconstructor(YTEnvSetup):
 
         tx2 = start_transaction(timeout=100000, tx=tx1)
         create("table", "//tmp/dir/table", tx=tx2)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx3 = start_transaction(timeout=100000, tx=tx2)
         remove("//tmp/dir/table", tx=tx3)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx3)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx3 = start_transaction(timeout=100000, tx=tx2)
         remove("//tmp/dir/table", tx=tx3)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx2)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx2 = start_transaction(timeout=100000, tx=tx1)
         create("table", "//tmp/dir/table", tx=tx2)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx2)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx11 = start_transaction(timeout=100000, tx=tx1)
         create("table", "//tmp/dir/t1", tx=tx11)
@@ -108,20 +125,20 @@ class TestSequoiaReconstructor(YTEnvSetup):
         tx14 = start_transaction(timeout=100000, tx=tx1)
         create("table", "//tmp/dir/t4", tx=tx14)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx11)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx12)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx1311)
         commit_transaction(tx131)
         commit_transaction(tx13)
         commit_transaction(tx14)
         commit_transaction(tx1)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_node_snapshots(self):
@@ -139,22 +156,22 @@ class TestSequoiaReconstructor(YTEnvSetup):
         tx4 = start_transaction(timeout=100000, tx=tx3)
         create("table", "//tmp/dir/t4", tx=tx4)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx4)
         commit_transaction(tx3)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx21 = start_transaction(timeout=100000, tx=tx2)
         tx22 = start_transaction(timeout=100000, tx=tx2)
 
         lock("//tmp/dir/t3", tx=tx21, mode="snapshot")
         lock("//tmp/dir/t4", tx=tx22, mode="snapshot")
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx21)
         abort_transaction(tx22)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx2)
 
@@ -164,21 +181,21 @@ class TestSequoiaReconstructor(YTEnvSetup):
 
         lock("//tmp/dir/t2", tx=tx21, mode="snapshot")
         lock("//tmp/dir/t2", tx=tx22, mode="snapshot")
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx21)
         abort_transaction(tx22)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx2)
         commit_transaction(tx1)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx1 = start_transaction(timeout=100000)
         lock("//tmp/dir", tx=tx1, mode="snapshot")
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx2 = start_transaction(timeout=100000, tx=tx1)
         tx21 = start_transaction(timeout=100000, tx=tx2)
@@ -187,24 +204,24 @@ class TestSequoiaReconstructor(YTEnvSetup):
         lock("//tmp/dir", tx=tx22, mode="snapshot")
         lock("//tmp/dir/t1", tx=tx21, mode="snapshot")
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx21)
         abort_transaction(tx22)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx2)
         commit_transaction(tx1)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_dependent_transactions(self):
         tx1 = start_transaction(timeout=100000)
         tx11 = start_transaction(timeout=100000, tx=tx1)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx111 = start_transaction(timeout=100000, tx=tx11)
         tx112 = start_transaction(timeout=100000, tx=tx11)
@@ -213,38 +230,38 @@ class TestSequoiaReconstructor(YTEnvSetup):
         tx21 = start_transaction(timeout=100000, tx=tx2, prerequisite_transaction_ids=[tx111])
         tx22 = start_transaction(timeout=100000, tx=tx2, prerequisite_transaction_ids=[tx112])
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx3 = start_transaction(timeout=100000, prequisite_transaction_ids=[tx21, tx22])
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx31 = start_transaction(timeout=100000, tx=tx3, prerequisite_transaction_ids=[tx2])
         start_transaction(timeout=100000, tx=tx31, prerequisite_transaction_ids=[tx11])
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx4 = start_transaction(timeout=100000, prequisite_transaction_ids=[tx21, tx22, tx11, tx3])
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx4)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx111)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         abort_transaction(tx112)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         commit_transaction(tx2)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_transaction_attributes(self):
         start_transaction(timeout=100000, attributes={"title": "tx1", "non_sequoia_name": "no value"})
         start_transaction(timeout=100000, attributes={"title": "tx2", "operation_title": "title"})
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_links(self):
@@ -255,13 +272,57 @@ class TestSequoiaReconstructor(YTEnvSetup):
         create("table", "//tmp/dir1/dir2/t1", tx=tx1)
         create("table", "//tmp/dir1/t2", tx=tx1)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         tx2 = start_transaction(timeout=100000, tx=tx1)
         link("//tmp/dir1/dir2/t1", "//tmp/dir1/t1", tx=tx2)
         link("//tmp/dir1/t2", "//tmp/dir1/dir2/t2", tx=tx1)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
+
+    @authors("danilalexeev")
+    def test_cypress_links(self, cypress_root):
+        set(cypress_root + "/target", 1)
+        set("//tmp/target", 2)
+        link(cypress_root + "/target", cypress_root + "/to_cypress")
+        link_path = cypress_root + r"/escaped\/name\@link"
+        link_id = link("//tmp/target", link_path)
+
+        tx = start_transaction(timeout=100000)
+        set(cypress_root + "/to_cypress&/@annotation", "branched", tx=tx)
+        lock(link_path + "&", mode="snapshot", tx=tx)
+        check_single_cell_sequoia_reconstructor(self)
+
+        remove(link_path + "&")
+        assert get(f"#{link_id}&/@target_path", tx=tx) == "//tmp/target"
+        check_single_cell_sequoia_reconstructor(self)
+
+        link(cypress_root + "/target", link_path)
+        check_single_cell_sequoia_reconstructor(self)
+
+        abort_transaction(tx)
+        remove(cypress_root + "/target")
+        check_single_cell_sequoia_reconstructor(self)
+
+    @authors("danilalexeev")
+    def test_cypress_link_transactions(self, cypress_root):
+        set("//tmp/target", 1)
+        parent_tx = start_transaction(timeout=100000)
+        link("//tmp/target", cypress_root + "/parent_link", tx=parent_tx)
+
+        committed_tx = start_transaction(timeout=100000, tx=parent_tx)
+        link("//tmp/target", cypress_root + "/committed_link", tx=committed_tx)
+        aborted_tx = start_transaction(timeout=100000, tx=parent_tx)
+        link("//tmp/target", cypress_root + "/aborted_link", tx=aborted_tx)
+        check_single_cell_sequoia_reconstructor(self)
+
+        commit_transaction(committed_tx)
+        abort_transaction(aborted_tx)
+        remove(cypress_root + "/parent_link&", tx=parent_tx)
+        check_single_cell_sequoia_reconstructor(self)
+
+        commit_transaction(parent_tx)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_remove_return(self):
@@ -277,7 +338,7 @@ class TestSequoiaReconstructor(YTEnvSetup):
                     tx = start_transaction(timeout=100000, tx=tx)
                 create("table", table, tx=tx)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_replace_remove(self):
@@ -294,7 +355,7 @@ class TestSequoiaReconstructor(YTEnvSetup):
                     tx = start_transaction(timeout=100000, tx=tx)
                 remove(table, tx=tx)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     @pytest.mark.parametrize("start_initial_transaction", [True, False])
@@ -313,11 +374,11 @@ class TestSequoiaReconstructor(YTEnvSetup):
         create("table", "//tmp/t", tx=t4)
         t5 = start_transaction(timeout=100000, tx=t4)
         remove("//tmp/t", tx=t5)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
         commit_transaction(t5)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
         commit_transaction(t4)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_multiple_replacements(self):
@@ -334,10 +395,10 @@ class TestSequoiaReconstructor(YTEnvSetup):
             remove("//tmp/t", tx=tx)
             create("table", "//tmp/t", tx=tx)
 
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
         for tx in transactions[::-1]:
             commit_transaction(tx)
-            check_sequoia_tables_reconstruction(self)
+            check_single_cell_sequoia_reconstructor(self)
 
     @authors("grphil")
     def test_acl(self):
@@ -347,13 +408,13 @@ class TestSequoiaReconstructor(YTEnvSetup):
             "inherit_acl": False,
             "acl": [make_ace("allow", "u", "write")],
         })
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         set("//tmp/t/@inherit_acl", True)
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         set("//tmp/t/@acl/end", make_ace("deny", "everyone", "read"))
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)
 
         remove("//tmp/t")
-        check_sequoia_tables_reconstruction(self)
+        check_single_cell_sequoia_reconstructor(self)

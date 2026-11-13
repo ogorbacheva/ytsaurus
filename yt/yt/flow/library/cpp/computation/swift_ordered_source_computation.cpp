@@ -18,9 +18,12 @@
 #include <yt/yt/flow/library/cpp/connectors/common/ordered_source.h>
 #include <yt/yt/flow/library/cpp/misc/ordered_memory.h>
 #include <yt/yt/flow/library/cpp/misc/prefetch.h>
+#include <yt/yt/flow/library/cpp/misc/status_profiler.h>
 
 #include <library/cpp/containers/absl/flat_hash_map.h>
 #include <library/cpp/iterator/zip.h>
+
+#include <contrib/libs/pdqsort/pdqsort.h>
 
 namespace NYT::NFlow {
 
@@ -45,8 +48,11 @@ using TSwiftOrderedSourceComputationOutputMessagePtr = TIntrusivePtr<TSwiftOrder
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TSwiftOrderedSourceTimestampMemory::Register(TRegistrar /*registrar*/)
-{ }
+void TSwiftOrderedSourceTimestampMemory::Register(TRegistrar registrar)
+{
+    registrar.Parameter("read_delay_estimator", &TThis::ReadDelayEstimator)
+        .Default();
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -76,13 +82,14 @@ void TSwiftOrderedSourceComputation::DoExecute(const IComputationRunContextPtr& 
     YT_VERIFY(OrderedSource_);
     WaitFor(InputStore_->Init()).ThrowOnError();
     WaitFor(TimerStore_->Init()).ThrowOnError();
-    if (TimerStore_->GetCount() != 0) {
-        THROW_ERROR_EXCEPTION("Persisted timer store expected to be empty, but it has %v records",
-            TimerStore_->GetCount());
+    if (!TimerStore_->IsEmpty()) {
+        THROW_ERROR_EXCEPTION("Persisted timer store expected to be empty");
     }
 
     const auto initContext = StateManager_->CreateContext()->AsKey(*GetContext()->Partition->SourceKey);
-    auto timestampMemory = WaitFor(initContext->CreateMutableStateClient<TSwiftOrderedSourceTimestampMemory>(TimestampMemoryStateName)).ValueOrThrow();
+    TimestampMemory_ = WaitFor(initContext->CreateMutableStateClient<TSwiftOrderedSourceTimestampMemory>(TimestampMemoryStateName)).ValueOrThrow();
+    auto& timestampMemory = TimestampMemory_;
+    ReadDelayEstimateError_ = GetContext()->StatusProfiler->ErrorState("read_delay_estimate");
 
     WatermarkGenerator_ = CreateWatermarkGenerator(
         GetSpec()->WatermarkStrategy->WatermarkGenerator,
@@ -96,7 +103,12 @@ void TSwiftOrderedSourceComputation::DoExecute(const IComputationRunContextPtr& 
         GetSpec()->WatermarkStrategy->WatermarkAlignment,
         Logger);
 
-    auto applyTimestampMemory = [&] (auto&& inflights) {
+    auto prepareInflights = [&] (auto&& inflights, TSystemTimestamp now) {
+        auto& sourceInflight = GetOrCrash(inflights, *ActiveSourceStreamId_);
+        sourceInflight = BuildReadDelayInflight(sourceInflight, TInstant::Seconds(now.Underlying()));
+        if (HasReadDelays()) {
+            ReadDelayStatus_.Store(ReadDelayQueue_.BuildStatus(GetReadDelayThreshold(), GetDynamicSpec()->Draining));
+        }
         if (!timestampMemory->empty()) {
             auto minTimestamp = timestampMemory->front().second;
             for (const auto& streamId : GetSpec()->OutputStreamIds) {
@@ -116,12 +128,11 @@ void TSwiftOrderedSourceComputation::DoExecute(const IComputationRunContextPtr& 
         auto iterGuard = StartRunIteration(context);
         const auto [now, uniqueSeqNo] = GenerateGlobalUniqueSeqNo();
         DoInit(StateManager_->CreateContext());
-        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, applyTimestampMemory(WatermarkGenerator_->Apply(BuildInflights(context), {*ActiveSourceStreamId_})));
+        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, prepareInflights(WatermarkGenerator_->Apply(BuildInflights(context, now), {*ActiveSourceStreamId_}), now));
         FinishRunIteration();
     }
     initTraceContextGuard.Release();
     YT_TLOG_INFO("Init completed");
-
 
     while (!isFinished) {
         auto iterGuard = StartRunIteration(context);
@@ -136,13 +147,14 @@ void TSwiftOrderedSourceComputation::DoExecute(const IComputationRunContextPtr& 
         const bool allowRead = outputLimitsCheckResult.AllowedInputStreams.contains(*ActiveSourceStreamId_) && alignmentCheck && windowCheck;
 
         std::vector<ISource::TMessageBatch> sourceMessageBatches;
-        if (DelayedMessages_.empty() && allowRead) {
+        if (ReadDelayQueue_.Empty() && allowRead) {
             TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.Fetch"));
             sourceMessageBatches = WaitFor(OrderedSource_->GetNextBatch(TMessageBatcherSettingsPtr(dynamicSpec))).ValueOrThrow();
             i64 sourceMessageCount = 0;
             for (const auto& sourceBatch : sourceMessageBatches) {
                 sourceMessageCount += std::ssize(sourceBatch.Messages);
             }
+            context->RegisterSourceMessages(sourceMessageCount);
             YT_TLOG_INFO("Got batch")
                 .With("SourceBatches", sourceMessageBatches.size())
                 .With("SourceMessages", sourceMessageCount);
@@ -154,14 +166,25 @@ void TSwiftOrderedSourceComputation::DoExecute(const IComputationRunContextPtr& 
         for (const auto& messageBatch : sourceMessageBatches) {
             RegisterInputBeforeProcessing(messageBatch.Messages, {}, {}, inputWatermarks);
         }
-        ProcessSourceBatches(std::move(sourceMessageBatches));
+        const auto readSamples = ProcessSourceBatches(std::move(sourceMessageBatches));
 
         const auto [now, uniqueSeqNo] = [&] {
             TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("GenerateGlobalUniqueSeqNo"));
             return WaitFor(generateSeqNoFuture).ValueOrThrow();
         }();
 
-        bool emptyEpoch = CheckDelayedMessages(context, iterGuard.TraceContext, now, MakeStrong(&*timestampMemory), dynamicSpec);
+        const auto config = GetDynamicSpec()->SourceReadDelayEstimator;
+        for (const auto& sample : readSamples) {
+            TimestampMemory_->ReadDelayEstimator.RegisterInput(
+                sample.LastMessageId.Underlying(),
+                sample.SystemTime,
+                sample.EventTime,
+                {static_cast<double>(sample.Statistics.Count), static_cast<double>(sample.Statistics.ByteSize)},
+                TInstant::Seconds(now.Underlying()),
+                config);
+        }
+
+        auto publishResult = CheckDelayedMessages(context, iterGuard.TraceContext, now, MakeStrong(&*timestampMemory), dynamicSpec);
 
         auto tx = PrepareTransaction(context);
 
@@ -172,23 +195,25 @@ void TSwiftOrderedSourceComputation::DoExecute(const IComputationRunContextPtr& 
         }
         Commit(context, tx);
 
-        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, applyTimestampMemory(WatermarkGenerator_->Apply(BuildInflights(context), {*ActiveSourceStreamId_})));
+        isFinished = UpdateStatus(/*reportTime*/ now, /*systemWatermark*/ now, prepareInflights(WatermarkGenerator_->Apply(BuildInflights(context, now), {*ActiveSourceStreamId_}), now));
+        if (!publishResult.EmptyEpoch) {
+            NoteNonEmptyRunIteration();
+        }
         FinishRunIteration();
 
-        if (emptyEpoch) {
-            if (!DelayedMessages_.empty()) {
-                TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.InjectionDelay"));
+        if (publishResult.EmptyEpoch) {
+            if (!ReadDelayQueue_.Empty()) {
+                TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.InjectionDelay", EEpochPartKind::Waiting));
                 YT_TLOG_INFO("Injection delayed epoch")
-                    .With("DelayedTimestamp", DelayedMessages_.front().Timestamp)
-                    .With("DelayedUnparsedMessages", DelayedMessages_.size());
+                    .With("ReadDelay", ConvertToYsonString(ReadDelayStatus_.Acquire(), EYsonFormat::Text));
                 TDelayedExecutor::WaitForDuration(dynamicSpec->EmptyBatchBackoff);
             } else if (!alignmentCheck) {
-                TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.WatermarkAlignment"));
+                TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.WatermarkAlignment", EEpochPartKind::Waiting));
                 YT_TLOG_INFO("Watermark unaligned epoch")
                     .With("PartitionReadWatermark", partitionReadWatermark);
                 TDelayedExecutor::WaitForDuration(dynamicSpec->EmptyBatchBackoff);
             } else if (!windowCheck) {
-                TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.ReadWindow"));
+                TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Input.ReadWindow", EEpochPartKind::Waiting));
                 YT_TLOG_INFO("Read window by alignment timestamp is too long")
                     .With("Window", OrderedSource_->GetAlignmentTimestampWindow())
                     .With("MaxWindow", GetDynamicParameters()->MaxReadWindow);
@@ -203,49 +228,54 @@ void TSwiftOrderedSourceComputation::DoExecute(const IComputationRunContextPtr& 
     }
 }
 
-TSystemTimestamp TSwiftOrderedSourceComputation::GetTriggerTimestamp(const std::vector<TMessage>& messages)
-{
-    TSystemTimestamp timestamp = ZeroSystemTimestamp;
-    for (const auto& message : messages) {
-        timestamp = std::max(timestamp, message.EventTimestamp);
-    }
-    return timestamp;
-}
-
-void TSwiftOrderedSourceComputation::ProcessSourceBatches(std::vector<ISource::TMessageBatch>&& sourceMessageBatches)
+std::vector<TReadDelayInput> TSwiftOrderedSourceComputation::ProcessSourceBatches(
+    std::vector<ISource::TMessageBatch>&& sourceMessageBatches)
 {
     if (sourceMessageBatches.empty()) {
-        return;
+        return {};
     }
 
-    // Skip messages before processing. A fully skipped batch is persisted
-    // right away; in a mixed batch the skipped messages ride the batch's cookie.
-    if (Filter_->IsEnabled()) {
-        i64 skippedCount = 0;
-        std::vector<ISource::TMessageBatch> keptBatches;
-        keptBatches.reserve(sourceMessageBatches.size());
-        for (auto& batch : sourceMessageBatches) {
-            auto [kept, skipped] = Filter_->Partition(std::move(batch.Messages));
+    auto readSamples = HasReadDelays() ? PrepareReadDelayInputs(sourceMessageBatches) : std::vector<TReadDelayInput>{};
+    std::vector<int> keptSampleIndices;
+    keptSampleIndices.reserve(readSamples.size());
+
+    THashMap<TStreamId, TBatchStatistics> skippedStatistics;
+    std::vector<ISource::TMessageBatch> keptBatches;
+    keptBatches.reserve(sourceMessageBatches.size());
+    // The timestamp memory is keyed by these ids, so they are taken before filtering: a dynamic
+    // filter change must not move a re-read batch past the registered boundary.
+    std::vector<TMessageId> keptFirstMessageIds;
+    keptFirstMessageIds.reserve(sourceMessageBatches.size());
+    i64 skippedCount = 0;
+    for (int batchIndex = 0; batchIndex < std::ssize(sourceMessageBatches); ++batchIndex) {
+        auto& batch = sourceMessageBatches[batchIndex];
+        auto firstMessageId = batch.Messages.empty() ? TMessageId{} : batch.Messages.front()->MessageId;
+        if (Filter_->IsEnabled()) {
+            auto [kept, skipped, statistics] = Filter_->Partition(std::move(batch.Messages));
             skippedCount += std::ssize(skipped);
+            for (const auto& [streamId, totals] : statistics) {
+                skippedStatistics[streamId] += totals;
+            }
             if (kept.empty()) {
                 OrderedSource_->MarkPublished(batch.Cookie);
                 OrderedSource_->MarkPersisted(batch.Cookie);
                 continue;
             }
             batch.Messages = std::move(kept);
-            keptBatches.push_back(std::move(batch));
         }
-        if (skippedCount > 0) {
-            SkippedByExpressionCounter_.Increment(skippedCount);
-            YT_TLOG_INFO("Skipped source messages by expression")
-                .With("Skipped", skippedCount)
-                .With("KeptBatches", keptBatches.size());
+        if (!readSamples.empty()) {
+            keptSampleIndices.push_back(batchIndex);
         }
-        sourceMessageBatches = std::move(keptBatches);
-        if (sourceMessageBatches.empty()) {
-            return;
-        }
+        keptBatches.push_back(std::move(batch));
+        keptFirstMessageIds.push_back(std::move(firstMessageId));
     }
+    if (skippedCount > 0) {
+        SkippedByExpressionCounter_.Increment(skippedCount);
+        YT_TLOG_INFO("Skipped source messages by expression")
+            .With("Skipped", skippedCount)
+            .With("KeptBatches", keptBatches.size());
+    }
+    sourceMessageBatches = std::move(keptBatches);
 
     // Each source message batch corresponds to one offset and may contain multiple messages.
     // We treat each source batch as its own unit for watermark purposes.
@@ -270,12 +300,15 @@ void TSwiftOrderedSourceComputation::ProcessSourceBatches(std::vector<ISource::T
     TTraceContextGuard traceGuard(Tracer_->CreateEpochPartTraceContext("Process"));
     auto inputContext = New<TInputContext>(allSourceMessages, std::vector<TInputTimerConstPtr>{});
 
-    auto metaSetter = CreateDeterministicMetaSetter(GetSpec(), EventTimestampAssigner_);
-    auto outputCollector = New<TRootOutputCollector>(GetSpec(), metaSetter, /*supportsDistribute*/ true);
-    DoProcess(inputContext, outputCollector->SetParents(inputContext->GetMessages(), inputContext->GetTimers(), {}));
-
-    auto result = outputCollector->CollectResult();
+    TRootOutputCollector::TTransformResult result;
+    if (!allSourceMessages.empty()) {
+        auto metaSetter = CreateDeterministicMetaSetter(GetSpec(), EventTimestampAssigner_);
+        auto outputCollector = New<TRootOutputCollector>(GetSpec(), metaSetter, /*supportsDistribute*/ true);
+        DoProcess(inputContext, outputCollector->SetParents(inputContext->GetMessages(), inputContext->GetTimers(), {}));
+        result = outputCollector->CollectResult();
+    }
     THROW_ERROR_EXCEPTION_UNLESS(result.OutputTimers.empty(), "SwiftSourceComputation does not support timers");
+    RegisterResults(inputContext, std::move(result.LineageDelta), std::move(skippedStatistics));
 
     const auto& flatDistribute = result.OutputMessagesDistribute;
     YT_VERIFY(flatDistribute.size() == result.OutputMessages.size());
@@ -319,20 +352,25 @@ void TSwiftOrderedSourceComputation::ProcessSourceBatches(std::vector<ISource::T
 
     for (i64 i = 0; i < std::ssize(sourceMessageBatches); ++i) {
         YT_VERIFY(!sourceMessageBatches[i].Messages.empty());
-        auto timestamp = GetTriggerTimestamp(candidateOutputMessages[i]);
-        DelayedMessages_.push_back(
+        auto timestamp = GetReadDelayBatchTimestamp(candidateOutputMessages[i]);
+        if (!readSamples.empty() && !candidateOutputMessages[i].empty()) {
+            readSamples[keptSampleIndices[i]].EventTime = TInstant::Seconds(timestamp.Underlying());
+        }
+        ReadDelayQueue_.Push(
             {
-                .FirstMessageId = sourceMessageBatches[i].Messages[0]->MessageId,
+                .FirstMessageId = std::move(keptFirstMessageIds[i]),
                 .BatchCookie = std::move(sourceMessageBatches[i].Cookie),
+                .InputStatistics = readSamples.empty() ? TBatchStatistics{} : readSamples[keptSampleIndices[i]].Statistics,
                 .CandidateOutputMessages = std::move(candidateOutputMessages[i]),
                 .IsOutput = std::move(isOutputByBatch[i]),
                 .Timestamp = timestamp,
                 .WatermarkGeneratorCookie = watermarkGeneratorCookies[i],
             });
     }
+    return readSamples;
 }
 
-bool TSwiftOrderedSourceComputation::CheckDelayedMessages(
+TSwiftOrderedSourceComputation::TPublishResult TSwiftOrderedSourceComputation::CheckDelayedMessages(
     IComputationRunContextPtr context,
     NTracing::TTraceContextPtr epochTraceContext,
     TSystemTimestamp now,
@@ -344,36 +382,18 @@ bool TSwiftOrderedSourceComputation::CheckDelayedMessages(
 
     const auto thresholdTimestamp = GetReadDelayThreshold();
 
-    const auto canBePublished = [&] (const TProcessedBatch& processed) {
-        if (dynamicSpec->Draining) {
-            // Can process only if message was registered in timestamp memory.
-            return timestampMemory->IsRegistered(processed.FirstMessageId);
-        }
-        return processed.Timestamp <= thresholdTimestamp;
-    };
-
     i64 publishedInputBatches = 0;
     i64 publishedParsed = 0;
     i64 publishedOutputs = 0;
 
     // Accumulate all output messages across all processed batches for a single RegisterOutputMessages call.
     std::vector<TOutputMessageConstPtr> allOutputMessages;
-    size_t publishableBatchCount = 0;
-    {
-        size_t estimate = 0;
-        for (const auto& delayed : DelayedMessages_) {
-            if (!canBePublished(delayed)) {
-                break;
-            }
-            ++publishableBatchCount;
-            estimate += delayed.CandidateOutputMessages.size();
-        }
-        allOutputMessages.reserve(estimate);
-    }
+    bool outputMessagesSorted = true;
+    const auto publication = ReadDelayQueue_.GetPublishablePrefix(thresholdTimestamp, dynamicSpec->Draining, timestampMemory);
+    allOutputMessages.reserve(publication.CandidateOutputCount);
 
-    for (size_t i = 0; i < publishableBatchCount; ++i) {
-        auto processed = std::move(DelayedMessages_.front());
-        DelayedMessages_.pop_front();
+    for (size_t i = 0; i < publication.BatchCount; ++i) {
+        auto processed = ReadDelayQueue_.Pop();
         publishedParsed += std::ssize(processed.CandidateOutputMessages);
 
         timestampMemory->Register(processed.FirstMessageId, now);
@@ -401,21 +421,33 @@ bool TSwiftOrderedSourceComputation::CheckDelayedMessages(
         });
         for (int i = 0; i < std::ssize(processed.CandidateOutputMessages); ++i) {
             auto& message = processed.CandidateOutputMessages[i];
-            if (!processed.IsOutput[i] || OutputStore_->Contains(message)) {
+            if (!processed.IsOutput[i]) {
+                continue;
+            }
+            if (OutputStore_->Contains(message)) {
                 continue;
             }
             publishedOutputs += 1;
 
             auto outputMessage = New<TSwiftOrderedSourceComputationOutputMessage>(std::move(message), GetContext()->StreamSpecStorage);
             outputMessage->OnDistributedCallback = batchTracker.AddDestination();
+            if (outputMessagesSorted && !allOutputMessages.empty()) {
+                outputMessagesSorted = allOutputMessages.back()->MessageId <= outputMessage->MessageId;
+            }
             allOutputMessages.push_back(std::move(outputMessage));
         }
 
         batchTracker.Activate();
     }
-    // Register all accumulated output messages in one batch.
+    // Custom suffixes need not follow emission order.
+    if (!outputMessagesSorted) {
+        pdqsort(allOutputMessages.begin(), allOutputMessages.end(), [] (const auto& lhs, const auto& rhs) {
+            return lhs->MessageId < rhs->MessageId;
+        });
+    }
+
     OutputStore_->TryRegisterKeyedBatch(allOutputMessages, *GetContext()->Partition->SourceKey, /*persist*/ false);
-    RegisterOutputMessages(context, allOutputMessages, *GetContext()->Partition->SourceKey, dynamicSpec);
+    RegisterOutputMessages(context, allOutputMessages, *GetContext()->Partition->SourceKey);
 
     YT_TLOG_INFO("Publishing batch")
         .With("SourceBatches", publishedInputBatches)
@@ -426,7 +458,9 @@ bool TSwiftOrderedSourceComputation::CheckDelayedMessages(
     epochTraceContext->AddTag("ytflow.epoch.published_parsed", publishedParsed);
     epochTraceContext->AddTag("ytflow.epoch.published_outputs", publishedOutputs);
 
-    return publishedInputBatches == 0;
+    return {
+        .EmptyEpoch = publishedInputBatches == 0,
+    };
 }
 
 void TSwiftOrderedSourceComputation::ProcessDistributedMessages(const IComputationRunContextPtr& /*context*/, std::deque<TOutputMessageConstPtr>&& messages)
@@ -440,6 +474,37 @@ void TSwiftOrderedSourceComputation::ProcessDistributedMessages(const IComputati
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
             static_cast<TSwiftOrderedSourceComputationOutputMessage*>(const_cast<TOutputMessage*>(message.Get()))->OnDistributedCallback();
         });
+}
+
+bool TSwiftOrderedSourceComputation::HasReadDelays() const
+{
+    const auto& alignment = GetSpec()->WatermarkStrategy->WatermarkAlignment;
+    return alignment && alignment->ReadDelays && !alignment->ReadDelays->empty();
+}
+
+TComputationStatusPtr TSwiftOrderedSourceComputation::GetStatus()
+{
+    auto status = TOrderedSourceComputationBase::GetStatus();
+    if (auto readDelay = ReadDelayStatus_.Acquire()) {
+        status->PartitionStatus->AddChild("read_delay", ConvertTo<IMapNodePtr>(readDelay));
+    }
+    return status;
+}
+
+TInflightStreamTraverseDataPtr TSwiftOrderedSourceComputation::BuildReadDelayInflight(
+    const TInflightStreamTraverseDataPtr& inflight,
+    TInstant now)
+{
+    if (!HasReadDelays()) {
+        return inflight;
+    }
+    auto observation = MakeReadDelayObservation(inflight->InflightMetrics, now, GetReadDelayThreshold());
+    TSourceReadDelayEstimate estimate;
+    if (observation.ReadDelayEventThreshold != TInstant::Zero()) {
+        estimate = TimestampMemory_->ReadDelayEstimator.Estimate(observation, GetDynamicSpec()->SourceReadDelayEstimator);
+    }
+    ReadDelayEstimateError_->SetError(GetReadDelayEstimateWarning(estimate));
+    return NFlow::BuildReadDelayInflight(inflight, estimate);
 }
 
 THashMap<std::string, THashMap<TStreamId, TJobEntityLimitStatus>> TSwiftOrderedSourceComputation::GetExtraInputLimits()

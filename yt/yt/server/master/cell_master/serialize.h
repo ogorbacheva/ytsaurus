@@ -218,6 +218,37 @@ DEFINE_ENUM(EMasterReign,
     ((SkipScratchChunkListParent)                                   (3343))  // babenko
     ((AggregateStateType)                                           (3344))  // buyval01
     ((LogicalHunkDataWeight)                                        (3345))  // akozhikhov
+    ((DeprecateArbitraryDataVersionSettings)                        (3346))  // sabdenovch
+    ((NoSuchYPathMethod)                                            (3347))  // kvk1920
+    ((PersistNodeLeaseTimeoutBeforeExtension)                       (3348))  // danilalexeev
+    ((MiscHunkStorageFixes)                                         (3349))  // akozhikhov
+    ((IntroduceStoresUpdateThrottler)                               (3350))  // alexelexa
+    ((MasterCellGroups)                                             (3351))  // evanevannnn
+    ((LegacyBaseIOConfigs)                                          (3352))  // ifsmirnov
+    ((NodeRegistrationRevision)                                     (3353))  // evanevannnn
+    ((AddPerUserActiveTransactionCountLimit)                        (3354))  // ivpiskarev
+    ((ChunkListRefactoring)                                         (3355))  // grphil
+    ((SecondaryIndexMoveWithinCell)                                 (3356))  // sabdenovch
+    ((TwoPhaseAlterTable)                                           (3357))  // ifsmirnov
+    ((SetEmptyRequisitionIndexOnImportByDefault)                    (3358))  // theevilbird
+    ((AccumulatePreloadPendingStoreCountCorrectly)                  (3359))  // sabdenovch
+    ((RecomputeAllTabletCellStatistics)                             (3360))  // sabdenovch
+    ((ClearSequoiaLastSeenReplicasOnMaster)                         (3361))  // aleksandra-zh
+    ((IgnoreMissingLeaseCellsOnForcedTransactionAbort)              (3362))  // shakurov
+    ((FixCrossMediumHistoricallyNonVital)                           (3363))  // kvk1920
+    ((PersistLastSequoiaReplicasCommitTimestamp)                    (3364))  // grphil
+    ((DynamicTableChunkProlongation)                                (3365))  // sabdenovch
+    ((ReedSolomon46And55)                                           (3366))  // savrus
+    ((ForbidMergingTabletsWithCumulativeDataWeight)                 (3367))  // akozhikhov
+    ((FixHunkTabletValidateReshard)                                 (3368))  // akozhikhov
+    ((BatchUnstageChunkTrees)                                       (3369))  // aleksandra-zh
+    ((HydraCausalTime_26_2)                                         (3370))  // danilalexeev
+    ((FixPreserveAclUnderTransaction)                               (3371))  // achains
+
+    // 27.1 starts here.
+    ((Start_27_1)                                                   (3400))  // ermolovd
+    ((SequoiaSecondaryIndices)                                      (3401))  // sabdenovch
+    ((HydraCausalTime)                                              (3402))  // danilalexeev
 );
 
 static_assert(TEnumTraits<EMasterReign>::IsMonotonic, "Master reign enum is not monotonic");

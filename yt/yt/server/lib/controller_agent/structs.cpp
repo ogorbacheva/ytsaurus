@@ -1,6 +1,7 @@
 #include "public.h"
 #include "structs.h"
 #include "statistics.h"
+#include "job_statistics_wire.h"
 
 #include <yt/yt/server/lib/exec_node/public.h>
 
@@ -15,6 +16,7 @@
 #include <yt/yt/client/job_tracker_client/helpers.h>
 
 #include <yt/yt/core/misc/protobuf_helpers.h>
+#include <yt/yt/core/misc/serialize.h>
 
 #include <util/generic/cast.h>
 
@@ -51,6 +53,22 @@ EAbortReason GetAbortReason(const TError& resultError, const TLogger& Logger)
 
 } // namespace
 
+void TJobPhaseSerializer::Save(TSaveContext& context, EJobPhase phase)
+{
+    NYT::Save(context, phase);
+}
+
+void TJobPhaseSerializer::Load(TLoadContext& context, EJobPhase& phase)
+{
+    if (context.GetVersion() < ESnapshotVersion::JobPhaseSpacing) {
+        phase = NExecNode::ConvertJobPhaseFromOld(NYT::Load<NExecNode::EJobPhaseOld>(context));
+    } else {
+        NYT::Load(context, phase);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 TJobSummary::TJobSummary(TJobId id, EJobState state)
     : Result()
     , Id(id)
@@ -69,7 +87,7 @@ TJobSummary::TJobSummary(NProto::TJobStatus* status)
     TimeStatistics = FromProto<NJobAgent::TTimeStatistics>(status->time_statistics());
     if (status->has_statistics()) {
         auto mutableStatistics = std::make_shared<TStatistics>();
-        *mutableStatistics = ConvertTo<TStatistics>(TYsonStringBuf(status->statistics()));
+        *mutableStatistics = DecodeJobStatisticsFromHeartbeat(*status);
         Statistics = std::move(mutableStatistics);
     }
 
@@ -91,6 +109,8 @@ TJobSummary::TJobSummary(NProto::TJobStatus* status)
 
     if (status->has_phase()) {
         Phase = FromProto<EJobPhase>(status->phase());
+    } else if (status->has_phase_old()) {
+        Phase = NExecNode::ConvertJobPhaseFromOld(FromProto<NExecNode::EJobPhaseOld>(status->phase_old()));
     }
 
     StatusTimestamp = FromProto<TInstant>(status->status_timestamp());
@@ -109,7 +129,9 @@ void TJobSummary::RegisterMetadata(auto&& registrar)
     PHOENIX_REGISTER_FIELD(4, State);
     PHOENIX_REGISTER_FIELD(5, FinishTime);
     PHOENIX_REGISTER_FIELD(6, ReleaseFlags);
-    PHOENIX_REGISTER_FIELD(7, Phase);
+    PHOENIX_REGISTER_FIELD(7, Phase,
+        // COMPAT(pogorelov)
+        .template Serializer<TJobPhaseSerializer>());
     PHOENIX_REGISTER_FIELD(8, TimeStatistics);
     PHOENIX_REGISTER_FIELD(9, TotalInputDataStatistics);
     PHOENIX_REGISTER_FIELD(10, OutputDataStatistics);

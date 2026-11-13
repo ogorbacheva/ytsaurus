@@ -1,6 +1,8 @@
 #include <yt/yt/core/test_framework/framework.h>
 
+#include <yt/yt/flow/library/cpp/common/external_state_manager.h>
 #include <yt/yt/flow/library/cpp/common/key.h>
+#include <yt/yt/flow/library/cpp/common/registry.h>
 #include <yt/yt/flow/library/cpp/common/spec.h>
 #include <yt/yt/flow/library/cpp/common/traverse.h>
 #include <yt/yt/flow/library/cpp/common/unittests/mock/time_provider.h>
@@ -8,10 +10,13 @@
 #include <yt/yt/flow/library/cpp/computation/computation_base.h>
 #include <yt/yt/flow/library/cpp/computation/key_visitor.h>
 
+#include <yt/yt/flow/library/cpp/computation/job_state/state_manager.h>
+
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
 
 #include <yt/yt/flow/library/cpp/tables/unittests/mock/key_states.h>
 #include <yt/yt/flow/library/cpp/tables/unittests/mock/key_visitor_states.h>
+#include <yt/yt/flow/library/cpp/tables/unittests/mock/partition_states.h>
 
 #include <yt/yt/client/table_client/unversioned_row.h>
 
@@ -21,21 +26,245 @@
 
 #include <yt/yt/library/profiling/sensor.h>
 
+#include <yt/yt/core/ytree/fluent.h>
+
+#include <library/cpp/yt/system/spin_lock.h>
+
+#include <util/system/type_name.h>
+
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <utility>
 
 namespace NYT::NFlow {
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TScriptedJoinerParameters
+    : public IExternalStateJoiner::TParameters
+{
+    REGISTER_YSON_STRUCT(TScriptedJoinerParameters);
+
+    static void Register(TRegistrar /*registrar*/)
+    { }
+};
+
+struct TScriptedJoinerDynamicParameters
+    : public IExternalStateJoiner::TDynamicParameters
+{
+    REGISTER_YSON_STRUCT(TScriptedJoinerDynamicParameters);
+
+    static void Register(TRegistrar /*registrar*/)
+    { }
+};
+
+//! A visitor-driven joiner whose List serves the keys scripted for the test and records every
+//! range it is asked for. The registry builds it inside TJobStateManager, so the script and the
+//! record are process-wide.
+class TScriptedVisitorDrivenJoiner
+    : public IExternalStateJoiner
+{
+public:
+    YT_FLOW_EXTEND_PARAMETERS(TScriptedJoinerParameters);
+    YT_FLOW_EXTEND_DYNAMIC_PARAMETERS(TScriptedJoinerDynamicParameters);
+
+    static constexpr bool VisitorDriven = true;
+
+    TScriptedVisitorDrivenJoiner(
+        TExternalStateJoinerContextPtr /*context*/,
+        TDynamicExternalStateJoinerContextPtr /*dynamicContext*/)
+    { }
+
+    bool IsVisitorDriven() const override
+    {
+        return true;
+    }
+
+    TFuture<TListResult> List(TFilter filter, i64 limit, std::optional<TKey> offsetExclusive) override
+    {
+        YT_VERIFY(!offsetExclusive);
+        auto lower = filter.LowerKey.value_or(MinKey());
+        auto upper = filter.UpperKey.value_or(MaxKey());
+        auto guard = Guard(Lock());
+        ListedRanges().push_back(TKeyRange{.Lower = lower, .Upper = upper});
+        TListResult result;
+        for (const auto& key : Keys()) {
+            if (key < lower || key >= upper) {
+                continue;
+            }
+            if (std::ssize(result.Keys) == limit) {
+                result.OffsetExclusive = result.Keys.back();
+                break;
+            }
+            result.Keys.push_back(key);
+        }
+        // A capped read covers only the keys before its last one, as the visitor assumes.
+        ListedUpTo() = std::ssize(result.Keys) == limit ? result.Keys.back() : upper;
+        return MakeFuture(std::move(result));
+    }
+
+    void RetainListed(const TKeyRange& range, const std::set<TKey>& visitKeys) override
+    {
+        auto guard = Guard(Lock());
+        ++RetainCalls();
+        for (const auto& key : visitKeys) {
+            YT_VERIFY(range.Contains(key));
+            RetainedKeys().insert(key);
+            if (key >= ListedUpTo()) {
+                ++VisitsAheadOfListedRows();
+            }
+        }
+    }
+
+    IStateHolderPtr GetState(const TKey& /*key*/) override
+    {
+        return nullptr;
+    }
+
+    TFuture<void> PreloadKeyStates(const THashSet<TKey>& /*keys*/) override
+    {
+        return OKFuture;
+    }
+
+    NTableClient::TTableSchemaPtr GetKeySchema() const override
+    {
+        return nullptr;
+    }
+
+    const IPayloadConverterCachePtr& GetConverterCache() const override
+    {
+        static const IPayloadConverterCachePtr Null;
+        return Null;
+    }
+
+    const std::optional<THashSet<TStreamId>>& GetKeyProviderStreams() const override
+    {
+        static const std::optional<THashSet<TStreamId>> Null;
+        return Null;
+    }
+
+    bool HasKeySchemaOverride() const override
+    {
+        return false;
+    }
+
+    void Reset() override
+    { }
+
+    void ValidateStateClass(const std::type_info& /*expectedStateType*/) const override
+    { }
+
+    IExternalStateJoiner::TParametersPtr GetParametersBase() const override
+    {
+        return nullptr;
+    }
+
+    IExternalStateJoiner::TDynamicParametersPtr GetDynamicParametersBase() const override
+    {
+        return nullptr;
+    }
+
+    static void Script(std::vector<TKey> keys)
+    {
+        auto guard = Guard(Lock());
+        std::sort(keys.begin(), keys.end());
+        Keys() = std::move(keys);
+        ListedRanges().clear();
+        RetainedKeys().clear();
+        RetainCalls() = 0;
+        ListedUpTo() = MaxKey();
+        VisitsAheadOfListedRows() = 0;
+    }
+
+    static std::vector<TKeyRange> TakeListedRanges()
+    {
+        auto guard = Guard(Lock());
+        return std::exchange(ListedRanges(), {});
+    }
+
+    static std::set<TKey> TakeRetainedKeys()
+    {
+        auto guard = Guard(Lock());
+        return std::exchange(RetainedKeys(), {});
+    }
+
+    static int TakeRetainCalls()
+    {
+        auto guard = Guard(Lock());
+        return std::exchange(RetainCalls(), 0);
+    }
+
+    //! Visits of keys the preceding List has not read up to: they would miss their joined row.
+    static int TakeVisitsAheadOfListedRows()
+    {
+        auto guard = Guard(Lock());
+        return std::exchange(VisitsAheadOfListedRows(), 0);
+    }
+
+private:
+    static TSpinLock& Lock()
+    {
+        static TSpinLock Lock;
+        return Lock;
+    }
+
+    static std::vector<TKey>& Keys()
+    {
+        static std::vector<TKey> Keys;
+        return Keys;
+    }
+
+    static std::vector<TKeyRange>& ListedRanges()
+    {
+        static std::vector<TKeyRange> Ranges;
+        return Ranges;
+    }
+
+    static std::set<TKey>& RetainedKeys()
+    {
+        static std::set<TKey> Keys;
+        return Keys;
+    }
+
+    static int& RetainCalls()
+    {
+        static int Calls = 0;
+        return Calls;
+    }
+
+    static TKey& ListedUpTo()
+    {
+        static TKey UpTo = MaxKey();
+        return UpTo;
+    }
+
+    static int& VisitsAheadOfListedRows()
+    {
+        static int Visits = 0;
+        return Visits;
+    }
+};
+
+YT_FLOW_DEFINE_EXTERNAL_STATE_JOINER(TScriptedVisitorDrivenJoiner);
+
+////////////////////////////////////////////////////////////////////////////////
+
 namespace {
 
 using namespace NConcurrency;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class TBlockingFirstListKeyStates
+class TBlockingListKeyStates
     : public NTables::TInMemoryKeyStates
 {
 public:
+    explicit TBlockingListKeyStates(int blockedCall = 1)
+        : RemainingCalls_(blockedCall)
+    { }
+
     TFuture<TListResult> List(
         TTableKeyFilter filter,
         i64 limit,
@@ -46,35 +275,56 @@ public:
             limit,
             std::move(offsetExclusive)))
             .ValueOrThrow();
-        if (!std::exchange(BlockFirstList_, false)) {
+        if (--RemainingCalls_ != 0) {
             return MakeFuture(std::move(result));
         }
 
-        FirstListStartedPromise_.Set();
-        return ReleaseFirstListPromise_.ToFuture().Apply(BIND([
+        BlockedListStartedPromise_.Set();
+        return ReleaseListPromise_.ToFuture().Apply(BIND([
             result = std::move(result)
         ] () mutable {
             return std::move(result);
         }));
     }
 
-    TFuture<void> GetFirstListStartedFuture() const
+    TFuture<void> GetBlockedListStartedFuture() const
     {
-        return FirstListStartedPromise_.ToFuture();
+        return BlockedListStartedPromise_.ToFuture();
     }
 
-    void ReleaseFirstList()
+    void ReleaseList()
     {
-        ReleaseFirstListPromise_.Set();
+        ReleaseListPromise_.Set();
     }
 
 private:
-    bool BlockFirstList_ = true;
-    const TPromise<void> FirstListStartedPromise_ = NewPromise<void>();
-    const TPromise<void> ReleaseFirstListPromise_ = NewPromise<void>();
+    int RemainingCalls_;
+    const TPromise<void> BlockedListStartedPromise_ = NewPromise<void>();
+    const TPromise<void> ReleaseListPromise_ = NewPromise<void>();
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+
+bool RangesCoverUintSpan(std::vector<TKeyRange> ranges, ui64 lower, ui64 upper)
+{
+    std::sort(ranges.begin(), ranges.end(), [] (const TKeyRange& lhs, const TKeyRange& rhs) {
+        return lhs.Lower < rhs.Lower;
+    });
+    auto reached = MakeUintKey(lower);
+    const auto end = MakeUintKey(upper);
+    for (const auto& range : ranges) {
+        if (reached >= end) {
+            break;
+        }
+        if (reached < range.Lower) {
+            return false;
+        }
+        if (reached < range.Upper) {
+            reached = range.Upper;
+        }
+    }
+    return reached >= end;
+}
 
 class TKeyVisitorTest
     : public ::testing::Test
@@ -96,13 +346,47 @@ protected:
         }
     }
 
+    TJobStateManagerPtr MakeStateManagerWithScriptedJoiner(const std::string& joinerName)
+    {
+        auto context = New<TJobStateManagerContext>();
+        context->ComputationId = ComputationId;
+        context->PartitionId = TPartitionId(TGuid::Create());
+        context->Logger = NLogging::TLogger("KeyVisitorTest");
+        context->Profiler = NProfiling::TProfiler();
+        context->StatusProfiler = CreateSyncStatusProfiler();
+        context->SerializedInvoker = Queue_->GetInvoker();
+        context->KeyStates = KeyStates_;
+        context->PartitionStates = New<NTables::TInMemoryPartitionStates>();
+        context->PipelinePath = NYPath::TRichYPath("//pipeline");
+        context->PipelinePath.SetCluster("test");
+
+        auto joinerSpec = New<TExternalStateJoinerSpec>();
+        joinerSpec->ExternalStateJoinerClassName = TypeName<TScriptedVisitorDrivenJoiner>();
+        // clang-format off
+        joinerSpec->Parameters = NYTree::BuildYsonNodeFluently()
+            .BeginMap()
+            .EndMap()
+            ->AsMap();
+        // clang-format on
+        context->ExternalStateJoiners[joinerName] = std::move(joinerSpec);
+
+        auto dynamicContext = New<TDynamicJobStateManagerContext>();
+        dynamicContext->StateManager = New<TDynamicStateManagerSpec>();
+        return New<TJobStateManager>(std::move(context), std::move(dynamicContext));
+    }
+
     TKeyVisitorContextPtr MakeContext(
         TKeyRange partitionRange,
         std::optional<THashSet<std::string>> names,
-        int bucketCount)
+        int bucketCount,
+        TJobStateManagerPtr stateManager = nullptr,
+        std::optional<THashSet<std::string>> externalNames = std::nullopt,
+        std::optional<THashSet<std::string>> weakExternalNames = std::nullopt)
     {
         auto spec = New<TKeyVisitorStreamSpec>();
         spec->Names = std::move(names);
+        spec->ExternalNames = std::move(externalNames);
+        spec->WeakExternalNames = std::move(weakExternalNames);
         spec->BucketCount = bucketCount;
 
         auto ctx = New<TKeyVisitorContext>();
@@ -111,6 +395,7 @@ protected:
         ctx->Spec = std::move(spec);
         ctx->PartitionRange = std::move(partitionRange);
         ctx->KeyStates = KeyStates_;
+        ctx->StateManager = std::move(stateManager);
         ctx->KeyVisitorStates = KeyVisitorStates_;
         ctx->TimeProvider = TimeProvider_;
         ctx->SerializedInvoker = Queue_->GetInvoker();
@@ -246,7 +531,7 @@ protected:
     bool IsEmptyOnQueue(const TKeyVisitorPtr& visitor)
     {
         return WaitFor(BIND([visitor, this] {
-            auto inflight = visitor->BuildInflight();
+            auto inflight = visitor->BuildInflight(TSystemTimestamp());
             const auto it = inflight.find(StreamId);
             return it != inflight.end() && it->second->Empty;
         })
@@ -255,9 +540,58 @@ protected:
             .ValueOrThrow();
     }
 
+    TInflightMetricsPtr ReadMetricsOnQueue(
+        const TKeyVisitorPtr& visitor,
+        TSystemTimestamp now = TSystemTimestamp())
+    {
+        return WaitFor(BIND([visitor, now, this] {
+            return visitor->BuildInflight(now).at(StreamId)->InflightMetrics;
+        })
+                .AsyncVia(Queue_->GetInvoker())
+                .Run())
+            .ValueOrThrow();
+    }
+
+    void WaitForOffered(const TKeyVisitorPtr& visitor, i64 readyCount, double rate)
+    {
+        const auto deadline = TInstant::Now() + TDuration::Seconds(5);
+        while (TInstant::Now() < deadline) {
+            auto metrics = ReadMetricsOnQueue(visitor);
+            if (metrics->ReadyCount == readyCount && metrics->OfferedCountPerSec &&
+                std::abs(*metrics->OfferedCountPerSec - rate) < 1e-6)
+            {
+                EXPECT_EQ(metrics->NewCountPerSec, metrics->OfferedCountPerSec);
+                return;
+            }
+            TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(5));
+        }
+        auto metrics = ReadMetricsOnQueue(visitor);
+        EXPECT_EQ(metrics->ReadyCount, readyCount);
+        EXPECT_NEAR(metrics->OfferedCountPerSec.value_or(-1), rate, 1e-6);
+        EXPECT_EQ(metrics->NewCountPerSec, metrics->OfferedCountPerSec);
+    }
+
     static THashSet<TKey> ToSet(const std::vector<TKey>& keys)
     {
         return THashSet<TKey>(keys.begin(), keys.end());
+    }
+
+    //! The ranges the scripted joiner has been listed over, collected until they cover the uint
+    //! keys in [lower, upper) or the timeout fires: the sweep runs on in the background after the
+    //! visits of a pass have been drained.
+    std::vector<TKeyRange> WaitForListedCoverage(ui64 lower, ui64 upper)
+    {
+        std::vector<TKeyRange> listed;
+        const auto deadline = TInstant::Now() + TDuration::Seconds(5);
+        while (TInstant::Now() < deadline) {
+            auto more = TScriptedVisitorDrivenJoiner::TakeListedRanges();
+            listed.insert(listed.end(), more.begin(), more.end());
+            if (RangesCoverUintSpan(listed, lower, upper)) {
+                break;
+            }
+            TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(20));
+        }
+        return listed;
     }
 };
 
@@ -542,7 +876,7 @@ TEST_F(TKeyVisitorTest, NonFiniteVisitorIgnoresUpstreamCompletion)
 TEST_F(TKeyVisitorTest, CompletionAtInitSeedsFinalFirstPass)
 {
     const std::vector<TKey> seeded{MakeUintKey(10), MakeUintKey(20)};
-    auto keyStates = New<TBlockingFirstListKeyStates>();
+    auto keyStates = New<TBlockingListKeyStates>();
     for (const auto& key : seeded) {
         keyStates->Set({ComputationId, key, "/state"});
     }
@@ -554,9 +888,9 @@ TEST_F(TKeyVisitorTest, CompletionAtInitSeedsFinalFirstPass)
         /*bufferRowLimit*/ 100);
     auto visitor = New<TKeyVisitor>(context, dynamicContext);
     WaitFor(visitor->Init(/*upstreamCompleted*/ true)).ThrowOnError();
-    WaitFor(keyStates->GetFirstListStartedFuture().WithTimeout(TDuration::Seconds(5)))
+    WaitFor(keyStates->GetBlockedListStartedFuture().WithTimeout(TDuration::Seconds(5)))
         .ThrowOnError();
-    keyStates->ReleaseFirstList();
+    keyStates->ReleaseList();
 
     std::vector<TKey> drained;
     DrainKeys(visitor, &drained, std::ssize(seeded));
@@ -575,7 +909,7 @@ TEST_F(TKeyVisitorTest, CompletionAtInitSeedsFinalFirstPass)
 // following Final pass is what observes the newly committed key.
 TEST_F(TKeyVisitorTest, CompletionDuringBackgroundReadStartsFreshFinalPass)
 {
-    auto keyStates = New<TBlockingFirstListKeyStates>();
+    auto keyStates = New<TBlockingListKeyStates>();
     auto context = MakeContext(MakeUintKeyRange(1, 100), /*names*/ std::nullopt, /*bucketCount*/ 1);
     context->KeyStates = keyStates;
     auto visitor = New<TKeyVisitor>(
@@ -584,13 +918,13 @@ TEST_F(TKeyVisitorTest, CompletionDuringBackgroundReadStartsFreshFinalPass)
             /*period*/ TDuration::MilliSeconds(10),
             /*bufferRowLimit*/ 100));
     WaitFor(visitor->Init()).ThrowOnError();
-    WaitFor(keyStates->GetFirstListStartedFuture().WithTimeout(TDuration::Seconds(5)))
+    WaitFor(keyStates->GetBlockedListStartedFuture().WithTimeout(TDuration::Seconds(5)))
         .ThrowOnError();
 
     const auto committedAfterSnapshot = MakeUintKey(20);
     keyStates->Set({ComputationId, committedAfterSnapshot, "/state"});
     SetUpstreamCompletedOnQueue(visitor);
-    keyStates->ReleaseFirstList();
+    keyStates->ReleaseList();
 
     std::vector<TKey> drained;
     EXPECT_EQ(DrainKeys(visitor, &drained, /*stopCount*/ 1), 1)
@@ -1000,6 +1334,340 @@ TEST_F(TKeyVisitorTest, BackgroundFillErrorClearsAfterListRecovers)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+TEST_F(TKeyVisitorTest, OfferedTracksMatchingPopulationDespiteFullBuffer)
+{
+    std::vector<TKey> keys;
+    for (ui64 hash = 0; hash < 100; hash += 10) {
+        keys.push_back(MakeKey(hash));
+    }
+    SeedKeys(keys, "/first");
+    SeedKeys(keys, "/second");
+    SeedKeys({MakeUintKey(5)}, "/excluded");
+    auto context = MakeContext(
+        MakeUintKeyRange(0, 100),
+        THashSet<std::string>{"/first", "/second"},
+        /*bucketCount*/ 1);
+    auto dynamicContext = MakeDynamicContext(TDuration::MilliSeconds(10), 1, 5);
+    auto visitor = New<TKeyVisitor>(context, dynamicContext);
+    // Accumulate one full range of throttler tokens before the first capped read.
+    TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(20));
+    WaitFor(visitor->Init()).ThrowOnError();
+
+    WaitForOffered(visitor, 2, 1000);
+    ReconfigureOnQueue(visitor, MakeDynamicContext(TDuration::MilliSeconds(20), 1, 5));
+    WaitForOffered(visitor, 2, 500);
+    // Several fill ticks with a full buffer must not lower the scheduled supply.
+    TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(150));
+    const auto metrics = ReadMetricsOnQueue(visitor);
+    EXPECT_EQ(metrics->ReadyCount, 2);
+    EXPECT_DOUBLE_EQ(metrics->OfferedCountPerSec.value_or(-1), 500);
+    EXPECT_EQ(metrics->NewCountPerSec, metrics->OfferedCountPerSec);
+    StopOnQueue(visitor);
+}
+
+TEST_F(TKeyVisitorTest, ReadyIncludesUnscannedWorkOnlyFromTheCurrentPass)
+{
+    std::vector<TKey> keys;
+    for (int keyIndex = 0; keyIndex < 10; ++keyIndex) {
+        keys.push_back(MakeKey(static_cast<ui64>(10 * keyIndex)));
+    }
+    SeedKeys(keys, "/state");
+    auto visitor = New<TKeyVisitor>(
+        MakeContext(MakeUintKeyRange(0, 100), /*names*/ std::nullopt, /*bucketCount*/ 1),
+        MakeDynamicContext(
+            /*period*/ TDuration::MilliSeconds(10),
+            /*bufferRowLimit*/ 1,
+            /*maxScanRowsPerIteration*/ 3));
+    WaitFor(visitor->Init(/*upstreamCompleted*/ true))
+        .ThrowOnError();
+    WaitForOffered(visitor, 2, 1000);
+
+    const auto metrics = ReadMetricsOnQueue(visitor, TSystemTimestamp(2));
+    EXPECT_EQ(metrics->ReadyCount, 10);
+    EXPECT_EQ(metrics->Count, 10);
+
+    ReconfigureOnQueue(visitor, MakeDynamicContext(
+        /*period*/ TDuration::Seconds(100),
+        /*bufferRowLimit*/ 1,
+        /*maxScanRowsPerIteration*/ 3));
+    EXPECT_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(1))->ReadyCount, 2);
+    EXPECT_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(11))->ReadyCount, 2);
+    EXPECT_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(51))->ReadyCount, 5);
+    EXPECT_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(101))->ReadyCount, 10);
+    EXPECT_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(1000))->ReadyCount, 10);
+    EXPECT_DOUBLE_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(1000))->OfferedCountPerSec.value_or(-1), 0.1);
+    ReconfigureOnQueue(visitor, MakeDynamicContext(
+        /*period*/ TDuration::MilliSeconds(10),
+        /*bufferRowLimit*/ 1,
+        /*maxScanRowsPerIteration*/ 3));
+
+    std::vector<TKey> drained;
+    EXPECT_EQ(DrainKeys(visitor, &drained, /*stopCount*/ 1, /*batchSize*/ 1), 1);
+    EXPECT_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(1000))->ReadyCount, 9);
+
+    EXPECT_EQ(DrainKeys(visitor, &drained, /*stopCount*/ 9, /*batchSize*/ 1), 9);
+    EXPECT_EQ(ToSet(drained), ToSet(keys));
+    EXPECT_TRUE(IsEmptyOnQueue(visitor));
+    EXPECT_EQ(ReadMetricsOnQueue(visitor, TSystemTimestamp(1000))->ReadyCount, 0);
+    StopOnQueue(visitor);
+}
+
+TEST_F(TKeyVisitorTest, OfferedRetainsDensityObservationsAcrossPasses)
+{
+    std::vector<TKey> keys;
+    for (ui64 hash = 0; hash < 100; hash += 10) {
+        keys.push_back(MakeKey(hash));
+    }
+    SeedKeys(keys, "/state");
+    auto visitor = New<TKeyVisitor>(
+        MakeContext(MakeUintKeyRange(0, 100), std::nullopt, 1),
+        MakeDynamicContext(TDuration::MilliSeconds(10), 100));
+    WaitFor(visitor->Init()).ThrowOnError();
+    WaitForOffered(visitor, 10, 1000);
+
+    WaitFor(BIND([this] {
+        for (ui64 hash = 5; hash < 100; hash += 10) {
+            SeedKeys({MakeUintKey(hash)}, "/state");
+        }
+    })
+            .AsyncVia(Queue_->GetInvoker())
+            .Run())
+        .ThrowOnError();
+    std::vector<TKey> drained;
+    EXPECT_EQ(DrainKeys(visitor, &drained, 10, 10), 10);
+    WaitForOffered(visitor, 20, 1500);
+    EXPECT_EQ(DrainKeys(visitor, &drained, 20, 20), 20);
+    WaitForOffered(visitor, 20, 5000.0 / 3);
+    StopOnQueue(visitor);
+}
+
+TEST_F(TKeyVisitorTest, OfferedUsesOnlyLocallyObservedCoverageAfterRestart)
+{
+    std::vector<TKey> keys;
+    for (ui64 hash = 0; hash < 100; hash += 10) {
+        keys.push_back(MakeKey(hash));
+    }
+    SeedKeys(keys, "/state");
+    auto context = MakeContext(MakeUintKeyRange(0, 100), std::nullopt, 1);
+    auto dynamicContext = MakeDynamicContext(TDuration::MilliSeconds(10), 100);
+    auto visitor = New<TKeyVisitor>(context, dynamicContext);
+    WaitFor(visitor->Init()).ThrowOnError();
+    WaitForOffered(visitor, 10, 1000);
+    std::vector<TKey> drained;
+    EXPECT_EQ(DrainKeys(visitor, &drained, 5, 5), 5);
+    SyncOnQueue(visitor);
+    StopOnQueue(visitor);
+
+    auto resumed = New<TKeyVisitor>(context, dynamicContext);
+    EXPECT_FALSE(ReadMetricsOnQueue(resumed)->OfferedCountPerSec);
+    WaitFor(resumed->Init()).ThrowOnError();
+    WaitForOffered(resumed, 5, 1000);
+    EXPECT_EQ(DrainKeys(resumed, &drained, 5, 5), 5);
+    EXPECT_EQ(ToSet(drained), ToSet(keys));
+    WaitForOffered(resumed, 10, 1000);
+    StopOnQueue(resumed);
+}
+
+TEST_F(TKeyVisitorTest, OfferedIsUnknownWithoutHashCoverageUntilFiniteCompletion)
+{
+    SeedKeys({
+            MakeKey(ui64(50), TStringBuf("alpha")),
+            MakeKey(ui64(50), TStringBuf("beta")),
+            MakeKey(ui64(50), TStringBuf("gamma")),
+             },
+        "/state");
+    auto visitor = New<TKeyVisitor>(
+        MakeContext({
+                .Lower = MakeKey(ui64(50), TStringBuf("a")),
+                .Upper = MakeKey(ui64(50), TStringBuf("z")),
+                    },
+            std::nullopt,
+            1),
+        MakeDynamicContext(TDuration::MilliSeconds(10), 100, 2));
+    WaitFor(visitor->Init(/*upstreamCompleted*/ true)).ThrowOnError();
+    const auto deadline = TInstant::Now() + TDuration::Seconds(5);
+    while (ReadMetricsOnQueue(visitor)->ReadyCount != 3 && TInstant::Now() < deadline) {
+        TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(5));
+    }
+    EXPECT_EQ(ReadMetricsOnQueue(visitor)->ReadyCount, 3);
+    EXPECT_FALSE(ReadMetricsOnQueue(visitor)->OfferedCountPerSec);
+    std::vector<TKey> drained;
+    EXPECT_EQ(DrainKeys(visitor, &drained, 3, 3), 3);
+    EXPECT_TRUE(IsEmptyOnQueue(visitor));
+    WaitForOffered(visitor, 0, 0);
+    StopOnQueue(visitor);
+}
+
+TEST_F(TKeyVisitorTest, EmptyPrefixContributesZeroDensityWithoutCompletingVisitor)
+{
+    auto keyStates = New<TBlockingListKeyStates>(2);
+    keyStates->Set({ComputationId, MakeUintKey(90), "/state"});
+    auto context = MakeContext(MakeUintKeyRange(0, 100), std::nullopt, 2);
+    context->KeyStates = keyStates;
+    auto visitor = New<TKeyVisitor>(context, MakeDynamicContext(TDuration::MilliSeconds(10), 100));
+    TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(20));
+    WaitFor(visitor->Init()).ThrowOnError();
+    WaitFor(keyStates->GetBlockedListStartedFuture()).ThrowOnError();
+
+    // The empty first bucket has been processed, but the nonempty second one is still pending.
+    const auto metrics = ReadMetricsOnQueue(visitor);
+    EXPECT_EQ(metrics->NewCountPerSec, 0);
+    EXPECT_EQ(metrics->OfferedCountPerSec, 0);
+    EXPECT_FALSE(IsEmptyOnQueue(visitor));
+
+    keyStates->ReleaseList();
+    WaitForOffered(visitor, 1, 100);
+    StopOnQueue(visitor);
+}
+
+TEST_F(TKeyVisitorTest, OfferedUsesRecentDensityAfterEmaWarmup)
+{
+    auto keyStates = New<TBlockingListKeyStates>(2);
+    for (ui64 hash = 0; hash < 50; hash += 10) {
+        keyStates->Set({ComputationId, MakeUintKey(hash), "/state"});
+    }
+    for (ui64 hash = 51; hash < 100; hash += 5) {
+        keyStates->Set({ComputationId, MakeUintKey(hash), "/state"});
+    }
+    auto context = MakeContext(MakeUintKeyRange(0, 100), std::nullopt, 2);
+    context->KeyStates = keyStates;
+    auto visitor = New<TKeyVisitor>(context, MakeDynamicContext(TDuration::MilliSeconds(10), 100));
+    TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(20));
+    WaitFor(visitor->Init()).ThrowOnError();
+    WaitFor(keyStates->GetBlockedListStartedFuture()).ThrowOnError();
+    WaitForOffered(visitor, 5, 1000);
+    ReconfigureOnQueue(visitor, MakeDynamicContext(TDuration::MilliSeconds(10), 1));
+
+    // Crossing the default 30-second window without an observation must not decay the estimate.
+    TDelayedExecutor::WaitForDuration(TDuration::Seconds(31));
+    WaitForOffered(visitor, 5, 1000);
+    keyStates->ReleaseList();
+    const auto deadline = TInstant::Now() + TDuration::Seconds(5);
+    while (ReadMetricsOnQueue(visitor)->ReadyCount != 15 && TInstant::Now() < deadline) {
+        TDelayedExecutor::WaitForDuration(TDuration::MilliSeconds(5));
+    }
+    const auto metrics = ReadMetricsOnQueue(visitor);
+    EXPECT_EQ(metrics->ReadyCount, 15);
+    // Recent density is 0.2, lifetime density is 0.15: the EMA must favor the recent sample.
+    ASSERT_TRUE(metrics->OfferedCountPerSec);
+    EXPECT_GT(*metrics->OfferedCountPerSec, 1600);
+    EXPECT_LT(*metrics->OfferedCountPerSec, 2000);
+    EXPECT_EQ(metrics->NewCountPerSec, metrics->OfferedCountPerSec);
+    StopOnQueue(visitor);
+}
+
+TEST_F(TKeyVisitorTest, OfferedIsZeroAfterScanningEmptyState)
+{
+    auto visitor = New<TKeyVisitor>(
+        MakeContext(MakeUintKeyRange(0, 100), std::nullopt, 1),
+        MakeDynamicContext(TDuration::MilliSeconds(10), 100));
+    WaitFor(visitor->Init()).ThrowOnError();
+    WaitForOffered(visitor, 0, 0);
+    EXPECT_FALSE(IsEmptyOnQueue(visitor));
+    StopOnQueue(visitor);
+}
+
+TEST_F(TKeyVisitorTest, WeakJoinerIsSweptWithoutContributingKeys)
+{
+    std::vector<TKey> seeded;
+    for (int value = 1; value <= 10; ++value) {
+        seeded.push_back(MakeUintKey(value));
+    }
+    SeedKeys(seeded, "/state");
+
+    // The joiner shares half of the state's keys and has keys of its own past them.
+    std::vector<TKey> joinerKeys;
+    for (int value = 5; value <= 30; ++value) {
+        joinerKeys.push_back(MakeUintKey(value));
+    }
+    TScriptedVisitorDrivenJoiner::Script(joinerKeys);
+
+    auto context = MakeContext(
+        MakeUintKeyRange(1, 100),
+        /*names*/ std::nullopt,
+        /*bucketCount*/ 4,
+        MakeStateManagerWithScriptedJoiner("/weak"),
+        /*externalNames*/ std::nullopt,
+        /*weakExternalNames*/ THashSet<std::string>{"/weak"});
+    auto visitor = New<TKeyVisitor>(context, MakeDynamicContext(
+        /*period*/ TDuration::MilliSeconds(10),
+        /*bufferRowLimit*/ 100));
+    WaitFor(visitor->Init())
+        .ThrowOnError();
+
+    std::vector<TKey> pass;
+    DrainKeys(visitor, &pass, std::ssize(seeded));
+    EXPECT_EQ(ToSet(pass), ToSet(seeded)) << "only the state's own keys are visited";
+    EXPECT_EQ(std::ssize(pass), std::ssize(seeded)) << "each own key once per pass";
+
+    auto listed = WaitForListedCoverage(1, 100);
+    EXPECT_TRUE(RangesCoverUintSpan(listed, 1, 100)) << "weak joiner must be listed over the whole partition";
+
+    StopOnQueue(visitor);
+
+    EXPECT_GT(TScriptedVisitorDrivenJoiner::TakeRetainCalls(), 0);
+    EXPECT_EQ(TScriptedVisitorDrivenJoiner::TakeRetainedKeys(), std::set<TKey>(seeded.begin(), seeded.end()));
+}
+
+TEST_F(TKeyVisitorTest, CapHitOnWeakJoinerKeepsEveryOwnKeyOncePerPass)
+{
+    // 5 is where the joiner's first capped read stops, and 9 lies past it: neither may be visited
+    // before a read of the joiner reaches it.
+    std::vector<TKey> seeded;
+    for (int value : {1, 3, 5, 9}) {
+        seeded.push_back(MakeUintKey(value));
+    }
+    SeedKeys(seeded, "/state");
+
+    // Dense enough that every List of the joiner hits the scan cap while the state never does.
+    std::vector<TKey> joinerKeys;
+    for (int value = 1; value <= 60; ++value) {
+        joinerKeys.push_back(MakeUintKey(value));
+    }
+    TScriptedVisitorDrivenJoiner::Script(joinerKeys);
+
+    auto context = MakeContext(
+        MakeUintKeyRange(1, 100),
+        /*names*/ std::nullopt,
+        /*bucketCount*/ 1,
+        MakeStateManagerWithScriptedJoiner("/weak"),
+        /*externalNames*/ std::nullopt,
+        /*weakExternalNames*/ THashSet<std::string>{"/weak"});
+    auto visitor = New<TKeyVisitor>(context, MakeDynamicContext(
+        /*period*/ TDuration::MilliSeconds(10),
+        /*bufferRowLimit*/ 100,
+        /*maxScanRowsPerIteration*/ 5));
+    WaitFor(visitor->Init())
+        .ThrowOnError();
+
+    for (int pass = 1; pass <= 2; ++pass) {
+        std::vector<TKey> keys;
+        DrainKeys(visitor, &keys, std::ssize(seeded));
+        EXPECT_EQ(ToSet(keys), ToSet(seeded)) << "pass " << pass;
+        EXPECT_EQ(std::ssize(keys), std::ssize(seeded)) << "pass " << pass << ": truncation must not duplicate";
+    }
+
+    auto listed = WaitForListedCoverage(1, 100);
+    EXPECT_GT(std::ssize(listed), 1) << "the cap must split the sweep into several reads";
+    EXPECT_TRUE(RangesCoverUintSpan(listed, 1, 100));
+
+    StopOnQueue(visitor);
+
+    EXPECT_EQ(TScriptedVisitorDrivenJoiner::TakeVisitsAheadOfListedRows(), 0)
+        << "a visit must not run ahead of the rows the weak joiner has read";
+}
+
+TEST(TKeyVisitorRangeCoverageTest, CoverageNeedsAContiguousUnion)
+{
+    EXPECT_TRUE(RangesCoverUintSpan(
+        {MakeUintKeyRange(40, 100), MakeUintKeyRange(1, 30), MakeUintKeyRange(20, 50)},
+        1,
+        100));
+    EXPECT_FALSE(RangesCoverUintSpan({MakeUintKeyRange(1, 30), MakeUintKeyRange(40, 100)}, 1, 100));
+    EXPECT_FALSE(RangesCoverUintSpan({MakeUintKeyRange(1, 99)}, 1, 100));
+    EXPECT_FALSE(RangesCoverUintSpan({}, 1, 100));
+}
 
 // Regression: a near-uint64-max hash span produced a rate whose `period * rate`
 // overflowed the throttler's double->i64 cast into a negative value.

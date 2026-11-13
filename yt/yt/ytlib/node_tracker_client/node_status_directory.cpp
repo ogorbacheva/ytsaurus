@@ -2,7 +2,9 @@
 
 #include <yt/yt/client/chunk_client/public.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <yt/yt/core/logging/log.h>
+
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 namespace NYT::NNodeTrackerClient {
 
@@ -81,7 +83,7 @@ private:
     const NLogging::TLogger Logger;
 
     // TODO(akozhikhov): Add periodic to clear old suspicious nodes.
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, SuspiciousNodesSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, SuspiciousNodesSpinLock_);
     THashMap<TNodeId, TInstant> SuspiciousNodesMarkTime_;
 };
 

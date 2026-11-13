@@ -306,6 +306,9 @@ struct TPoolConfig
 
     bool EnableStepFunctionForGangOperations;
 
+    //! Inherited by the whole subtree unless a descendant pool overrides it.
+    std::optional<bool> EnableFifoChildrenReorderingForGuaranteeUtilization;
+
     THashMap<std::string, std::string> MeteringTags;
 
     TOffloadingSettings OffloadingSettings;
@@ -1155,6 +1158,9 @@ struct TOperationSpecBase
     //! If set to true, any aborted/failed job will result in operation fail.
     bool FailOnJobRestart;
 
+    //! Whether jobs of this operation can be interrupted gracefully.
+    bool EnableJobInterrupts;
+
     // TODO(gritukan): Deprecate.
     bool EnableJobSplitting;
 
@@ -1583,6 +1589,13 @@ struct TUserJobSpec
 
     THashMap<std::string, std::string> Environment;
 
+    //! Environment variables inherited from the docker image config. Unlike
+    //! |Environment|, they are passed to jobs verbatim, without |$(...)|-pattern
+    //! substitution. Filled in by the controller agent during spec enrichment.
+    //! User variables from |Environment| and the cluster-wide controller agent
+    //! environment always win over these.
+    THashMap<std::string, std::string> DockerImageEnvironment;
+
     double CpuLimit;
     int GpuLimit;
     int PortCount;
@@ -1969,7 +1982,6 @@ private:
     PHOENIX_DECLARE_OPAQUE_TYPE(TMapOperationSpec, 0x4aa00f9d);
 };
 
-
 DEFINE_REFCOUNTED_TYPE(TMapOperationSpec)
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2087,7 +2099,6 @@ private:
     PHOENIX_DECLARE_OPAQUE_TYPE(TEraseOperationSpec, 0xbaec2ff5);
 };
 
-
 DEFINE_REFCOUNTED_TYPE(TEraseOperationSpec)
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2125,7 +2136,6 @@ struct TReduceOperationSpec
 private:
     PHOENIX_DECLARE_OPAQUE_TYPE(TReduceOperationSpec, 0x7353c0af);
 };
-
 
 DEFINE_REFCOUNTED_TYPE(TReduceOperationSpec)
 
@@ -2224,7 +2234,11 @@ struct TSortOperationSpecBase
     // This option is used for partition/partition_map and sorted_reduce/sorted_merge jobs.
     bool ForceJobSizeAdjuster;
 
+    bool EnableSharedJobSizeAdjuster;
+
     std::optional<bool> EnableFinalPartitionsMerging;
+
+    bool UsePushBasedShuffle;
 
     REGISTER_YSON_STRUCT(TSortOperationSpecBase);
 
@@ -2233,7 +2247,6 @@ struct TSortOperationSpecBase
 private:
     PHOENIX_DECLARE_OPAQUE_TYPE(TSortOperationSpecBase, 0xdd19ecde);
 };
-
 
 DEFINE_REFCOUNTED_TYPE(TSortOperationSpecBase)
 
@@ -2256,7 +2269,6 @@ struct TSortOperationSpec
 private:
     PHOENIX_DECLARE_OPAQUE_TYPE(TSortOperationSpec, 0xa6709f80);
 };
-
 
 DEFINE_REFCOUNTED_TYPE(TSortOperationSpec)
 
@@ -2486,7 +2498,6 @@ struct TOperationRuntimeParametersUpdate
     TJobShellOptionsUpdateMap OptionsPerJobShell;
     std::optional<NYTree::IMapNodePtr> Annotations;
     std::optional<std::string> ControllerAgentTag;
-
 
     bool ContainsPool() const;
 

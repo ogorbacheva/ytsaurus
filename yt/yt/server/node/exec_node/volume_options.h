@@ -5,7 +5,6 @@
 
 #include <yt/yt/server/node/exec_node/artifact.h>
 
-#include <yt/yt/server/lib/nbd/config.h>
 #include <yt/yt/server/lib/nbd/public.h>
 #include <yt/yt/server/lib/nbd/image/public.h>
 
@@ -13,6 +12,8 @@
 
 #include <yt/yt/ytlib/chunk_client/public.h>
 #include <yt/yt/ytlib/chunk_client/session_id.h>
+
+#include <yt/yt/library/nbd/config.h>
 
 #include <yt/yt/core/rpc/public.h>
 
@@ -58,7 +59,12 @@ struct TChunkNbdVolumeOptions
     NChunkClient::TSessionId SessionId;
 };
 
-using TRWNbdVolumeBackendOptions = std::variant<TChunkNbdVolumeOptions>;
+struct TJournalNbdVolumeOptions
+{
+    TJournalNbdVolumeSpec Spec;
+};
+
+using TRWNbdVolumeBackendOptions = std::variant<TChunkNbdVolumeOptions, TJournalNbdVolumeOptions>;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -74,33 +80,6 @@ struct TPrepareRWNbdVolumeOptions
     NNbd::EFilesystemType FilesystemType = NNbd::EFilesystemType::Unknown;
 
     TRWNbdVolumeBackendOptions BackendOptions;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-
-struct TPrepareLayerOptions
-{
-    TJobId JobId;
-    TArtifactKey ArtifactKey;
-    TArtifactDownloadOptions ArtifactDownloadOptions;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-
-struct TPrepareSquashFSVolumeOptions
-{
-    TJobId JobId;
-    TArtifactKey ArtifactKey;
-    TArtifactDownloadOptions ArtifactDownloadOptions;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-
-struct TPrepareOverlayVolumeOptions
-{
-    TJobId JobId;
-    TUserSandboxOptions UserSandboxOptions;
-    std::vector<TOverlayData> OverlayDataArray;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

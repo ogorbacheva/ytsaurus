@@ -26,6 +26,7 @@ TMutationContext::TMutationContext(
     , Request_(request)
     , PrevRandomSeed_(Parent_->GetPrevRandomSeed())
     , SequenceNumber_(Parent_->GetSequenceNumber())
+    , CausalTime_(Parent_->GetCausalTime())
     , StateHash_(Parent_->GetStateHash())
     , Term_(Parent_->GetTerm())
 {
@@ -44,20 +45,22 @@ TMutationContext::TMutationContext(
     ui64 randomSeed,
     ui64 prevRandomSeed,
     i64 sequenceNumber,
+    TCausalTime causalTime,
     ui64 stateHash,
     int term,
-    TSharedRef localHostNameOverride)
+    TStringBuf localHostNameOverride)
     : THydraContext(
         logicalVersion,
         physicalVersion,
         compatOnlyPhysicalVersion,
         timestamp,
         randomSeed,
-        std::move(localHostNameOverride))
+        localHostNameOverride)
     , Parent_(nullptr)
     , Request_(request)
     , PrevRandomSeed_(prevRandomSeed)
     , SequenceNumber_(sequenceNumber)
+    , CausalTime_(causalTime)
     , StateHash_(stateHash)
     , Term_(term)
 { }
@@ -69,11 +72,12 @@ TMutationContext::TMutationContext(TTestingTag)
         TPhysicalVersion(),
         /*timestamp*/ TInstant::Zero(),
         /*randomSeed*/ 0,
-        /*localHostNameOverride*/ TSharedRef::FromString(std::string("<unknown-testing>")))
+        /*localHostNameOverride*/ "<unknown-testing>")
     , Parent_(nullptr)
     , Request_(nullptr)
     , PrevRandomSeed_(0)
     , SequenceNumber_(0)
+    , CausalTime_(0)
     , StateHash_(0)
     , Term_(0)
 { }
@@ -91,6 +95,11 @@ ui64 TMutationContext::GetPrevRandomSeed() const
 i64 TMutationContext::GetSequenceNumber() const
 {
     return SequenceNumber_;
+}
+
+TCausalTime TMutationContext::GetCausalTime() const
+{
+    return CausalTime_;
 }
 
 ui64 TMutationContext::GetStateHash() const

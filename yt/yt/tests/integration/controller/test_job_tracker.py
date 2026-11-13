@@ -7,7 +7,7 @@ from yt_env_setup import (
 )
 
 from yt_commands import (
-    authors, run_sleeping_vanilla, get, ls, wait,
+    authors, run_sleeping_vanilla, get, ls, wait, set,
     set_node_banned, exists,
     run_test_vanilla, with_breakpoint,
     wait_breakpoint, release_breakpoint,
@@ -219,11 +219,14 @@ class TestJobTracker(YTEnvSetup):
 
         assert job_id not in self._list_jobs(op)
 
-        events = self._get_job_events_from_event_log(op.id, controller_agent_address)
-        aborted_job_events = {event["job_id"]: event for event in events if event["event_type"] == "job_aborted"}
+        def get_aborted_job_events():
+            events = self._get_job_events_from_event_log(op.id, controller_agent_address)
+            return {event["job_id"]: event for event in events if event["event_type"] == "job_aborted"}
 
-        assert len(aborted_job_events) == 1
-        assert aborted_job_events[job_id]["reason"] == "node_offline"
+        # The event log is flushed to disk periodically, so the event may not be there yet.
+        wait(lambda: len(get_aborted_job_events()) == 1)
+
+        assert get_aborted_job_events()[job_id]["reason"] == "node_offline"
 
         set_node_banned(node_address, False)
 
@@ -247,7 +250,7 @@ class TestJobTracker(YTEnvSetup):
 
         update_controller_agent_config("enable_snapshot_building", False)
 
-        (job_id, ) = wait_breakpoint()
+        (job_id, ) = wait_breakpoint(op)
 
         job_info = self._get_job_info(op, job_id)
 
@@ -307,7 +310,7 @@ class TestJobTracker(YTEnvSetup):
 
         op.ensure_running()
 
-        (job_id, ) = wait_breakpoint()
+        (job_id, ) = wait_breakpoint(op)
 
         op.wait_for_fresh_snapshot()
 
@@ -382,7 +385,7 @@ class TestJobTracker(YTEnvSetup):
         op.wait_for_fresh_snapshot()
         update_controller_agent_config("enable_snapshot_building", False)
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         update_nodes_dynamic_config({
             "exec_node": {
@@ -427,7 +430,7 @@ class TestJobTracker(YTEnvSetup):
 
         op.ensure_running()
 
-        (job_id, ) = wait_breakpoint()
+        (job_id, ) = wait_breakpoint(op)
 
         op.wait_for_fresh_snapshot()
 
@@ -491,7 +494,7 @@ class TestJobTracker(YTEnvSetup):
 
         op.ensure_running()
 
-        (job_id, ) = wait_breakpoint()
+        (job_id, ) = wait_breakpoint(op)
 
         op.wait_for_fresh_snapshot()
 
@@ -546,7 +549,7 @@ class TestJobTracker(YTEnvSetup):
 
         op = run_test_vanilla(with_breakpoint("BREAKPOINT"))
 
-        (job_id, ) = wait_breakpoint()
+        (job_id, ) = wait_breakpoint(op)
 
         with Restarter(self.Env, NODES_SERVICE):
             pass
@@ -811,7 +814,7 @@ class TestJobTrackerRaces(YTEnvSetup):
             },
         )
 
-        wait_breakpoint()
+        wait_breakpoint(op2)
         wait(lambda: aborted_job_profiler.get_job_count_delta() == 1)
 
         wait(lambda: not exists(f"//sys/cluster_nodes/{node_address}/orchid/exec_node/job_controller/allocations/{allocation1}"))
@@ -863,6 +866,113 @@ class TestJobTrackerRaces(YTEnvSetup):
 
 ##################################################################
 
+class TestJobTrackerControllerCancellation(YTEnvSetup):
+    ENABLE_MULTIDAEMON = False  # Restart the scheduler without restarting the controller agent.
+    NUM_MASTERS = 1
+    NUM_NODES = 1
+    NUM_SCHEDULERS = 1
+    NUM_CONTROLLER_AGENTS = 1
+
+    DELTA_NODE_CONFIG = {
+        "job_resource_manager": {
+            "resource_limits": {"cpu": 2, "user_slots": 2},
+        },
+        "master_connector": {
+            "lease_transaction_timeout": 120000,
+        },
+    }
+
+    DELTA_DYNAMIC_NODE_CONFIG = {
+        "%true": {
+            "exec_node": {
+                "job_controller": {"allocation": {"enable_multiple_jobs": True}},
+                "controller_agent_connector": {"settle_jobs_timeout": 120000},
+            },
+        },
+    }
+
+    DELTA_CONTROLLER_AGENT_CONFIG = {
+        "controller_agent": {
+            "controller_thread_count": 1,
+            "enable_snapshot_building": False,
+            "job_tracker": {
+                "node_disconnection_timeout": 120000,
+                "revival_node_disconnection_timeout": 120000,
+            },
+        },
+    }
+
+    @classmethod
+    def modify_controller_agent_config(cls, config, cluster_index):
+        config["logging"]["rules"].append({
+            "family": "plain_text",
+            "min_level": "debug",
+            "include_categories": ["Controller"],
+            "writers": ["json-controller-agent-0"],
+        })
+
+    @authors("pogorelov")
+    def test_controller_cancellation_while_waiting_on_barrier(self):
+        controller_agent = ls("//sys/controller_agents/instances")[0]
+        job_tracker_orchid = f"//sys/controller_agents/instances/{controller_agent}/orchid/controller_agent/job_tracker"
+        cancelled_barrier_counter = profiler_factory().at_controller_agent(controller_agent).counter(
+            "controller_agent/job_tracker/settle_job/cancelled_settle_job_request_waiting_on_barrier_count")
+
+        log_path = self.path_to_run + "/logs/controller-agent-0.json.log"
+        from_barrier = write_log_barrier(controller_agent)
+
+        op = run_test_vanilla(
+            with_breakpoint("BREAKPOINT", breakpoint_name="barrier_job"),
+            spec={"enable_multiple_jobs_in_allocation": True},
+        )
+        job_id, = wait_breakpoint(op, breakpoint_name="barrier_job")
+        allocation_id = get_allocation_id_from_job_id(job_id)
+
+        create_pool("blocker_pool", attributes={"resource_limits": {"cpu": 1}})
+        blocker = run_test_vanilla(
+            "sleep 1000",
+            pool="blocker_pool",
+            # Keep the sole controller thread busy until the scheduler restart cancels the producer.
+            spec={"testing": {"settle_job_delay": {"duration": 5000, "type": "sync"}}},
+        )
+
+        def blocker_is_settling():
+            return bool(read_structured_log(
+                log_path,
+                from_barrier=from_barrier,
+                to_barrier=write_log_barrier(controller_agent),
+                row_filter=lambda event: (
+                    "Making test delay" in event.get("message", "")
+                    and blocker.id in event.get("message", "")
+                ),
+            ))
+
+        wait(blocker_is_settling)
+        # Do not let the revived blocker enter the delay again.
+        set("//sys/pool_trees/default/blocker_pool/@resource_limits/cpu", 0)
+
+        # The completion heartbeat queues an event on the busy controller through JobTracker.
+        # JobTracker tells the node to store the completed job; the node then requests to settle a new job.
+        release_breakpoint(breakpoint_name="barrier_job")
+        requests_path = job_tracker_orchid + f"/inflight_settle_job_requests/{allocation_id}/requests"
+        wait(lambda: any(
+            request["stage"] == "waiting_on_barrier"
+            for request in get(requests_path, default=[])
+        ))
+
+        # Stop node heartbeats without aborting its lease: allocation-finish events would
+        # explicitly cancel the in barrier and mask controller cancellation.
+        with Restarter(self.Env, NODES_SERVICE, sync=False, abort_transactions=False):
+            with Restarter(self.Env, SCHEDULERS_SERVICE, sync=False):
+                pass
+            wait(lambda: cancelled_barrier_counter.get_delta() > 0)
+
+        blocker.abort()
+        op.track()
+
+
+##################################################################
+
 class TestStoredJobRemoval(YTEnvSetup):
     NUM_MASTERS = 1
     NUM_NODES = 3
@@ -896,7 +1006,7 @@ class TestStoredJobRemoval(YTEnvSetup):
             job_count=2,
         )
 
-        job_to_abort, job_to_keep = wait_breakpoint(job_count=2)
+        job_to_abort, job_to_keep = wait_breakpoint(op, job_count=2)
         # Wait for fresh snapshot to prevent fast job releasing.
         op.wait_for_fresh_snapshot()
 
@@ -909,7 +1019,7 @@ class TestStoredJobRemoval(YTEnvSetup):
 
         release_breakpoint(job_id=job_to_abort)
 
-        new_job_ids = wait_breakpoint(job_count=2)
+        new_job_ids = wait_breakpoint(op, job_count=2)
         assert len(new_job_ids) == 2
         if new_job_ids[0] == job_to_keep:
             job_to_release = new_job_ids[1]

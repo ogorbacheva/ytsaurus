@@ -1,4 +1,4 @@
-from yt_env_setup import (YTEnvSetup, Restarter, CONTROLLER_AGENTS_SERVICE, SCHEDULERS_SERVICE)
+from yt_env_setup import (YTEnvSetup, Restarter, CONTROLLER_AGENTS_SERVICE, SCHEDULERS_SERVICE, ROOTFS_LAYER_PATH)
 
 from yt_commands import (
     authors, print_debug, vanilla, map, with_breakpoint, wait_breakpoint, release_breakpoint,
@@ -38,11 +38,6 @@ class TestSeveralJobsInAllocation(YTEnvSetup):
                 "user_slots": 1,
             },
         },
-        "exec_node": {
-            "job_proxy": {
-                "test_root_fs": False,
-            },
-        },
     }
 
     DELTA_DYNAMIC_NODE_CONFIG = {
@@ -73,7 +68,7 @@ class TestSeveralJobsInAllocation(YTEnvSetup):
             },
         )
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         print_debug(f"job_id1: {job_id1}")
 
         if with_job_revival:
@@ -84,7 +79,7 @@ class TestSeveralJobsInAllocation(YTEnvSetup):
 
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
         print_debug(f"job_id2: {job_id2}")
         release_breakpoint(job_id=job_id2)
 
@@ -112,10 +107,10 @@ class TestSeveralJobsInAllocation(YTEnvSetup):
                 "enable_multiple_jobs_in_allocation": True,
             },
         )
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id2)
 
         print_debug(f"job_id1: {job_id1}, job_id2: {job_id2}")
@@ -143,7 +138,7 @@ class TestSeveralJobsInAllocation(YTEnvSetup):
         allocation_id = None
 
         for i in range(job_count):
-            job_id, = wait_breakpoint(job_count=1)
+            job_id, = wait_breakpoint(op, job_count=1)
             release_breakpoint(job_id=job_id)
 
             if allocation_id is None:
@@ -222,7 +217,7 @@ class TestAllocationReuseWhenJobsDisabled(YTEnvSetup):
         node = nodes[0]
         node_user_slots_path = f"//sys/cluster_nodes/{node}/orchid/exec_node/job_resource_manager/resource_limits/user_slots"
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         allocation_id1 = get_allocation_id_from_job_id(job_id1)
 
         try:
@@ -255,7 +250,7 @@ class TestAllocationReuseWhenJobsDisabled(YTEnvSetup):
             enable_scheduler_jobs_on_node(node)
             wait(lambda: get(node_user_slots_path) > 0)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
         allocation_id2 = get_allocation_id_from_job_id(job_id2)
 
         assert job_id1 != job_id2
@@ -277,9 +272,6 @@ class TestNbdInAllocation(YTEnvSetup):
     NUM_NODES = 1
     DELTA_NODE_CONFIG = {
         "exec_node": {
-            "job_proxy": {
-                "test_root_fs": True,
-            },
             "slot_manager": {
                 "job_environment": {
                     "type": "porto",
@@ -311,16 +303,8 @@ class TestNbdInAllocation(YTEnvSetup):
         },
     }
 
-    def setup_files(self):
-        create("file", "//tmp/exec.tar.gz", attributes={"replication_factor": 1})
-        write_file("//tmp/exec.tar.gz", open("rootfs/exec.tar.gz", "rb").read())
-        create("file", "//tmp/rootfs.tar.gz", attributes={"replication_factor": 1})
-        write_file("//tmp/rootfs.tar.gz", open("rootfs/rootfs.tar.gz", "rb").read())
-
     @authors("krasovav")
     def test_root_volume_nbd_allocation_reuse(self):
-        self.setup_files()
-
         op = vanilla(
             track=False,
             spec={
@@ -332,11 +316,7 @@ class TestNbdInAllocation(YTEnvSetup):
                             "root": {
                                 "layers": [
                                     {
-                                        "path": "//tmp/exec.tar.gz",
-                                        "access_method": "nbd",
-                                    },
-                                    {
-                                        "path": "//tmp/rootfs.tar.gz",
+                                        "path": ROOTFS_LAYER_PATH,
                                         "access_method": "nbd",
                                     },
                                 ],
@@ -356,10 +336,10 @@ class TestNbdInAllocation(YTEnvSetup):
             },
         )
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
 
         assert get_allocation_id_from_job_id(job_id1) == get_allocation_id_from_job_id(job_id2)
 
@@ -378,9 +358,6 @@ class TestGpuLayersInAllocation(YTEnvSetup):
     NUM_NODES = 1
     DELTA_NODE_CONFIG = {
         "exec_node": {
-            "job_proxy": {
-                "test_root_fs": True,
-            },
             "slot_manager": {
                 "job_environment": {
                     "type": "porto",
@@ -428,11 +405,6 @@ class TestGpuLayersInAllocation(YTEnvSetup):
     }
 
     def setup_files(self):
-        create("file", "//tmp/exec.tar.gz", attributes={"replication_factor": 1})
-        write_file("//tmp/exec.tar.gz", open("rootfs/exec.tar.gz", "rb").read())
-        create("file", "//tmp/rootfs.tar.gz", attributes={"replication_factor": 1})
-        write_file("//tmp/rootfs.tar.gz", open("rootfs/rootfs.tar.gz", "rb").read())
-
         tx = start_transaction()
         create("map_node", "//tmp/drivers", tx=tx)
         create(
@@ -462,12 +434,7 @@ class TestGpuLayersInAllocation(YTEnvSetup):
                         "job_count": 2,
                         "command": with_breakpoint("BREAKPOINT"),
                         "volumes": {
-                            "root": {
-                                "layers": [
-                                    {"path": "//tmp/exec.tar.gz"},
-                                    {"path": "//tmp/rootfs.tar.gz"},
-                                ],
-                            },
+                            "root": {},
                         },
                         "job_volumes_mounts": [
                             {"volume_id": "root", "mount_path": "/"},
@@ -480,10 +447,10 @@ class TestGpuLayersInAllocation(YTEnvSetup):
             },
         )
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
 
         assert get_allocation_id_from_job_id(job_id1) == get_allocation_id_from_job_id(job_id2)
 
@@ -586,10 +553,10 @@ class TestArtifactReuseInAllocation(TestArtifactReuseInAllocationBase):
             },
         )
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
 
         assert get_allocation_id_from_job_id(job_id1) == get_allocation_id_from_job_id(job_id2)
 
@@ -603,12 +570,16 @@ class TestArtifactReuseInAllocation(TestArtifactReuseInAllocationBase):
         # First job must have downloaded the artifact.
         assert stats1["exec_agent"]["artifacts"]["cache_miss_artifacts_size"]["sum"] > 0
         assert stats1["exec_agent"]["artifacts"]["files_downloaded_size"]["sum"] > 0
+        # The file is fresh, so it must be fetched over the network without waiting for anyone.
+        assert stats1["exec_agent"]["artifacts"]["files_cached_size"]["sum"] == 0
+        assert stats1["exec_agent"]["artifacts"]["files_chunk_cache_async_hit_size"]["sum"] == 0
 
         # Second job in same allocation must not have downloaded anything (served from cache).
         assert stats2["exec_agent"]["artifacts"]["cache_miss_artifacts_size"]["sum"] == 0
         assert stats2["exec_agent"]["artifacts"]["files_cached_size"]["sum"] == 0
         assert stats2["exec_agent"]["artifacts"]["files_downloaded_size"]["sum"] == 0
         assert stats2["exec_agent"]["artifacts"]["files_downloaded_total_duration"]["sum"] == 0
+        assert stats2["exec_agent"]["artifacts"]["files_chunk_cache_async_hit_size"]["sum"] == 0
 
     @authors("pogorelov")
     def test_artifact_evicted_when_allocation_not_reused(self):
@@ -638,10 +609,10 @@ class TestArtifactReuseInAllocation(TestArtifactReuseInAllocationBase):
             },
         )
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id2)
 
         op.track()
@@ -676,10 +647,10 @@ class TestArtifactReuseInAllocation(TestArtifactReuseInAllocationBase):
             },
         )
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id2)
 
         op.track()
@@ -727,7 +698,7 @@ class TestArtifactReuseInAllocationOfGangOperation(TestArtifactReuseInAllocation
             track=False,
         )
 
-        job_ids = wait_breakpoint(job_count=2)
+        job_ids = wait_breakpoint(op, job_count=2)
 
         first_job_id = job_ids[0]
 
@@ -758,7 +729,7 @@ class TestArtifactReuseInAllocationOfGangOperation(TestArtifactReuseInAllocation
         for job_id in job_ids:
             release_breakpoint(job_id=job_id)
 
-        new_job_ids = wait_breakpoint(job_count=2)
+        new_job_ids = wait_breakpoint(op, job_count=2)
         release_breakpoint()
 
         op.track()
@@ -838,7 +809,7 @@ class TestArtifactReuseInAllocationOfGangOperation(TestArtifactReuseInAllocation
 
         wait(lambda: get(op.get_orchid_path() + "/controller/operation_incarnation") != current_incarnation)
 
-        new_job_ids = wait_breakpoint(job_count=2)
+        new_job_ids = wait_breakpoint(op, job_count=2)
         release_breakpoint()
 
         op.track()
@@ -919,7 +890,7 @@ class TestSuspendedOperationDoesNotSettleJobs(YTEnvSetup):
 
         allocations_orchid_path, _ = self._get_orchid_paths()
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         allocation_id = get_allocation_id_from_job_id(job_id1)
 
         assert exists(allocations_orchid_path + f"/{allocation_id}")
@@ -935,7 +906,7 @@ class TestSuspendedOperationDoesNotSettleJobs(YTEnvSetup):
         op.resume()
         wait(lambda: not get(op.get_path() + "/@suspended"))
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id2)
 
         op.track()
@@ -959,7 +930,7 @@ class TestSuspendedOperationDoesNotSettleJobs(YTEnvSetup):
             },
         )
 
-        job_id1, = wait_breakpoint(job_count=1)
+        job_id1, = wait_breakpoint(op, job_count=1)
         allocation_id = get_allocation_id_from_job_id(job_id1)
 
         op.suspend()
@@ -984,7 +955,7 @@ class TestSuspendedOperationDoesNotSettleJobs(YTEnvSetup):
         op.resume()
         wait(lambda: not get(op.get_path() + "/@suspended"))
 
-        job_id2, = wait_breakpoint(job_count=1)
+        job_id2, = wait_breakpoint(op, job_count=1)
         release_breakpoint(job_id=job_id2)
 
         op.track()

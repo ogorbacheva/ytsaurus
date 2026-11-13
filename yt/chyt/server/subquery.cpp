@@ -1,5 +1,6 @@
 #include "subquery.h"
 
+#include "chunk_spec_cache.h"
 #include "config.h"
 #include "helpers.h"
 #include "host.h"
@@ -16,7 +17,7 @@
 
 #include <yt/yt/server/lib/chunk_pools/helpers.h>
 #include <yt/yt/server/lib/chunk_pools/unordered_chunk_pool.h>
-#include <yt/yt/server/lib/chunk_pools/new_sorted_chunk_pool.h>
+#include <yt/yt/server/lib/chunk_pools/sorted_chunk_pool.h>
 
 #include <yt/yt/server/lib/controller_agent/job_size_constraints.h>
 #include <yt/yt/server/lib/controller_agent/read_range_registry.h>
@@ -26,14 +27,13 @@
 
 #include <yt/yt/ytlib/chunk_client/chunk_meta_extensions.h>
 #include <yt/yt/ytlib/chunk_client/chunk_spec.h>
-#include <yt/yt/ytlib/chunk_client/input_chunk_slice.h>
-#include <yt/yt/ytlib/chunk_client/input_chunk.h>
+#include <yt/yt/ytlib/chunk_client/chunk_spec_fetcher.h>
+#include <yt/yt/ytlib/chunk_client/data_slice.h>
 #include <yt/yt/ytlib/chunk_client/data_slice_descriptor.h>
-#include <yt/yt/ytlib/chunk_client/input_chunk_slice.h>
-#include <yt/yt/ytlib/chunk_client/legacy_data_slice.h>
 #include <yt/yt/ytlib/chunk_client/data_source.h>
 #include <yt/yt/ytlib/chunk_client/helpers.h>
-#include <yt/yt/ytlib/chunk_client/chunk_spec_fetcher.h>
+#include <yt/yt/ytlib/chunk_client/input_chunk.h>
+#include <yt/yt/ytlib/chunk_client/input_chunk_slice.h>
 
 #include <yt/yt/ytlib/chunk_pools/chunk_stripe.h>
 
@@ -223,12 +223,15 @@ private:
     std::vector<TChunkStripePtr> ResultStripes_;
 
     // Table index to input data slices.
-    std::vector<std::vector<TLegacyDataSlicePtr>> InputDataSlices_;
+    std::vector<std::vector<TDataSlicePtr>> InputDataSlices_;
 
     std::vector<TTableReadSpec> TableReadSpecs_;
 
     TMasterChunkSpecFetcherPtr MasterChunkSpecFetcher_;
     TTabletChunkSpecFetcherPtr TabletChunkSpecFetcher_;
+    TChunkSpecCachePtr ChunkSpecCache_;
+    std::vector<int> CachedTableIndices_;
+    std::vector<TChunkSpecCache::TRequest> CacheRequests_;
 
     TLogger Logger;
 
@@ -292,7 +295,7 @@ private:
             auto& stripe = ResultStripes_[operandIndex];
             auto& dataSlices = stripe->DataSlices();
 
-            auto removePred = [&] (const TLegacyDataSlicePtr& dataSlice) {
+            auto removePred = [&] (const TDataSlicePtr& dataSlice) {
                 if (!dataSlice->LowerLimit().KeyBound && !dataSlice->UpperLimit().KeyBound) {
                     return false;
                 }
@@ -303,7 +306,7 @@ private:
                     operandIndex).can_be_true;
             };
 
-            auto it = std::remove_if(dataSlices.begin(), dataSlices.end(), [&] (const TLegacyDataSlicePtr& dataSlice) {
+            auto it = std::remove_if(dataSlices.begin(), dataSlices.end(), [&] (const TDataSlicePtr& dataSlice) {
                 bool needToRemove = removePred(dataSlice);
 
                 using namespace NStatisticPath;
@@ -490,7 +493,6 @@ private:
             }
 
             for (auto& dataSlice : InputDataSlices_[tableIndex]) {
-                YT_VERIFY(!dataSlice->IsLegacy);
                 dataSlice->SetInputStreamIndex(tableIndex);
 
                 if (!VirtualColumnNames_.empty()) {
@@ -570,11 +572,9 @@ private:
         std::vector<TInputChunkSlicePtr> chunkSlices;
         chunkSlices.reserve(dataSlices.size());
 
-        // Yes, that looks weird, but we extract chunk slices again
-        // from data slices so that we can form new data slices.
+        // Extract physical chunk slices to combine them into versioned data slices.
         for (auto& dataSlice : dataSlices) {
             for (auto& chunkSlice : dataSlice->ChunkSlices) {
-                YT_VERIFY(!chunkSlice->IsLegacy);
                 chunkSlices.emplace_back(std::move(chunkSlice));
             }
         }
@@ -694,10 +694,25 @@ private:
             std::move(options),
             Invoker_,
             Logger);
+
+        // GetChunkSpecCache() returns nullptr whenever TSubqueryConfig::ChunkSpecCache is unset.
+        ChunkSpecCache_ = QueryContext_->Host->GetChunkSpecCache();
     }
 
     void AddTableForFetching(const TTablePtr& table, int tableIndex)
     {
+        if (ChunkSpecCache_ && IsChunkSpecCacheEligible(table)) {
+            CachedTableIndices_.push_back(tableIndex);
+            CacheRequests_.push_back(TChunkSpecCache::TRequest{
+                .ObjectId = table->ObjectId,
+                .ExternalCellTag = table->ExternalCellTag,
+                .ChunkCount = table->ChunkCount,
+                .MinContentRevision = table->ContentRevision,
+                .MinChunkMergerRevision = table->ChunkMergerRevision,
+            });
+            return;
+        }
+
         // TODO(achulkov2): Support ordered tables in tablet chunk spec fetcher?
         if (table->IsSortedDynamic() && QueryContext_->SessionSettings->DynamicTable->FetchFromTablets &&
             QueryContext_->SessionSettings->Execution->TableReadLockMode == ETableReadLockMode::None &&
@@ -717,6 +732,13 @@ private:
                 tableIndex,
                 table->Path.GetNewRanges(table->Comparator));
         }
+    }
+
+    bool IsChunkSpecCacheEligible(const TTablePtr& table) const
+    {
+        return !table->Dynamic
+            && !table->ExternalTransactionId
+            && !table->Path.HasNontrivialRanges();
     }
 
     void FetchTableReadSpecs()
@@ -763,6 +785,7 @@ private:
                 TRlsReadSpec::BuildFromRowLevelAclAndTableSchema(
                     table->Schema,
                     table->RowLevelAcl,
+                    Client_->GetOptions().GetAuthenticatedUser(),
                     Logger()));
 
             // We do not need to fetch anything if table was filtered by index.
@@ -770,23 +793,45 @@ private:
                 if (OperandCount_ == 1 && !table->Path.HasNontrivialRanges() && !KeyReadRanges_.empty()) {
                     table->Path.SetRanges(KeyReadRanges_);
                 }
+
                 AddTableForFetching(table, tableIndex);
             }
         }
 
-        if (auto breakpointFilename = QueryContext_->SessionSettings->Testing->ChunkSpecFetcherBreakpoint) {
-            HandleBreakpoint(*breakpointFilename, Client_);
-            YT_TLOG_DEBUG("Chunk spec fetcher handled breakpoint")
-                .With("Breakpoint", *breakpointFilename);
+
+        std::vector<TErrorOr<std::vector<NChunkClient::NProto::TChunkSpec>>> cacheResults;
+        TDuration chunkSpecsFetchTime;
+
+        {
+            NProfiling::TWallTimer chunkSpecsFetchTimer;
+
+            auto cacheFuture = CachedTableIndices_.empty()
+                ? MakeFuture(std::vector<TErrorOr<std::vector<NChunkClient::NProto::TChunkSpec>>>())
+                : ChunkSpecCache_->GetChunkSpecs(
+                    std::move(CacheRequests_),
+                    Client_,
+                    *QueryContext_->SessionSettings->FetchChunksReadOptions);
+
+            if (auto breakpointFilename = QueryContext_->SessionSettings->Testing->ChunkSpecFetcherBreakpoint) {
+                HandleBreakpoint(*breakpointFilename, Client_);
+                YT_TLOG_DEBUG("Chunk spec fetcher handled breakpoint")
+                    .With("Breakpoint", *breakpointFilename);
+            }
+
+            std::vector<TFuture<void>> asyncResults = {
+                MasterChunkSpecFetcher_->Fetch(),
+                TabletChunkSpecFetcher_->Fetch(),
+                cacheFuture.AsVoid(),
+            };
+
+            WaitFor(AllSucceeded(asyncResults))
+                .ThrowOnError();
+
+            cacheResults = cacheFuture.GetOrCrash().ValueOrThrow();
+
+            chunkSpecsFetchTime = chunkSpecsFetchTimer.GetElapsedTime();
+            QueryContext_->Host->GetChunkSpecsFetchTimeCounter().Record(chunkSpecsFetchTime);
         }
-
-        std::vector<TFuture<void>> asyncResults = {
-            MasterChunkSpecFetcher_->Fetch(),
-            TabletChunkSpecFetcher_->Fetch()
-        };
-
-        WaitFor(AllSucceeded(asyncResults))
-            .ThrowOnError();
 
         int chunkCount = 0;
         for (auto& chunkSpec : Concatenate(
@@ -801,8 +846,26 @@ private:
             TableReadSpecs_[tableIndex].DataSliceDescriptors.emplace_back(TDataSliceDescriptor(std::move(chunkSpec)));
         }
 
-        YT_TLOG_INFO("Chunk specs fetched")
-            .With("ChunkCount", chunkCount);
+        YT_VERIFY(cacheResults.size() == CachedTableIndices_.size());
+        for (int index = 0; index < std::ssize(CachedTableIndices_); ++index) {
+            auto tableIndex = CachedTableIndices_[index];
+            auto& chunkSpecsOrError = cacheResults[index];
+            THROW_ERROR_EXCEPTION_IF_FAILED(
+                chunkSpecsOrError,
+                "Error fetching cached chunk specs for table %v",
+                InputTables_[tableIndex]->Path);
+            for (auto& chunkSpec : chunkSpecsOrError.Value()) {
+                chunkCount++;
+                TableReadSpecs_[tableIndex].DataSliceDescriptors.emplace_back(TDataSliceDescriptor(std::move(chunkSpec)));
+            }
+        }
+
+        {
+            using namespace NStatisticPath;
+            QueryContext_->AddStatisticsSample("/input_fetcher/chunk_specs_fetch_time_us"_SP, chunkSpecsFetchTime.MicroSeconds());
+        }
+
+        YT_LOG_INFO("Chunk specs fetched (ChunkCount: %v, FetchTime: %v)", chunkCount, chunkSpecsFetchTime);
     }
 
     //! Wrap chunk spec from data slice descriptor into data slice,
@@ -812,7 +875,8 @@ private:
         auto& chunkSpec = dataSliceDescriptor.GetSingleChunk();
 
         auto tableIndex = chunkSpec.table_index();
-        int keyLength = InputTables_[tableIndex]->Comparator.GetLength();
+        const auto& comparator = InputTables_[tableIndex]->Comparator;
+        int keyLength = comparator.GetLength();
 
         auto inputChunk = New<TInputChunk>(chunkSpec, keyLength);
 
@@ -824,15 +888,13 @@ private:
             MiscExtMap_.emplace(inputChunk->GetChunkId(), nullptr);
         }
 
-        auto chunkSlice = CreateInputChunkSlice(std::move(inputChunk));
+        auto chunkSlice = CreateInputChunkSlice(std::move(inputChunk), RowBuffer_, comparator);
         if (OperandSchemas_[InputTables_[tableIndex]->OperandIndex]->IsSorted()) {
-            InferLimitsFromBoundaryKeys(chunkSlice, RowBuffer_);
+            InferLimitsFromBoundaryKeys(chunkSlice, RowBuffer_, /*keyColumnCount*/ std::nullopt, comparator);
         }
         auto dataSlice = CreateUnversionedInputDataSlice(chunkSlice);
 
         dataSlice->VirtualRowIndex = dataSliceDescriptor.VirtualRowIndex;
-
-        dataSlice->TransformToNew(RowBuffer_, keyLength, /*trimChunkSliceKeys*/ true);
 
         InputDataSlices_[tableIndex].emplace_back(std::move(dataSlice));
     }
@@ -1059,6 +1121,7 @@ std::vector<TSubquery> BuildThreadSubqueries(
 
     IPersistentChunkPoolPtr chunkPool;
 
+    TComparator comparator;
     if (queryAnalysisResult.PoolKind == EPoolKind::Unordered) {
         chunkPool = CreateUnorderedChunkPool(
             TUnorderedChunkPoolOptions{
@@ -1069,7 +1132,7 @@ std::vector<TSubquery> BuildThreadSubqueries(
             TInputStreamDirectory({TInputStreamDescriptor(false /*isTeleportable*/, true /*isPrimary*/, false /*isVersioned*/)}));
     } else if (queryAnalysisResult.PoolKind == EPoolKind::Sorted) {
         YT_VERIFY(queryAnalysisResult.KeyColumnCount);
-        TComparator comparator(std::vector<ESortOrder>(*queryAnalysisResult.KeyColumnCount, ESortOrder::Ascending));
+        comparator = TComparator{std::vector<ESortOrder>(*queryAnalysisResult.KeyColumnCount, ESortOrder::Ascending)};
 
         // TODO(achulkov2): Make using this fetcher configurable? Not sure whether it could cause degradations. IMO it should make things better.
         auto chunkSliceFetcher = CreateChunkSliceFetcher(
@@ -1081,13 +1144,12 @@ std::vector<TSubquery> BuildThreadSubqueries(
             queryContext->RowBuffer,
             queryContext->Logger);
 
-        chunkPool = CreateNewSortedChunkPool(
+        chunkPool = CreateSortedChunkPool(
             TSortedChunkPoolOptions{
                 .SortedJobOptions = TSortedJobOptions{
                     .EnableKeyGuarantee = true,
                     .PrimaryComparator = comparator,
                     .PrimaryPrefixLength = *queryAnalysisResult.KeyColumnCount,
-                    .ShouldSlicePrimaryTableByKeys = true,
                     .ValidateOrder = false,
                     .MaxTotalSliceCount = std::numeric_limits<int>::max() / 2,
                     .JobSizeTrackerOptions = jobSizeSpec.JobSizeTrackerOptions,
@@ -1104,9 +1166,7 @@ std::vector<TSubquery> BuildThreadSubqueries(
         Y_UNREACHABLE();
     }
 
-    auto adjustDataSliceForPool = [&] (const TLegacyDataSlicePtr& dataSlice) {
-        YT_VERIFY(!dataSlice->IsLegacy);
-
+    auto adjustDataSliceForPool = [&] (const TDataSlicePtr& dataSlice) {
         if (queryAnalysisResult.PoolKind == EPoolKind::Unordered) {
             dataSlice->LowerLimit().KeyBound = TKeyBound();
             dataSlice->UpperLimit().KeyBound = TKeyBound();
@@ -1124,7 +1184,7 @@ std::vector<TSubquery> BuildThreadSubqueries(
             dataSlice->UpperLimit().KeyBound = ShortenKeyBound(dataSlice->UpperLimit().KeyBound, *queryAnalysisResult.KeyColumnCount, queryContext->RowBuffer);
 
             if (dataSlice->Type == EDataSourceType::UnversionedTable) {
-                // New sorted pool makes no use of chunk slice bounds.
+                // Keep physical chunk-slice bounds aligned with the logical data-slice bounds.
                 for (const auto& chunkSlice : dataSlice->ChunkSlices) {
                     chunkSlice->LowerLimit().KeyBound = dataSlice->LowerLimit().KeyBound;
                     chunkSlice->UpperLimit().KeyBound = dataSlice->UpperLimit().KeyBound;
@@ -1137,7 +1197,6 @@ std::vector<TSubquery> BuildThreadSubqueries(
 
     for (const auto& chunkStripe : queryInput.StripeList->Stripes()) {
         for (const auto& dataSlice : chunkStripe->DataSlices()) {
-            YT_VERIFY(!dataSlice->IsLegacy);
             if ((dataSlice->LowerLimit().KeyBound && !dataSlice->LowerLimit().KeyBound.IsUniversal()) ||
                 (dataSlice->UpperLimit().KeyBound && !dataSlice->UpperLimit().KeyBound.IsUniversal()))
             {
@@ -1160,7 +1219,6 @@ std::vector<TSubquery> BuildThreadSubqueries(
 
         for (const auto& chunkStripe : subquery.StripeList->Stripes()) {
             for (const auto& dataSlice : chunkStripe->DataSlices()) {
-                YT_VERIFY(!dataSlice->IsLegacy);
                 if (dataSlice->ReadRangeIndex) {
                     auto comparator = queryInput.DataSourceDirectory->DataSources()[dataSlice->GetTableIndex()]->GetComparator();
                     inputReadRangeRegistry.ApplyReadRange(dataSlice, comparator);
@@ -1230,8 +1288,9 @@ std::vector<TSubquery> BuildThreadSubqueries(
 
     // TODO(dakovalkov): Should we do it for Unordered chunk pool for the sake of better caching?
     if (queryAnalysisResult.PoolKind == EPoolKind::Sorted) {
-        std::sort(subqueries.begin(), subqueries.end(), [] (const TSubquery& lhs, const TSubquery& rhs) {
-            return lhs.Cookie < rhs.Cookie;
+        // Data between jobs can not overlap (because of |EnableKeyGuarantee|), therefore we could sort by bounds.
+        std::sort(subqueries.begin(), subqueries.end(), [&] (const TSubquery& lhs, const TSubquery& rhs) {
+            return comparator.CompareKeyBounds(lhs.Bounds.first, rhs.Bounds.first) < 0;
         });
         LogSubqueryDebugInfo(subqueries, "AfterSort", Logger);
     }

@@ -1,3 +1,5 @@
+INCLUDE(${ARCADIA_ROOT}/yt/ya_features.make.inc)
+
 LIBRARY()
 
 INCLUDE(${ARCADIA_ROOT}/yt/ya_cpp.make.inc)
@@ -21,6 +23,7 @@ SRCS(
     job_helpers.cpp
     job_memory.cpp
     job_splitter.cpp
+    journal_nbd_spec.cpp
     helpers.cpp
     input_transaction_manager.cpp
     input_manager.cpp
@@ -29,6 +32,8 @@ SRCS(
     ordered_controller.cpp
     private.cpp
     probing_job_manager.cpp
+    push_based_shuffle.cpp
+    push_based_shuffle_job_spec.cpp
     remote_copy_controller.cpp
     sink.cpp
     sort_controller.cpp
@@ -40,6 +45,12 @@ SRCS(
     unordered_controller.cpp
     vanilla_controller.cpp
 )
+
+IF (YT_ENABLE_JOURNAL_NBD)
+    SRCS(journal_nbd_helpers.cpp)
+ELSE()
+    SRCS(journal_nbd_helpers_dummy.cpp)
+ENDIF()
 
 PEERDIR(
     yt/yt/library/query/engine

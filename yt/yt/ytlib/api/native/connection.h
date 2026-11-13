@@ -115,6 +115,13 @@ struct IConnection
         EMasterChannelKind kind,
         NObjectClient::TCellTag cellTag = NObjectClient::PrimaryMasterCellTagSentinel) = 0;
 
+    // COMPAT(danilalexeev): local native-service routing for the embedded ApiService.
+    //! Only for Cypress proxy's native clients; the supplied channel must be local.
+    virtual NRpc::IChannelPtr WrapAsCypressChannelOrThrow(
+        const NRpc::IChannelPtr& localChannel,
+        EMasterChannelKind kind,
+        NObjectClient::TCellTag cellTag = NObjectClient::PrimaryMasterCellTagSentinel) = 0;
+
     virtual const NRpc::IChannelPtr& GetCypressProxyChannel() = 0;
 
     virtual const NRpc::IChannelPtr& GetSchedulerChannel() = 0;
@@ -148,6 +155,7 @@ struct IConnection
 
     virtual const NTabletClient::ITableMountCachePtr& GetTableMountCache() = 0;
     virtual const NChaosClient::IReplicationCardCachePtr& GetReplicationCardCache() = 0;
+    virtual const NChaosClient::IChaosLeaseCachePtr& GetChaosLeaseCache() = 0;
     virtual const NTransactionClient::ITimestampProviderPtr& GetTimestampProvider() = 0;
     virtual const NTransactionClient::IClockManagerPtr& GetClockManager() = 0;
 
@@ -267,6 +275,9 @@ struct TConnectionOptions
     bool CreateQueueConsumerRegistrationManager = false;
 
     EChaosResidencyCacheType ChaosResidencyCacheMode = EChaosResidencyCacheType::Client;
+
+    //! If false, a dummy chaos cell directory synchronizer doing nothing is created instead.
+    bool CreateChaosCellDirectorySynchronizer = true;
 
     explicit TConnectionOptions(IInvokerPtr connectionInvoker);
     TConnectionOptions() = default;

@@ -8,7 +8,7 @@
 
 #include <yt/yt/server/master/cypress_server/public.h>
 
-#include <yt/yt/server/master/object_server/object_detail.h>
+#include <yt/yt/server/master/object_server/object.h>
 
 #include <yt/yt/server/master/security_server/acl.h>
 #include <yt/yt/server/master/security_server/cluster_resources.h>
@@ -177,6 +177,8 @@ public:
     using TAccountResourcesMap = THashMap<NSecurityServer::TAccountPtr, NSecurityServer::TClusterResources>;
     DEFINE_BYREF_RW_PROPERTY(TAccountResourcesMap, AccountResourceUsage);
     DEFINE_BYREF_RW_PROPERTY(NSecurityServer::TAccessControlDescriptor, Acd);
+
+    DEFINE_BYVAL_RW_PROPERTY(NSecurityClient::TUserId, InitiatorId);
 
     using TAccountResourceUsageLeaseSet = THashSet<NSecurityServer::TAccountResourceUsageLeaseRawPtr>;
     DEFINE_BYREF_RW_PROPERTY(TAccountResourceUsageLeaseSet, AccountResourceUsageLeases);

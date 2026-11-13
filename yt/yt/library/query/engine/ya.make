@@ -70,6 +70,8 @@ PEERDIR(
     contrib/libs/xxhash
 )
 
+PROVIDES(YT_QUERY_ENGINE)
+
 USE_LLVM_BC18()
 
 LLVM_BC(
@@ -608,6 +610,15 @@ LLVM_BC(
         dict_sum_update
         dict_sum_merge
         dict_sum_finalize
+)
+
+LLVM_BC(
+    udf/running.cpp
+    NAME running
+    SYMBOLS
+        running_sum
+        running_uniq
+        running_difference
 )
 
 LLVM_BC(

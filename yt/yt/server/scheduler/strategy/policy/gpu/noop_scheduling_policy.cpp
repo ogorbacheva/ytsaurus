@@ -30,6 +30,11 @@ public:
     void UnregisterNode(TNodeId /*nodeId*/) override
     { }
 
+    std::vector<TExecNodeDescriptorPtr> GetNodeDescriptors() const override
+    {
+        return {};
+    }
+
     TFuture<void> ProcessSchedulingHeartbeat(
         const ISchedulingHeartbeatContextPtr& /*schedulingHeartbeatContext*/,
         const TPoolTreeSnapshotPtr& /*treeSnapshot*/,
@@ -72,27 +77,34 @@ public:
         YT_UNIMPLEMENTED();
     }
 
-    void BuildSchedulingAttributesStringForNode(
+    NLogging::TLoggingTagList BuildSchedulingAttributeTagsForNode(
+        const TPoolTreeSnapshotPtr& /*treeSnapshot*/,
         const ISchedulingHeartbeatContextPtr& /*schedulingHeartbeatContext*/,
+        TNodeId /*nodeId*/) const override
+    {
+        return {};
+    }
+
+    void BuildSchedulingAttributesForNode(
+        const TPoolTreeSnapshotPtr& /*treeSnapshot*/,
         TNodeId /*nodeId*/,
-        TDelimitedStringBuilderWrapper& /*delimitedBuilder*/) const override
+        TFluentMap /*fluent*/) const override
     { }
 
-    void BuildSchedulingAttributesForNode(TNodeId /*nodeId*/, TFluentMap /*fluent*/) const override
-    { }
-
-    void BuildSchedulingAttributesStringForOngoingAllocations(
+    NLogging::TLoggingTagList BuildSchedulingAttributeTagsForOngoingAllocations(
         const TPoolTreeSnapshotPtr& /*treeSnapshot*/,
         const std::vector<TAllocationPtr>& /*allocations*/,
-        TInstant /*now*/,
-        TDelimitedStringBuilderWrapper& /*delimitedBuilder*/) const override
-    { }
+        TInstant /*now*/) const override
+    {
+        return {};
+    }
 
-    void BuildElementLoggingStringAttributes(
+    NLogging::TLoggingTagList BuildElementLoggingTags(
         const TPoolTreeSnapshotPtr& /*treeSnapshot*/,
-        const TPoolTreeElement* /*element*/,
-        TDelimitedStringBuilderWrapper& /*delimitedBuilder*/) const override
-    { }
+        const TPoolTreeElement* /*element*/) const override
+    {
+        return {};
+    }
 
     void PopulateOrchidService(const ICompositeMapServicePtr& /*orchidService*/) const override
     { }

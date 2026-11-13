@@ -1,11 +1,14 @@
 #include "controller.h"
+#include "resource_instances.h"
 
 #include "private.h"
 
 #include "config.h"
 #include "job_manager.h"
 #include "lease_manager.h"
+#include "lineage_aggregator.h"
 #include "persisted_state_manager.h"
+#include "stream_metrics.h"
 #include "throttler_host.h"
 #include "worker.h"
 #include "worker_tracker.h"
@@ -22,6 +25,7 @@
 
 #include <yt/yt/client/api/client.h>
 #include <yt/yt/client/api/transaction.h>
+#include <yt/yt/client/tablet_client/public.h>
 
 #include <yt/yt/client/transaction_client/helpers.h>
 #include <yt/yt/client/transaction_client/timestamp_provider.h>
@@ -61,39 +65,11 @@ constinit const auto Logger = ControllerLogger;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// FuncGauge-based lag gauge: computes lag as (Now() - LastWatermark) at read time.
-// Unlike TGauge, continues growing even if Update() stops being called (e.g. controller is stuck).
-// Returns -1 if no watermark has been set yet.
-class TLagGauge
-    : public TRefCounted
-{
-public:
-    static TIntrusivePtr<TLagGauge> Create(
-        const TProfiler& profiler,
-        const std::string& name)
-    {
-        auto gauge = New<TLagGauge>();
-        profiler.AddFuncGauge(name, gauge, [gauge = gauge.Get()] () -> double {
-            auto watermark = TSystemTimestamp(gauge->Watermark_.load(std::memory_order::relaxed));
-            if (watermark == ZeroSystemTimestamp) {
-                return -1.0;
-            }
-            auto now = static_cast<i64>(TInstant::Now().Seconds());
-            return static_cast<double>(std::max<i64>(0, now - static_cast<i64>(watermark.Underlying())));
-        });
-        return gauge;
-    }
-
-    void Update(TSystemTimestamp watermark)
-    {
-        Watermark_.store(watermark.Underlying(), std::memory_order::relaxed);
-    }
-
-private:
-    std::atomic<ui64> Watermark_{ZeroSystemTimestamp.Underlying()};
-};
-
-using TLagGaugePtr = TIntrusivePtr<TLagGauge>;
+//! Shape of the derived leadership warm-up, see #GetLeadershipWarmupTimeout. The factor leaves room
+//! for a discovery tick missed just before the address was published (the executor is jittered), the
+//! extra time covers the RPC latency and the registration stampede of a large fleet.
+static constexpr int LeadershipWarmupPeriodFactor = 2;
+static constexpr auto LeadershipWarmupExtraTime = TDuration::Seconds(5);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -138,50 +114,6 @@ class TControllerLeader
     : public TRefCounted
 {
 public:
-    class TStreamMetrics
-    {
-    public:
-        TStreamMetrics(const TStreamId& streamId, const TProfiler& profiler)
-            : Profiler_(profiler
-                    .WithPrefix("/streams")
-                    .WithRequiredTag("stream_id", streamId.Underlying()))
-            , TimeLagGauge_(TLagGauge::Create(Profiler_, "/time_lag"))
-            , EventTimeLagGauge_(TLagGauge::Create(Profiler_, "/event_time_lag"))
-            , LagGauge_(Profiler_.Gauge("/count_lag"))
-            , ByteSizeLagGauge_()
-        { }
-
-        void Apply(const TSystemTimestamp /*now*/, const TStreamTraverseDataPtr& stream)
-        {
-            TimeLagGauge_->Update(stream->SystemWatermark);
-            EventTimeLagGauge_->Update(stream->EventWatermark);
-
-            const auto& metrics = stream->InflightMetrics;
-            LagGauge_.Update(metrics->Count);
-
-            auto update = [&] (auto& gauge, const std::string& name, auto value) {
-                if (value) {
-                    if (!gauge) {
-                        gauge = Profiler_.Gauge(name);
-                    }
-                    gauge->Update(*value);
-                } else {
-                    gauge = {};
-                }
-            };
-
-            update(ByteSizeLagGauge_, "/byte_size_lag", metrics->ByteSize);
-        }
-
-    private:
-        TProfiler Profiler_;
-
-        TLagGaugePtr TimeLagGauge_;
-        TLagGaugePtr EventTimeLagGauge_;
-        TGauge LagGauge_;
-        std::optional<TGauge> ByteSizeLagGauge_;
-    };
-
     struct TAggregatedStreamTraverseData
     {
         int Count = 0;
@@ -226,15 +158,15 @@ public:
         void Apply(const TAggregatedNodePerformanceMetricsPtr& metrics)
         {
             CpuUsageTotalGauge_.Update(metrics->Total->CpuUsageCurrent.value_or(0));
-            MemoryUsageTotalGauge_.Update(metrics->Total->MemoryUsageCurrent);
+            MemoryUsageTotalGauge_.Update(metrics->Total->MemoryUsageCurrent.value_or(0));
 
             // CpuUsageCurrent/MemoryUsageCurrent is bad metric for taking maximum.
             PartitionCpuUsageMaxGauge_.Update(metrics->Max->CpuUsage30s.value_or(0));
             // Per-partition memory metric is very noisy, so use 10-min smoothed metric.
-            PartitionMemoryUsageMaxGauge_.Update(metrics->Max->MemoryUsage10m);
+            PartitionMemoryUsageMaxGauge_.Update(metrics->Max->MemoryUsage10m.value_or(0));
 
             PartitionCpuUsageAvgGauge_.Update(metrics->Avg->CpuUsageCurrent.value_or(0));
-            PartitionMemoryUsageAvgGauge_.Update(metrics->Avg->MemoryUsageCurrent);
+            PartitionMemoryUsageAvgGauge_.Update(metrics->Avg->MemoryUsageCurrent.value_or(0));
         }
 
         void ResetPerformanceMetrics()
@@ -338,6 +270,8 @@ public:
             TProfiler Profiler;
 
             TGauge Unknown = Profiler.Gauge("/unknown");
+            TGauge Failed = Profiler.Gauge("/failed");
+            TGauge GracefullyMoving = Profiler.Gauge("/gracefully_moving");
             TGauge Preparing = Profiler.Gauge("/preparing");
             TGauge WorkingYoung = Profiler.Gauge("/working_young");
             TGauge WorkingOld = Profiler.Gauge("/working_old");
@@ -411,6 +345,7 @@ public:
         const NProfiling::TProfiler& profiler,
         IYTConnectorPtr connector,
         IPipelineAuthenticatorPtr authenticator,
+        NHttp::IClientPtr httpClient,
         TControllerConfigPtr config,
         TNodeInfoPtr nodeInfo,
         const IInvokerPtr& invoker,
@@ -420,6 +355,7 @@ public:
         IStatusProfilerPtr statusProfiler)
         : Connector_(std::move(connector))
         , PipelineAuthenticator_(std::move(authenticator))
+        , HttpClient_(std::move(httpClient))
         , TimeProvider_(CreateRetryingTimeProvider(Connector_->GetClient(), clockClusterTag, invoker, statusProfiler, ControllerLogger()))
         , VersionProvider_(CreateVersionProvider(TimeProvider_))
         , Config_(std::move(config))
@@ -428,7 +364,13 @@ public:
         , Invoker_(invoker)
         , MainCycleInvoker_(mainCycleInvoker)
         , ThrottlerHost_(std::move(throttlerHost))
-        , LeaseManager_(CreateLeaseManager(Connector_, Config_->LeaseManager))
+        , LeaseManager_(CreateLeaseManager(
+            Connector_,
+            Config_->LeaseManager,
+            Config_->ElectionManager.GetType(),
+            Config_->ElectionManager.TryGetConcrete<TChaosElectionBackendConfig>(),
+            Config_->PersistedStateManager->MaxWritesPerTransaction,
+            invoker))
         , MutationMetrics_(Profiler_)
         , CurrentEpochGauge_(Profiler_.Gauge("/current_epoch"))
         , ComputationCountGauge_(Profiler_.Gauge("/computation_count"))
@@ -437,6 +379,7 @@ public:
         , SpecVersion_(Profiler_.Gauge("/spec_version"))
         , DynamicSpecVersion_(Profiler_.Gauge("/dynamic_spec_version"))
         , StatusProfiler_(std::move(statusProfiler))
+        , SpecValidationErrorState_(StatusProfiler_->ErrorState("/spec_validation"))
     { }
 
     const IVersionProviderPtr& GetVersionProvider() const
@@ -454,7 +397,6 @@ public:
         THashMap<EWorkerState, ui64> counts;
         flowView->State->Workers.clear();
         flowView->EphemeralState->FlowCoreTargetMismatchedWorkers.clear();
-        THashSet<TIncarnationId> incarnations;
 
         const auto& flowCoreTarget = flowView->State->ExecutionSpec->FlowCoreTarget;
         ui64 flowCoreTargetMismatchCount = 0;
@@ -477,12 +419,10 @@ public:
                     worker->RegisterTime = w.RegisterTime;
                     worker->LegacyAddress = worker->RpcAddress;
                     flowView->State->Workers[worker->RpcAddress] = worker;
-                    incarnations.insert(w.IncarnationId);
                 }
             }
             counts[w.State] += 1;
         }
-        DropMissingKeys(flowView->EphemeralState->WorkerIncarnationsJobs, incarnations);
         for (const auto& [state, count] : counts) {
             if (!WorkerCountGauges_.contains(state)) {
                 WorkerCountGauges_[state] = Profiler_.WithTag("state", ToString(state)).Gauge("/worker_count");
@@ -500,7 +440,7 @@ public:
             .With("Active", flowView->State->Workers.size());
     }
 
-    void DoIteration(const TFlowViewPtr& flowView)
+    void DoIteration(const TFlowViewPtr& flowView, const TFlowViewPtr& committedFlowView)
     {
         YT_ASSERT_INVOKER_AFFINITY(MainCycleInvoker_);
 
@@ -513,14 +453,19 @@ public:
         SpecVersion_.Update(spec->GetVersion().Underlying());
         DynamicSpecVersion_.Update(dynamicSpec->GetVersion().Underlying());
 
+        ValidateSpecsOnChange(flowView);
+
         // TODO(mikari): revise order
         flowState->CurrentTimestamp = WaitFor(TimeProvider_->GetTimestamp(/*barrier*/ true))
             .ValueOrThrow();
+
+        LineageAggregator_.Update(flowView);
 
         if (!UpdateSpecs(flowView, spec, dynamicSpec)) {
             YT_TLOG_WARNING("No job manager, fast stop");
             auto context = New<TJobManagerContext>();
             context->ClientsCache = Connector_->GetClientsCache();
+            context->HttpClient = HttpClient_;
             context->PipelinePath = Connector_->GetPipelinePath();
             context->Invoker = Invoker_;
             context->MainCycleInvoker = MainCycleInvoker_;
@@ -533,7 +478,7 @@ public:
                 if (pipelineState != EPipelineState::Paused && pipelineState != EPipelineState::Stopped && pipelineState != EPipelineState::Completed) {
                     flowState->ExecutionSpec->PipelineState->TrySetValue(EPipelineState::Pausing, VersionProvider_);
                 }
-                DoScheduling(flowView);
+                DoScheduling(flowView, committedFlowView);
             } catch (const std::exception& ex) {
                 JobManager_ = nullptr;
                 throw;
@@ -565,19 +510,25 @@ public:
                 FlowCoreTargetMatched_ = flowCoreTargetMatched;
             }
 
-            if (flowCoreTargetMatched) {
+            if (flowCoreTargetMatched && SpecValidationError_.IsOK()) {
                 CheckTargetState(flowView);
             } else {
                 auto state = flowView->State->ExecutionSpec->PipelineState->GetValue();
                 if (state == EPipelineState::Working || state == EPipelineState::Draining) {
-                    YT_TLOG_WARNING("FlowCoreTarget mismatch, pausing pipeline")
-                        .With("Target", flowView->State->ExecutionSpec->FlowCoreTarget->GetValue())
-                        .With("Actual", NodeInfo_->FlowCoreVersion);
+                    if (!flowCoreTargetMatched) {
+                        YT_TLOG_WARNING("FlowCoreTarget mismatch, pausing pipeline")
+                            .With("Target", flowView->State->ExecutionSpec->FlowCoreTarget->GetValue())
+                            .With("Actual", NodeInfo_->FlowCoreVersion);
+                    } else {
+                        YT_TLOG_WARNING("Pipeline spec is invalid, pausing pipeline")
+                            .With(SpecValidationError_);
+                    }
+
                     flowView->State->ExecutionSpec->PipelineState->TrySetValue(EPipelineState::Pausing, VersionProvider_);
                 }
             }
 
-            DoScheduling(flowView);
+            DoScheduling(flowView, committedFlowView);
 
             SyncJobManagerState(flowView);
 
@@ -618,6 +569,15 @@ public:
         }
     }
 
+    void AddWorkerStatistics(
+        TIncarnationId workerIncarnationId,
+        TWorkerStatisticsPtr statistics)
+    {
+        LineageAggregator_.AddWorkerRatios(
+            workerIncarnationId,
+            std::move(statistics->LineageRatios));
+    }
+
     void UpdateMetrics(const TFlowViewPtr& flowView)
     {
         const auto& traverseData = flowView->State->TraverseData;
@@ -628,36 +588,13 @@ public:
             auto now = WaitFor(TimeProvider_->GetTimestamp(/*barrier*/ false))
                 .ValueOrThrow();
 
-            auto registerStream = [&] (const auto& streamId, const auto& stream) {
-                auto& metrics = StreamMetrics_
-                    .emplace(streamId, TStreamMetrics(streamId, Profiler_))
-                    .first->second;
-                metrics.Apply(now, stream);
-            };
-
-            for (const auto& [streamId, stream] : traverseData->Streams) {
-                registerStream(streamId, stream);
-            }
-            static const TStreamId unitedStreamId = TStreamId("__united__");
-            registerStream(unitedStreamId, traverseData->UnitedStream);
-            static const TStreamId unitedSourceStreamId = TStreamId("__united_source__");
-            registerStream(unitedSourceStreamId, traverseData->UnitedSourceStream);
-            static const TStreamId unitedTimerStreamId = TStreamId("__united_timer__");
-            registerStream(unitedTimerStreamId, traverseData->UnitedTimerStream);
-            static const TStreamId unitedKeyVisitorStreamId = TStreamId("__united_key_visitor__");
-            registerStream(unitedKeyVisitorStreamId, traverseData->UnitedKeyVisitorStream);
-            static const TStreamId unitedOutputStreamId = TStreamId("__united_output__");
-            registerStream(unitedOutputStreamId, traverseData->UnitedOutputStream);
-
-            auto streamIds = ConcatVectors(
-                GetKeys(traverseData->Streams),
-                std::vector<TStreamId>{
-                    unitedStreamId,
-                    unitedSourceStreamId,
-                    unitedTimerStreamId,
-                    unitedKeyVisitorStreamId,
-                    unitedOutputStreamId});
-            DropMissingKeys(StreamMetrics_, THashSet<TStreamId>(streamIds.begin(), streamIds.end()));
+            UpdateStreamMetrics(
+                StreamMetrics_,
+                now,
+                traverseData,
+                CollectTimerStreamIds(pipelineSpec),
+                executionSpec->DynamicPipelineSpec->GetValue()->EnableUnitedStreamMetrics,
+                Profiler_);
         }
 
         const auto minJobStatusUpdateTime = TInstant::Now() -
@@ -672,12 +609,16 @@ public:
             } else {
                 metrics.ResetPerformanceMetrics();
             }
-            if (auto* computationInputMetrics = inputMetrics.FindPtr(computationId)) {
+
+            // Traverse data and input metrics may lag behind a replaced spec until a successful leader iteration syncs them.
+            auto* computationInputMetrics = inputMetrics.FindPtr(computationId);
+            auto* computationSpec = pipelineSpec->Computations.FindPtr(computationId);
+            if (computationInputMetrics && computationSpec) {
                 metrics.Apply(
                     *computationInputMetrics,
                     streamTraverseDatas[computationId],
                     flowView->EphemeralState->StreamTraverseDataMetrics[computationId],
-                    GetOrCrash(pipelineSpec->Computations, computationId));
+                    *computationSpec);
             } else {
                 metrics.ResetInputMetrics();
             }
@@ -717,6 +658,7 @@ public:
 private:
     const IYTConnectorPtr Connector_;
     const IPipelineAuthenticatorPtr PipelineAuthenticator_;
+    const NHttp::IClientPtr HttpClient_;
     const ITimeProviderPtr TimeProvider_;
     const IVersionProviderPtr VersionProvider_;
     const TControllerConfigPtr Config_;
@@ -727,6 +669,7 @@ private:
     const IThrottlerHostPtr ThrottlerHost_;
     const ILeaseManagerPtr LeaseManager_;
     IJobManagerPtr JobManager_;
+    TLineageAggregator LineageAggregator_;
 
     TMutationMetrics MutationMetrics_;
     THashMap<TStreamId, TStreamMetrics> StreamMetrics_;
@@ -744,8 +687,59 @@ private:
     TPipelineStateMetrics PipelineStateMetrics_;
 
     const IStatusProfilerPtr StatusProfiler_;
+    const IStatusErrorStatePtr SpecValidationErrorState_;
 
     bool FlowCoreTargetMatched_ = true;
+
+    //! Versions of the canonical specs that #SpecValidationError_ belongs to.
+    std::optional<std::pair<TVersion, TVersion>> ValidatedSpecVersions_;
+    TError SpecValidationError_;
+
+    //! Validates the canonical specs when their versions change; scheduling stays paused while they are invalid.
+    void ValidateSpecsOnChange(const TFlowViewPtr& flowView)
+    {
+        const auto& spec = flowView->CurrentSpec;
+        const auto& dynamicSpec = flowView->CurrentDynamicSpec;
+        auto versions = std::pair(spec->GetVersion(), dynamicSpec->GetVersion());
+        if (ValidatedSpecVersions_ == versions) {
+            return;
+        }
+
+        ValidatedSpecVersions_ = versions;
+
+        TError error;
+        try {
+            if (spec->GetVersion() != TVersion(0)) {
+                ValidatePipelineSpec(spec->GetValue());
+            }
+
+            if (dynamicSpec->GetVersion() != TVersion(0)) {
+                ValidateDynamicPipelineSpec(dynamicSpec->GetValue());
+            }
+        } catch (const std::exception& ex) {
+            error = TError("Pipeline spec is invalid; the pipeline cannot run until the spec is fixed")
+                .With("spec_version", spec->GetVersion())
+                .With("dynamic_spec_version", dynamicSpec->GetVersion())
+                .With(TError(ex));
+        }
+
+        if (!error.IsOK()) {
+            if (SpecValidationError_.IsOK()) {
+                YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Error, "Pipeline spec validation failed, pausing pipeline")
+                    .With(error);
+            }
+
+            SpecValidationErrorState_->SetError(error);
+        } else {
+            if (!SpecValidationError_.IsOK()) {
+                YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Info, "Pipeline spec validation passed");
+            }
+
+            SpecValidationErrorState_->ClearError();
+        }
+
+        SpecValidationError_ = std::move(error);
+    }
 
     bool UpdateSpecs(const TFlowViewPtr& flowView, const TVersionedPipelineSpecPtr& spec, const TVersionedDynamicPipelineSpecPtr& dynamicSpec)
     {
@@ -761,6 +755,7 @@ private:
             try {
                 auto context = New<TJobManagerContext>();
                 context->ClientsCache = Connector_->GetClientsCache();
+                context->HttpClient = HttpClient_;
                 context->PipelinePath = Connector_->GetPipelinePath();
                 context->Invoker = Invoker_;
                 context->MainCycleInvoker = MainCycleInvoker_;
@@ -888,8 +883,12 @@ private:
             }
         }
 
-        void OnUpdateJob(const TJobPtr& /*oldJob*/, const TJobPtr& /*newJob*/) override
+        void OnUpdateJob(const TJobPtr& oldJob, const TJobPtr& newJob) override
         {
+            // An update keeps the job where it is; a job on another worker or partition is a
+            // new job, and #WorkerIncarnationsJobs relies on that.
+            YT_VERIFY(newJob->WorkerIncarnationId == oldJob->WorkerIncarnationId);
+            YT_VERIFY(newJob->PartitionId == oldJob->PartitionId);
             if (auto strongLeader = WeakLeader_.Lock()) {
                 strongLeader->MutationMetrics_.UpdateJobLeaseCounter.Increment();
             }
@@ -908,7 +907,13 @@ private:
                 }
                 state->PreviousJobFinishReason = reason;
 
-                EphemeralState_->WorkerIncarnationsJobs[oldJob->WorkerIncarnationId].erase(oldJob->JobId);
+                auto incarnationIt = EphemeralState_->WorkerIncarnationsJobs.find(oldJob->WorkerIncarnationId);
+                if (incarnationIt != EphemeralState_->WorkerIncarnationsJobs.end()) {
+                    incarnationIt->second.erase(oldJob->JobId);
+                    if (incarnationIt->second.empty()) {
+                        EphemeralState_->WorkerIncarnationsJobs.erase(incarnationIt);
+                    }
+                }
             }
         }
 
@@ -917,18 +922,31 @@ private:
         TFlowEphemeralStatePtr EphemeralState_;
     };
 
-    void DoScheduling(const TFlowViewPtr& flowView)
+    void DoScheduling(const TFlowViewPtr& flowView, const TFlowViewPtr& committedFlowView)
     {
+        JobManager_->BeginIteration(committedFlowView);
+
         auto checkLeases = [&] {
             LeaseManager_->CheckLeases(flowView);
         };
-        auto terminateAndPrepareLeases = [&] {
-            LeaseManager_->TerminateStrayLeases(flowView);
-            LeaseManager_->PrepareLeases(flowView);
-        };
-        auto stopJobsAndResetState = [&] (EPipelineState newState) {
+        auto finishPipeline = [&] (EPipelineState newState) {
             JobManager_->StopAllJobs(flowView);
             LeaseManager_->TerminateStrayLeases(flowView);
+            const auto& layout = flowView->State->ExecutionSpec->Layout;
+            std::vector<TResourceInstanceId> instanceIds;
+            for (const auto& [instanceId, _] : layout->ResourceInstances) {
+                instanceIds.push_back(instanceId);
+            }
+            for (auto instanceId : instanceIds) {
+                layout->ResourceInstances.erase(instanceId);
+            }
+            std::vector<std::string> addresses;
+            for (const auto& [address, _] : layout->WorkerSpecs) {
+                addresses.push_back(address);
+            }
+            for (const auto& address : addresses) {
+                layout->WorkerSpecs.erase(address);
+            }
             flowView->State->ExecutionSpec->PipelineState->TrySetValue(newState, VersionProvider_);
         };
         auto manageJobs = [&] {
@@ -942,15 +960,39 @@ private:
         auto state = flowView->State->ExecutionSpec->PipelineState->GetValue();
         checkLeases();
         if (state == EPipelineState::Working || state == EPipelineState::Draining) {
-            manageJobs();
-            terminateAndPrepareLeases();
+            // Job management is held off as a whole, which keeps RemoveLostJobs and DistributeJobs
+            // consistent: a job left pointing at a not-yet-registered worker is exactly what the
+            // latter refuses to distribute.
+            auto warmupLeft = GetLeadershipWarmupLeft(flowView, Connector_->GetLeadershipPublishTime(), TInstant::Now());
+            if (warmupLeft > TDuration::Zero()) {
+                YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Warning, "Skipping job management during leadership warm-up")
+                    .With("WarmupLeft", warmupLeft)
+                    .With("Jobs", flowView->State->ExecutionSpec->Layout->Jobs.size());
+            } else {
+                manageJobs();
+            }
         }
+        if (state == EPipelineState::Working || state == EPipelineState::Draining) {
+            LeaseManager_->PrepareLeases(flowView);
+        }
+        // After the grants and as late as the lease writes go: manageJobs() has just taken jobs
+        // away from some partitions, and their leases must be gone before this layout is
+        // persisted, or a partition the layout no longer knows about keeps a worker running on it
+        // while its next job starts alongside. Runs in every state — jobs are dropped in all of
+        // them.
+        //
+        // The order only shrinks the window, it does not close it: a revocation is the one lease
+        // write that hurts when the iteration is discarded afterwards, and PersistFlowState can
+        // still lose a row-lock race to a spec update below. The jobs whose leases were revoked
+        // then die on their next commit and are recreated a job-failure cycle later; the fence is
+        // never weakened, only liveness is.
+        LeaseManager_->TerminateStrayLeases(flowView);
         if (state == EPipelineState::Working && JobManager_->CheckPipelineCompleted(flowView)) {
-            stopJobsAndResetState(EPipelineState::Completed);
+            finishPipeline(EPipelineState::Completed);
         } else if (state == EPipelineState::Draining && JobManager_->CheckPipelineStopped(flowView)) {
-            stopJobsAndResetState(EPipelineState::Stopped);
+            finishPipeline(EPipelineState::Stopped);
         } else if (state == EPipelineState::Pausing) {
-            stopJobsAndResetState(EPipelineState::Paused);
+            finishPipeline(EPipelineState::Paused);
         }
     }
 
@@ -959,6 +1001,8 @@ private:
         struct TCounters
         {
             ui64 Unknown = 0;
+            ui64 Failed = 0;
+            ui64 GracefullyMoving = 0;
             ui64 Preparing = 0;
             ui64 WorkingYoung = 0;
             ui64 WorkingOld = 0;
@@ -1008,8 +1052,15 @@ private:
             const auto& status = statusIt->second;
             if (!status->CurrentJobStatus) {
                 handlePartitionWithoutJobStatus();
-            } else if (!status->CurrentJobStatus->Error.IsOK()) {
-                reasonCounters.Unknown += 1;
+            } else if (const auto& error = status->CurrentJobStatus->Error; !error.IsOK()) {
+                // The job is done but still assigned: it is waiting for the controller to drop it
+                // (and, for a graceful move, to recreate it on the target worker). Both are regular
+                // lifecycle states, so keep them apart from a partition with no job at all.
+                if (error.FindMatching(NFlow::EErrorCode::GracefulShutdown)) {
+                    reasonCounters.GracefullyMoving += 1;
+                } else {
+                    reasonCounters.Failed += 1;
+                }
             } else if (!status->CurrentJobStatus->RetryableErrors.empty()) {
                 reasonCounters.WorkingWithRetryableError += 1;
             } else if (!status->CurrentJobStatus->InitedTime.has_value()) {
@@ -1032,6 +1083,8 @@ private:
 
                 auto& reasonMetrics = computationMetrics.ReasonMetrics[reason];
                 reasonMetrics.Unknown.Update(reasonCounters.Unknown);
+                reasonMetrics.Failed.Update(reasonCounters.Failed);
+                reasonMetrics.GracefullyMoving.Update(reasonCounters.GracefullyMoving);
                 reasonMetrics.Preparing.Update(reasonCounters.Preparing);
                 reasonMetrics.WorkingYoung.Update(reasonCounters.WorkingYoung);
                 reasonMetrics.WorkingOld.Update(reasonCounters.WorkingOld);
@@ -1039,6 +1092,8 @@ private:
                 reasonMetrics.Stopped.Update(reasonCounters.Stopped);
 
                 totalCounters.Unknown += reasonCounters.Unknown;
+                totalCounters.Failed += reasonCounters.Failed;
+                totalCounters.GracefullyMoving += reasonCounters.GracefullyMoving;
                 totalCounters.Preparing += reasonCounters.Preparing;
                 totalCounters.WorkingYoung += reasonCounters.WorkingYoung;
                 totalCounters.WorkingOld += reasonCounters.WorkingOld;
@@ -1057,6 +1112,8 @@ private:
             .With("WorkingYoung", totalCounters.WorkingYoung)
             .With("WorkingWithRetryableError", totalCounters.WorkingWithRetryableError)
             .With("Preparing", totalCounters.Preparing)
+            .With("GracefullyMoving", totalCounters.GracefullyMoving)
+            .With("Failed", totalCounters.Failed)
             .With("Unknown", totalCounters.Unknown)
             .With("Stopped", totalCounters.Stopped)
             .With("FlowViewAge", TInstant::Now() - TInstant::Seconds(flowView->State->CurrentTimestamp.Underlying()));
@@ -1142,9 +1199,9 @@ private:
     {
         YT_VERIFY(JobManager_);
         auto currentJobManagerState = JobManager_->GetState();
-        if (!AreNodesEqual(ConvertToNode(currentJobManagerState), ConvertToNode(flowView->State->JobManagerState))) {
+        if (currentJobManagerState->Computations != flowView->State->JobManagerState->Computations) {
             YT_TLOG_INFO("Updating job manager state in flow view")
-                .With("NewState", NYson::ConvertToYsonString(currentJobManagerState, EYsonFormat::Text));
+                .With("ComputationCount", currentJobManagerState->Computations.size());
             flowView->State->JobManagerState = currentJobManagerState;
         }
     }
@@ -1228,10 +1285,14 @@ private:
             }
         }
 
-        // Remove WorkerSpecs entries for workers that no longer exist.
+        // Remove the WorkerSpecs of workers that no longer exist and of workers that re-registered
+        // with a new incarnation: a new incarnation has no preloaded resources.
         std::vector<std::string> staleWorkerAddresses;
         for (const auto& [workerAddress, workerSpec] : flowLayout->WorkerSpecs) {
-            if (!flowView->State->Workers.contains(workerAddress)) {
+            auto* worker = flowView->State->Workers.FindPtr(workerAddress);
+            if (!worker ||
+                (workerSpec->WorkerIncarnationId && *workerSpec->WorkerIncarnationId != (*worker)->IncarnationId))
+            {
                 staleWorkerAddresses.push_back(workerAddress);
             }
         }
@@ -1254,6 +1315,7 @@ public:
         IYTConnectorPtr connector,
         IPersistedStateManagerPtr persistedStateManager,
         IPipelineAuthenticatorPtr authenticator,
+        NHttp::IClientPtr httpClient,
         bool ignoreSingletonsDynamicConfig,
         NObjectClient::TCellTag clockClusterTag,
         IStatusProfilerPtr rootStatusProfiler)
@@ -1265,6 +1327,7 @@ public:
         , Connector_(std::move(connector))
         , PersistedStateManager_(persistedStateManager)
         , PipelineAuthenticator_(std::move(authenticator))
+        , HttpClient_(std::move(httpClient))
         , IgnoreSingletonsDynamicConfig_(ignoreSingletonsDynamicConfig)
         , FlowViewKeeper_(New<TFlowViewKeeper>())
         , ClockClusterTag_(clockClusterTag)
@@ -1306,15 +1369,27 @@ public:
     void RegisterJobStatus(const TJobId& jobId, TJobStatusPtr jobStatus) override
     {
         EnsureIsLeader();
+
         auto guard = Guard(FreshStatusesLock_);
-        FreshJobStatuses_[jobId] = jobStatus;
+        FreshJobStatuses_[jobId] = std::move(jobStatus);
     }
 
     void RegisterWorkerStatus(TStringBuf workerAddress, TWorkerStatusPtr status) override
     {
         EnsureIsLeader();
+        if (status->Statistics) {
+            if (status->WorkerIncarnationId) {
+                if (auto leader = WeakLeader_.Lock()) {
+                    leader->AddWorkerStatistics(
+                        *status->WorkerIncarnationId,
+                        std::move(status->Statistics));
+                }
+            }
+            status->Statistics.Reset();
+        }
+
         auto guard = Guard(FreshStatusesLock_);
-        FreshWorkerStatuses_[std::string(workerAddress)] = status;
+        FreshWorkerStatuses_[std::string(workerAddress)] = std::move(status);
     }
 
 private:
@@ -1343,19 +1418,20 @@ private:
     const IYTConnectorPtr Connector_;
     const IPersistedStateManagerPtr PersistedStateManager_;
     const IPipelineAuthenticatorPtr PipelineAuthenticator_;
+    const NHttp::IClientPtr HttpClient_;
     const IFlowExecutorPtr FlowExecutor_;
     const bool IgnoreSingletonsDynamicConfig_;
     const TFlowViewKeeperPtr FlowViewKeeper_;
     const NObjectClient::TCellTag ClockClusterTag_;
     const IStatusProfilerPtr RootStatusProfiler_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, StartLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, StartLock_);
     TCancelableContextPtr CancelableContext_;
     // Tracks the current leader; used for double-start detection and the post-stop watchdog.
     TWeakPtr<TControllerLeader> WeakLeader_;
     static constexpr TDuration LeaderStopTimeout = TDuration::Minutes(5);
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, FreshStatusesLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, FreshStatusesLock_);
     THashMap<TJobId, TJobStatusPtr> FreshJobStatuses_;
     THashMap<std::string, TWorkerStatusPtr> FreshWorkerStatuses_;
 
@@ -1405,6 +1481,7 @@ private:
             leaderProfiler,
             Connector_,
             PipelineAuthenticator_,
+            HttpClient_,
             Config_,
             NodeInfo_,
             cancelableInvoker,
@@ -1414,8 +1491,12 @@ private:
             RootStatusProfiler_);
         WeakLeader_ = leader;
 
+        // The epoch belongs to the leadership this scheduler loop serves: reporting the end of
+        // recovery with it keeps a delayed callback from touching a later leadership.
+        auto leadershipEpoch = Connector_->GetLeadershipEpoch();
+
         auto schedulerActivityContext = TRegularActivityContext{.LeaderProfiler = leaderProfiler, .RootStatusProfiler = RootStatusProfiler_, .ActivityName = "schedule"};
-        YT_UNUSED_FUTURE(BIND([this, this_ = MakeStrong(this), leader, schedulerActivityContext] {
+        YT_UNUSED_FUTURE(BIND([this, this_ = MakeStrong(this), leader, schedulerActivityContext, leadershipEpoch] {
             auto dynamicSpecVersion = TVersion(-1);
             while (true) {
                 try {
@@ -1448,6 +1529,7 @@ private:
                     TDelayedExecutor::WaitForDuration(Config_->WarmUpTime);
 
                     while (true) {
+                        auto pipelineState = EPipelineState::Unknown;
                         try {
                             auto guard = TEventTimerGuard(schedulerActivityContext.IterationTime);
                             {
@@ -1484,7 +1566,7 @@ private:
                                 leader->SyncWorkers(newFlowView, WorkerTracker_->GetWorkers());
                                 YT_TLOG_INFO("Iteration sync workers finished")
                                     .With("Version", newFlowView->State->ExecutionSpec->PipelineState->GetVersion());
-                                leader->DoIteration(newFlowView);
+                                leader->DoIteration(newFlowView, currentFlowView);
                                 YT_TLOG_INFO("Iteration finished")
                                     .With("Version", newFlowView->State->ExecutionSpec->PipelineState->GetVersion());
 
@@ -1493,7 +1575,7 @@ private:
                                     .With("Version", newFlowView->State->ExecutionSpec->PipelineState->GetVersion());
                                 leader->Commit(newFlowView);
                                 PersistedStateManager_->AdvanceInputMessagesWatermark(newFlowView->State->TraverseData->InputSystemWatermark);
-                                YT_TLOG_INFO("Watermark advanced")
+                                YT_TLOG_INFO("Watermark publication attempts finished")
                                     .With("Version", newFlowView->State->ExecutionSpec->PipelineState->GetVersion());
                                 FlowViewKeeper_->SetStates(newFlowView->State, newFlowView->EphemeralState);
                                 YT_TLOG_INFO("State and ephemeral state updated")
@@ -1504,10 +1586,35 @@ private:
                                     .With("Version", newFlowView->State->ExecutionSpec->PipelineState->GetVersion())
                                     .With("TargetState", newFlowView->CurrentDynamicSpec->GetValue()->TargetState);
                                 schedulerActivityContext.ErrorState->ClearError();
+                                pipelineState = newFlowView->State->ExecutionSpec->PipelineState->GetValue();
+                                // The iteration committed, so the fenced transactions feed the
+                                // leader lease from here on and the recovery-time renewal must
+                                // stop — but only once the pipeline has a spec. Until then the
+                                // iterations are no-ops throttled by NoSpecIterationBackoff, and
+                                // between two of them nothing else would touch the leader row.
+                                if (pipelineState != EPipelineState::Unknown) {
+                                    Connector_->OnLeaderRecoveryFinished(leadershipEpoch);
+                                }
                             }
                         } catch (const std::exception& ex) {
                             auto error = TError(ex);
-                            if (!error.FindMatching(NFlow::EErrorCode::SpecVersionMismatch) && !error.FindMatching(NFlow::EErrorCode::FlowCoreTargetVersionMismatch)) {
+                            // A row lock conflict is an expected outcome of an iteration, not a
+                            // reason to tear the leader down: with the dyntable backend every
+                            // fenced transaction writes the leader lease row, so an iteration
+                            // racing a client-driven spec update loses it about as often as it
+                            // wins. Restarting the executor thread would rebuild the leader and
+                            // leave its flow view keeper uninitialized for everybody else; the
+                            // next iteration simply redoes the work.
+                            // A tablet in the middle of a smooth movement is the same kind of
+                            // outcome: it rejects the commit, moves, and is back within seconds.
+                            // Restarting the executor over it costs a full flow view rebuild, and
+                            // on a pipeline whose iteration runs for minutes that turns a routine
+                            // tablet move into a controller that never finishes an iteration.
+                            if (!error.FindMatching(NFlow::EErrorCode::SpecVersionMismatch) &&
+                                !error.FindMatching(NFlow::EErrorCode::FlowCoreTargetVersionMismatch) &&
+                                !error.FindMatching(NTabletClient::EErrorCode::TransactionLockConflict) &&
+                                !IsTransientTabletError(error))
+                            {
                                 THROW_ERROR_EXCEPTION("Schedule iteration failed")
                                     .With(error);
                             }
@@ -1516,7 +1623,9 @@ private:
                             YT_TLOG_EVENT(PublicControllerLogger, NLogging::ELogLevel::Warning, "Schedule iteration failed")
                                 .With(error);
                         }
-                        TDelayedExecutor::WaitForDuration(Config_->SchedulerPeriod);
+                        TDelayedExecutor::WaitForDuration(pipelineState == EPipelineState::Unknown
+                                ? std::max(Config_->SchedulerPeriod, Config_->NoSpecIterationBackoff)
+                                : Config_->SchedulerPeriod);
                         schedulerActivityContext.TotalIterations.Increment();
                     }
                 } catch (const std::exception& ex) {
@@ -1554,8 +1663,9 @@ private:
                         auto error = TError("Failed to execute %v iteration", name).With(ex);
                         activityContext.FailedIterations.Increment();
                         activityContext.ErrorState->SetError(error);
-                        YT_TLOG_EVENT(Logger, getLogLevel(error), "")
-                            .With(error);
+                        YT_TLOG_EVENT(Logger, getLogLevel(error), "Iteration failed")
+                            .With("Name", name)
+                            .With(ex);
                     }
                     TDelayedExecutor::WaitForDuration(period);
                 }
@@ -1745,6 +1855,9 @@ private:
             workerStatus = newWorkerStatus;
         }
 
+        auto feedbackView = flowView->CopyPtr();
+        feedbackView->Feedback = feedback;
+        ProjectResourceInstanceStatuses(feedbackView);
         return feedback;
     }
 };
@@ -1760,6 +1873,7 @@ IControllerPtr CreateController(
     IYTConnectorPtr connector,
     IPersistedStateManagerPtr stateManager,
     IPipelineAuthenticatorPtr authenticator,
+    NHttp::IClientPtr httpClient,
     bool ignoreSingletonsDynamicConfig,
     NObjectClient::TCellTag clockClusterTag,
     IStatusProfilerPtr rootStatusProfiler)
@@ -1773,9 +1887,44 @@ IControllerPtr CreateController(
         std::move(connector),
         std::move(stateManager),
         std::move(authenticator),
+        std::move(httpClient),
         ignoreSingletonsDynamicConfig,
         clockClusterTag,
         std::move(rootStatusProfiler));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TDuration GetLeadershipWarmupTimeout(const TDynamicPipelineSpecPtr& dynamicSpec)
+{
+    const auto& connector = dynamicSpec->ControllerConnector;
+
+    auto timeout =
+        (connector->ControllerDiscoverPeriod + connector->ControllerHeartbeatPeriod) * LeadershipWarmupPeriodFactor +
+        LeadershipWarmupExtraTime;
+
+    return std::min(timeout, connector->ControllerWaitTimeout);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+TDuration GetLeadershipWarmupLeft(const TFlowViewPtr& flowView, TInstant publishTime, TInstant now)
+{
+    if (flowView->State->ExecutionSpec->Layout->Jobs.size() == 0) {
+        return TDuration::Zero();
+    }
+
+    auto warmupTimeout = GetLeadershipWarmupTimeout(flowView->CurrentDynamicSpec->GetValue());
+    if (warmupTimeout == TDuration::Zero()) {
+        return TDuration::Zero();
+    }
+
+    if (publishTime == TInstant::Zero()) {
+        return warmupTimeout;
+    }
+
+    auto deadline = publishTime + warmupTimeout;
+    return now < deadline ? deadline - now : TDuration::Zero();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

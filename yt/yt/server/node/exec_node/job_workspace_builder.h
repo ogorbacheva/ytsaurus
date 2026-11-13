@@ -29,7 +29,27 @@
 
 #include <yt/yt/core/misc/public.h>
 
+#include <library/cpp/yt/misc/enum.h>
+
 namespace NYT::NExecNode {
+
+////////////////////////////////////////////////////////////////////////////////
+
+DEFINE_ENUM(EJobWorkspaceBuildingStep,
+    (PrepareLayers)
+    (BuildSlotRootDirectory)
+    (PrepareRootVolume)
+    (PrepareNonRootVolumes)
+    (PrepareGpuCheckVolume)
+    (BindRootVolume)
+    (LinkVolumes)
+    (ValidateRootFS)
+    (PrepareSandboxDirectories)
+    (RunSetupCommand)
+    (RunCustomPreparations)
+    (ApplyNetworkPriority)
+    (RunGpuCheckCommand)
+);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -42,7 +62,7 @@ struct TJobWorkspaceBuildingContext
     TJobPtr Job;
     std::string CommandUser;
 
-    TArtifactDownloadOptions ArtifactDownloadOptions;
+    TArtifactDownloadContext ArtifactDownloadContext;
 
     TJobFSSecretaryPtr FSSecretary;
     std::vector<NContainers::TBind> Binds;
@@ -53,8 +73,6 @@ struct TJobWorkspaceBuildingContext
 
     bool NeedGpu = false;
     std::optional<TGpuCheckOptions> GpuCheckOptions;
-
-    bool TestRootFS = false;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -105,7 +123,6 @@ class TJobWorkspaceBuilder
 {
 public:
     DEFINE_SIGNAL(void(EJobPhase phase), UpdateBuilderPhase);
-    DEFINE_SIGNAL(void(i64 compressedDataSize, bool cacheHit, bool isLayer), UpdateArtifactStatistics);
     DEFINE_SIGNAL(void(TJobWorkspaceBuilderTimePoints), UpdateTimePoints);
 
 public:
@@ -114,11 +131,13 @@ public:
         TJobWorkspaceBuildingContext context,
         IJobDirectoryManagerPtr directoryManager);
 
-    TFuture<void> Run();
+    virtual TFuture<void> Run();
 
     TJobWorkspaceBuildingResult ExtractResult();
 
 protected:
+    using EStep = EJobWorkspaceBuildingStep;
+
     DECLARE_THREAD_AFFINITY_SLOT(JobThread);
 
     const IInvokerPtr Invoker_;
@@ -132,19 +151,23 @@ protected:
 
     const NLogging::TLogger& Logger;
 
+    TFuture<void> DoBuildSlotRootDirectory();
+
     virtual TFuture<void> DoPrepareLayers() = 0;
 
     virtual TFuture<void> DoPrepareRootVolume() = 0;
 
     virtual TFuture<void> DoPrepareNonRootVolumes() = 0;
 
-    virtual TFuture<void> DoPrepareGpuCheckVolume() = 0;
+    // Only the porto workspace builder runs a preliminary GPU check, so only it prepares
+    // the check volume. Other builders never run this step.
+    virtual TFuture<void> DoPrepareGpuCheckVolume();
 
     virtual TFuture<void> DoBindRootVolume() = 0;
 
     virtual TFuture<void> DoLinkVolumes() = 0;
 
-    virtual TFuture<void> DoValidateRootFS() = 0;
+    virtual TFuture<void> DoValidateRootFS();
 
     virtual TFuture<void> DoPrepareSandboxDirectories() = 0;
 
@@ -152,16 +175,14 @@ protected:
 
     virtual TFuture<void> DoRunCustomPreparations() = 0;
 
+    // Only the porto workspace builder applies network priority.
+    virtual TFuture<void> DoApplyNetworkPriority();
+
     virtual TFuture<void> DoRunGpuCheckCommand() = 0;
 
     void ValidateJobPhase(EJobPhase expectedPhase) const;
 
     void SetJobPhase(EJobPhase phase);
-
-    void UpdateArtifactStatistics(
-        i64 compressedDataSize,
-        bool cacheHit,
-        bool isLayer);
 
     void MakeArtifactSymlinks();
 
@@ -172,42 +193,21 @@ protected:
 
     void SetNowTime(std::optional<TInstant>& timeField);
 
-private:
-    template <TFuture<void>(TJobWorkspaceBuilder::*Step)()>
+    template <EStep Step>
     TCallback<TFuture<void>()> MakeStep();
 
-    template <TFuture<void>(TJobWorkspaceBuilder::*Step)()>
-    TFuture<void> GuardedAction();
+    TFuture<void> FinishRun(TFuture<void> future);
 
-    template <TFuture<void>(TJobWorkspaceBuilder::*Step)()>
-    constexpr const char* GetStepName();
+private:
+    TFuture<void> GuardedAction(EStep step);
 };
 
 DEFINE_REFCOUNTED_TYPE(TJobWorkspaceBuilder)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TJobWorkspaceBuilderPtr CreateSimpleJobWorkspaceBuilder(
-    IInvokerPtr invoker,
-    TJobWorkspaceBuildingContext context,
-    IJobDirectoryManagerPtr directoryManager);
-
-#ifdef _linux_
-
-TJobWorkspaceBuilderPtr CreatePortoJobWorkspaceBuilder(
-    IInvokerPtr invoker,
-    TJobWorkspaceBuildingContext context,
-    IJobDirectoryManagerPtr directoryManager,
-    TGpuManagerPtr gpuManager);
-
-#endif
-
-TJobWorkspaceBuilderPtr CreateCriJobWorkspaceBuilder(
-    IInvokerPtr invoker,
-    TJobWorkspaceBuildingContext context,
-    IJobDirectoryManagerPtr directoryManager,
-    NContainers::NCri::ICriImageCachePtr imageCache);
-
-////////////////////////////////////////////////////////////////////////////////
-
 } // namespace NYT::NExecNode
+
+#define JOB_WORKSPACE_BUILDER_INL_H_
+#include "job_workspace_builder-inl.h"
+#undef JOB_WORKSPACE_BUILDER_INL_H_

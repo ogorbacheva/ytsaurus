@@ -31,14 +31,22 @@
 #include <yt/yt/server/master/object_server/object_manager.h>
 #include <yt/yt/server/master/object_server/type_handler_detail.h>
 
+#include <yt/yt/server/master/security_server/security_manager.h>
+
 #include <yt/yt/server/master/tablet_server/config.h>
 
 #include <yt/yt/server/master/transaction_server/transaction.h>
 #include <yt/yt/server/master/transaction_server/transaction_manager.h>
 
+#include <yt/yt/server/lib/hive/hive_manager.h>
+
+#include <yt/yt/server/lib/misc/interned_attributes.h>
+
 #include <yt/yt/server/lib/table_server/proto/table_manager.pb.h>
 
 #include <yt/yt/server/lib/tablet_server/replicated_table_tracker.h>
+
+#include <yt/yt/ytlib/object_client/object_service_proxy.h>
 
 #include <yt/yt/library/heavy_schema_validation/schema_validation.h>
 
@@ -53,6 +61,7 @@
 
 #include <yt/yt/client/table_client/schema.h>
 
+#include <yt/yt/core/concurrency/periodic_executor.h>
 #include <yt/yt/core/concurrency/throughput_throttler.h>
 
 #include <yt/yt/core/misc/random_access_queue.h>
@@ -65,12 +74,14 @@ using namespace NChunkServer;
 using namespace NConcurrency;
 using namespace NCypressClient;
 using namespace NCypressServer;
+using namespace NHiveServer;
 using namespace NHydra;
 using namespace NLogging;
 using namespace NObjectClient;
 using namespace NObjectServer;
 using namespace NProto;
 using namespace NSecurityServer;
+using namespace NServer;
 using namespace NQueryClient;
 using namespace NTableClient;
 using namespace NTabletClient;
@@ -774,17 +785,14 @@ public:
 
                 if (!schemaById) {
                     // COMPAT(h0pless): Change this to YT_VERIFY after schema migration is complete.
-                    YT_LOG_ALERT_IF(
+                    YT_TLOG_ALERT_IF(
                         !schema && !schemaFromConstrainedSchema,
-                        "Request to create a foreign node has %v id of an unimported schema on external cell "
-                        "(NodeId: %v, NativeCellTag: %v, CellTag: %v, SchemaId: %v)",
-                        MakeFormatterWrapper([&] (auto* builder) {
-                            builder->AppendString(isChunkSchema ? "chunk schema" : "schema");
-                        }),
-                        nodeId,
-                        nativeCellTag,
-                        multicellManager->GetCellTag(),
-                        schemaId);
+                        "Request to create a foreign node carries an id of an unimported schema on external cell")
+                        .With("ChunkSchema", isChunkSchema)
+                        .With("NodeId", nodeId)
+                        .With("NativeCellTag", nativeCellTag)
+                        .With("CellTag", multicellManager->GetCellTag())
+                        .With("SchemaId", schemaId);
                 }
             }
         }
@@ -910,26 +918,89 @@ public:
         YT_UNREACHABLE();
     }
 
-    TSecondaryIndex* CreateSecondaryIndex(
-        TObjectId hintId,
+    TSecondaryIndexParameters GetAndRemoveSecondaryIndexParameters(IAttributeDictionary* attributes) override
+    {
+        auto kind = attributes->GetAndRemove<ESecondaryIndexKind>(
+            EInternedAttributeKey::Kind.Unintern(),
+            ESecondaryIndexKind::FullSync);
+        auto tableId = attributes->GetAndRemove<TTableId>(EInternedAttributeKey::TableId.Unintern());
+        auto indexTableId = attributes->GetAndRemove<TTableId>(EInternedAttributeKey::IndexTableId.Unintern());
+        auto predicate = attributes->FindAndRemove<std::string>(EInternedAttributeKey::Predicate.Unintern());
+
+        auto getUnfoldedColumns = [&] {
+            if (auto unfoldedColumn = attributes->FindAndRemove<std::string>("unfolded_column")) {
+                attributes->Remove("unfolded_table_column");
+                attributes->Remove("unfolded_index_column");
+                return TUnfoldedColumns(*unfoldedColumn, *unfoldedColumn);
+            } else {
+                return TUnfoldedColumns(
+                    attributes->GetAndRemove<std::string>("unfolded_table_column"),
+                    attributes->GetAndRemove<std::string>("unfolded_index_column"));
+            }
+        };
+        auto unfoldedColumns = kind == ESecondaryIndexKind::Unfolding
+            ? std::optional(getUnfoldedColumns())
+            : std::nullopt;
+
+        auto evaluatedColumns = attributes->FindAndRemove<TTableSchemaPtr>(
+            EInternedAttributeKey::EvaluatedColumnsSchema.Unintern());
+
+        return {
+            .Kind = kind,
+            .TableId = tableId,
+            .IndexTableId = indexTableId,
+            .Predicate = std::move(predicate),
+            .UnfoldedColumns = std::move(unfoldedColumns),
+            .EvaluatedColumnsSchema = std::move(evaluatedColumns),
+        };
+    }
+
+    TSecondaryIndex* CreateRawSecondaryIndexObject(TSecondaryIndexId hintId) override
+    {
+        auto secondaryIndexId = Bootstrap_->GetObjectManager()->GenerateId(EObjectType::SecondaryIndex, hintId);
+        auto* secondaryIndex = SecondaryIndexMap_.Insert(
+            secondaryIndexId,
+            TPoolAllocator::New<TSecondaryIndex>(secondaryIndexId));
+
+        // A single reference ensures that index object is deleted when either primary or index table is deleted.
+        YT_VERIFY(secondaryIndex->RefObject() == 1);
+
+        return secondaryIndex;
+    }
+
+    std::pair<TTableNode*, TTableNode*> ValidateSecondaryIndexCreationAndGetTables(
         ESecondaryIndexKind kind,
         TTableId tableId,
         TTableId indexTableId,
-        std::optional<std::string> predicate,
-        std::optional<TUnfoldedColumns> unfoldedColumns,
-        TTableSchemaPtr evaluatedColumnsSchema) override
+        const std::optional<std::string>& predicate,
+        const std::optional<TUnfoldedColumns>& unfoldedColumns,
+        const TTableSchemaPtr& evaluatedColumnsSchema,
+        bool skipIsAlreadyIndexCheck) override
     {
         YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
 
-        YT_TLOG_DEBUG("Creating secondary index")
+        YT_TLOG_DEBUG("Validating creation of secondary index")
             .With("TableId", tableId)
             .With("IndexTableId", indexTableId)
             .With("Kind", kind)
-            .With("Predicate", predicate);
+            .With("Predicate", predicate)
+            .With("UnfoldedColumns", unfoldedColumns)
+            .With("EvaluatedColumnsSchema", evaluatedColumnsSchema);
 
         if (tableId == indexTableId) {
             THROW_ERROR_EXCEPTION("Table cannot be an index to itself")
                 .With("table_id", tableId);
+        }
+
+        if ((IsSequoiaId(tableId) || IsSequoiaId(indexTableId)) && !IsHiveMutation()) {
+            // Not YT_TLOG_ALERT_AND_THROW since it only throws Fatal errors, while this one is perfectly recoverable, just unexpected.
+
+            YT_TLOG_ALERT("In Sequoia secondary index must be created via dedicated 2-phase commit initiated by Cypress proxy")
+                .With("TableId", tableId)
+                .With("IndexTableId", indexTableId);
+
+            THROW_ERROR_EXCEPTION(NObjectClient::EErrorCode::RequestInvolvesSequoia,
+                "In Sequoia secondary index must be created via dedicated 2-phase commit initiated by Cypress proxy");
         }
 
         auto* table = GetTableNodeOrThrow(tableId);
@@ -950,7 +1021,7 @@ public:
             if (!indexTable->SecondaryIndices().empty()) {
                 THROW_ERROR_EXCEPTION("Cannot use a table with indices as an index");
             }
-            if (indexTable->GetIndexTo()) {
+            if (indexTable->GetIndexTo() && !skipIsAlreadyIndexCheck) {
                 THROW_ERROR_EXCEPTION("Index cannot have multiple primary tables");
             }
             if (table->GetIndexTo()) {
@@ -1018,19 +1089,68 @@ public:
             }
         }
 
-        auto secondaryIndexId = Bootstrap_->GetObjectManager()->GenerateId(EObjectType::SecondaryIndex, hintId);
+        return {table, indexTable};
+    }
 
-        auto* secondaryIndex = SecondaryIndexMap_.Insert(
-            secondaryIndexId,
-            TPoolAllocator::New<TSecondaryIndex>(secondaryIndexId));
-        // A single reference ensures that index object is deleted when either primary or index table is deleted.
-        YT_VERIFY(secondaryIndex->RefObject() == 1);
+    TSecondaryIndex* ValidateAndCreateSecondaryIndex(
+        TObjectId hintId,
+        IAttributeDictionary* attributes) override
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        auto parameters = GetAndRemoveSecondaryIndexParameters(attributes);
+
+        auto [table, indexTable] = ValidateSecondaryIndexCreationAndGetTables(
+            parameters.Kind,
+            parameters.TableId,
+            parameters.IndexTableId,
+            parameters.Predicate,
+            parameters.UnfoldedColumns,
+            parameters.EvaluatedColumnsSchema,
+            /*skipIsAlreadyIndexCheck*/ false);
+
+        auto* secondaryIndex = CreateRawSecondaryIndexObject(hintId);
+
+        secondaryIndex->SetTableId(parameters.TableId);
+        secondaryIndex->SetIndexTableId(parameters.IndexTableId);
+        secondaryIndex->SetKind(parameters.Kind);
+        secondaryIndex->Predicate() = std::move(parameters.Predicate);
+        secondaryIndex->UnfoldedColumns() = std::move(parameters.UnfoldedColumns);
+        secondaryIndex->EvaluatedColumnsSchema() = std::move(parameters.EvaluatedColumnsSchema);
+
+        if (table->IsNative()) {
+            indexTable->SetIndexTo(secondaryIndex);
+            if (table->IsExternal()) {
+                secondaryIndex->ExternalCellTags() = {table->GetExternalCellTag()};
+            }
+        }
+        InsertOrCrash(table->MutableSecondaryIndices(), secondaryIndex);
+
+        return secondaryIndex;
+    }
+
+    TSecondaryIndex* CreateSecondaryIndex(
+        TObjectId hintId,
+        ESecondaryIndexKind kind,
+        TTableNode* table,
+        TTableNode* indexTable, // May be null on external cell.
+        TTableId indexTableId,
+        std::optional<std::string> predicate,
+        std::optional<TUnfoldedColumns> unfoldedColumns,
+        TTableSchemaPtr evaluatedColumnsSchema) noexcept override
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        YT_VERIFY(!indexTable || indexTable->GetId() == indexTableId);
+
+        auto* secondaryIndex = CreateRawSecondaryIndexObject(hintId);
+
         secondaryIndex->SetKind(kind);
-        secondaryIndex->SetTableId(tableId);
+        secondaryIndex->SetTableId(table->GetId());
         secondaryIndex->SetIndexTableId(indexTableId);
-        secondaryIndex->SetExternalCellTag(table->IsNative()
-            ? table->GetExternalCellTag()
-            : NotReplicatedCellTagSentinel);
+        if (table->IsNative() && table->IsExternal()) {
+            secondaryIndex->ExternalCellTags() = {table->GetExternalCellTag()};
+        }
         secondaryIndex->Predicate() = std::move(predicate);
         secondaryIndex->UnfoldedColumns() = std::move(unfoldedColumns);
         secondaryIndex->EvaluatedColumnsSchema() = std::move(evaluatedColumnsSchema);
@@ -1228,9 +1348,9 @@ public:
         }
 
         if (!collocation->Tables().insert(table).second) {
-            YT_LOG_ALERT("Table %v is already present in collocation %v",
-                table->GetId(),
-                collocation->GetId());
+            YT_TLOG_ALERT("Table is already present in collocation")
+                .With("TableId", table->GetId())
+                .With("CollocationId", collocation->GetId());
         }
 
         switch (collocationType) {
@@ -1268,9 +1388,9 @@ public:
         }
 
         if (collocation->Tables().erase(table) != 1) {
-            YT_LOG_ALERT("Table %v is already missing from collocation %v",
-                table->GetId(),
-                collocation->GetId());
+            YT_TLOG_ALERT("Table is already missing from collocation")
+                .With("TableId", table->GetId())
+                .With("CollocationId", collocation->GetId());
             return;
         }
 
@@ -1437,31 +1557,39 @@ public:
         addToObjectRevisions("consumers", chaosManager->GetQueueConsumers());
         addToObjectRevisions("producers", chaosManager->GetQueueProducers());
 
-        if (multicellManager->IsPrimaryMaster() && multicellManager->GetRoleMasterCellCount(EMasterCellRole::CypressNodeHost) > 1) {
+        if (multicellManager->IsPrimaryMaster()) {
+            auto nodeHostCellTags = multicellManager->GetNodeHostMasterCells();
+            nodeHostCellTags.erase(multicellManager->GetCellTag());
+
             std::vector<TFuture<TYPathProxy::TRspGetPtr>> asyncResults;
-            for (auto cellTag : multicellManager->GetRoleMasterCells(EMasterCellRole::CypressNodeHost)) {
-                if (multicellManager->GetCellTag() != cellTag) {
-                    YT_TLOG_DEBUG("Requesting queue agent objects from secondary cell")
-                        .With("CellTag", cellTag);
-                    auto proxy = TObjectServiceProxy::FromDirectMasterChannel(
-                        multicellManager->GetMasterChannelOrThrow(cellTag, NHydra::EPeerKind::Follower));
-                    auto req = TYPathProxy::Get("//sys/@queue_agent_object_revisions");
-                    // TODO(kvk1920): don't use "root" user here.
-                    asyncResults.push_back(proxy.Execute(req));
-                }
+            asyncResults.reserve(nodeHostCellTags.size());
+            for (auto cellTag : nodeHostCellTags) {
+                YT_TLOG_DEBUG("Requesting queue agent objects from secondary cell")
+                    .With("CellTag", cellTag);
+                auto proxy = TObjectServiceProxy::FromDirectMasterChannel(
+                    multicellManager->GetMasterChannelOrThrow(cellTag, NHydra::EPeerKind::Follower));
+                auto req = TYPathProxy::Get("//sys/@queue_agent_object_revisions");
+                // TODO(kvk1920): don't use "root" user here.
+                asyncResults.push_back(proxy.Execute(req));
             }
-            return AllSucceeded(std::move(asyncResults)).Apply(BIND([objectRevisions] (const std::vector<TYPathProxy::TRspGetPtr>& responses) mutable {
-                for (const auto& rsp : responses) {
-                    auto objects = ConvertTo<TObjectRevisionMap>(TYsonString{rsp->value()});
-                    for (const auto& [key, items] : objects) {
-                        objectRevisions[key].insert(items.begin(), items.end());
-                    }
-                }
-                return ConvertToYsonString(objectRevisions);
-            }));
-        } else {
-            return MakeFuture(ConvertToYsonString(objectRevisions));
+
+            if (!asyncResults.empty()) {
+                return AllSucceeded(std::move(asyncResults))
+                    .Apply(BIND([objectRevisions = std::move(objectRevisions)] (
+                        const std::vector<TYPathProxy::TRspGetPtr>& responses) mutable
+                    {
+                        for (const auto& rsp : responses) {
+                            auto objects = ConvertTo<TObjectRevisionMap>(TYsonString{rsp->value()});
+                            for (const auto& [key, items] : objects) {
+                                objectRevisions[key].insert(items.begin(), items.end());
+                            }
+                        }
+                        return ConvertToYsonString(objectRevisions);
+                    }));
+            }
         }
+
+        return MakeFuture(ConvertToYsonString(objectRevisions));
     }
 
     DEFINE_SIGNAL_OVERRIDE(void(TTableCollocationData), ReplicationCollocationCreated);
@@ -1929,6 +2057,9 @@ private:
             }
 
             for (const auto& entry : chunk->GetAggregatedRequisition(requisitionRegistry).AllEntries()) {
+                if (!IsObjectAlive(entry.Account)) {
+                    continue;
+                }
                 referenceAccount(chunkSchema.Get(), entry.Account);
             }
         }

@@ -153,8 +153,6 @@ struct TProxyBootstrapConfig
 
     TProxyMemoryLimitsPtr MemoryLimits;
 
-    bool EnableShuffleService;
-
     THeapProfilerConfigPtr HeapProfiler;
 
     NSignature::TSignatureComponentsConfigPtr SignatureComponents;
@@ -204,6 +202,9 @@ struct TProxyDynamicConfig
     NCellMasterClient::TCellDirectorySynchronizerOverrideDynamicConfigPtr MasterCellDirectorySynchronizer;
 
     THashMap<std::string, double> WorkerPoolWeightOverrides;
+
+    bool UseWorkerPoolForBusXfer;
+    bool UseWorkerPoolForRpc;
 
     std::optional<int> WorkerThreadPoolSize;
 

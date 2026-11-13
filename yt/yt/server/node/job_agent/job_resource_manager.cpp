@@ -34,7 +34,7 @@
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 #include <library/cpp/yt/memory/non_null_ptr.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
@@ -1216,7 +1216,7 @@ private:
     const TJobResourceManagerConfigPtr StaticConfig_;
     TAtomicIntrusivePtr<TJobResourceManagerDynamicConfig> DynamicConfig_;
 
-    NThreading::TAtomicObject<TNodeResourceLimitsOverrides> ResourceLimitsOverrides_;
+    TAtomicObject<TNodeResourceLimitsOverrides> ResourceLimitsOverrides_;
 
     const INodeMemoryTrackerPtr NodeMemoryUsageTracker_;
     const IMemoryUsageTrackerPtr SystemMemoryUsageTracker_;
@@ -1238,7 +1238,7 @@ private:
 
     TGauge FreeUserJobMemoryWatermarkGauge_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ResourcesLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ResourcesLock_);
 
     TEnumIndexedArray<EResourcesState, TJobResources> ResourceUsages_;
 
@@ -2061,7 +2061,7 @@ void TResourceHolder::UpdateResourceDemand(
     YT_VERIFY(AdditionalResourceUsage_ == ZeroJobResources());
 
     YT_TLOG_DEBUG("Resource demand updated")
-        .With("NewRecourceDemand", resources)
+        .With("NewResourceDemand", resources)
         .With("NewPortCount", allocationAttributes.PortCount);
 
     BaseResourceUsage_ = resources;

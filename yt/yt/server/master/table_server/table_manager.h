@@ -2,7 +2,6 @@
 
 #include "public.h"
 #include "master_table_schema.h"
-#include "secondary_index.h"
 
 #include <yt/yt/server/master/cell_master/public.h>
 
@@ -11,6 +10,10 @@
 #include <yt/yt/server/master/transaction_server/transaction.h>
 
 #include <yt/yt/server/lib/hydra/entity_map.h>
+
+#include <yt/yt/server/lib/tablet_server/public.h>
+
+#include <yt/yt/client/tablet_client/index_info.h>
 
 #include <library/cpp/yt/memory/ref_counted.h>
 
@@ -162,14 +165,39 @@ struct ITableManager
         std::optional<NTableClient::TColumnNameToConstraintMap> constraints) = 0;
 
     // Secondary index management.
+    struct TSecondaryIndexParameters
+    {
+        ESecondaryIndexKind Kind;
+        TTableId TableId;
+        TTableId IndexTableId;
+        std::optional<std::string> Predicate;
+        std::optional<NTabletClient::TUnfoldedColumns> UnfoldedColumns;
+        NTableClient::TTableSchemaPtr EvaluatedColumnsSchema;
+    };
+
+    virtual TSecondaryIndex* ValidateAndCreateSecondaryIndex(
+        NObjectClient::TObjectId hintId,
+        NYTree::IAttributeDictionary* attributes) = 0;
+    virtual TSecondaryIndexParameters GetAndRemoveSecondaryIndexParameters(
+        NYTree::IAttributeDictionary* attributes) = 0;
+    virtual std::pair<TTableNode*, TTableNode*> ValidateSecondaryIndexCreationAndGetTables(
+        ESecondaryIndexKind kind,
+        TTableId tableId,
+        TTableId indexTableId,
+        const std::optional<std::string>& predicate,
+        const std::optional<NTabletClient::TUnfoldedColumns>& unfoldedColumns,
+        const NTableClient::TTableSchemaPtr& evaluatedColumnsSchema,
+        bool skipIsAlreadyIndexCheck = false) = 0;
+    virtual TSecondaryIndex* CreateRawSecondaryIndexObject(TSecondaryIndexId hintId) = 0;
     virtual TSecondaryIndex* CreateSecondaryIndex(
         NObjectClient::TObjectId hintId,
-        ESecondaryIndexKind type,
-        TTableId table,
-        TTableId secondaryIndex,
+        ESecondaryIndexKind kind,
+        TTableNode* table,
+        TTableNode* indexTable,
+        TTableId indexTableId,
         std::optional<std::string> predicate,
         std::optional<NTabletClient::TUnfoldedColumns> unfoldedColumns,
-        NTableClient::TTableSchemaPtr evaluatedColumns) = 0;
+        NTableClient::TTableSchemaPtr evaluatedColumnsSchema) noexcept = 0;
 
     // Table collocation management.
     virtual TTableCollocation* CreateTableCollocation(

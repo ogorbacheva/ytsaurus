@@ -38,6 +38,7 @@
 #include <yt/yt/client/api/dynamic_table_transaction_mixin.h>
 #include <yt/yt/client/api/queue_transaction_mixin.h>
 
+#include <yt/yt/client/chaos_client/chaos_lease.h>
 #include <yt/yt/client/chaos_client/replication_card_cache.h>
 
 #include <yt/yt/client/object_client/helpers.h>
@@ -705,7 +706,10 @@ private:
     struct TNativeTransactionBufferTag
     { };
 
-    const TRowBufferPtr RowBuffer_ = New<TRowBuffer>(TNativeTransactionBufferTag());
+    const TRowBufferPtr RowBuffer_ = New<TRowBuffer>(
+        TNativeTransactionBufferTag(),
+        TChunkedMemoryPool::DefaultStartChunkSize,
+        Client_->GetHeavyRequestMemoryUsageTracker());
 
     const IInvokerPtr SerializedInvoker_;
 
@@ -713,13 +717,19 @@ private:
     { };
     TChunkedMemoryPool HunkMemoryPool_{THunkTransactionTag()};
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, SpinLock_);
     ETransactionState State_ = ETransactionState::Active;
     TPromise<void> AbortPromise_;
     std::vector<NApi::ITransactionPtr> AlienTransactions_;
 
     class TTableCommitSession;
     using TTableCommitSessionPtr = TIntrusivePtr<TTableCommitSession>;
+
+    struct TPrerequisites
+    {
+        std::vector<TTransactionId> PrerequisiteIds;
+        std::vector<TChaosLeasePtr> ChaosLeases;
+    };
 
     class TTabletCommitSession;
     using TTabletCommitSessionPtr = TIntrusivePtr<TTabletCommitSession>;
@@ -965,27 +975,38 @@ private:
             ModificationsData_.resize(Modifications_.size());
             for (int modificationIndex = 0; modificationIndex < std::ssize(Modifications_); ++modificationIndex) {
                 const auto& modification = Modifications_[modificationIndex];
-                auto& modificationsData = ModificationsData_[modificationIndex];
+                auto& modificationData = ModificationsData_[modificationIndex];
 
-                if (std::holds_alternative<NRowModifications::TWriteRow>(modification) ||
-                    std::holds_alternative<NRowModifications::TDeleteRow>(modification) ||
-                    std::holds_alternative<NRowModifications::TWriteAndLockRow>(modification))
-                {
-                    modificationsData.CapturedRow = rowBuffer->CaptureAndPermuteRow(
+                auto isVersionedWrite = std::holds_alternative<NRowModifications::TVersionedWriteRow>(modification);
+                if (tableInfo->IsSorted() && isVersionedWrite) {
+                    auto capturedRow = rowBuffer->CaptureAndPermuteRow(
+                        TVersionedRow(GetTypeErasedRow(modification)),
+                        *primarySchema,
+                        primaryIdMapping,
+                        /*validateDuplicateAndRequiredValueColumns*/ true,
+                        Options_.AllowMissingKeyColumns);
+                    modificationData.CapturedRow = capturedRow.ToTypeErasedRow();
+                } else {
+                    // Ordered versioned writes also carry unversioned rows with timestamps.
+                    auto capturedRow = rowBuffer->CaptureAndPermuteRow(
                         TUnversionedRow(GetTypeErasedRow(modification)),
                         *modificationSchema,
                         modificationSchema->GetKeyColumnCount(),
                         modificationIdMapping,
-                        /*validateDuplicateAndRequiredValueColumns*/ std::holds_alternative<NRowModifications::TWriteRow>(modification));
+                        /*validateDuplicateAndRequiredValueColumns*/ isVersionedWrite ||
+                            std::holds_alternative<NRowModifications::TWriteRow>(modification));
+                    modificationData.CapturedRow = capturedRow.ToTypeErasedRow();
+                }
 
-                    if (tableInfo->HunkStorageId) {
-                        auto rowPayloads = ExtractHunks(modificationsData.CapturedRow, modificationSchema);
-                        modificationsData.HunkCount = std::ssize(rowPayloads);
-                        HunkPayloads_.insert(
-                            HunkPayloads_.end(),
-                            std::make_move_iterator(rowPayloads.begin()),
-                            std::make_move_iterator(rowPayloads.end()));
-                    }
+                if (tableInfo->IsUsingHunkStorage()) {
+                    auto rowPayloads = ExtractHunks(
+                        TUnversionedRow(modificationData.CapturedRow),
+                        modificationSchema);
+                    modificationData.HunkCount = std::ssize(rowPayloads);
+                    HunkPayloads_.insert(
+                        HunkPayloads_.end(),
+                        std::make_move_iterator(rowPayloads.begin()),
+                        std::make_move_iterator(rowPayloads.end()));
                 }
             }
         }
@@ -1018,14 +1039,21 @@ private:
             req->set_mount_revision(ToProto(hunkTabletInfo->MountRevision));
 
             auto payloadCount = std::ssize(HunkPayloads_);
-            auto payloadHolder = MakeSharedRangeHolder(std::move(transaction));
+            auto payloadHolder = MakeSharedRangeHolder(transaction);
             req->Attachments().reserve(payloadCount);
             for (const auto& payload : HunkPayloads_) {
                 req->Attachments().push_back(TSharedRef(payload, payloadHolder));
             }
 
-            return req->Invoke().Apply(BIND([this, payloadCount]
+            // Another hunk write may fail and release the commit's reference to the transaction
+            // before this response arrives. The transaction owns this modification request.
+            return req->Invoke().Apply(BIND([this, payloadCount, weakTransaction = MakeWeak(transaction)]
                 (const TTabletServiceProxy::TErrorOrRspWriteHunksPtr& rspOrError) mutable {
+                    auto transaction = weakTransaction.Lock();
+                    if (!transaction) {
+                        THROW_ERROR_EXCEPTION("Received WriteHunks response corresponding to already destroyed transaction");
+                    }
+
                     if (!rspOrError.IsOK()) {
                         THROW_ERROR_EXCEPTION("Failed to write hunks")
                             .With(rspOrError);
@@ -1105,7 +1133,7 @@ private:
                     std::holds_alternative<NRowModifications::TDeleteRow>(modification) ||
                     std::holds_alternative<NRowModifications::TWriteAndLockRow>(modification))
                 {
-                    auto capturedRow = std::move(modificationData.CapturedRow);
+                    auto capturedRow = TMutableUnversionedRow(modificationData.CapturedRow);
 
                     TTabletInfoPtr tabletInfo;
                     if (tableInfo->IsSorted()) {
@@ -1145,41 +1173,14 @@ private:
                     }
 
                     auto session = transaction->GetOrCreateTabletSession(tabletInfo, tableInfo, TableSession_);
-                    if (modificationData.HunkCount > 0) {
-                        auto hunkTabletInfo = transaction->GetAssignedHunkTabletInfo(
-                            TableSession_->GetInfo()->TableId,
-                            TableSession_->GetHunkTableInfo(),
-                            /*createIfMissing*/ false);
-
-                        THunkChunksInfo hunkInfo{
-                            .CellId = hunkTabletInfo->CellId,
-                            .HunkTabletId = hunkTabletInfo->TabletId,
-                            .MountRevision = hunkTabletInfo->MountRevision
-                        };
-
-                        int lastHunkDescriptorIndex = currentHunkDescriptorIndex + modificationData.HunkCount;
-                        YT_VERIFY(lastHunkDescriptorIndex <= std::ssize(HunkDescriptors_));
-
-                        std::vector<THunkDescriptor> descriptors(
-                            HunkDescriptors_.begin() + currentHunkDescriptorIndex,
-                            HunkDescriptors_.begin() + lastHunkDescriptorIndex);
-
-                        for (const auto& descriptor : descriptors) {
-                            auto& ref = hunkInfo.HunkChunkRefs[descriptor.ChunkId];
-                            ref.ChunkId = descriptor.ChunkId;
-                            ++ref.HunkCount;
-                            ref.TotalHunkLength += descriptor.Length - sizeof(THunkPayloadHeader);
-                            ref.ErasureCodec = descriptor.ErasureCodec;
-                        }
-
-                        ReplaceHunks(
-                            capturedRow,
+                    if (modificationData.HunkCount != 0) {
+                        PrepareHunks(
+                            transaction.Get(),
+                            modificationData.CapturedRow,
                             modificationSchema,
-                            std::move(descriptors),
-                            HunkMemoryPool_);
-
-                        session->MemorizeHunkInfo(hunkInfo);
-                        currentHunkDescriptorIndex = lastHunkDescriptorIndex;
+                            modificationData.HunkCount,
+                            session,
+                            &currentHunkDescriptorIndex);
                     }
 
                     if (command == EWireProtocolCommand::WriteRow &&
@@ -1206,28 +1207,14 @@ private:
                     const auto* versionedWrite = std::get_if<NRowModifications::TVersionedWriteRow>(&modification);
                     YT_VERIFY(versionedWrite);
 
-                    TTypeErasedRow row;
                     TTabletInfoPtr tabletInfo;
                     if (tableInfo->IsSorted()) {
-                        auto capturedRow = rowBuffer->CaptureAndPermuteRow(
-                            TVersionedRow(versionedWrite->Row),
-                            *primarySchema,
-                            primaryIdMapping,
-                            /*validateDuplicateAndRequiredValueColumns*/ true,
-                            Options_.AllowMissingKeyColumns);
+                        auto capturedRow = TMutableVersionedRow(modificationData.CapturedRow);
                         if (evaluator) {
                             evaluator->EvaluateKeys(capturedRow, rowBuffer, /*preserveColumnsIds*/ false);
                         }
-                        row = capturedRow.ToTypeErasedRow();
                         tabletInfo = GetSortedTabletForRow(tableInfo, capturedRow, true);
                     } else {
-                        auto capturedRow = rowBuffer->CaptureAndPermuteRow(
-                            TUnversionedRow(versionedWrite->Row),
-                            *primarySchema,
-                            primarySchema->GetKeyColumnCount(),
-                            primaryIdMapping,
-                            /*validateDuplicateAndRequiredValueColumns*/ true);
-                        row = capturedRow.ToTypeErasedRow();
                         tabletInfo = GetOrderedTabletForRow(
                             tableInfo,
                             RandomTabletInfo_,
@@ -1237,7 +1224,17 @@ private:
                     }
 
                     auto session = transaction->GetOrCreateTabletSession(tabletInfo, tableInfo, TableSession_);
-                    session->SubmitVersionedRow(row);
+                    if (modificationData.HunkCount != 0) {
+                        PrepareHunks(
+                            transaction.Get(),
+                            modificationData.CapturedRow,
+                            modificationSchema,
+                            modificationData.HunkCount,
+                            session,
+                            &currentHunkDescriptorIndex);
+                    }
+
+                    session->SubmitVersionedRow(modificationData.CapturedRow);
                 }
             }
             YT_VERIFY(currentHunkDescriptorIndex == std::ssize(HunkDescriptors_));
@@ -1259,13 +1256,59 @@ private:
 
         struct TModificationData
         {
-            TMutableUnversionedRow CapturedRow;
-            int HunkCount;
+            TTypeErasedRow CapturedRow;
+            int HunkCount = 0;
         };
         std::vector<TModificationData> ModificationsData_;
 
         std::vector<TRef> HunkPayloads_;
         std::vector<THunkDescriptor> HunkDescriptors_;
+
+        void PrepareHunks(
+            TTransaction* transaction,
+            TTypeErasedRow capturedRow,
+            const TTableSchemaPtr& schema,
+            int hunkCount,
+            const ITabletCommitSessionPtr& session,
+            int* currentHunkDescriptorIndex)
+        {
+            YT_VERIFY(hunkCount != 0);
+
+            auto hunkTabletInfo = transaction->GetAssignedHunkTabletInfo(
+                TableSession_->GetInfo()->TableId,
+                TableSession_->GetHunkTableInfo(),
+                /*createIfMissing*/ false);
+
+            THunkChunksInfo hunkInfo{
+                .CellId = hunkTabletInfo->CellId,
+                .HunkTabletId = hunkTabletInfo->TabletId,
+                .MountRevision = hunkTabletInfo->MountRevision,
+            };
+
+            int lastHunkDescriptorIndex = *currentHunkDescriptorIndex + hunkCount;
+            YT_VERIFY(lastHunkDescriptorIndex <= std::ssize(HunkDescriptors_));
+
+            std::vector<THunkDescriptor> descriptors(
+                HunkDescriptors_.begin() + *currentHunkDescriptorIndex,
+                HunkDescriptors_.begin() + lastHunkDescriptorIndex);
+
+            for (const auto& descriptor : descriptors) {
+                auto& ref = hunkInfo.HunkChunkRefs[descriptor.ChunkId];
+                ref.ChunkId = descriptor.ChunkId;
+                ++ref.HunkCount;
+                ref.TotalHunkLength += descriptor.Length - sizeof(THunkPayloadHeader);
+                ref.ErasureCodec = descriptor.ErasureCodec;
+            }
+
+            ReplaceHunks(
+                TMutableUnversionedRow(capturedRow),
+                schema,
+                descriptors,
+                HunkMemoryPool_);
+
+            session->MemorizeHunkInfo(hunkInfo);
+            *currentHunkDescriptorIndex = lastHunkDescriptorIndex;
+        }
 
         static EWireProtocolCommand GetCommand(const TRowModification& modification)
         {
@@ -1298,7 +1341,7 @@ private:
     TMultiSlidingWindow<TModificationRequest*> OrderedRequestsSlidingWindow_;
     bool SecondaryIndicesProcessed_ = false;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, QueueProducerSessionSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, QueueProducerSessionSpinLock_);
     THashMap<std::tuple<TRichYPath, TRichYPath, TQueueProducerSessionId>, TQueueProducerSequenceNumber> QueueProducerSessionToSequenceNumber_;
 
     struct TSyncReplica
@@ -1439,7 +1482,7 @@ private:
         {
             YT_ASSERT_THREAD_AFFINITY_ANY();
 
-            if (!TableInfo_->HunkStorageId) {
+            if (!TableInfo_->IsUsingHunkStorage()) {
                 return OKFuture;
             }
 
@@ -1521,10 +1564,22 @@ private:
             // Note also that this is not a compat. The key here requests "write"
             // permission, so it should never receive row-level acl in the response.
             auto future = permissionCache->Get(permissionKey).AsVoid();
-            auto result = future.TryGet();
-            if (!result || !result->IsOK()) {
-                futures->push_back(std::move(future));
+            if (auto result = future.TryGet(); result && result->IsOK()) {
+                return;
             }
+            if (UpstreamReplicaId_) {
+                future = future.Apply(BIND([
+                    replicaCluster = client->GetNativeConnection()->GetClusterName().value(),
+                    replicaPath = TableInfo_->Path
+                ] (const TError& error) {
+                    return error.IsOK()
+                        ? error
+                        : error
+                            .With("replica_cluster", replicaCluster)
+                            .With("replica_path", replicaPath);
+                }));
+            }
+            futures->push_back(std::move(future));
         }
 
         void RegisterSyncReplicas(std::vector<TFuture<void>>* futures)
@@ -1657,7 +1712,7 @@ private:
     ICellCommitSessionProviderPtr CellCommitSessionProvider_;
 
     //! Maps replica cluster name to sync replica transaction.
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ClusterNameToSyncReplicaTransactionPromiseSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ClusterNameToSyncReplicaTransactionPromiseSpinLock_);
     THashMap<std::string, TPromise<NApi::ITransactionPtr>> ClusterNameToSyncReplicaTransactionPromise_;
 
     //! Caches mappings from name table ids to schema ids.
@@ -1869,7 +1924,7 @@ private:
         return it->second;
     }
 
-    TFuture<void> DoAbort(TGuard<NThreading::TSpinLock>* guard, const TTransactionAbortOptions& options = {})
+    TFuture<void> DoAbort(TGuard<TSpinLock>* guard, const TTransactionAbortOptions& options = {})
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
         YT_ASSERT_SPINLOCK_AFFINITY(SpinLock_);
@@ -1939,7 +1994,10 @@ private:
         const std::vector<TSharedRef>& serializedRows,
         const TPushQueueProducerOptions& options)
     {
-        auto rowBuffer = New<TRowBuffer>(TNativeTransactionBufferTag());
+        auto rowBuffer = New<TRowBuffer>(
+            TNativeTransactionBufferTag(),
+            TChunkedMemoryPool::DefaultStartChunkSize,
+            Client_->GetHeavyRequestMemoryUsageTracker());
 
         auto data = MergeRefsToRef<TNativeTransactionBufferTag>(serializedRows);
         auto reader = CreateWireProtocolReader(data, std::move(rowBuffer));
@@ -2265,22 +2323,81 @@ private:
             Counters_);
     }
 
-    void BuildAdjustedCommitOptions(const TTransactionCommitOptions& options)
+    std::vector<TTransactionId> GetPrerequisiteIds(const TTransactionCommitOptions& options) const
     {
-        CommitOptions_ = options;
-
         // NB: Include prerequisite ids which have been set during start_transaction call.
         std::vector<TTransactionId> prerequisiteIds;
         prerequisiteIds.reserve(
             Transaction_->GetPrerequisiteTransactionIds().size() +
-            CommitOptions_.PrerequisiteTransactionIds.size());
+            options.PrerequisiteTransactionIds.size());
         prerequisiteIds.insert(prerequisiteIds.end(),
             Transaction_->GetPrerequisiteTransactionIds().begin(),
             Transaction_->GetPrerequisiteTransactionIds().end());
         prerequisiteIds.insert(prerequisiteIds.end(),
-            CommitOptions_.PrerequisiteTransactionIds.begin(),
-            CommitOptions_.PrerequisiteTransactionIds.end());
+            options.PrerequisiteTransactionIds.begin(),
+            options.PrerequisiteTransactionIds.end());
         SortUnique(prerequisiteIds);
+
+        return prerequisiteIds;
+    }
+
+    bool IsChaosTableCommitSession(
+        const TTableCommitSessionPtr& session,
+        const TTransactionCommitOptions& options) const
+    {
+        return session->GetInfo()->ReplicationCardId &&
+            session->GetReplicationCard()->Era > InitialReplicationEra &&
+            !options.CoordinatorCellId;
+    }
+
+    TFuture<TPrerequisites> FetchPrerequisites(
+        const TTransactionCommitOptions& options,
+        bool enableChaosLeaseTransactionParticipants)
+    {
+        TPrerequisites prerequisites{
+            .PrerequisiteIds = GetPrerequisiteIds(options),
+        };
+
+        if (!enableChaosLeaseTransactionParticipants || prerequisites.PrerequisiteIds.empty()) {
+            return MakeFuture(std::move(prerequisites));
+        }
+
+        std::optional<TYPath> chaosTablePath;
+        for (const auto& [path, session] : TablePathToSession_) {
+            if (IsChaosTableCommitSession(session, options)) {
+                chaosTablePath = path;
+                break;
+            }
+        }
+
+        if (!chaosTablePath) {
+            return MakeFuture(std::move(prerequisites));
+        }
+
+        std::vector<TFuture<TChaosLeasePtr>> futures;
+        futures.reserve(prerequisites.PrerequisiteIds.size());
+        for (auto prerequisiteId : prerequisites.PrerequisiteIds) {
+            try {
+                ValidateChaosLeaseType(prerequisiteId, *chaosTablePath);
+            } catch (const std::exception& ex) {
+                return MakeFuture<TPrerequisites>(TError(ex));
+            }
+            futures.push_back(Client_->GetChaosLease(prerequisiteId));
+        }
+        return AllSucceeded(std::move(futures))
+            .AsUnique()
+            .Apply(BIND([prerequisites = std::move(prerequisites)] (std::vector<TChaosLeasePtr>&& chaosLeases) mutable {
+                prerequisites.ChaosLeases = std::move(chaosLeases);
+                return std::move(prerequisites);
+            }));
+    }
+
+    void BuildAdjustedCommitOptions(
+        const TTransactionCommitOptions& options,
+        TPrerequisites prerequisites,
+        bool enableChaosLeaseTransactionParticipants)
+    {
+        CommitOptions_ = options;
 
         THashSet<NObjectClient::TCellId> selectedCellIds;
         THashSet<NChaosClient::TReplicationCardId> requestedReplicationCardIds;
@@ -2295,10 +2412,7 @@ private:
 
             const auto& replicationCard = session->GetReplicationCard();
             auto replicationCardId = session->GetInfo()->ReplicationCardId;
-            if (replicationCardId &&
-                replicationCard->Era > InitialReplicationEra &&
-                !options.CoordinatorCellId)
-            {
+            if (IsChaosTableCommitSession(session, options)) {
                 affectsChaosTables = true;
                 if (!requestedReplicationCardIds.insert(replicationCardId).second) {
                     YT_TLOG_DEBUG("Coordinator for replication card already selected, skipping")
@@ -2347,11 +2461,14 @@ private:
                 }
 
                 NChaosClient::NProto::TReqReplicatedCommit request;
-                ToProto(request.mutable_replication_card_id(), replicationCardId);
-                request.set_replication_era(session->GetReplicationCard()->Era);
-                if (isNewCoordinator && !prerequisiteIds.empty()) {
-                    request.mutable_prerequisite_ids()->Reserve(prerequisiteIds.size());
-                    for (const auto& prerequisiteId : prerequisiteIds) {
+                ToProto(request.mutable_chaos_object_id(), replicationCardId);
+                request.set_chaos_object_era(session->GetReplicationCard()->Era);
+                if (!enableChaosLeaseTransactionParticipants &&
+                    isNewCoordinator &&
+                    !prerequisites.PrerequisiteIds.empty())
+                {
+                    request.mutable_prerequisite_ids()->Reserve(prerequisites.PrerequisiteIds.size());
+                    for (const auto& prerequisiteId : prerequisites.PrerequisiteIds) {
                         ValidateChaosLeaseType(prerequisiteId, path);
                         ToProto(request.add_prerequisite_ids(), prerequisiteId);
                     }
@@ -2375,11 +2492,53 @@ private:
         }
 
         if (affectsChaosTables) {
+            if (enableChaosLeaseTransactionParticipants) {
+                YT_VERIFY(prerequisites.ChaosLeases.size() == prerequisites.PrerequisiteIds.size());
+                for (int index = 0; index < std::ssize(prerequisites.PrerequisiteIds); ++index) {
+                    auto chaosLeaseId = prerequisites.PrerequisiteIds[index];
+                    const auto& coordinatorCellIds = prerequisites.ChaosLeases[index]->CoordinatorCellIds;
+
+                    YT_TLOG_DEBUG("Considering chaos lease")
+                        .With("ChaosLeaseId", chaosLeaseId)
+                        .With("CoordinatorCellIds", coordinatorCellIds);
+
+                    if (coordinatorCellIds.empty()) {
+                        THROW_ERROR_EXCEPTION(NTransactionClient::EErrorCode::ChaosCoordinatorsAreNotAvailable,
+                            "Coordinators are not available")
+                            .With("chaos_lease_id", chaosLeaseId);
+                    }
+
+                    NObjectClient::TCellId coordinatorCellId;
+                    for (auto candidate : coordinatorCellIds) {
+                        if (selectedCellIds.contains(candidate)) {
+                            coordinatorCellId = candidate;
+                            break;
+                        }
+                    }
+
+                    if (!coordinatorCellId) {
+                        const auto& downedCellTracker = Client_->GetNativeConnection()->GetDownedCellTracker();
+                        coordinatorCellId = downedCellTracker->ChooseOne(coordinatorCellIds);
+                        selectedCellIds.insert(coordinatorCellId);
+                        Transaction_->RegisterParticipant(coordinatorCellId);
+                    }
+
+                    NChaosClient::NProto::TReqReplicatedCommit request;
+                    ToProto(request.mutable_chaos_object_id(), chaosLeaseId);
+                    request.set_chaos_object_era(InitialReplicationEra);
+                    DoAddAction(coordinatorCellId, MakeTransactionActionData(request));
+
+                    YT_TLOG_DEBUG("Coordinator selected for chaos lease")
+                        .With("ChaosLeaseId", chaosLeaseId)
+                        .With("CoordinatorCellId", coordinatorCellId);
+                }
+            }
+
             // NB: If commit affects chaos tables, then the list of prerequisite ids can contain only chaos leases,
             // As the tab nodes can only handle master transactions as prerequisites, we send them only to chaos coordinators.
             CommitOptions_.PrerequisiteTransactionIds = {};
         } else {
-            CommitOptions_.PrerequisiteTransactionIds = std::move(prerequisiteIds);
+            CommitOptions_.PrerequisiteTransactionIds = std::move(prerequisites.PrerequisiteIds);
         }
     }
 
@@ -2409,6 +2568,9 @@ private:
 
     TFuture<TTransactionCommitResult> DoCommit(const TTransactionCommitOptions& options, bool needsFlush)
     {
+        bool enableChaosLeaseTransactionParticipants =
+            Client_->GetNativeConnection()->GetConfig()->EnableChaosLeaseTransactionParticipants;
+
         for (auto cellId : options.AdditionalParticipantCellIds) {
             Transaction_->RegisterParticipant(cellId);
         }
@@ -2421,8 +2583,15 @@ private:
             }()
             .Apply(
                 BIND([=, this, this_ = MakeStrong(this)] {
-                    BuildAdjustedCommitOptions(options);
-
+                    return FetchPrerequisites(options, enableChaosLeaseTransactionParticipants);
+                }).AsyncVia(SerializedInvoker_))
+            .AsUnique()
+            .Apply(
+                BIND([=, this, this_ = MakeStrong(this)] (TPrerequisites&& prerequisites) {
+                    BuildAdjustedCommitOptions(
+                        options,
+                        std::move(prerequisites),
+                        enableChaosLeaseTransactionParticipants);
                     return needsFlush ? PrepareRequests() : OKFuture;
                 }).AsyncVia(SerializedInvoker_))
             .Apply(

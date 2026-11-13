@@ -11,6 +11,8 @@
 
 #include <yt/yt/core/concurrency/action_queue.h>
 
+#include <yt/yt/core/test_framework/framework.h>
+
 namespace NYT::NQueryTracker {
 namespace {
 
@@ -24,6 +26,7 @@ using namespace NYPath;
 using namespace NYTree;
 using namespace NConcurrency;
 
+using ::testing::AnyNumber;
 using ::testing::StrictMock;
 using ::testing::Return;
 using ::testing::_;
@@ -36,6 +39,7 @@ DEFINE_REFCOUNTED_TYPE(TStrictMockTransaction)
 
 const TYPath StateRoot = "//sys/query_tracker";
 const TQueryTrackerDynamicConfigPtr Config = New<TQueryTrackerDynamicConfig>();
+const std::string AdminsGroup = "qt_admins";
 
 const TYsonString EmptyMap = TYsonString(TStringBuf("{}"));
 const TYsonString EmptyList = TYsonString(TStringBuf("[]"));
@@ -79,6 +83,15 @@ TUnversionedLookupRowsResult MakeEmptyLookupActiveRowsResult(int rows)
     };
 }
 
+TUnversionedLookupRowsResult MakeEmptyLookupQueryByUserAndMutationIdRowsResult()
+{
+    return {
+        .Rowset = CreateRowset(TQueryByUserAndMutationIdDescriptor::Get()->GetSchema(), MakeSharedRange(
+            std::vector<TUnversionedRow>{TUnversionedRow{}},
+            New<TRowBuffer>())),
+    };
+}
+
 template <typename TRecord>
 TRecord CreateSimpleQuery(const TQueryId& queryId, ui64 startTime = 0, const std::vector<std::string>& acos = {}, const std::string& query = "")
 {
@@ -108,7 +121,13 @@ public:
         MockClient = New<TStrictMockClient>();
         MockTransaction = New<TStrictMockTransaction>();
 
-        Proxy = CreateQueryTrackerProxy(MockClient, StateRoot, Config, EmptyEngineProviders, 0);
+        Proxy = CreateQueryTrackerProxy(
+            MockClient,
+            StateRoot,
+            Config,
+            EmptyEngineProviders,
+            /*expectedTablesVersion*/ 0,
+            /*adminsGroup*/ std::nullopt);
 
         EXPECT_CALL(*MockClient, StartTransaction(_, _))
             .WillOnce(Return(MakeFuture((ITransactionPtr)MockTransaction)));
@@ -127,6 +146,71 @@ public:
     TIntrusivePtr<TStrictMockTransaction> MockTransaction;
     TQueryTrackerProxyPtr Proxy;
 };
+
+////////////////////////////////////////////////////////////////////////////////
+
+TEST(TQueryTrackerAdminsConfigTest, OptionalGroup)
+{
+    auto config = New<TQueryTrackerBootstrapConfig>();
+
+    EXPECT_FALSE(config->AdminsGroup);
+    EXPECT_TRUE(HasQueryTrackerAdminAccess(
+        {NSecurityClient::SuperusersGroupName},
+        config->AdminsGroup));
+
+    EXPECT_FALSE(HasQueryTrackerAdminAccess({AdminsGroup}, config->AdminsGroup));
+
+    config->AdminsGroup = AdminsGroup;
+    EXPECT_TRUE(HasQueryTrackerAdminAccess(
+        {NSecurityClient::SuperusersGroupName},
+        config->AdminsGroup));
+
+    EXPECT_TRUE(HasQueryTrackerAdminAccess({AdminsGroup}, config->AdminsGroup));
+    EXPECT_FALSE(HasQueryTrackerAdminAccess({"users", "everyone"}, config->AdminsGroup));
+}
+
+TEST(TQueryTrackerAdminsConfigTest, UnconfiguredGroupDoesNotBypassAccessControl)
+{
+    auto client = New<TStrictMockClient>();
+    EXPECT_CALL(*client, GetNode(TYPath("//sys/users/user/@member_of_closure"), _))
+        .WillOnce(Return(MakeFuture(ConvertToYsonString(
+            std::vector<std::string>{AdminsGroup}))));
+
+    EXPECT_EQ(
+        CheckAccessControl("user", EmptyList, client, EPermission::Use, std::nullopt),
+        NSecurityClient::ESecurityAction::Deny);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TQueryTrackerAdminBypassesAccessControlTest
+    : public ::testing::Test
+    , public ::testing::WithParamInterface<std::string>
+{ };
+
+TEST_P(TQueryTrackerAdminBypassesAccessControlTest, BypassesAccessControl)
+{
+    auto client = New<TStrictMockClient>();
+    EXPECT_CALL(*client, GetNode(TYPath("//sys/users/user/@member_of_closure"), _))
+        .WillOnce(Return(MakeFuture(ConvertToYsonString(
+            std::vector<std::string>{GetParam()}))));
+
+    EXPECT_EQ(
+        CheckAccessControl(
+            "user",
+            ConvertToYsonString(std::vector<std::string>{"nobody"}),
+            client,
+            EPermission::Use,
+            AdminsGroup),
+        NSecurityClient::ESecurityAction::Allow);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PrivilegedGroups,
+    TQueryTrackerAdminBypassesAccessControlTest,
+    ::testing::Values(
+        NSecurityClient::SuperusersGroupName,
+        AdminsGroup));
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -152,6 +236,78 @@ TEST_F(TQueryTrackerProxyTest, StartDraftQuery)
             .AccessControlObjects = std::vector<std::string>{"aco1", "aco2"},
         },
         "user");
+}
+
+TEST_F(TQueryTrackerProxyTest, StartQueryWithMutationId)
+{
+    EXPECT_CALL(*MockClient, LookupRows(TYPath("//sys/query_tracker/queries_by_user_and_mutation_id"), _, _, _))
+        .WillOnce(Return(MakeFuture(MakeEmptyLookupQueryByUserAndMutationIdRowsResult())));
+    EXPECT_CALL(*MockTransaction, WriteRows(_, _, _, _, _))
+        .Times(AnyNumber());
+    EXPECT_CALL(*MockTransaction, WriteRows(TYPath("//sys/query_tracker/queries_by_user_and_mutation_id"), _, _, _, _));
+    EXPECT_CALL(*MockTransaction, Commit(_)).WillOnce(Return(MakeFuture(TTransactionCommitResult{})));
+
+    TStartQueryOptions options{.Draft = true};
+    options.MutationId = TGuid::Create();
+
+    auto queryId = TQueryId::Create();
+    EXPECT_EQ(queryId, Proxy->StartQuery(queryId, EQueryEngine::Mock, "query", options, "user"));
+}
+
+TEST_F(TQueryTrackerProxyTest, RetryStartQueryWithMutationId)
+{
+    auto mutationId = TGuid::Create();
+    auto startedQueryId = TQueryId::Create();
+    std::vector<TQueryByUserAndMutationId> records{
+        {.Key = {.User = "user", .MutationId = mutationId}, .QueryId = startedQueryId},
+    };
+    EXPECT_CALL(*MockClient, LookupRows(TYPath("//sys/query_tracker/queries_by_user_and_mutation_id"), _, _, _))
+        .WillOnce(Return(MakeQueryResult<TUnversionedLookupRowsResult, TQueryByUserAndMutationIdDescriptor>(records)));
+
+    TStartQueryOptions options{.Draft = true};
+    options.MutationId = mutationId;
+    options.Retry = true;
+
+    EXPECT_EQ(startedQueryId, Proxy->StartQuery(TQueryId::Create(), EQueryEngine::Mock, "query", options, "user"));
+}
+
+TEST_F(TQueryTrackerProxyTest, DuplicateStartQueryWithMutationId)
+{
+    auto mutationId = TGuid::Create();
+    std::vector<TQueryByUserAndMutationId> records{
+        {.Key = {.User = "user", .MutationId = mutationId}, .QueryId = TQueryId::Create()},
+    };
+    EXPECT_CALL(*MockClient, LookupRows(TYPath("//sys/query_tracker/queries_by_user_and_mutation_id"), _, _, _))
+        .WillOnce(Return(MakeQueryResult<TUnversionedLookupRowsResult, TQueryByUserAndMutationIdDescriptor>(records)));
+
+    TStartQueryOptions options{.Draft = true};
+    options.MutationId = mutationId;
+
+    EXPECT_THROW_WITH_SUBSTRING(
+        Proxy->StartQuery(TQueryId::Create(), EQueryEngine::Mock, "query", options, "user"),
+        "Duplicate request is not marked as \"retry\"");
+}
+
+TEST_F(TQueryTrackerProxyTest, ConcurrentStartQueryWithMutationId)
+{
+    auto mutationId = TGuid::Create();
+    auto startedQueryId = TQueryId::Create();
+    std::vector<TQueryByUserAndMutationId> records{
+        {.Key = {.User = "user", .MutationId = mutationId}, .QueryId = startedQueryId},
+    };
+    EXPECT_CALL(*MockClient, LookupRows(TYPath("//sys/query_tracker/queries_by_user_and_mutation_id"), _, _, _))
+        .WillOnce(Return(MakeFuture(MakeEmptyLookupQueryByUserAndMutationIdRowsResult())))
+        .WillOnce(Return(MakeQueryResult<TUnversionedLookupRowsResult, TQueryByUserAndMutationIdDescriptor>(records)));
+    EXPECT_CALL(*MockTransaction, WriteRows(_, _, _, _, _))
+        .Times(AnyNumber());
+    EXPECT_CALL(*MockTransaction, Commit(_))
+        .WillOnce(Return(MakeFuture<TTransactionCommitResult>(TError(NTabletClient::EErrorCode::TransactionLockConflict, "Row lock conflict"))));
+
+    TStartQueryOptions options{.Draft = true};
+    options.MutationId = mutationId;
+    options.Retry = true;
+
+    EXPECT_EQ(startedQueryId, Proxy->StartQuery(TQueryId::Create(), EQueryEngine::Mock, "query", options, "user"));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -287,14 +443,22 @@ public:
     {
         MockClient = New<TStrictMockClient>();
         MockClient->SetTimestampProvider(CreateNoopTimestampProvider());
-        Proxy = CreateQueryTrackerProxy(MockClient, StateRoot, Config, EmptyEngineProviders, 0);
+        Proxy = CreateQueryTrackerProxy(
+            MockClient,
+            StateRoot,
+            Config,
+            EmptyEngineProviders,
+            /*expectedTablesVersion*/ 0,
+            /*adminsGroup*/ std::nullopt);
         ActionQueue = New<TActionQueue>("ListQueriesThread");
         Invoker = ActionQueue->GetInvoker();
     }
 
-    void ExpectListQueriesGetAcoCalls(bool everyoneAcoExists, bool isSuperuser = false)
+    void ExpectListQueriesGetAcoCalls(
+        bool everyoneAcoExists,
+        const std::string& adminGroup = {})
     {
-        if (!isSuperuser) {
+        if (adminGroup.empty()) {
             auto existAcos = TYsonString(TStringBuf("[]"));
             if (everyoneAcoExists) {
                 existAcos = BuildYsonStringFluently()
@@ -319,8 +483,8 @@ public:
         }
 
         std::vector<std::string> memberOfClosure({"users", "everyone"});
-        if (isSuperuser) {
-            memberOfClosure.push_back(NSecurityClient::SuperusersGroupName);
+        if (!adminGroup.empty()) {
+            memberOfClosure.push_back(adminGroup);
         }
         EXPECT_CALL(*MockClient, GetNode(TYPath("//sys/users/user/@member_of_closure"), _))
             .WillOnce(Return(MakeFuture(ConvertToYsonString(memberOfClosure))));
@@ -456,9 +620,23 @@ TEST_F(TListQueryTrackerProxyTest, ListQueriesOnOnlyActive)
     ASSERT_FALSE(result.Incomplete);
 }
 
-TEST_F(TListQueryTrackerProxyTest, ListQueriesForSuperuser)
+class TListQueriesForAdminTest
+    : public TListQueryTrackerProxyTest
+    , public ::testing::WithParamInterface<std::string>
+{ };
+
+TEST_P(TListQueriesForAdminTest, ListQueries)
 {
-    ExpectListQueriesGetAcoCalls(/*everyoneAcoExists*/ false, /*isSuperuser*/ true);
+    Proxy = CreateQueryTrackerProxy(
+        MockClient,
+        StateRoot,
+        Config,
+        EmptyEngineProviders,
+        /*expectedTablesVersion*/ 0,
+        AdminsGroup);
+    ExpectListQueriesGetAcoCalls(
+        /*everyoneAcoExists*/ false,
+        GetParam());
 
     auto startTime = 1;
     auto queryId = TQueryId::Create();
@@ -489,6 +667,13 @@ TEST_F(TListQueryTrackerProxyTest, ListQueriesForSuperuser)
     ASSERT_EQ(result.Queries.size(), 1ul);
     ASSERT_FALSE(result.Incomplete);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    PrivilegedGroups,
+    TListQueriesForAdminTest,
+    ::testing::Values(
+        NSecurityClient::SuperusersGroupName,
+        AdminsGroup));
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -42,6 +42,8 @@
 #include <library/cpp/testing/common/env.h>
 #include <library/cpp/testing/gtest/matchers.h>
 
+#include <util/string/split.h>
+
 #include <util/system/sanitizers.h>
 #include <util/system/type_name.h>
 
@@ -101,6 +103,60 @@ private:
 };
 
 YT_FLOW_DEFINE_SINK(TTestSink);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TTestPathSinkParameters
+    : public TTestSink::TParameters
+{
+    NYPath::TRichYPath Path;
+
+    REGISTER_YSON_STRUCT(TTestPathSinkParameters);
+
+    static void Register(TRegistrar registrar)
+    {
+        registrar.Parameter("path", &TThis::Path)
+            .AddOption(EYTPathOwnership::SharedWrite)
+            .Default();
+    }
+};
+
+class TTestPathSink
+    : public TTestSink
+{
+public:
+    YT_FLOW_EXTEND_PARAMETERS(TTestPathSinkParameters);
+
+    using TTestSink::TTestSink;
+};
+
+YT_FLOW_DEFINE_SINK(TTestPathSink);
+
+struct TTestPathSourceParameters
+    : public TRandomSource::TParameters
+{
+    NYPath::TRichYPath Path;
+
+    REGISTER_YSON_STRUCT(TTestPathSourceParameters);
+
+    static void Register(TRegistrar registrar)
+    {
+        registrar.Parameter("path", &TThis::Path)
+            .AddOption(EYTPathOwnership::ReadOnly)
+            .Default();
+    }
+};
+
+class TTestPathSource
+    : public TRandomSource
+{
+public:
+    YT_FLOW_EXTEND_PARAMETERS(TTestPathSourceParameters);
+
+    using TRandomSource::TRandomSource;
+};
+
+YT_FLOW_DEFINE_SOURCE(TTestPathSource);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -219,6 +275,7 @@ public:
         context->Invoker = GetCurrentInvoker();
         context->MainCycleInvoker = GetCurrentInvoker();
         context->PipelinePath = NYPath::TRichYPath::Parse("<cluster=pipeline_cluster>//pipeline/path");
+        context->VersionProvider = TestVersionProvider();
         context->StatusProfiler = CreateSyncStatusProfiler();
         JobManager = CreateJobManager(context, Spec, DynamicSpec, FlowView->State->JobManagerState, /*authenticator*/ nullptr);
         FlowView->CurrentSpec->TrySetValue(Spec, TestVersionProvider());
@@ -338,7 +395,7 @@ TEST_W(TDescribeTest, MakeComputationDescriptions)
     Spec->Computations[TComputationId("Computation_1")]->ProcessingFunction = "MyProcessFunction";
 
     auto makeComputationDescriptions = [&] {
-        return MakeComputationDescriptions(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView));
+        return MakeComputationDescriptions(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView), {});
     };
 
     auto makeExpectedMetrics = [] (double cpuUsage10m, i64 memoryUsage10m) {
@@ -394,7 +451,7 @@ TEST_W(TDescribeTest, MakeComputationDescriptions)
 
         EXPECT_TRUE(*computationDescription.Metrics == *expected.Metrics);
         EXPECT_DOUBLE_EQ(computationDescription.CpuUsage, *expected.Metrics->CpuUsage10m);
-        EXPECT_DOUBLE_EQ(computationDescription.MemoryUsage, expected.Metrics->MemoryUsage10m);
+        EXPECT_DOUBLE_EQ(computationDescription.MemoryUsage, expected.Metrics->MemoryUsage10m.value_or(0));
 
         EXPECT_EQ(computationDescription.HighlightCpuUsage, expected.Highlighted);
         EXPECT_EQ(computationDescription.HighlightMemoryUsage, expected.Highlighted);
@@ -467,7 +524,7 @@ TEST_W(TDescribeTest, PartitionsStatsCountByJobState)
     }
 
     auto statsOf = [&] (const TComputationId& computationId) {
-        auto computations = MakeComputationDescriptions(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView));
+        auto computations = MakeComputationDescriptions(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView), {});
         return GetOrCrash(computations, computationId).PartitionsStats;
     };
 
@@ -498,23 +555,53 @@ TEST_W(TDescribeTest, WarnsOnPartitionStuckWithoutJob)
     ASSERT_TRUE(strandedPartitionId.has_value());
 
     auto describe = [&] {
-        auto computations = MakeComputationDescriptions(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView));
+        auto computations = MakeComputationDescriptions(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView), {});
         return GetOrCrash(computations, TComputationId("Computation_1"));
     };
 
-    // A partition that has just lost its job is mid-rebalance, not stuck.
-    FlowView->Feedback->UpdateTime = TInstant::Now();
-    FlowView->Feedback->PartitionJobStatuses[*strandedPartitionId]->CurrentJobStatusUpdateTime = FlowView->Feedback->UpdateTime;
-    EXPECT_EQ(describe().Status, ELogLevel::Info);
+    for (auto pipelineState : {EPipelineState::Working, EPipelineState::Draining}) {
+        FlowView->State->StartMutation();
+        FlowView->State->ExecutionSpec->PipelineState->TrySetValue(pipelineState, TestVersionProvider());
+        FlowView->State->CommitMutation();
 
-    // Minutes later it is, and the computation must stop reporting itself as healthy.
-    FlowView->Feedback->PartitionJobStatuses[*strandedPartitionId]->CurrentJobStatusUpdateTime =
-        FlowView->Feedback->UpdateTime - TDuration::Minutes(5);
-    auto description = describe();
-    EXPECT_EQ(description.Status, ELogLevel::Warning)
-        << ConvertToYsonString(description, EYsonFormat::Text).ToString();
-    EXPECT_TRUE(MessagesContain(description.Messages, "have had no job"))
-        << ConvertToYsonString(description.Messages, EYsonFormat::Text).ToString();
+        // A partition that has just lost its job is mid-rebalance, not stuck.
+        FlowView->Feedback->UpdateTime = TInstant::Now();
+        FlowView->Feedback->PartitionJobStatuses[*strandedPartitionId]->CurrentJobStatusUpdateTime = FlowView->Feedback->UpdateTime;
+        EXPECT_EQ(describe().Status, ELogLevel::Info);
+
+        // Minutes later it is, and the computation must stop reporting itself as healthy.
+        FlowView->Feedback->PartitionJobStatuses[*strandedPartitionId]->CurrentJobStatusUpdateTime =
+            FlowView->Feedback->UpdateTime - TDuration::Minutes(5);
+        auto description = describe();
+        EXPECT_EQ(description.Status, ELogLevel::Warning)
+            << ConvertToYsonString(description, EYsonFormat::Text).ToString();
+        EXPECT_TRUE(MessagesContain(description.Messages, "have had no job"))
+            << ConvertToYsonString(description.Messages, EYsonFormat::Text).ToString();
+    }
+}
+
+TEST_W(TDescribeTest, DoesNotWarnOnPartitionsWithoutJobsWhenPipelineIsInactive)
+{
+    Prepare();
+
+    auto strandedPartitionId = StripJobOfSomePartition(FlowView, TComputationId("Computation_1"));
+    ASSERT_TRUE(strandedPartitionId.has_value());
+
+    FlowView->Feedback->UpdateTime = TInstant::Now();
+    FlowView->Feedback->PartitionJobStatuses[*strandedPartitionId]->CurrentJobStatusUpdateTime = TInstant::Zero();
+
+    for (auto pipelineState : {EPipelineState::Paused, EPipelineState::Stopped}) {
+        FlowView->State->StartMutation();
+        FlowView->State->ExecutionSpec->PipelineState->TrySetValue(pipelineState, TestVersionProvider());
+        FlowView->State->CommitMutation();
+
+        auto computations = MakeComputationDescriptions(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView), {});
+        const auto& description = GetOrCrash(computations, TComputationId("Computation_1"));
+        EXPECT_EQ(description.Status, ELogLevel::Info)
+            << ConvertToYsonString(description, EYsonFormat::Text).ToString();
+        EXPECT_FALSE(MessagesContain(description.Messages, "have had no job"))
+            << ConvertToYsonString(description.Messages, EYsonFormat::Text).ToString();
+    }
 }
 
 TEST_W(TDescribeTest, RegisterStreams)
@@ -535,6 +622,35 @@ TEST_W(TDescribeTest, RegisterStreams)
     }
     ASSERT_TRUE(Pipeline.Streams.find("output_stream") != Pipeline.Streams.end());
     ASSERT_GE(Pipeline.Streams.at("output_stream").Messages.size(), 1u);
+}
+
+TEST_W(TDescribeTest, RegisterStreamsListsAllSinkInputs)
+{
+    Prepare();
+    auto& computation = Spec->Computations["Computation_1"];
+    computation->OutputStreamIds.insert("second_stream");
+    // A sink with two inputs and a second sink that reads one of them.
+    computation->Sinks["Sink_1"]->InputStreamIds = {"second_stream", "output_stream"};
+    auto& extraSink = computation->Sinks["Sink_extra"] = New<TSinkSpec>();
+    extraSink->SinkClassName = TypeName<TTestSink>();
+    extraSink->InputStreamIds = {"output_stream"};
+
+    for (const auto& [computationId, computationSpec] : Spec->Computations) {
+        auto computationDescription = TPipelineComputationDescription();
+        RegisterStreams(Spec, computationId, Pipeline, computationDescription, TDescribeTraitsContext{});
+    }
+
+    auto outputStream = MakeStreamGraphId(TStreamId("output_stream"));
+    auto secondStream = MakeStreamGraphId(TStreamId("second_stream"));
+    const auto& sink = Pipeline.Sinks.at(TSinkId("Computation_1/Sink_1"));
+    EXPECT_EQ(sink.StreamGraphEntityIds, (std::vector{outputStream, secondStream}));
+    EXPECT_TRUE(sink.StreamGraphEntityId == outputStream || sink.StreamGraphEntityId == secondStream);
+    const auto& extra = Pipeline.Sinks.at(TSinkId("Computation_1/Sink_extra"));
+    EXPECT_EQ(extra.StreamGraphEntityIds, (std::vector{outputStream}));
+    EXPECT_EQ(extra.StreamGraphEntityId, outputStream);
+
+    auto node = ConvertToNode(sink)->AsMap();
+    EXPECT_EQ(node->GetChildOrThrow("stream_ids")->AsList()->GetChildCount(), 2);
 }
 
 TEST_W(TDescribeTest, FillTopHeavyHittersMessages)
@@ -624,6 +740,14 @@ TEST_W(TDescribeTest, FillStreamTraverseData)
     EXPECT_TRUE(Pipeline.Streams["output_stream"].BytesPerSecond == 200);
     EXPECT_TRUE(Pipeline.Streams["output_stream"].InflightBytes == 200);
     EXPECT_TRUE(Pipeline.Streams["output_stream"].InflightRows == 20);
+
+    // A stream known only from the traverse data gets its global name, and the graphs label it.
+    EXPECT_EQ(Pipeline.Streams["Computation_3/input_stream"].GlobalName, TStreamId("Computation_3/input_stream"));
+
+    for (const auto& diagram : {BuildMermaidComputationsGraph(Pipeline), BuildMermaidUnrolledGraph(Pipeline)}) {
+        EXPECT_THAT(diagram, HasSubstr("s_stm_2dComputation__3_2finput__stream([\"Computation_3/input_stream\"])")) << diagram;
+        EXPECT_THAT(diagram, Not(HasSubstr("([\"\"])"))) << diagram;
+    }
 }
 
 TEST_W(TDescribeTest, FillComputationPerformanceMetrics)
@@ -725,9 +849,21 @@ TEST_W(TDescribeTest, DescribePipeline)
 
     // Add authenticator.
     auto mockAuthenticator = New<StrictMock<TMockPipelineAuthenticator>>();
-    EXPECT_CALL(*mockAuthenticator, GetAuthDescription())
-        .WillRepeatedly(Return("FakeAuthDescription description 1"));
+    auto authentication = New<TPipelineAuthenticationDescription>();
+    authentication->Method = EPipelineAuthenticationMethod::OAuth;
+    authentication->SubjectType = EPipelineAuthenticationSubjectType::User;
+    authentication->Subject = "fake-user";
+    authentication->DisplayName = "FakeAuthDescription description 1";
+    EXPECT_CALL(*mockAuthenticator, GetPipelineAuthenticationDescription())
+        .WillRepeatedly(Return(authentication));
     statusDescription = DescribePipeline({.FlowView = FlowView, .Logger = TLogger("test"), .Authenticator = mockAuthenticator, .StatusOnly = true});
+    EXPECT_EQ(
+        ConvertToYsonString(statusDescription.Authentication).ToString(),
+        ConvertToYsonString(authentication).ToString());
+    EXPECT_EQ(statusDescription.WorkerCount, WorkerCount);
+    ASSERT_TRUE(statusDescription.CurrentResourceUsage);
+    EXPECT_DOUBLE_EQ(statusDescription.CurrentResourceUsage->CpuUsageCores, 9.0);
+    EXPECT_EQ(statusDescription.CurrentResourceUsage->MemoryUsage, 9);
     EXPECT_TRUE(containsText(statusDescription.Messages, "FakeAuthDescription"))
         << "Messages:" << ConvertToYsonString(statusDescription.Messages).ToString();
     messagesSize = statusDescription.Messages.size();
@@ -742,6 +878,194 @@ TEST_W(TDescribeTest, DescribePipeline)
     EXPECT_EQ(description.Status, statusDescription.Status);
     EXPECT_EQ(description.Messages.size(), statusDescription.Messages.size());
     EXPECT_EQ(description.Computations.size(), 3u);
+}
+
+// After a recovered pipeline gets a replaced spec, its traverse data may still have computations that the spec lacks.
+TEST_W(TDescribeTest, DescribeToleratesComputationMissingFromSpec)
+{
+    Prepare();
+
+    auto traverseData = ConvertTo<TNodeTraverseDataPtr>(TYsonStringBuf(TStringBuf(R""""({
+            "streams" = {
+                "output_stream" = {
+                    "state" = "Active";
+                    "inflight_metrics" = {
+                        "count" = 10;
+                        "byte_size" = 100;
+                        "processed_bytes_per_sec" = 200.;
+                    }
+                };
+            }
+        })"""")));
+    for (const auto& computationId : {TComputationId("Computation_1"), TComputationId("Computation_removed")}) {
+        FlowView->State->TraverseData->Computations[computationId] = CloneYsonStruct(traverseData);
+    }
+
+    for (bool statusOnly : {false, true}) {
+        SCOPED_TRACE(Format("StatusOnly: %v", statusOnly));
+        auto description = DescribePipeline({.FlowView = FlowView, .Logger = TLogger("test"), .StatusOnly = statusOnly});
+        // Computations present in the spec are still described from their traverse data.
+        EXPECT_TRUE(MessagesContain(description.Messages, "TotalStreams: 1"));
+        if (!statusOnly) {
+            EXPECT_EQ(description.Computations.size(), Spec->Computations.size());
+            EXPECT_FALSE(description.Computations.contains(TComputationId("Computation_removed")));
+            EXPECT_EQ(description.Streams.at(TStreamId("output_stream")).InflightRows, 10);
+        }
+    }
+}
+
+TEST_W(TDescribeTest, DescribePipelineExposesDataChannelEdges)
+{
+    Prepare();
+    FlowView->EphemeralState->PipelinePath = NYPath::TRichYPath::Parse("<cluster=pipeline_cluster>//pipeline/path");
+
+    auto& writer = Spec->Computations["Computation_1"];
+    writer->OutputStreamIds.insert("second_stream");
+    auto& sink = writer->Sinks["Sink_1"];
+    sink->InputStreamIds = {"output_stream", "second_stream"};
+    sink->SinkClassName = TypeName<TTestPathSink>();
+    auto setSinkPath = [&] (TStringBuf path) {
+        sink->Parameters = ConvertToNode(TYsonString(Format("{path=%Qv}", path)))->AsMap();
+    };
+
+    // A sink without input streams has no graph entity and gets no edges.
+    auto& streamlessSink = Spec->Computations["Computation_2"]->Sinks["Sink_2"];
+    streamlessSink->SinkClassName = TypeName<TTestPathSink>();
+    streamlessSink->Parameters = ConvertToNode(TYsonString(TStringBuf("{path=\"//q\"}")))->AsMap();
+
+    // A sink-only channel produces no edge.
+    auto& sinkOnly = Spec->Computations["Computation_3"]->Sinks["Sink_3"];
+    sinkOnly->InputStreamIds = {"output_stream"};
+    sinkOnly->SinkClassName = TypeName<TTestPathSink>();
+    sinkOnly->Parameters = ConvertToNode(TYsonString(TStringBuf("{path=\"//only_written\"}")))->AsMap();
+
+    auto& source = Spec->Computations["Computation_3"]->SourceStreams["Source"];
+    source->SourceClassName = TypeName<TTestPathSource>();
+    auto setSourcePath = [&] (TStringBuf path) {
+        source->Parameters = ConvertToNode(TYsonString(Format("{path=%Qv}", path)))->AsMap();
+    };
+    auto sourceStreamId = MakeGlobalStreamId("Computation_3", "Source", Spec->Computations["Computation_3"]);
+
+    auto describe = [&] {
+        return DescribePipeline({.FlowView = FlowView, .Logger = TLogger("test")});
+    };
+
+    setSinkPath("//q");
+    setSourcePath("<cluster=pipeline_cluster>//q");
+    {
+        auto description = describe();
+        ASSERT_EQ(description.Edges.size(), 1u);
+        const auto& edge = description.Edges[0];
+        EXPECT_EQ(edge.From.Underlying(), "snk-Computation_1/Sink_1");
+        EXPECT_EQ(edge.To, MakeSourceGraphId(sourceStreamId));
+        EXPECT_EQ(edge.Kind, EGraphEdgeKind::DataChannel);
+        EXPECT_EQ(edge.Label, "yt:pipeline_cluster://q");
+
+        auto node = ConvertToNode(edge)->AsMap();
+        EXPECT_EQ(node->GetChildValueOrThrow<std::string>("kind"), "data_channel");
+        EXPECT_EQ(node->GetChildValueOrThrow<std::string>("from"), "snk-Computation_1/Sink_1");
+
+        // The sink node reads both of its input streams; the edge goes from the sink node to the source node.
+        for (const auto& diagram : {BuildMermaidComputationsGraph(description), BuildMermaidUnrolledGraph(description)}) {
+            EXPECT_THAT(diagram, HasSubstr("s_stm_2doutput__stream --> e_snk_2dComputation__1_2fSink__1")) << diagram;
+            EXPECT_THAT(diagram, HasSubstr("s_stm_2dsecond__stream --> e_snk_2dComputation__1_2fSink__1")) << diagram;
+            EXPECT_THAT(diagram, HasSubstr("e_snk_2dComputation__1_2fSink__1 -.->|yt:pipeline_cluster://q| e_src_2d")) << diagram;
+        }
+
+        auto unrolled = UnrollPipelineDescription(description);
+        ASSERT_EQ(unrolled.Edges.size(), 1u);
+        EXPECT_EQ(unrolled.Edges[0].Label, edge.Label);
+
+        auto status = DescribeStatus();
+        EXPECT_TRUE(status.Edges.empty());
+        EXPECT_EQ(status.Messages.size(), description.Messages.size());
+    }
+
+    setSinkPath("<clusters=[a;b]>//q");
+    setSourcePath("<cluster=b>//q");
+    {
+        auto description = describe();
+        ASSERT_EQ(description.Edges.size(), 1u);
+        EXPECT_EQ(description.Edges[0].Label, "yt:b://q");
+    }
+
+    // A path with both attributes is on the union of their clusters.
+    setSinkPath("<cluster=a;clusters=[c;b]>//q");
+    {
+        auto description = describe();
+        ASSERT_EQ(description.Edges.size(), 1u);
+        EXPECT_EQ(description.Edges[0].Label, "yt:b://q");
+    }
+
+    setSinkPath("<cluster=a;clusters=[a;c]>//q");
+    EXPECT_TRUE(describe().Edges.empty());
+
+    // An unknown source class yields no channels and no extra messages.
+    source->SourceClassName = "NYT::NFlow::TUnknownSource";
+    setSinkPath("<cluster=b>//q");
+    {
+        auto description = describe();
+        EXPECT_TRUE(description.Edges.empty());
+        EXPECT_EQ(DescribeStatus().Messages.size(), description.Messages.size());
+    }
+}
+
+TEST_W(TDescribeTest, DescribePipelineUsesProvidedNow)
+{
+    Prepare();
+
+    const auto now = TInstant::Seconds(1'000'000);
+    for (const auto& [partitionId, status] : FlowView->Feedback->PartitionJobStatuses) {
+        Y_UNUSED(partitionId);
+        status->CurrentJobStatus->InitedTime = now - TDuration::Minutes(1);
+    }
+
+    auto describeAt = [&] (TInstant describeNow) {
+        return DescribePipeline({
+            .FlowView = FlowView,
+            .Now = describeNow,
+            .Logger = TLogger("test"),
+        });
+    };
+
+    auto description = describeAt(now);
+    for (const auto& [computationId, computation] : description.Computations) {
+        Y_UNUSED(computationId);
+        EXPECT_EQ(computation.UnstablePartitionCount, computation.TotalPartitionCount);
+    }
+
+    description = describeAt(now + TDuration::Minutes(10));
+    for (const auto& [computationId, computation] : description.Computations) {
+        Y_UNUSED(computationId);
+        EXPECT_EQ(computation.UnstablePartitionCount, 0);
+    }
+}
+
+TEST_W(TDescribeTest, DescribePipelineAggregatesBestEffortCurrentResourceUsage)
+{
+    Prepare();
+    auto partitionIt = FlowView->State->ExecutionSpec->Layout->Partitions.begin();
+
+    auto missingCpuPartitionId = partitionIt++->first;
+    FlowView->Feedback->GetCurrentJobStatus(missingCpuPartitionId)->PerformanceMetrics->CpuUsageCurrent.reset();
+
+    auto missingStatusPartitionId = partitionIt++->first;
+    FlowView->Feedback->PartitionJobStatuses[missingStatusPartitionId]->CurrentJobStatus = nullptr;
+
+    auto finishedPartitionId = partitionIt++->first;
+    FlowView->Feedback->GetCurrentJobStatus(finishedPartitionId)->IsFinished = true;
+
+    auto& partitionWithoutJob = partitionIt++->second;
+    partitionWithoutJob->CurrentJobId.reset();
+
+    auto description = DescribePipeline({
+        .FlowView = FlowView,
+        .Logger = TLogger("test"),
+        .StatusOnly = true,
+    });
+    ASSERT_TRUE(description.CurrentResourceUsage);
+    EXPECT_DOUBLE_EQ(description.CurrentResourceUsage->CpuUsageCores, 5.0);
+    EXPECT_EQ(description.CurrentResourceUsage->MemoryUsage, 6);
 }
 
 TEST_W(TDescribeTest, DescribePipelineExposesControllerBuildType)
@@ -896,16 +1220,28 @@ TEST_W(TDescribeTest, DescribePipelineNoFlowView)
     EXPECT_EQ(messagesSize, 1u)
         << "Messages:" << ConvertToYsonString(statusDescription.Messages).ToString();
 
+    auto authenticator = New<StrictMock<TMockPipelineAuthenticator>>();
+    auto authentication = New<TPipelineAuthenticationDescription>();
+    authentication->Method = EPipelineAuthenticationMethod::OAuth;
+    authentication->SubjectType = EPipelineAuthenticationSubjectType::User;
+    authentication->Subject = "alice";
+    authentication->DisplayName = "alice";
+    EXPECT_CALL(*authenticator, GetPipelineAuthenticationDescription())
+        .WillOnce(Return(authentication));
     statusDescription = DescribePipeline({
         .FlowView = nullptr,
         .ControllerErrors = {
             {"a", TError("b")},
         },
         .Logger = TLogger("test"),
+        .Authenticator = authenticator,
         .StatusOnly = true,
     });
     EXPECT_EQ(statusDescription.Messages.size(), messagesSize + 1u)
         << "Messages:" << ConvertToYsonString(statusDescription.Messages).ToString();
+    EXPECT_EQ(statusDescription.Authentication, authentication);
+    EXPECT_EQ(statusDescription.WorkerCount, 0);
+    EXPECT_FALSE(statusDescription.CurrentResourceUsage);
 
     EXPECT_THROW(DescribePipeline({.FlowView = nullptr, .Logger = TLogger("test")}), TErrorException);
 }
@@ -913,18 +1249,98 @@ TEST_W(TDescribeTest, DescribePipelineNoFlowView)
 TEST_W(TDescribeTest, DescribeComputations)
 {
     Prepare();
-    auto description = DescribeComputations(FlowView);
+    auto description = DescribeComputations(FlowView, {});
     EXPECT_EQ(description.Computations.size(), Spec->Computations.size());
 }
 
 TEST_W(TDescribeTest, DescribeComputation)
 {
     Prepare();
-    auto description = DescribeComputation(FlowView, "Computation_1");
+    auto description = DescribeComputation(FlowView, "Computation_1", {});
     EXPECT_EQ(description.Name, "Computation_1");
     ASSERT_EQ(description.Partitions.size(), 3u);
     EXPECT_EQ(description.Partitions[0].ComputationId, "Computation_1");
     EXPECT_EQ(description.CpuUsage, 90);
+}
+
+TEST_W(TDescribeTest, RoutesComputationControllerAndPartitioningErrors)
+{
+    Prepare();
+
+    const std::string computation1Component = "/job_manager/computation_controllers/Computation_1/async_http_sink";
+    const std::string computation2Component = "/job_manager/partitioning/Computation_2/throughput";
+    const std::string staleComputationComponent = "/job_manager/partitioning/Computation_10/throughput";
+    const std::string pipelineComponent = "/job_manager/resource_manager/failed_resource";
+    THashMap<std::string, TError> controllerErrors = {
+        {computation1Component, TError("Computation 1 controller error")},
+        {computation2Component, TError("Computation 2 controller error")},
+        {staleComputationComponent, TError("Stale computation controller error")},
+        {pipelineComponent, TError("Pipeline controller error")},
+    };
+
+    auto pipelineDescription = DescribePipeline({
+        .FlowView = FlowView,
+        .ControllerErrors = controllerErrors,
+        .Logger = TLogger("test"),
+    });
+
+    const auto& computation1 = GetOrCrash(pipelineDescription.Computations, TComputationId("Computation_1"));
+    const auto& computation2 = GetOrCrash(pipelineDescription.Computations, TComputationId("Computation_2"));
+    EXPECT_EQ(computation1.Status, ELogLevel::Warning);
+    EXPECT_EQ(computation2.Status, ELogLevel::Warning);
+    EXPECT_TRUE(MessagesContain(computation1.Messages, computation1Component));
+    EXPECT_FALSE(MessagesContain(computation1.Messages, computation2Component));
+    EXPECT_FALSE(MessagesContain(computation1.Messages, staleComputationComponent));
+    EXPECT_TRUE(MessagesContain(computation2.Messages, computation2Component));
+
+    auto hasDirectRetryableError = [] (const std::vector<TMessage>& messages, const std::string& component) {
+        return std::any_of(messages.begin(), messages.end(), [&] (const TMessage& message) {
+            return message.Text.starts_with("Retryable error in component") &&
+                message.Text.find(component) != std::string::npos;
+        });
+    };
+    EXPECT_TRUE(hasDirectRetryableError(pipelineDescription.Messages, computation1Component));
+    EXPECT_TRUE(hasDirectRetryableError(pipelineDescription.Messages, computation2Component));
+    EXPECT_TRUE(hasDirectRetryableError(pipelineDescription.Messages, staleComputationComponent));
+    EXPECT_TRUE(hasDirectRetryableError(pipelineDescription.Messages, pipelineComponent));
+
+    auto computationsDescription = DescribeComputations(FlowView, controllerErrors);
+    const TComputationDescription* listedComputation1 = nullptr;
+    const TComputationDescription* listedComputation2 = nullptr;
+    for (const auto& computation : computationsDescription.Computations) {
+        if (computation.Name == "Computation_1") {
+            listedComputation1 = &computation;
+        } else if (computation.Name == "Computation_2") {
+            listedComputation2 = &computation;
+        }
+    }
+    ASSERT_NE(listedComputation1, nullptr);
+    ASSERT_NE(listedComputation2, nullptr);
+    EXPECT_EQ(listedComputation1->Status, ELogLevel::Warning);
+    EXPECT_EQ(listedComputation2->Status, ELogLevel::Warning);
+    EXPECT_TRUE(MessagesContain(listedComputation1->Messages, computation1Component));
+    EXPECT_FALSE(MessagesContain(listedComputation1->Messages, computation2Component));
+    EXPECT_FALSE(MessagesContain(listedComputation1->Messages, staleComputationComponent));
+    EXPECT_TRUE(MessagesContain(listedComputation2->Messages, computation2Component));
+
+    auto computationDescription = DescribeComputation(
+        FlowView,
+        TComputationId("Computation_1"),
+        controllerErrors);
+    EXPECT_EQ(computationDescription.Status, ELogLevel::Warning);
+    EXPECT_TRUE(MessagesContain(computationDescription.Messages, computation1Component));
+    EXPECT_FALSE(MessagesContain(computationDescription.Messages, computation2Component));
+    EXPECT_FALSE(MessagesContain(computationDescription.Messages, staleComputationComponent));
+    EXPECT_FALSE(MessagesContain(computationDescription.Messages, pipelineComponent));
+
+    auto statusOnlyDescription = DescribePipeline({
+        .FlowView = FlowView,
+        .ControllerErrors = controllerErrors,
+        .Logger = TLogger("test"),
+        .StatusOnly = true,
+    });
+    EXPECT_TRUE(hasDirectRetryableError(statusOnlyDescription.Messages, computation1Component));
+    EXPECT_TRUE(hasDirectRetryableError(statusOnlyDescription.Messages, computation2Component));
 }
 
 TEST_W(TDescribeTest, DescribePartition)
@@ -948,13 +1364,20 @@ TEST_W(TDescribeTest, DescribePartition)
 TEST_W(TDescribeTest, DescribeWorker)
 {
     Prepare();
+    for (const auto& [_, worker] : FlowView->State->Workers) {
+        worker->VcpuFactor = 1.5;
+        worker->VcpuLimit = 15'000;
+    }
     auto workersDescription = DescribeWorkers(FlowView);
     ASSERT_EQ(workersDescription.Workers.size(), 1u);
+    EXPECT_EQ(workersDescription.Workers[0].VcpuLimit, 15'000);
     auto description = DescribeWorker(FlowView, workersDescription.Workers[0].Address);
     EXPECT_EQ(description.Address, "worker-1.net:81");
     ASSERT_EQ(description.Partitions.size(), 9u);
     EXPECT_GE(description.Messages.size(), 1u);
     EXPECT_GE(description.CpuUsage, 1.0);
+    EXPECT_EQ(description.VcpuFactor, 1.5);
+    EXPECT_EQ(description.VcpuLimit, 15'000);
 }
 
 TEST_W(TDescribeTest, DescribeWorkerShowsDeployStageLink)
@@ -1123,11 +1546,11 @@ TEST_W(TDescribeTest, AdequatePerformance)
     });
 
     auto computationsDescription = run("describe_computations", [&] {
-        return DescribeComputations(FlowView);
+        return DescribeComputations(FlowView, {});
     });
     ASSERT_GE(computationsDescription.Computations.size(), 1u);
     auto firstComputationDescription = run("describe_computation", [&] {
-        return DescribeComputation(FlowView, TComputationId(computationsDescription.Computations[0].Name));
+        return DescribeComputation(FlowView, TComputationId(computationsDescription.Computations[0].Name), {});
     });
 
     auto workersDescription = run("describe_workers", [&] {
@@ -1377,6 +1800,9 @@ TEST(TUnrollPipelineDescriptionTest, SplitsPerStreamsDependencyPair)
     auto out = MakeStreamGraphId(TStreamId("c"));
 
     TPipelineDescription original;
+    original.Authentication = New<TPipelineAuthenticationDescription>();
+    original.WorkerCount = 3;
+    original.CurrentResourceUsage = New<TCurrentResourceUsage>();
     auto& computation = original.Computations[TComputationId("comp")];
     computation.Id = MakeComputationGraphId(TComputationId("comp"));
     computation.InputStreams = {in1, in2};
@@ -1384,6 +1810,10 @@ TEST(TUnrollPipelineDescriptionTest, SplitsPerStreamsDependencyPair)
     computation.StreamsDependency[out] = {in1, in2};
 
     auto unrolled = UnrollPipelineDescription(original);
+
+    EXPECT_EQ(unrolled.Authentication, original.Authentication);
+    EXPECT_EQ(unrolled.WorkerCount, original.WorkerCount);
+    EXPECT_EQ(unrolled.CurrentResourceUsage, original.CurrentResourceUsage);
 
     // Two sub-computations, one per (out, in) pair.
     ASSERT_EQ(unrolled.Computations.size(), 2u);
@@ -1464,17 +1894,6 @@ TEST_F(TDescribeTest, BuildBuffersAndBackpressureMessage)
     outStats.MaxBlockedTimeShare = 0.6;
     outStats.MaxBlockedPartitionId = blockedPartition;
 
-    // Zero limit with usage: percentages are meaningless, bytes are printed.
-    auto& storeStats = comp.OutputLimitStats[out]["output_store_bytes"];
-    storeStats.Max.Used = 5_MB;
-    storeStats.Max.Limit = 0;
-    storeStats.MaxPartitionId = blockedPartition;
-
-    // Count limits are formatted as counts, not bytes.
-    auto& countStats = comp.OutputLimitStats[out]["output_store_count"];
-    countStats.Max.Used = 12000;
-    countStats.Max.Limit = 50000;
-
     THashMap<TGraphEntityId, TWriterBlockedShare> writerBlocked;
     writerBlocked[in] = {0.56, writerPartition};
 
@@ -1487,8 +1906,6 @@ TEST_F(TDescribeTest, BuildBuffersAndBackpressureMessage)
     EXPECT_THAT(markdown, HasSubstr(Format("input_buffer_bytes{limit=100B, used=**97%%**, pending=500%%, backpressured_partition=%v}", fillPartition)));
     EXPECT_THAT(markdown, HasSubstr(Format("writer{blocked_share=**0.56**, backpressured_partition=%v}", writerPartition)));
     EXPECT_THAT(markdown, HasSubstr(Format("output_buffer_bytes{blocked_share=**0.60**, limit=100B, used=20%%, backpressured_partition=%v}", blockedPartition)));
-    EXPECT_THAT(markdown, HasSubstr("output_store_bytes{limit=0B, used=**5.0MB**"));
-    EXPECT_THAT(markdown, HasSubstr("output_store_count{limit=50K, used=24%}"));
     // The calm stream is listed without bold or a partition.
     EXPECT_THAT(markdown, HasSubstr("input_buffer_bytes{limit=100B, used=10%}\n"));
 
@@ -1516,6 +1933,113 @@ TEST_F(TDescribeTest, MermaidGraphEscapesBraces)
     EXPECT_THAT(diagram, Not(HasSubstr("{")));
     EXPECT_THAT(diagram, Not(HasSubstr("\uff5b")));
     EXPECT_THAT(diagram, Not(HasSubstr("\uff5d")));
+}
+
+// The edge lines of a Mermaid diagram in emission order: the indices of linkStyle refer to them.
+std::vector<std::string> GetMermaidEdgeLines(const std::string& diagram)
+{
+    std::vector<std::string> edgeLines;
+    for (const auto& line : StringSplitter(diagram).Split('\n')) {
+        auto text = std::string(line.Token());
+        if (text.find("-->") != std::string::npos || text.find("-.->") != std::string::npos) {
+            edgeLines.push_back(std::move(text));
+        }
+    }
+
+    return edgeLines;
+}
+
+// The edge lines that a linkStyle with |style| applies to.
+std::vector<std::string> GetStyledMermaidEdgeLines(const std::string& diagram, TStringBuf style)
+{
+    auto edgeLines = GetMermaidEdgeLines(diagram);
+    std::vector<std::string> result;
+    for (const auto& line : StringSplitter(diagram).Split('\n')) {
+        int index = 0;
+        auto text = std::string(line.Token());
+        if (text.find(style) != std::string::npos && sscanf(text.c_str(), "  linkStyle %d", &index) == 1) {
+            EXPECT_LT(index, std::ssize(edgeLines)) << diagram;
+            if (index < std::ssize(edgeLines)) {
+                result.push_back(edgeLines[index]);
+            }
+        }
+    }
+
+    return result;
+}
+
+constexpr TStringBuf WarningLinkStyle = "stroke:#cc0000";
+
+TEST_F(TDescribeTest, MermaidGraphShowsDataChannelEdges)
+{
+    Prepare();
+    Spec->Computations["Computation_1"]->Sinks["Sink_1"]->InputStreamIds = {"output_stream"};
+
+    for (const auto& [computationId, computationSpec] : Spec->Computations) {
+        auto& computationDescription = Pipeline.Computations[computationId];
+        RegisterStreams(Spec, computationId, Pipeline, computationDescription, TDescribeTraitsContext{});
+    }
+
+    auto sourceStreamId = MakeStreamGraphId(MakeGlobalStreamId("Computation_3", "Source", Spec->Computations["Computation_3"]));
+    auto outputStreamId = MakeStreamGraphId(TStreamId("output_stream"));
+
+    // A warning edge, to check that the link style indices stay aligned.
+    auto& stats = Pipeline.Computations["Computation_1"].OutputLimitStats[outputStreamId]["output_buffer_bytes"];
+    stats.Max.Limit = 100;
+    stats.Max.Used = 100;
+
+    auto sourceGraphId = Pipeline.Sources.at(MakeGlobalStreamId("Computation_3", "Source", Spec->Computations["Computation_3"])).Id;
+    TGraphEdge edge;
+    edge.From = MakeSinkGraphId(TSinkId("Computation_1/Sink_1"));
+    edge.To = sourceGraphId;
+    edge.Kind = EGraphEdgeKind::DataChannel;
+    edge.Label = "yt:b://q";
+    Pipeline.Edges.push_back(edge);
+
+    // Mermaid syntax characters of a valid YT path are encoded.
+    auto parenthesized = edge;
+    parenthesized.Label = "yt:a://tmp/q(a)[b]#c";
+    Pipeline.Edges.push_back(parenthesized);
+
+    // Edges between entities absent from the graph are skipped.
+    auto missing = edge;
+    missing.From = MakeSinkGraphId(TSinkId("Computation_1/missing_sink"));
+    missing.Label = "yt:a://missing";
+    Pipeline.Edges.push_back(missing);
+
+    // "src-Computation_3/Source" and "stm-Computation_3/Source" encoded: '-' is _2d, '/' is _2f, '_' is __.
+    ASSERT_EQ(sourceGraphId.Underlying(), "src-Computation_3/Source");
+    ASSERT_EQ(sourceStreamId.Underlying(), "stm-Computation_3/Source");
+    std::string sourceNode = "e_src_2dComputation__3_2fSource";
+    std::string sourceStreamNode = "s_stm_2dComputation__3_2fSource";
+
+    for (const auto& diagram : {BuildMermaidComputationsGraph(Pipeline), BuildMermaidUnrolledGraph(Pipeline)}) {
+        // Sources and sinks are nodes connected to their streams; the stream labels have no annotations.
+        EXPECT_THAT(diagram, HasSubstr(Format("%v[/\"Computation_3/Source", sourceNode))) << diagram;
+        EXPECT_THAT(diagram, HasSubstr("e_snk_2dComputation__1_2fSink__1[\\\"Computation_1/Sink_1")) << diagram;
+        EXPECT_THAT(diagram, HasSubstr(Format("%v --> %v", sourceNode, sourceStreamNode))) << diagram;
+        EXPECT_THAT(diagram, HasSubstr("s_stm_2doutput__stream --> e_snk_2dComputation__1_2fSink__1")) << diagram;
+        EXPECT_THAT(diagram, Not(HasSubstr("(source)"))) << diagram;
+        EXPECT_THAT(diagram, Not(HasSubstr("(sink)"))) << diagram;
+
+        auto expectedEdge = Format("e_snk_2dComputation__1_2fSink__1 -.->|yt:b://q| %v", sourceNode);
+        EXPECT_THAT(diagram, HasSubstr(expectedEdge)) << diagram;
+        EXPECT_THAT(diagram, HasSubstr("-.->|yt:a://tmp/q#40;a#41;#91;b#93;#35;c|")) << diagram;
+        EXPECT_THAT(diagram, Not(HasSubstr("missing"))) << diagram;
+
+        auto edgeLines = GetMermaidEdgeLines(diagram);
+        auto dataEdgeIndex = std::find_if(edgeLines.begin(), edgeLines.end(), [] (const auto& line) {
+            return line.find("-.->") != std::string::npos;
+        }) - edgeLines.begin();
+        ASSERT_LT(dataEdgeIndex, std::ssize(edgeLines));
+        EXPECT_THAT(diagram, HasSubstr(Format("linkStyle %v stroke:#3366cc", dataEdgeIndex))) << diagram;
+        auto warningEdgeLines = GetStyledMermaidEdgeLines(diagram, WarningLinkStyle);
+        EXPECT_FALSE(warningEdgeLines.empty()) << diagram;
+        for (const auto& line : warningEdgeLines) {
+            EXPECT_THAT(line, HasSubstr("-->|"));
+            EXPECT_THAT(line, HasSubstr("s_stm_2doutput__stream"));
+        }
+    }
 }
 
 TEST_F(TDescribeTest, BlockedTimeShareReachesDescribeFromJobStatus)
@@ -1566,6 +2090,84 @@ TEST_F(TDescribeTest, BlockedTimeShareReachesDescribeFromJobStatus)
     ASSERT_TRUE(share);
     EXPECT_EQ(share->Share, 0.75);
     EXPECT_EQ(share->ExamplePartitionId, blockedPartitionId);
+}
+
+TEST_F(TDescribeTest, MermaidNodeIdsAreInjective)
+{
+    Prepare();
+    // Valid sink names that a lossy encoding would merge.
+    auto& computation = Spec->Computations["Computation_1"];
+    for (const auto& sinkId : {"a-b", "a_b"}) {
+        auto& sink = computation->Sinks[TSinkId(sinkId)] = New<TSinkSpec>();
+        sink->SinkClassName = TypeName<TTestSink>();
+        sink->InputStreamIds = {"output_stream"};
+    }
+
+    for (const auto& [computationId, computationSpec] : Spec->Computations) {
+        auto& computationDescription = Pipeline.Computations[computationId];
+        RegisterStreams(Spec, computationId, Pipeline, computationDescription, TDescribeTraitsContext{});
+    }
+
+    for (const auto& diagram : {BuildMermaidComputationsGraph(Pipeline), BuildMermaidUnrolledGraph(Pipeline)}) {
+        EXPECT_THAT(diagram, HasSubstr("e_snk_2dComputation__1_2fa_2db[\\\"Computation_1/a-b")) << diagram;
+        EXPECT_THAT(diagram, HasSubstr("e_snk_2dComputation__1_2fa__b[\\\"Computation_1/a_b")) << diagram;
+        EXPECT_THAT(diagram, HasSubstr("s_stm_2doutput__stream --> e_snk_2dComputation__1_2fa_2db")) << diagram;
+        EXPECT_THAT(diagram, HasSubstr("s_stm_2doutput__stream --> e_snk_2dComputation__1_2fa__b")) << diagram;
+    }
+}
+
+TEST_F(TDescribeTest, SourceStreamLimitsReachDescribe)
+{
+    Prepare();
+
+    // A source computation reports the read window of its source stream by the local stream id.
+    TPartitionId limitedPartitionId;
+    for (const auto& [partitionId, partition] : FlowView->State->ExecutionSpec->Layout->Partitions) {
+        if (partition->ComputationId != TComputationId("Computation_3")) {
+            continue;
+        }
+
+        auto& jobStatus = FlowView->Feedback->PartitionJobStatuses[partitionId]->CurrentJobStatus;
+        auto& limitStatus = jobStatus->InputLimits["max_read_window_seconds"][TStreamId("Source")];
+        limitStatus.Limit = 120;
+        limitStatus.Used = 120;
+        limitedPartitionId = partitionId;
+        break;
+    }
+
+    ASSERT_FALSE(limitedPartitionId == TPartitionId());
+
+    for (const auto& [computationId, computationSpec] : Spec->Computations) {
+        auto& computationDescription = Pipeline.Computations[computationId];
+        RegisterStreams(Spec, computationId, Pipeline, computationDescription, TDescribeTraitsContext{});
+    }
+
+    FillGraphLimits(FlowView, GetComputationPartitionIntermediateDescriptions(FlowView), Pipeline);
+    FillExtendedStreams(FlowView, Pipeline);
+
+    auto sourceStreamId = MakeStreamGraphId(MakeGlobalStreamId("Computation_3", "Source", Spec->Computations["Computation_3"]));
+    const auto& computation = Pipeline.Computations.at(TComputationId("Computation_3"));
+    const auto& stats = computation.InputLimitStats.at(sourceStreamId).at("max_read_window_seconds");
+    EXPECT_EQ(stats.Max.Used, 120);
+    EXPECT_EQ(stats.Max.Limit, 120);
+    EXPECT_EQ(stats.MaxPartitionId, limitedPartitionId);
+
+    ASSERT_EQ(computation.ExtendedSourceStreams.size(), 1u);
+    EXPECT_EQ(computation.ExtendedSourceStreams[0].StreamGraphEntityId, sourceStreamId);
+    EXPECT_TRUE(computation.ExtendedSourceStreams[0].BackpressureDetected);
+
+    // The source edge is drawn with the limit and highlighted.
+    auto diagram = BuildMermaidComputationsGraph(Pipeline);
+    EXPECT_THAT(diagram, HasSubstr("max_read_window_seconds")) << diagram;
+    // The read window is in seconds, not bytes.
+    EXPECT_THAT(diagram, HasSubstr("limit=2m")) << diagram;
+    EXPECT_THAT(diagram, Not(HasSubstr("limit=120B"))) << diagram;
+    auto warningEdgeLines = GetStyledMermaidEdgeLines(diagram, WarningLinkStyle);
+    bool hasWarningSourceEdge = std::ranges::any_of(warningEdgeLines, [] (const auto& line) {
+        return line.find("max_read_window_seconds") != std::string::npos;
+    });
+
+    EXPECT_TRUE(hasWarningSourceEdge) << diagram;
 }
 
 TEST_F(TDescribeTest, FillStreamStatisticsMessages)
@@ -1834,6 +2436,74 @@ TEST_W(TDescribeTest, DescribePipelineShowsControllerCommitInfo)
     if (!buildInfo->BuildHost.empty()) {
         EXPECT_TRUE(contains("* Built on: `" + buildInfo->BuildHost + "`")) << "Messages:" << dump();
     }
+}
+
+TEST_W(TDescribeTest, DescribePipelineUsesProvidedControllerBuildInfo)
+{
+    Prepare();
+
+    auto buildInfo = New<TFlowCoreBuildInfo>();
+    buildInfo->Author = "ui-test-user";
+    buildInfo->Branch = "ui-test-branch";
+    buildInfo->BuildHost = "localhost";
+    buildInfo->BuildTimestamp = 1'000'000;
+
+    auto description = DescribePipeline({
+        .FlowView = FlowView,
+        .Logger = TLogger("test"),
+        .StatusOnly = true,
+        .ControllerFlowCoreVersion = GetBinaryChecksum(),
+        .ControllerBuildInfo = buildInfo,
+    });
+
+    EXPECT_TRUE(MessagesContain(description.Messages, "* Author: `ui-test-user`"));
+    EXPECT_TRUE(MessagesContain(description.Messages, "ui-test-branch"));
+    EXPECT_TRUE(MessagesContain(description.Messages, "* Built on: `localhost`"));
+    EXPECT_TRUE(MessagesContain(description.Messages, "* Built at: `1970-01-12T13:46:40Z`"));
+}
+
+TEST_W(TDescribeTest, DescribePipelineShowsFlowCoreRevision)
+{
+    Prepare();
+    FlowView->State->ExecutionSpec->FlowCoreTarget->TrySetValue(TFlowCoreTarget(GetBinaryChecksum()), TestVersionProvider());
+
+    auto buildInfo = New<TFlowCoreBuildInfo>();
+    buildInfo->SvnRevision = 123;
+    buildInfo->BaseSvnRevision = 456;
+    auto describe = [&] {
+        return DescribePipeline({
+            .FlowView = FlowView,
+            .Logger = TLogger("test"),
+            .StatusOnly = true,
+            .ControllerFlowCoreVersion = GetBinaryChecksum(),
+            .ControllerBuildInfo = buildInfo,
+        });
+    };
+    auto expectedMarkdown = [] (int revision) {
+        auto revisionLink = NInternalUrls::VcsRevisionUrlPrefix.empty()
+            ? Format("`r%v`", revision)
+            : Format("[r%v](https://a.yandex-team.ru/arcadia?rev=r%v)", revision, revision);
+        return revisionLink + " -- the base trunk revision of the FlowCore library, excluding commits from the user's branch.";
+    };
+
+    auto description = describe();
+    bool found = false;
+    for (int index = 1; index < std::ssize(description.Messages); ++index) {
+        const auto& message = description.Messages[index];
+        if (message.Text == "FlowCore library revision") {
+            found = true;
+            EXPECT_EQ(message.Level, ELogLevel::Info);
+            EXPECT_EQ(description.Messages[index - 1].Text, "Flow binaries matching");
+            EXPECT_THAT(message.MarkdownText, testing::Optional(testing::StrEq(expectedMarkdown(456))));
+        }
+    }
+    EXPECT_TRUE(found);
+
+    buildInfo->BaseSvnRevision = -1;
+    EXPECT_FALSE(MessagesContain(describe().Messages, "FlowCore library revision"));
+
+    buildInfo->BaseSvnRevision = 0;
+    EXPECT_FALSE(MessagesContain(describe().Messages, "FlowCore library revision"));
 }
 
 TEST_W(TDescribeTest, DescribePipelineShowsFlowCoreTargetMismatch)

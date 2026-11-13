@@ -186,7 +186,7 @@ Let’s walk through the code line by line:
 - `onMessages(List<ExtendedMessage> messages, OutputCollector output, RuntimeContext ctx)` — called for a batch of messages.
 - `onTimers(List<Timer> timers, OutputCollector output, RuntimeContext ctx)` — called for a batch of timers.
 
-A batch corresponds to one worker request and may contain messages with different [keys](../../../flow/concepts/glossary.md#key); per-key grouping, if needed, is done in the function code (see [Companion](../../../flow/concepts/companion.md#schema)).
+A batch corresponds to one worker request and may contain messages with different [keys](../../../flow/concepts/glossary.md#key); per-key grouping, if needed, is done in user code (see [Companion](../../../flow/concepts/companion.md#schema)).
 
 #### Example of a batch function
 
@@ -326,10 +326,23 @@ Use `OutputCollector` to send processing results:
 | Method | Description |
 | --- | --- |
 | `output.addMessage(message)` | Add an output message |
+| `output.addMessage(message, options)` | Add a message with `AddMessageOptions` controlling distribution and the Swift message ID suffix |
 | `output.addTimer(triggerTimestamp)` | Add a [timer](../../../flow/concepts/glossary.md#timer) with the specified trigger time (eventTimestamp = 0) |
 | `output.addTimer(triggerTimestamp, eventTimestamp)` | Add a timer with the specified trigger time and event time |
 | `output.addTimer(timerStreamId, triggerTimestamp, eventTimestamp)` | Add a timer for a specific timer stream |
 | `output.setParentIds(parentIds)` | Set the parent ID to track the [lineage](../../../flow/concepts/lineage.md) of messages. Returns a new `OutputCollector` |
+
+For a Swift computation, `MessageIdSuffix.payloadHash()` or `MessageIdSuffix.userDefined(value)` makes message identity independent of emission order:
+
+```java
+output.addMessage(
+        message,
+        AddMessageOptions.builder()
+                .setMessageIdSuffix(MessageIdSuffix.payloadHash())
+                .build());
+```
+
+Default options use the message sequence number. Payload-hash and user-defined suffixes are supported only by Swift computations.
 
 ## Spring Boot
 
@@ -406,7 +419,7 @@ To run a companion in Java or Kotlin, you must declare the `CompanionManager` re
     "parameters" = {
         "timeout" = "10s";
         "jdk_bin_path" = "/app/ytflow/jdk/bin/java";
-        "main_class" = "tech.ytsaurus.flow.examples.waitclickjoin.NodeCompanionMain";
+        "main_class" = "tech.ytsaurus.flow.examples.waitclickjoin.PipelineMain";
         "classpath" = "/app/ytflow/lib/*";
     };
     "dependencies" = {};

@@ -25,6 +25,11 @@ message TWatchLogOption
     repeated string required_tags = 4;
     // List of excluded tags.
     repeated string excluded_tags = 5;
+
+    // Detect actual changes of aggregated attributes in update events, reading old values if needed,
+    // and allow aggregated attributes in selectors.
+    // Otherwise, any store to an aggregated attribute is reported as a possible change.
+    optional bool enable_aggregated_attribute_changes = 11;
 }
 
 message THistoryAttribute
@@ -41,6 +46,8 @@ message THistoryTimeIndex
     {
         IM_DISABLED = 0;
         IM_ENABLED = 1;
+        // Writes are enabled, but queries do not select the index.
+        IM_BUILDING = 2;
     }
     optional string snake_case_name = 1;
     optional string camel_case_name = 2;
@@ -50,6 +57,8 @@ message THistoryTimeIndex
     optional EIndexMode mode = 6;
     // Included attributes are part of the index and can be used as selectors of select history query.
     repeated string included_attributes = 7;
+    // Hash column expression; mutually exclusive with hash_modulo.
+    optional string hash_expression = 8;
 }
 
 enum EMigrationState
@@ -166,6 +175,7 @@ message TAttributeSensor
     optional string path = 1;
     optional EAttributeSensorPolicy policy = 2;
     optional bool per_user = 3;
+    optional bool include_removed = 4;
 }
 
 message TAccessControlEntry
@@ -209,7 +219,41 @@ message TLocalAttributeMigration
     optional string old_lock_group = 4;
 }
 
-// Next field number 61.
+// Declares a satellite table keyed by the object, an attribute id and a map key.
+// The order of |attributes| is significant: an attribute's zero-based position is its persisted
+// attribute id. Reordering or removing attributes is a breaking on-disk change; deprecate them instead.
+// All attributes must share the map key type and, unless |merge_types| is set, the value type.
+message TSatelliteTable
+{
+    message TSatelliteAttribute
+    {
+        oneof state {
+            string path = 1;
+            bool deprecated = 2;
+        }
+    }
+
+    // Table name suffix.
+    optional string name = 1;
+    // Ordered list of attribute paths stored in this table. Position induces the attribute id.
+    repeated TSatelliteAttribute attributes = 2;
+    // Data group of the |value| column. Key columns always use the default group.
+    optional string values_data_group = 3;
+    // Stores values in an "any" column, so attributes of different value types may share the table.
+    // Set it upfront if such an attribute may be appended later.
+    optional bool merge_types = 4;
+
+    // Defaults to CRP_REMOVE. Only CRP_REMOVE, CRP_AWAIT_FOREIGN and CRP_FORBID are allowed.
+    // CRP_AWAIT_FOREIGN leaves a non-empty table in place under the `_orm_satellites` finalizer,
+    // which completes once the maps are drained with ordinary removals.
+    optional ECascadingRemovalPolicy removal_policy = 5;
+
+    // Aggregate function of the |value| column; incompatible with |merge_types|.
+    // Description: https://yt.yandex-team.ru/docs/user-guide/dynamic-tables/sorted-dynamic-tables#aggr_columns
+    optional string values_aggregate = 6;
+}
+
+// Next field number 62.
 message TObjectTypeOption
 {
     reserved 6, 7, 15, 17, 20, 21, 28, 29, 34, 35, 37, 38, 46;
@@ -315,6 +359,9 @@ message TObjectTypeOption
 
     // Migrations changing underlying storage of attribute. E.g. moving "/spec/age" from [spec.etc] to [spec.age].
     repeated TLocalAttributeMigration local_attribute_migrations = 53;
+
+    // Satellite tables storing out-of-row map attributes for this object type.
+    repeated TSatelliteTable satellite_tables = 61;
 
     // meta.account_id column was mistakenly added to some ORM's.
     optional bool remove_legacy_meta_account_id = 47;
@@ -486,6 +533,8 @@ message TEditionFlagOptions
     optional bool initial_value = 3 [default = false];
     // Human-readable summary for self-describing code and automated reports/nudges.
     optional string description = 4;
+    // Export the resolved flag value through the generated C++ codegen feature interface.
+    optional bool expose_to_cpp = 5 [default = false];
 }
 
 // Options for options! Set a |project_flag| field option on a boolean file option to require each ORM
@@ -501,7 +550,7 @@ message TProjectFlagOptions
     optional string description = 2;
 }
 
-// Next field 30062.
+// Next field 30068.
 extend google.protobuf.FileOptions
 {
     repeated TObjectTypeOption object_type = 30000;
@@ -620,19 +669,11 @@ extend google.protobuf.FileOptions
     // If true, treats default value and field absence as equal.
     optional bool compare_absent_value_as_default = 30056;
 
-    // Exposes the /control/partition_objects method on the schema object. Edition flag: defaults on
-    // at edition 1+; an installation below edition 1 (or pinning it |= false|) keeps the control
-    // field dropped. The codegen drops the schema control field unless the effective value is set.
-    optional bool enable_schema_partition_objects = 30062 [(edition_flag) = {
-        at_edition: 1
-        description: "Expose /control/partition_objects on the schema object."
-    }];
-    // Exposes the /control/watch_log_info method on the schema object. Edition flag: defaults on at
-    // edition 1+; an installation below edition 1 (or pinning it |= false|) keeps the control field
-    // dropped. The codegen drops the schema control field unless the effective value is set.
-    optional bool enable_schema_watch_log_info = 30060 [(edition_flag) = {
-        at_edition: 1
-        description: "Expose /control/watch_log_info on the schema object."
+    // Adds the |tags| field to TAccessControlEntry. Edition flag: defaults on at edition 7+; an
+    // installation below edition 7 (or pinning it |= false|) keeps the field dropped.
+    optional bool enable_acl_entry_tags = 30066 [(edition_flag) = {
+        at_edition: 7
+        description: "Add the tags field to access control entries."
     }];
 
     // Enables the |multi_consumer| system table and native multi-consumer support.
@@ -646,6 +687,9 @@ extend google.protobuf.FileOptions
     optional string counter_field_lock_group = 30063;
     optional string counter_field_data_group = 30064;
     optional bool counter_is_multiple_referenceable = 30065;
+
+    // Generates the |leader_election_lock| system table used by the chaos election backend.
+    optional bool enable_chaos_election = 30067;
 }
 
 enum EGenerationPolicy
@@ -737,6 +781,8 @@ message TReferenceOption
         optional string counter_path = 1;
         optional int32 field_number = 2;
     }
+
+    message TPluginKeyStorageOption { }
 
     message TReferenceViewOption
     {
@@ -835,6 +881,7 @@ message TReferenceOption
         TProtoKeyStorageOption proto_key_storage = 4;
         TTabularKeyStorageOption tabular_key_storage = 5;
         TCountingKeyStorageOption counting_key_storage = 9;
+        TPluginKeyStorageOption plugin_key_storage = 19;
     }
 
     optional TReferenceViewOption view = 7;
@@ -864,6 +911,8 @@ message TReferencesOption
 
     message TEndpoint
     {
+        extensions 1000 to 1999;
+
         // The object type that owns this side of the reference (snake_case).
         optional string object_type = 1;
 
@@ -883,6 +932,7 @@ message TReferencesOption
         {
             TReferenceOption.TTabularKeyStorageOption tabular_key_storage = 12;
             TReferenceOption.TCountingKeyStorageOption counting_key_storage = 13;
+            TReferenceOption.TPluginKeyStorageOption plugin_key_storage = 15;
             // One-sided reference: this side is not materialized.
             bool dummy = 14;
         }
@@ -912,6 +962,14 @@ message TGeohashOption
     optional uint32 length = 1;
     // Path to field of NYT.NOrm.NDataModel.TGeoPoint type.
     optional string source_geo_point_path = 2;
+}
+
+message TAddTagsToDescendantOption
+{
+    // Relative path to a descendant field, starting with '/'. The message root path '/' is not allowed.
+    optional string path = 1;
+    // Tags to add to the descendant field.
+    repeated string tags = 2;
 }
 
 message TJoinCondition
@@ -945,7 +1003,22 @@ message TJoinedColumnOption
     optional string aggregation = 5;
 }
 
-// Next field 31064.
+message TProtobufStorageRawAliasOptions
+{
+    optional string name = 1;
+    optional int32 number = 2;
+    // Standard protobuf deprecation marker for the public raw alias field.
+    optional bool deprecated = 3;
+}
+
+enum EMessageStorageFormat
+{
+    MSF_YSON = 0;
+    MSF_PROTOBUF = 1;
+    MSF_KEEP_STORED = 2;
+}
+
+// Next field 31069.
 extend google.protobuf.FieldOptions
 {
     optional bool column = 31001;
@@ -1066,6 +1139,10 @@ extend google.protobuf.FieldOptions
     // field in the subtree after |add_tags|, overriding any tags they add back via
     // |message_tags| or |add_tags|. The field itself keeps the tags.
     repeated string eliminate_tags_from_descendants = 31062;
+    // Tags to add to descendant fields at paths relative to this field and starting with '/'.
+    // The message root path '/' is not allowed.
+    // Added tags behave like |add_tags| declared directly on the descendant field.
+    repeated TAddTagsToDescendantOption add_tags_to_descendants = 31065;
 
     optional EUpdatePolicy update_policy = 31032;
     optional bool not_updatable = 31004;
@@ -1108,7 +1185,24 @@ extend google.protobuf.FieldOptions
     optional TJoinedColumnOption joined_column = 31050;
 
     // Field (in the same message) that actually stores the content of this field in raw protobuf format as bytes.
+    // Legacy two-field form; prefer |protobuf_storage| for new models.
     optional string raw_protobuf = 31051;
+
+    // Store this message-typed field as raw protobuf bytes in a codegen-synthesized column.
+    // Single-field form of |raw_protobuf|: the storage column is not visible in the client proto.
+    optional bool protobuf_storage = 31066;
+
+    // Expose a bytes (or repeated bytes) alias of a protobuf_storage field.
+    // The alias shares its owner's storage and uses the owner's write mode.
+    optional TProtobufStorageRawAliasOptions protobuf_storage_raw_alias = 31067;
+
+    // Write format for singular/repeated message columns of type Any, at codegen edition 12+.
+    // Reads accept all supported YSON/protobuf representations regardless of this option;
+    // writes use the selected format, which defaults to MSF_YSON.
+    // MSF_KEEP_STORED preserves the previous format; in this mode, new messages use YSON
+    // when creating an object or replacing a null column value.
+    // Not supported on maps or on fixed-format protobuf_storage columns.
+    optional EMessageStorageFormat message_storage_format = 31068;
 
     // Each predicate is an ORM QL expression over field's attribute.
     // Alias `value` can be used instead of spelling out full attribute path in the expression.
@@ -1191,8 +1285,7 @@ extend google.protobuf.EnumOptions
     // The file into which this enum should be exported.
     optional string enum_output_filename = 33006;
 
-    // For columnar enums there is DEFINE_ENUM generated.
-    // By default enum name is chosen. This option overrides it.
+    // Overrides the C++ type name of the DEFINE_ENUM generated for a columnar enum (the enum name by default).
     // TODO(dgolear): Get rid of DEFINE_ENUM.
     optional string enum_cpp_type_name = 33008;
 }

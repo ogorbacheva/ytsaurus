@@ -86,6 +86,8 @@ def build_configs(yt_config, ports_generator, dirs, logs_dir, binary_to_version)
         multidaemon_config,
         deepcopy(master_connection_configs),
         deepcopy(clock_connection_config),
+        discovery_configs,
+        cypress_proxy_rpc_ports,
         ports_generator,
         logs_dir)
 
@@ -366,6 +368,14 @@ def build_configs(yt_config, ports_generator, dirs, logs_dir, binary_to_version)
             queue_agent_rpc_ports),
         "multi": multidaemon_config,
     }
+
+    if yt_config.chaos_node_count > 0:
+        # Master configs are built before cache addresses are allocated.
+        replication_card_cache_config = cluster_configuration["cluster_connection"]["replication_card_cache"]
+        cell_tags = [master_configs["primary_cell_tag"]] + master_configs["secondary_cell_tags"]
+        for cell_tag in cell_tags:
+            for master_config in master_configs[cell_tag]:
+                master_config["cluster_connection"]["replication_card_cache"] = deepcopy(replication_card_cache_config)
 
     return cluster_configuration
 
@@ -747,6 +757,18 @@ def _build_kafka_proxy_configs(multidaemon_config_output,
 
         config["monitoring_port"] = next(ports_generator)
 
+        if yt_config.enable_tls and yt_config.kafka_cert is not None:
+            config["server"] = {
+                "credentials": {
+                    "cert_chain": {
+                        "file_name": yt_config.kafka_cert,
+                    },
+                    "private_key": {
+                        "file_name": yt_config.kafka_cert_key,
+                    },
+                },
+            }
+
         multidaemon_config_output["daemons"][f"kafka_proxy_{index}"] = {
             "type": "kafka_proxy",
             "config": config,
@@ -760,6 +782,8 @@ def _build_timestamp_provider_configs(yt_config,
                                       multidaemon_config_output,
                                       master_connection_configs,
                                       clock_connection_config,
+                                      discovery_configs,
+                                      cypress_proxy_rpc_ports,
                                       ports_generator,
                                       logs_dir):
     configs = []
@@ -783,6 +807,18 @@ def _build_timestamp_provider_configs(yt_config,
         })
 
         init_cypress_annotations(config, index)
+
+        config["cluster_connection"] = \
+            _build_cluster_connection_config(
+                yt_config,
+                master_connection_configs,
+                clock_connection_config,
+                discovery_configs,
+                None,  # timestamp provider addresses
+                [],  # master cache addresses
+                [],  # chaos cache addresses
+                cypress_proxy_rpc_ports,
+                config_template=config["cluster_connection"])
 
         # COMPAT(aleksandra-zh)
         set_at(config, "timestamp_provider/addresses",
@@ -1117,6 +1153,10 @@ def _build_node_configs(multidaemon_config_output,
     configs = []
     addresses = []
 
+    store_location_media = yt_config.store_location_media
+    store_location_count = (
+        len(store_location_media) if store_location_media is not None else yt_config.store_location_count)
+
     for index in range(yt_config.node_count):
         config = default_config.get_node_config()
 
@@ -1226,7 +1266,7 @@ def _build_node_configs(multidaemon_config_output,
 
         store_location_configs = []
 
-        for location_index in range(yt_config.store_location_count):
+        for location_index in range(store_location_count):
             store_location_config = {
                 "low_watermark": 0,
                 "high_watermark": 0,
@@ -1250,6 +1290,9 @@ def _build_node_configs(multidaemon_config_output,
                 store_location_config["path"] = os.path.join(node_tmpfs_dirs[index], "chunk_store/{0}".format(location_index))
             else:
                 store_location_config["path"] = os.path.join(node_dirs[index], "chunk_store/{0}".format(location_index))
+
+            if store_location_media is not None:
+                store_location_config["medium_name"] = store_location_media[location_index]
 
             store_location_configs.append(store_location_config)
 
@@ -2349,6 +2392,13 @@ def init_logging(path, name,
     if "compression_thread_count" not in logging_config:
         logging_config["compression_thread_count"] = 4
 
+    # With compressed logs, the default (unset flush_period) flushes writers after every
+    # batch, producing many tiny zstd frames (~5 KB) that compress ~6x instead of ~10x and
+    # waste CPU. A periodic flush lets frames accumulate -> smaller logs and less compression
+    # CPU, at the cost of up to flush_period of log buffered in RAM (lost on a hard crash).
+    if compression_options and "flush_period" not in logging_config:
+        logging_config["flush_period"] = 1000
+
     default_log_level = max(log_level, LogLevel.INFO)
     writer_name = _get_writer_name(default_log_level.to_str())
     logging_config.setdefault("rules", []).append({
@@ -2465,7 +2515,7 @@ def init_singletons(config, yt_config):
     set_at(config, "rpc_dispatcher", {
         "compression_pool_size": 1,
         "heavy_pool_size": 1,
-        "alert_on_missing_request_info": True,
+        "alert_on_missing_request_annotation": True,
         "alert_on_unset_request_timeout": True,
     })
     set_at(config, "chunk_client_dispatcher", {
@@ -2477,6 +2527,8 @@ def init_singletons(config, yt_config):
     })
     set_at(config, "address_resolver/localhost_fqdn", yt_config.fqdn)
     set_at(config, "solomon_exporter/grid_step", 1000)
+    if yt_config.tcmalloc_profile_sampling_rate is not None:
+        set_at(config, "tcmalloc/profile_sampling_rate", yt_config.tcmalloc_profile_sampling_rate)
     set_at(config, "enable_ref_counted_tracker_profiling", yt_config.enable_resource_tracking)
     set_at(config, "resource_tracker/enable", yt_config.enable_resource_tracking)
     if yt_config.mock_tvm_id is not None:

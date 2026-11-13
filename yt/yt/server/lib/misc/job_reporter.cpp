@@ -427,13 +427,16 @@ public:
 
     size_t EstimateSize() const override
     {
+        const auto& profile = Report_.Profile();
+        YT_VERIFY(profile);
+
         return ::NYT::NServer::EstimateSizes(
             Report_.OperationId(),
             Report_.JobId(),
-            Report_.Profile().value_or(NJobAgent::TJobProfile{}).GetType(),
+            profile->GetType(),
             /*partIndex*/ int{0},
-            Report_.Profile().value_or(NJobAgent::TJobProfile{}).Blob,
-            Report_.Profile().value_or(NJobAgent::TJobProfile{}).ProfilingProbability);
+            profile->Blob(),
+            profile->GetProfilingProbability());
     }
 
     TUnversionedOwningRow ToRow(int archiveVersion) const override
@@ -456,8 +459,8 @@ public:
                 .PartIndex = 0,
             },
             .ProfileType = profile->GetType(),
-            .ProfileBlob = profile->Blob,
-            .ProfilingProbability = profile->ProfilingProbability,
+            .ProfileBlob = profile->Blob(),
+            .ProfilingProbability = profile->GetProfilingProbability(),
         });
     }
 
@@ -605,25 +608,26 @@ public:
         JobFailContextHandler_->SetEnabled(config->EnableJobFailContextReporter);
     }
 
-    void OnDynamicConfigChanged(
-        const TJobReporterConfigPtr& /*oldConfig*/,
-        const TJobReporterConfigPtr& newConfig)
+    void Reconfigure(const TJobReporterConfigPtr& config)
     {
-        JobHandler_->OnConfigChanged(
-            newConfig,
-            newConfig->JobHandler);
-        JobSpecHandler_->OnConfigChanged(
-            newConfig,
-            newConfig->JobSpecHandler);
-        JobStderrHandler_->OnConfigChanged(
-            newConfig,
-            newConfig->JobStderrHandler);
-        JobProfileHandler_->OnConfigChanged(
-            newConfig,
-            newConfig->JobProfileHandler);
-        JobFailContextHandler_->OnConfigChanged(
-            newConfig,
-            newConfig->JobFailContextHandler);
+        JobHandler_->Reconfigure(
+            config,
+            config->JobHandler);
+        OperationIdHandler_->Reconfigure(
+            config,
+            config->OperationIdHandler);
+        JobSpecHandler_->Reconfigure(
+            config,
+            config->JobSpecHandler);
+        JobStderrHandler_->Reconfigure(
+            config,
+            config->JobStderrHandler);
+        JobProfileHandler_->Reconfigure(
+            config,
+            config->JobProfileHandler);
+        JobFailContextHandler_->Reconfigure(
+            config,
+            config->JobFailContextHandler);
     }
 
 private:
@@ -689,12 +693,10 @@ void TJobReporter::UpdateConfig(const TJobReporterConfigPtr& config)
     }
 }
 
-void TJobReporter::OnDynamicConfigChanged(
-    const TJobReporterConfigPtr& oldConfig,
-    const TJobReporterConfigPtr& newConfig)
+void TJobReporter::Reconfigure(const TJobReporterConfigPtr& config)
 {
     if (Impl_) {
-        Impl_->OnDynamicConfigChanged(oldConfig, newConfig);
+        Impl_->Reconfigure(config);
     }
 }
 

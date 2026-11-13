@@ -15,13 +15,17 @@
 namespace NYql {
     namespace NCommonJobVars {
         extern const TString ACTOR_PORT;
+        extern const TString GRPC_PORT;
+        extern const TString MONITORING_PORT;
         extern const TString ACTOR_NODE_ID;
+        extern const TString LOG_LEVEL;
         extern const TString ADDRESS_RESOLVER_CONFIG;
         extern const TString UDFS_PATH;
         extern const TString OPERATION_SIZE;
         extern const TString YT_COORDINATOR;
         extern const TString YT_BACKEND;
         extern const TString YT_FORCE_IPV4;
+        extern const TString DQ_CLIQUE_ALIAS;
     }
 
     class ICoordinationHelper;
@@ -30,6 +34,7 @@ namespace NYql {
     {
         TString ObjectId;
         TString LocalFileName;
+        TString ContentMd5;
         TMaybe<TString> RemoteFileName;
         THashMap<TString, TString> Attributes;
         TFile File;
@@ -54,6 +59,7 @@ namespace NYql {
         NYql::NProto::TDqConfig::TYtBackend YtBackend;
 
         TString UploadPrefix;
+        TString UploadClusterAddress;
         TString LockName;
         TString LogFile;
 
@@ -77,6 +83,7 @@ namespace NYql {
 
         // Pinger
         TString DieOnFileAbsence; // see YQL-14099
+        ui16 MonitoringPort = 0;
 
         // Cleaner
         TMaybe<int> KeepFirst;
@@ -90,6 +97,7 @@ namespace NYql {
 
     NActors::IActor* CreateResourceManager(const TResourceManagerOptions& options, const TIntrusivePtr<ICoordinationHelper>& coordinator);
 
+    // Clique-only clients can use CreateUploadCoordinationHelper.
     NActors::IActor* CreateResourceUploader(const TResourceManagerOptions& options, const TIntrusivePtr<ICoordinationHelper>& coordinator);
 
     NActors::IActor* CreateResourceDownloader(const TResourceManagerOptions& options, const TIntrusivePtr<ICoordinationHelper>& coordinator);

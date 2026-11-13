@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"slices"
 	"time"
 
 	"go.uber.org/atomic"
@@ -16,6 +17,7 @@ import (
 	"go.ytsaurus.tech/yt/chyt/controller/internal/monitoring"
 	"go.ytsaurus.tech/yt/chyt/controller/internal/strawberry"
 	"go.ytsaurus.tech/yt/go/ypath"
+	"go.ytsaurus.tech/yt/go/yson"
 	"go.ytsaurus.tech/yt/go/yt"
 	"go.ytsaurus.tech/yt/go/yt/ythttp"
 	"go.ytsaurus.tech/yt/go/ytlock"
@@ -97,7 +99,9 @@ func New(config *Config, options *Options, cfs map[string]strawberry.ControllerF
 	app.locations = make([]*Location, 0)
 
 	var agentInfos []strawberry.AgentInfo
+	controllerConfigs := make(map[string]map[string]yson.RawValue)
 	healthCheckers := make(map[string]monitoring.HealthChecker)
+	var monitoredClusters []string
 	for _, proxy := range config.LocationProxies {
 		l.Debug("initializing location", log.String("location_proxy", proxy))
 		var err error
@@ -121,16 +125,30 @@ func New(config *Config, options *Options, cfs map[string]strawberry.ControllerF
 			l.Fatal("error creating YT client", log.Error(err), log.String("proxy", proxy))
 		}
 
+		// COMPAT(buyval01): Remove after migrating agent settings to location_overrides.
 		aCfg := config.Strawberry.ApplyOverrides(config.LocationStrawberryOverrides[proxy])
+		aCfg = aCfg.ApplyOverrides(config.LocationOverrides[proxy].Agent)
+		aCfg.BaseACL = config.BaseACL
 
 		ctlDefaultSpeclet := config.LocationControllerDefaultSpeclet[proxy]
+		controllerConfigs[proxy] = make(map[string]yson.RawValue)
+
+		enabledFamilies := config.EnabledFamilies
+		if override := config.LocationOverrides[proxy].EnabledFamilies; override != nil {
+			enabledFamilies = override
+		}
 
 		loc.as = map[string]*agent.Agent{}
 		for family, cf := range cfs {
+			if enabledFamilies != nil && !slices.Contains(*enabledFamilies, family) {
+				continue
+			}
+
 			l := loc.l.WithName(family)
 			l.Debug("instantiating controller for location", log.String("location", proxy), log.String("family", family))
 
 			cCfg := cf.Config
+			// COMPAT(buyval01): Remove after migrating default speclets to location_overrides.
 			if defaultSpeclet := ctlDefaultSpeclet[family]; len(defaultSpeclet) > 0 {
 				newCfg, err := strawberry.AddDefaultSpecletToConfig(cCfg, defaultSpeclet)
 				if err != nil {
@@ -138,6 +156,12 @@ func New(config *Config, options *Options, cfs map[string]strawberry.ControllerF
 				}
 				cCfg = newCfg
 			}
+
+			cCfg, err = strawberry.ApplyControllerConfigOverrides(cCfg, config.LocationOverrides[proxy].Controllers[family])
+			if err != nil {
+				l.Fatal("failed to apply controller overrides for location", log.Error(err))
+			}
+			controllerConfigs[proxy][family] = cCfg
 
 			c := cf.Ctor(l.WithName("c"), loc.ytc, config.Strawberry.RootOrDefault().Child(family), proxy, cCfg)
 			subRegistry := metricsRegistry.WithTags(map[string]string{
@@ -151,7 +175,10 @@ func New(config *Config, options *Options, cfs map[string]strawberry.ControllerF
 		}
 
 		// TODO(max42): extend for generic controllers.
-		healthCheckers[proxy] = loc.as["chyt"]
+		if a, ok := loc.as["chyt"]; ok {
+			healthCheckers[proxy] = a
+			monitoredClusters = append(monitoredClusters, proxy)
+		}
 
 		app.locations = append(app.locations, loc)
 		for _, a := range loc.as {
@@ -171,19 +198,19 @@ func New(config *Config, options *Options, cfs map[string]strawberry.ControllerF
 				RobotUsername:             config.Strawberry.RobotUsername,
 				AssignAdministerToCreator: config.Strawberry.AssignAdministerToCreatorOrDefault(),
 			},
-			ClusterInfos:                     agentInfos,
-			LocationAliases:                  config.HTTPLocationAliases,
-			LocationControllerDefaultSpeclet: config.LocationControllerDefaultSpeclet,
-			Token:                            config.Token,
-			Endpoint:                         config.HTTPAPIEndpointOrDefault(),
-			DisableAuth:                      config.DisableAPIAuth,
+			ClusterInfos:              agentInfos,
+			LocationAliases:           config.HTTPLocationAliases,
+			LocationControllerConfigs: controllerConfigs,
+			Token:                     config.Token,
+			Endpoint:                  config.HTTPAPIEndpointOrDefault(),
+			DisableAuth:               config.DisableAPIAuth,
 		}
 		app.HTTPAPIServer = api.NewServer(apiConfig, l)
 	}
 
 	if config.HTTPMonitoringEndpoint != nil {
 		var monitoringConfig = monitoring.HTTPMonitoringConfig{
-			Clusters: config.LocationProxies,
+			Clusters: monitoredClusters,
 			Endpoint: config.HTTPMonitoringEndpointOrDefault(),
 		}
 		app.HTTPMonitoringServer = monitoring.NewServer(monitoringConfig, l, &app, healthCheckers)

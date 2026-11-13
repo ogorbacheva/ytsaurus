@@ -113,7 +113,6 @@ public:
     virtual TFuture<void> StartSidecar() = 0;
     virtual TFuture<void> ShutdownSidecar() = 0;
     virtual void RestartSidecar() = 0;
-    virtual bool IsAlive() = 0;
 
 protected:
     const std::string Name_;
@@ -152,6 +151,10 @@ struct TUserJobEnvironmentOptions
     bool EnablePortoMemoryTracking = false;
 
     NContainers::EEnablePorto EnablePorto = NContainers::EEnablePorto::None;
+
+    //! Non-root UID to which the trusted executor switches before executing
+    //! user code. Its presence also requires starting the executor as root.
+    std::optional<int> TargetUserId;
 
     i64 ThreadLimit;
 
@@ -234,6 +237,7 @@ DEFINE_REFCOUNTED_TYPE(IJobProxyEnvironment)
 IJobProxyEnvironmentPtr CreateJobProxyEnvironment(
     const TJobProxyInternalConfigPtr& config,
     IInvokerPtr invoker,
+    const std::string& jobProxyPreparationPath,
     const std::string& jobProxySlotPath,
     std::function<void(TError)> failedSidecarCallback);
 

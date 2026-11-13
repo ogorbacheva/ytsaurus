@@ -7,6 +7,8 @@
 
 #include <yt/yt/client/api/public.h>
 
+#include <yt/yt/client/scheduler/public.h>
+
 #include <yt/yt/client/ypath/rich.h>
 
 #include <util/datetime/base.h>
@@ -18,9 +20,30 @@ namespace NYT::NFlow {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+//! Sends the set-target-pipeline-state command to the pipeline controller.
+void SetTargetPipelineState(
+    const TFlowExecuteTarget& target,
+    const NYPath::TYPath& root,
+    EPipelineState state);
+
+////////////////////////////////////////////////////////////////////////////////
+
 //! Returns the YT_FLOW_GRACEFUL_UPDATE env var as bool (defaults to true).
 //! Used by the runner to decide between StopPipeline (graceful) and PausePipeline.
 bool IsGracefulUpdateFromEnv();
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! The vanilla operation a pipeline runs in. The runner checks it whenever the controller
+//! is unreachable: a terminal operation ends the wait with an error right away.
+struct TVanillaOperationHandle
+{
+    NApi::IClientPtr Client;
+    NScheduler::TOperationId OperationId;
+
+    //! Throws when the operation is completed, failed or aborted; a failed lookup is logged and ignored.
+    void ThrowIfTerminal() const;
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -35,9 +58,9 @@ void WaitPipelineState(
     TDuration waitTimeout = DefaultWaitPipelineTimeout,
     TDuration requestTimeout = DefaultWaitPipelineStateRequestTimeout);
 
-//! Same as above, using an existing client.
+//! Same as above, using an existing client; |target| may carry the direct-mode settings.
 void WaitPipelineState(
-    NApi::IClientPtr client,
+    const TFlowExecuteTarget& target,
     const NYPath::TYPath& root,
     EPipelineState state,
     TDuration waitTimeout = DefaultWaitPipelineTimeout,
@@ -52,19 +75,18 @@ void RunPipeline(
     bool setFlowCoreTarget = true,
     std::optional<bool> graceful = {},
     TDuration waitTimeout = DefaultWaitPipelineTimeout,
-    bool enablePipelineCreation = true,
     bool enablePipelineStopOrPause = true);
 
 void RunPipeline(
-    NApi::IClientPtr client,
+    const TFlowExecuteTarget& target,
     const NYPath::TYPath& root,
     const TPipelineSpecPtr& spec,
     const TDynamicPipelineSpecPtr& dynamicSpec,
     bool setFlowCoreTarget = true,
     std::optional<bool> graceful = {},
     TDuration waitTimeout = DefaultWaitPipelineTimeout,
-    bool enablePipelineCreation = true,
-    bool enablePipelineStopOrPause = true);
+    bool enablePipelineStopOrPause = true,
+    const std::optional<TVanillaOperationHandle>& vanillaOperation = {});
 
 void WaitPipeline(
     const std::string& clusterUrl,
@@ -74,9 +96,10 @@ void WaitPipeline(
 //! Tails the controller log until the pipeline completes or the controller stays
 //! unreachable for |controllerUnavailableTimeout|.
 void WaitPipeline(
-    NApi::IClientPtr client,
+    const TFlowExecuteTarget& target,
     const NYPath::TRichYPath& pipelinePath,
-    TDuration controllerUnavailableTimeout = DefaultWaitPipelineTimeout);
+    TDuration controllerUnavailableTimeout = DefaultWaitPipelineTimeout,
+    const std::optional<TVanillaOperationHandle>& vanillaOperation = {});
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -181,7 +181,7 @@ public:
         YT_VERIFY(bootstrap);
         YT_ASSERT_INVOKER_THREAD_AFFINITY(GetControlInvoker(EControlQueue::Default), ControlThread);
 
-        OperationsCleaner_ = New<TOperationsCleaner>(Config_->OperationsCleaner, this, Bootstrap_);
+        OperationsCleaner_ = New<TOperationsCleaner>(Config_, this, Bootstrap_);
 
         OperationsCleaner_->SubscribeOperationsRemovedFromCypress(BIND_NO_PROPAGATE(&TImpl::OnOperationsRemovedFromCypress, MakeWeak(this)));
 
@@ -535,6 +535,16 @@ public:
             .Run();
     }
 
+    void SetOperationAlertSync(
+        TOperationId operationId,
+        EOperationAlertType alertType,
+        const TError& alert)
+    {
+        YT_ASSERT_THREAD_AFFINITY(ControlThread);
+
+        DoSetOperationAlert(operationId, alertType, alert);
+    }
+
     void ValidatePoolPermission(
         const std::string& treeId,
         NObjectClient::TObjectId poolObjectId,
@@ -808,6 +818,30 @@ public:
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
+        return BIND(&TImpl::DoSuspendOperationByUserRequest, MakeStrong(this), operation, user, abortRunningAllocations, reason)
+            .AsyncVia(operation->GetCancelableControlInvoker())
+            .Run();
+    }
+
+    TFuture<void> ResumeOperation(
+        const TOperationPtr& operation,
+        const std::string& user)
+    {
+        YT_ASSERT_THREAD_AFFINITY(ControlThread);
+
+        return BIND(&TImpl::DoResumeOperation, MakeStrong(this), operation, user)
+            .AsyncVia(operation->GetCancelableControlInvoker())
+            .Run();
+    }
+
+    void DoSuspendOperationByUserRequest(
+        const TOperationPtr& operation,
+        const std::string& user,
+        bool abortRunningAllocations,
+        const std::optional<std::string>& reason)
+    {
+        YT_ASSERT_THREAD_AFFINITY(ControlThread);
+
         auto codicilGuard = operation->MakeCodicilGuard();
 
         if (operation->GetState() == EOperationState::None) {
@@ -817,9 +851,9 @@ public:
         ValidateOperationManagementAccess(user, operation, EPermissionSet(EPermission::Manage), EOperationManagementAction::Suspend);
 
         if (operation->IsFinishingState() || operation->IsFinishedState()) {
-            return MakeFuture(TError(NScheduler::EErrorCode::InvalidOperationState,
+            THROW_ERROR_EXCEPTION(NScheduler::EErrorCode::InvalidOperationState,
                 "Cannot suspend operation in %Qlv state",
-                operation->GetState()));
+                operation->GetState());
         }
 
         auto error = TError("Suspend operation by user request");
@@ -832,10 +866,11 @@ public:
             abortRunningAllocations,
             /*setAlert*/ reason.has_value());
 
-        return MasterConnector_->FlushOperationNode(operation);
+        WaitFor(MasterConnector_->FlushOperationNode(operation))
+            .ThrowOnError();
     }
 
-    TFuture<void> ResumeOperation(
+    void DoResumeOperation(
         const TOperationPtr& operation,
         const std::string& user)
     {
@@ -850,9 +885,9 @@ public:
         ValidateOperationManagementAccess(user, operation, EPermissionSet(EPermission::Manage), EOperationManagementAction::Resume);
 
         if (!operation->GetSuspended()) {
-            return MakeFuture(TError(NScheduler::EErrorCode::InvalidOperationState,
+            THROW_ERROR_EXCEPTION(NScheduler::EErrorCode::InvalidOperationState,
                 "Operation is in %Qlv state",
-                operation->GetState()));
+                operation->GetState());
         }
 
         NodeManager_->ResumeOperationScheduling(operation->GetId());
@@ -867,7 +902,8 @@ public:
         YT_TLOG_INFO("Operation resumed")
             .With("OperationId", operation->GetId());
 
-        return MasterConnector_->FlushOperationNode(operation);
+        WaitFor(MasterConnector_->FlushOperationNode(operation))
+            .ThrowOnError();
     }
 
     TFuture<void> CompleteOperation(
@@ -974,7 +1010,7 @@ public:
 
         Strategy_->DisableOperation(operation.Get());
 
-        operation->Restart(TError("Agent unregistered"));
+        operation->Restart(TError(NScheduler::EErrorCode::AgentUnregistered, "Agent unregistered"));
         operation->SetStateAndEnqueueEvent(EOperationState::Orphaned);
         AdvanceEpoch(operation->ControllerEpoch());
 
@@ -1264,6 +1300,13 @@ public:
         return NodeManager_->GetResourceUsage(filter);
     }
 
+    TCellTag GetPrimaryMasterCellTag() const override
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        return GetClient()->GetNativeConnection()->GetPrimaryMasterCellTag();
+    }
+
     void MarkOperationAsRunningInStrategy(TOperationId operationId) override
     {
         auto operation = GetOperation(operationId);
@@ -1338,6 +1381,7 @@ public:
                 }
                 if (operation->GetState() != expectedState) { // EOperationState::RevivingJobs or EOperationState::Materializing
                     YT_TLOG_INFO("Operation state changed during materialization, skip materialization postprocessing")
+                        .With("OperationId", operation->GetId())
                         .With("ActualState", operation->GetState())
                         .With("ExpectedState", expectedState);
                     return;
@@ -1782,6 +1826,7 @@ public:
 private:
     TSchedulerConfigPtr Config_;
     const TSchedulerConfigPtr InitialConfig_;
+    TYsonString LastConfigYson_;
     int ConfigRevision_ = 0;
 
     TBootstrap* const Bootstrap_;
@@ -2377,10 +2422,19 @@ private:
             THROW_ERROR(rspOrError.Wrap(NScheduler::EErrorCode::WatcherHandlerFailed, "Error getting scheduler configuration"));
         }
 
+        auto configYson = TYsonString(rspOrError.Value()->value());
+        if (LastConfigYson_ && configYson == LastConfigYson_) {
+            ++ConfigRevision_;
+            return;
+        }
+
+        // Applying a different config may fail after changing Config_.
+        // Do not skip reloading the previous config in that case.
+        LastConfigYson_ = {};
+
         auto newConfig = CloneYsonStruct(InitialConfig_);
         try {
-            const auto& rsp = rspOrError.Value();
-            auto configFromCypress = ConvertToNode(TYsonString(rsp->value()));
+            auto configFromCypress = ConvertToNode(configYson);
             try {
                 newConfig->Load(configFromCypress, /*postprocess*/ true, /*setDefaults*/ false);
             } catch (const std::exception& ex) {
@@ -2411,7 +2465,7 @@ private:
 
             Strategy_->UpdateConfig(Config_);
             MasterConnector_->UpdateConfig(Config_);
-            OperationsCleaner_->UpdateConfig(Config_->OperationsCleaner);
+            OperationsCleaner_->UpdateConfig(Config_);
             ExecNodeMemoryDistributionByTagsCache_->SetExpirationTimeout(Config_->SchedulingTagFilterExpireTimeout);
 
             ProfilingExecutor_->SetPeriod(Config_->ProfilingUpdatePeriod);
@@ -2445,6 +2499,7 @@ private:
             ExperimentsAssigner_.UpdateExperimentConfigs(Config_->Experiments);
         }
 
+        LastConfigYson_ = std::move(configYson);
         ++ConfigRevision_;
     }
 
@@ -3156,9 +3211,11 @@ private:
                 YT_TLOG_DEBUG("Full heartbeat from agent processed, aborted allocations supposed to be considered by controller agent")
                     .With("OperationId", operation->GetId());
             } catch (const std::exception& ex) {
+                YT_TLOG_WARNING("Failed to wait for full heartbeat from agent")
+                    .With("OperationId", operation->GetId())
+                    .With(ex);
                 auto error = TError("Failed to wait full heartbeat from agent for operation %v", operation->GetId())
                     .With(ex);
-                YT_LOG_WARNING(error);
                 Bootstrap_->GetControllerAgentTracker()->HandleAgentFailure(agent, error);
             }
         }
@@ -3550,14 +3607,17 @@ private:
                 WaitFor(controller->Terminate(finalState))
                     .ThrowOnError();
             } catch (const std::exception& ex) {
-                auto error = TError("Failed to abort controller of operation %v", operation->GetId())
-                    .With(ex);
                 if (auto agent = operation->FindAgent()) {
-                    YT_LOG_WARNING(error);
+                    YT_TLOG_WARNING("Failed to abort operation controller")
+                        .With("OperationId", operation->GetId())
+                        .With(ex);
+                    auto error = TError("Failed to abort controller of operation %v", operation->GetId())
+                        .With(ex);
                     Bootstrap_->GetControllerAgentTracker()->HandleAgentFailure(agent, error);
                 } else {
                     YT_TLOG_WARNING("Operation termination failed but looks like controller is already unregistered")
-                        .With(error);
+                        .With("OperationId", operation->GetId())
+                        .With(ex);
                 }
                 return;
             }
@@ -3644,13 +3704,18 @@ private:
             .With("OperationId", operation->GetId());
 
         if (operation->RevivalDescriptor()->ShouldCommitOutputTransaction) {
-            WaitFor(operation->Transactions()->OutputTransaction->Commit())
+            const auto& transactions = operation->Transactions();
+            WaitFor(transactions->OutputTransaction->Commit())
                 .ThrowOnError();
             // We don't know whether debug transaction is committed.
-            if (operation->Transactions()->DebugTransaction) {
-                Y_UNUSED(operation->Transactions()->DebugTransaction->Commit());
+            if (transactions->DebugTransaction) {
+                Y_UNUSED(transactions->DebugTransaction->Commit());
             }
-            for (auto transaction : {operation->Transactions()->InputTransaction, operation->Transactions()->AsyncTransaction}) {
+            for (auto transaction : {
+                transactions->InputTransaction,
+                transactions->AsyncTransaction,
+                transactions->JournalNbdTransaction,
+            }) {
                 if (transaction) {
                     Y_UNUSED(transaction->Abort());
                 }
@@ -4403,12 +4468,12 @@ private:
 
         i64 GetSize() const override
         {
-            YT_ABORT();
+            THROW_ERROR_EXCEPTION("Getting allocation count is not supported");
         }
 
         std::vector<std::string> GetKeys(i64 /*limit*/) const override
         {
-            YT_ABORT();
+            THROW_ERROR_EXCEPTION("Listing allocations is not supported");
         }
 
         IYPathServicePtr FindItemService(const std::string& key) const override
@@ -4688,6 +4753,14 @@ TFuture<void> TScheduler::SetOperationAlert(
         std::optional<TDuration> timeout)
 {
     return Impl_->SetOperationAlert(operationId, alertType, alert, timeout);
+}
+
+void TScheduler::SetOperationAlertSync(
+    TOperationId operationId,
+    EOperationAlertType alertType,
+    const TError& alert)
+{
+    Impl_->SetOperationAlertSync(operationId, alertType, alert);
 }
 
 TFuture<void> TScheduler::ValidateJobShellAccess(

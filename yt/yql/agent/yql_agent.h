@@ -3,6 +3,8 @@
 #include "private.h"
 #include "bootstrap.h"
 
+#include <yt/yql/plugin/plugin.h>
+
 #include <yt/yt/ytlib/hive/public.h>
 
 #include <yt/yt/ytlib/yql_client/proto/yql_service.pb.h>
@@ -39,9 +41,13 @@ struct IYqlAgent
 
     virtual TFuture<NYqlClient::NProto::TRspGetDeclaredParametersInfo> GetDeclaredParametersInfo(const TString& user, const TString& query, const NYson::TYsonString& settings) = 0;
 
-    virtual NYqlClient::NProto::TRspGetQueryProgress GetQueryProgress(TQueryId queryId) = 0;
+    virtual NYqlClient::NProto::TRspGetQueryProgress GetQueryProgress(TQueryId queryId, NYqlPlugin::TProgressOptions progressOptions) = 0;
 
     virtual NYqlClient::NProto::TRspGetYqlAgentInfo GetYqlAgentInfo() = 0;
+
+    //! Returns false if the agent cannot execute queries right now,
+    //! e.g. its YQL plugin has no healthy workers yet.
+    virtual bool IsReady() const = 0;
 };
 
 DEFINE_REFCOUNTED_TYPE(IYqlAgent)
@@ -56,6 +62,7 @@ IYqlAgentPtr CreateYqlAgent(
     NHiveClient::TClusterDirectoryPtr clusterDirectory,
     NHiveClient::TClientDirectoryPtr clientDirectory,
     IInvokerPtr controlInvoker,
+    ITokenManagerPtr tokenManager,
     TString agentId);
 
 ////////////////////////////////////////////////////////////////////////////////

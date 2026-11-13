@@ -1,24 +1,22 @@
 {
   "info": {
-    "created": "2026-08-26T16:15:54.414Z",
-    "pr": {
-      "id": 14746946,
-      "author": "baymer",
-      "summary": "FBP-3198: опциональный скрипт для TS_LINT и TS_TEST"
-    }
+    "created": "2026-11-09T23:14:44Z",
+    "commit": "c37e0848e50e9306af9e7300447ee97663d044a6",
+    "branch": "FBP-3697-platform-tarballs",
+    "dirty": false
   },
   "by_platform": {
     "darwin": {
-      "uri": "sbr:13361667603"
+      "uri": "sbr:14229140627"
     },
     "darwin-arm64": {
-      "uri": "sbr:13361662677"
+      "uri": "sbr:14229140944"
     },
     "linux": {
-      "uri": "sbr:13361677353"
+      "uri": "sbr:14229140091"
     },
     "linux-aarch64": {
-      "uri": "sbr:13361672150"
+      "uri": "sbr:14229140331"
     }
   }
 }

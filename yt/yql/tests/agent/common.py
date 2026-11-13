@@ -1,6 +1,6 @@
 import yt_queries
 
-from yt_env_setup import YTEnvSetup, get_sanitizer_type
+from yt_env_setup import YTEnvSetup, get_sanitizer_type, ROOTFS_LAYER_PATH
 
 from yt_commands import (create, get, set, wait, write_file)
 
@@ -11,6 +11,8 @@ from google.protobuf.text_format import MessageToString
 import hashlib
 import tarfile
 import tempfile
+
+import yatest.common
 
 
 LLVM_SYMBOLIZER_PATH = "contrib/libs/llvm18/tools/llvm-symbolizer/llvm-symbolizer"
@@ -77,6 +79,8 @@ def wait_for_proto_dynamic_config_update(client, expected_modification_times):
 
 
 class TestQueriesYqlBase(YTEnvSetup):
+    ENABLE_MULTIDAEMON = True
+
     NUM_NODES = 3
     NUM_YQL_AGENTS = 1
     NUM_MASTERS = 1
@@ -94,6 +98,26 @@ class TestQueriesYqlBase(YTEnvSetup):
         "cluster_connection_dynamic_config_policy": "from_cluster_directory",
     }
 
+    # Pass --test-param YT_RECIPE_DEBUG_LOGS to keep the default debug logs.
+    if yatest.common.get_param("YT_RECIPE_DEBUG_LOGS") is not None:
+        DELTA_LOCAL_YT_CONFIG = {}
+    else:
+        # Debug logging is on by default in local YT and produces hundreds of GB of logs.
+        # job_proxy_log_manager is passed as a whole value, so its defaults are restated
+        # here with log_dump switched to the info writer: no debug writer is created once
+        # debug logging is off.
+        DELTA_LOCAL_YT_CONFIG = {
+            "enable_debug_logging": False,
+            "job_proxy_log_manager": {
+                "sharding_key_length": 1,
+                "logs_storage_period": "7d",
+                "directory_traversal_concurrency": None,
+                "log_dump": {
+                    "log_writer_name": "info",
+                },
+            },
+        }
+
     COPY_YTSERVER = False
 
     if get_sanitizer_type():
@@ -103,9 +127,6 @@ class TestQueriesYqlBase(YTEnvSetup):
 
         DELTA_NODE_CONFIG = {
             "exec_node": {
-                "job_proxy": {
-                    "test_root_fs": True,
-                },
                 "slot_manager": {
                     "job_environment": {
                         "type": "porto",
@@ -190,14 +211,14 @@ leak:*ToPySecureParam*
         self._setup_files(authenticated_user=kwargs.get("authenticated_user"))
 
         query_prefix = f"""
-pragma yt.LayerPaths = "{self._sanitizer_stuff_archive_yt_path}";
+pragma yt.LayerPaths = "{self._sanitizer_stuff_archive_yt_path},{ROOTFS_LAYER_PATH}";
 pragma yt.JobEnv = '{{
-    ASAN_SYMBOLIZER_PATH = "$(RootFS)/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
-    MSAN_SYMBOLIZER_PATH = "$(RootFS)/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
-    LSAN_SYMBOLIZER_PATH = "$(RootFS)/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
-    TSAN_SYMBOLIZER_PATH = "$(RootFS)/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
-    UBSAN_SYMBOLIZER_PATH = "$(RootFS)/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
-    LSAN_OPTIONS = "malloc_context_size=200:suppressions=$(RootFS)/{SANITIZER_STUFF_PATH}/{SUPPRESSIONS_FILENAME}";
+    ASAN_SYMBOLIZER_PATH = "/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
+    MSAN_SYMBOLIZER_PATH = "/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
+    LSAN_SYMBOLIZER_PATH = "/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
+    TSAN_SYMBOLIZER_PATH = "/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
+    UBSAN_SYMBOLIZER_PATH = "/{SANITIZER_STUFF_PATH}/{LLVM_SYMBOLIZER_FILENAME}";
+    LSAN_OPTIONS = "malloc_context_size=200:suppressions=/{SANITIZER_STUFF_PATH}/{SUPPRESSIONS_FILENAME}";
 }}';
 """
 

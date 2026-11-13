@@ -1,20 +1,21 @@
 #pragma once
 
 #include "public.h"
-#include "chunk_manager.h"
+
 #include "chunk_replica.h"
 #include "domestic_medium.h"
-#include "consistent_chunk_placement.h"
+#include "stored_chunk_replica.h"
 
 #include <yt/yt/server/master/cell_master/public.h>
 
-#include <yt/yt/server/master/node_tracker_server/node_tracker.h>
 #include <yt/yt/server/master/node_tracker_server/node.h>
+#include <yt/yt/server/master/node_tracker_server/node_tracker.h>
 
 #include <yt/yt/client/object_client/helpers.h>
 
 #include <yt/yt/core/misc/fenwick_tree.h>
 
+#include <array>
 #include <optional>
 
 namespace NYT::NChunkServer {
@@ -50,8 +51,10 @@ public:
     void OnNodeDisposed(TNode* node);
 
     void OnDataCenterChanged(NNodeTrackerServer::TDataCenter* dataCenter);
+    void OnMediumChanged();
 
-    bool IsDataCenterFeasible(const NNodeTrackerServer::TDataCenter* dataCenter) const;
+    bool IsDataCenterFeasible(const NNodeTrackerServer::TDataCenter* dataCenter, int mediumIndex) const;
+    bool IsDataCenterTemporarilyUnavailable(const NNodeTrackerServer::TDataCenter* dataCenter) const;
 
     THashSet<std::string> GetFaultyStorageDataCenterNames() const;
 
@@ -91,23 +94,11 @@ public:
         TChunkPtrWithReplicaAndMediumIndex replica,
         const TStoredChunkReplicaList& replicas);
 
-    template <typename TGenericChunk>
-    int GetMaxReplicasPerRack(
-        const TMedium* medium,
-        const TGenericChunk* chunk,
-        std::optional<int> replicationFactorOverride = std::nullopt) const;
-
+    //! Returns the maximum replica count permitted in a rack, including data-center constraints.
     template <typename TGenericChunk>
     int GetMaxReplicasPerRack(
         int mediumIndex,
         const TGenericChunk* chunk,
-        std::optional<int> replicationFactorOverride = std::nullopt) const;
-
-    template <typename TGenericChunk>
-    int GetMaxReplicasPerDataCenter(
-        const TDomesticMedium* medium,
-        const TGenericChunk* chunk,
-        const NNodeTrackerServer::TDataCenter* dataCenter,
         std::optional<int> replicationFactorOverride = std::nullopt) const;
 
     template <typename TGenericChunk>
@@ -229,8 +220,9 @@ private:
 
     THashSet<const NNodeTrackerServer::TDataCenter*> StorageDataCenters_;
     THashSet<const NNodeTrackerServer::TDataCenter*> BannedStorageDataCenters_;
+    THashSet<const NNodeTrackerServer::TDataCenter*> TemporarilyUnavailableStorageDataCenters_;
     THashSet<const NNodeTrackerServer::TDataCenter*> FaultyStorageDataCenters_;
-    THashSet<const NNodeTrackerServer::TDataCenter*> AliveStorageDataCenters_;
+    std::array<THashSet<const NNodeTrackerServer::TDataCenter*>, NChunkClient::MaxMediumCount> PerMediumAliveStorageDataCenters_;
     std::vector<TError> DataCenterSetErrors_;
     std::vector<TError> DataCenterFaultErrors_;
 
@@ -278,12 +270,18 @@ private:
     template <typename TGenericChunk>
     bool IsValidWriteTargetToAllocate(
         TNode* node,
+        const TDomesticMedium* medium,
         TTargetCollector<TGenericChunk>* collector,
         bool enableRackAwareness,
         bool enableDataCenterAwareness,
         bool enableNodeWriteSessionLimit,
         bool enableHostAwareness);
-    bool IsValidWriteTargetCore(TNode* node);
+    bool IsValidWriteTargetCore(TNode* node, const TDomesticMedium* medium);
+
+    const THashSet<std::string>& GetStorageDataCenterNames(int mediumIndex) const;
+    const THashSet<std::string>& GetBannedStorageDataCenterNames(int mediumIndex) const;
+    THashSet<std::string> GetAllStorageDataCenterNames() const;
+
     // Preferred nodes are special: they don't come from load-factor maps and
     // thus may not have been vetted by #IsValidWriteTargetToInsert. Thus,
     // additional checking of their media is required.
@@ -305,6 +303,13 @@ private:
         const NNodeTrackerServer::TDataCenter* dataCenter,
         const NNodeTrackerClient::TAggregatedNodeStatistics& dataCenterStatistics,
         bool dataCenterIsEnabled) const;
+
+    template <typename TGenericChunk>
+    int DoGetMaxReplicasPerDataCenter(
+        int mediumIndex,
+        const TGenericChunk* chunk,
+        int dataCenterCount,
+        std::optional<int> replicationFactorOverride) const;
 
     // TODO(shakurov): consider moving this to TChunk. At the moment,
     // TChunk::GetMaxReplicasPerFailureDomain and TChunk::GetPhysicalReplicationFactor

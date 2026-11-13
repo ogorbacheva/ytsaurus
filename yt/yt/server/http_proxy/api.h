@@ -19,7 +19,7 @@
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 namespace NYT::NHttpProxy {
 
@@ -75,6 +75,12 @@ public:
     std::optional<TSemaphoreGuard> AcquireSemaphore(const std::string& user, const std::string& command);
     void ReleaseSemaphore(const TUserCommandPair& key);
 
+    i64 GetHeavyRequestMemoryReservation(
+        const NDriver::TCommandDescriptor& descriptor,
+        const NYTree::IMapNodePtr& parameters) const;
+    void UpdateHeavyRequestReservedMemory(const TUserCommandPair& key, i64 delta);
+    void IncrementHeavyRequestReservationRejectCount(const TUserCommandPair& key);
+
     void IncrementBytesOutProfilingCounters(
         const std::string& user,
         const NNet::TNetworkAddress& clientAddress,
@@ -113,6 +119,7 @@ public:
 
 private:
     const TApiConfigPtr Config_;
+    const NDriver::TDriverConfigPtr DriverConfig_;
     TAtomicIntrusivePtr<TApiDynamicConfig> DynamicConfig_;
 
     const NDriver::IDriverPtr DriverV3_;
@@ -137,7 +144,7 @@ private:
 
     std::string GetNetworkNameForAddress(const NNet::TNetworkAddress& address) const;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, BanCacheLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, BanCacheLock_);
     THashMap<std::string, TInstant> BanCache_;
 
     struct TProfilingCounters
@@ -148,6 +155,9 @@ private:
         NProfiling::TCounter RequestCount;
         NProfiling::TEventTimer RequestWallTime;
         NProfiling::TTimeCounter CumulativeRequestCpuTime;
+        std::atomic<i64> HeavyRequestReservedMemory{0};
+        NProfiling::TGauge HeavyRequestReservedMemoryGauge;
+        NProfiling::TCounter HeavyRequestReservationRejectCount;
 
         NConcurrency::TSyncMap<TErrorCode, NProfiling::TCounter> ApiErrors;
     };

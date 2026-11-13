@@ -1,7 +1,8 @@
 #include <yt/yt/server/lib/nbd/chunk/page_cache.h>
 #include <yt/yt/server/lib/nbd/chunk/chunk_handler.h>
-#include <yt/yt/server/lib/nbd/chunk/config.h>
 #include <yt/yt/server/lib/nbd/chunk/public.h>
+
+#include <yt/yt/library/nbd/chunk/config.h>
 
 #include <yt/yt/core/test_framework/framework.h>
 
@@ -12,7 +13,7 @@
 #include <library/cpp/yt/memory/new.h>
 #include <library/cpp/yt/memory/ref.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 #include <util/datetime/base.h>
 

@@ -1,5 +1,5 @@
 from collections import defaultdict
-from .test_lookup import TestLookupCache
+from . import test_lookup
 
 from yt_env_setup import find_ut_file, skip_if_rpc_driver_backend
 
@@ -13,7 +13,6 @@ from yt_commands import (
     write_local_file, reshard_table, sync_create_cells, sync_mount_table, sync_unmount_table, sync_flush_table,
     WaitFailed, create_table_replica, sync_enable_table_replica)
 
-from yt_sequoia_helpers import not_implemented_in_sequoia
 
 from yt_type_helpers import (
     decimal_type,
@@ -171,7 +170,6 @@ class TestQuery(DynamicTablesBase):
             select_rows("* from [//tmp/t]", allow_full_scan=False)
 
     @authors("lukyan")
-    @not_implemented_in_sequoia
     def test_execution_pool(self):
         create_user("u")
         sync_create_cells(1)
@@ -1236,8 +1234,7 @@ class TestQuery(DynamicTablesBase):
 
     @authors("lukyan")
     def test_udf_custom_path(self):
-        registry_path = "//home/udfs"
-        create("map_node", "//home")
+        registry_path = "//tmp/custom_udfs"
         create("map_node", registry_path)
 
         abs_path = os.path.join(registry_path, "abs_udf")
@@ -2073,6 +2070,68 @@ class TestQuery(DynamicTablesBase):
             select_rows("a from [//tmp/t] where b != 0 limit 3", use_canonical_null_relations=True),
             [{"a": 1}])
 
+    @authors("sabdenovch")
+    def test_union_all(self):
+        sync_create_cells(1)
+
+        self._create_table(
+            "//tmp/t1",
+            [
+                {"name": "o", "type": "int64", "sort_order": "ascending"},
+                {"name": "x", "type": "string"},
+                {"name": "y", "type": "int64"},
+            ],
+            [
+                {"o": 1, "x": "alpha", "y": 100},
+                {"o": 2, "x": "beta",  "y": 200},
+                {"o": 3, "x": "gamma", "y": 300},
+            ])
+
+        self._create_table(
+            "//tmp/t2",
+            [
+                {"name": "r", "type": "int64", "sort_order": "ascending"},
+                {"name": "b", "type": "string"},
+                {"name": "a", "type": "int64"},
+            ],
+            [
+                {"r": 1, "b": "delta",   "a": 400},
+                {"r": 2, "b": "epsilon", "a": 500},
+            ])
+
+        # Both subqueries project to (name string, value int64) — schemas match.
+        expected = [
+            {"name": "alpha", "value": 100},
+            {"name": "beta",  "value": 200},
+            {"name": "gamma", "value": 300},
+            {"name": "delta",   "value": 400},
+            {"name": "epsilon", "value": 500},
+        ]
+        actual = select_rows(
+            "name, value from ("
+            "  select x as name, y as value from [//tmp/t1] order by o desc limit 100"
+            "  union all"
+            "  select b as name, a as value from [//tmp/t2]"
+            ")")
+        assert_items_equal(actual, expected)
+
+        with raises_yt_error("UNION ALL subqueries name column"):
+            select_rows(
+                "v from ("
+                "  select x as v from [//tmp/t1]"
+                "  union all"
+                "  select a as w from [//tmp/t2]"
+                ")")
+
+        with raises_yt_error("UNION ALL subqueries have incompatible types"):
+            select_rows(
+                "v from ("
+                "  select x as v from [//tmp/t1]"
+                "  union all"
+                "  select a as v from [//tmp/t2]"
+                ")",
+            )
+
     @authors("lukyan")
     def test_read_without_merge_agg(self):
         sync_create_cells(1)
@@ -2101,6 +2160,8 @@ class TestQuery(DynamicTablesBase):
                 "single_column_group_by_default": False,
             })
 
+        set("//tmp/t/@mount_config/row_merger_type", "new")
+
         sync_mount_table("//tmp/t")
 
         insert_rows(
@@ -2111,6 +2172,8 @@ class TestQuery(DynamicTablesBase):
             ],
             update=True,
         )
+
+        sync_flush_table("//tmp/t")
 
         insert_rows(
             "//tmp/t",
@@ -2123,29 +2186,35 @@ class TestQuery(DynamicTablesBase):
         )
 
         def test_query(query):
-            res1 = select_rows(query, merge_versioned_rows=False)
-            res2 = select_rows(query, merge_versioned_rows=True)
+            res1 = select_rows(query, merge_versioned_rows=False, expression_builder_version=2)
+            res2 = select_rows(query, merge_versioned_rows=True, expression_builder_version=2)
             assert_items_equal(res1, res2)
 
-        test_query(
-            "k1, nk1_, sum(v1) as sv1, sum(v2) as sv2, sum(nv1_) as snv1, sum(nv2_) as snv2 "
-            "from [//tmp/t] array join nk1 as nk1_, nv1 as nv1_, nv2 as nv2_ "
-            "group by k1, nk1_")
+        is_first_nested = "nk1_ = try_get_int64(nk1, \"/0\") and nk2_ = try_get_int64(nk2, \"/0\")"
 
-        test_query(
-            "k2, nk1_, sum(v1) as sv1, sum(v2) as sv2, sum(nv1_) as snv1, sum(nv2_) as snv2 "
-            "from [//tmp/t] array join nk1 as nk1_, nv1 as nv1_, nv2 as nv2_ "
-            "group by k2, nk1_")
+        def make_query(gk, ngk):
+            base_query = (
+                "SELECT {}, {}_, "
+                "sum(if({}, v1, 0)) as sv1, "
+                "sum(if({}, v2, 0)) as sv2, "
+                "sum(nv1_) as snv1, sum(nv2_) as snv2 "
+                "FROM [//tmp/t] ARRAY JOIN nk1 as nk1_, nk2 as nk2_, nv1 as nv1_, nv2 as nv2_ "
+                "GROUP BY {}, {}_").format(gk, ngk, is_first_nested, is_first_nested, gk, ngk)
 
-        test_query(
-            "k1, nk2_, sum(v1) as sv1, sum(v2) as sv2, sum(nv1_) as snv1, sum(nv2_) as snv2 "
-            "from [//tmp/t] array join nk2 as nk2_, nv1 as nv1_, nv2 as nv2_ "
-            "group by k1, nk2_")
+            inner_query = (
+                "SELECT {}, sum(snv1__) as snv1_, sum(snv2__) as snv2_ "
+                "FROM (array_agg({}_, true) as {}, array_agg(snv1, true) as snv1__, array_agg(snv2, true) as snv2__) "
+                "GROUP BY {}").format(ngk, ngk, ngk, ngk)
 
-        test_query(
-            "k2, nk2_, sum(v1) as sv1, sum(v2) as sv2, sum(nv1_) as snv1, sum(nv2_) as snv2 "
-            "from [//tmp/t] array join nk2 as nk2_, nv1 as nv1_, nv2 as nv2_ "
-            "group by k2, nk2_")
+            return (
+                "{}, sum(sv1) as sv1_, sum(sv2) as sv2_, ({}) as x "
+                "FROM ({}) "
+                "GROUP BY {}").format(gk, inner_query, base_query, gk)
+
+        test_query(make_query("k1", "nk1"))
+        test_query(make_query("k2", "nk1"))
+        test_query(make_query("k1", "nk2"))
+        test_query(make_query("k2", "nk2"))
 
     @authors("sabdenovch")
     def test_array_join(self):
@@ -2840,7 +2909,6 @@ class TestQuery(DynamicTablesBase):
             select_rows("cast_operator(1) from [//tmp/table]", expression_builder_version=2)
 
     @authors("coteeq")
-    @not_implemented_in_sequoia
     def test_rls(self):
         sync_create_cells(1)
         create_user("u")
@@ -3096,11 +3164,551 @@ class TestQuery(DynamicTablesBase):
         )
         assert expected == actual
 
+    @authors("dgolear")
+    def test_hierarchical_join_orm_satellite_tables(self):
+        sync_create_cells(1)
+
+        object_key_schema = [
+            {
+                "name": "hash",
+                "type": "uint64",
+                "expression": "farm_hash([meta.publisher_id])",
+                "sort_order": "ascending",
+            },
+            {"name": "meta.publisher_id", "type": "int64", "sort_order": "ascending"},
+            {"name": "meta.id", "type": "int64", "sort_order": "ascending"},
+            {"name": "meta.id2", "type": "int64", "sort_order": "ascending"},
+        ]
+        satellite_schema = object_key_schema + [
+            {"name": "attribute_id", "type": "int64", "sort_order": "ascending"},
+            {"name": "map_key", "type": "string", "sort_order": "ascending"},
+            {"name": "value", "type": "uint64"},
+        ]
+
+        book_keys = [(1, 10, 100), (1, 11, 100), (2, 10, 100), (2, 10, 101)]
+        self._create_table(
+            "//tmp/books",
+            object_key_schema + [{"name": "spec.year", "type": "int64"}],
+            [
+                {"meta.publisher_id": p, "meta.id": i, "meta.id2": i2, "spec.year": 2000 + n}
+                for n, (p, i, i2) in enumerate(book_keys)
+            ],
+        )
+
+        warehouse_attribute_id = 0
+        other_attribute_id = 1
+        orphan_key = (2, 10, 102)
+        warehouse = {
+            (1, 10, 100): {"north": 10, "south": 20, "east": 30},
+            (2, 10, 100): {"west": 5},
+            orphan_key: {"north": 1},
+        }
+        other = {
+            (1, 10, 100): {"north": 999},
+            (2, 10, 101): {"lost": 7},
+        }
+        capacity = {
+            (1, 11, 100): {"a": 1, "b": 2},
+            (2, 10, 100): {"c": 3},
+        }
+
+        def satellite_rows(maps_by_attribute_id):
+            return [
+                {
+                    "meta.publisher_id": p,
+                    "meta.id": i,
+                    "meta.id2": i2,
+                    "attribute_id": attribute_id,
+                    "map_key": map_key,
+                    "value": yson.YsonUint64(value),
+                }
+                for attribute_id, maps in maps_by_attribute_id.items()
+                for (p, i, i2), entries in maps.items()
+                for map_key, value in entries.items()
+            ]
+
+        self._create_table(
+            "//tmp/books_warehouse",
+            satellite_schema,
+            satellite_rows({warehouse_attribute_id: warehouse, other_attribute_id: other}),
+        )
+        self._create_table(
+            "//tmp/books_capacity",
+            satellite_schema,
+            satellite_rows({0: capacity}),
+        )
+
+        def expected_map(maps, key):
+            return [{"s.map_key": k, "s.value": v} for k, v in sorted(maps.get(key, {}).items())]
+
+        expected = [
+            {
+                "publisher_id": p,
+                "id": i,
+                "id2": i2,
+                "warehouse": expected_map(warehouse, (p, i, i2)),
+                "other": expected_map(other, (p, i, i2)),
+                "capacity": expected_map(capacity, (p, i, i2)),
+            }
+            for p, i, i2 in sorted(book_keys)
+        ]
+
+        def satellite_subquery(name, table, attribute_id):
+            return f"""
+                (select s.map_key, s.value
+                    from (cast(make_list(b.`meta.id`) as `List<Int64>`) as {name}_id)
+                    join `{table}` as s
+                        on (b.`meta.publisher_id`, {name}_id, b.`meta.id2`, {attribute_id}) =
+                            (s.`meta.publisher_id`, s.`meta.id`, s.`meta.id2`, s.attribute_id)
+                ) as {name}
+            """
+
+        actual = select_rows(
+            f"""
+            b.`meta.publisher_id` as publisher_id,
+            b.`meta.id` as id,
+            b.`meta.id2` as id2,
+            {satellite_subquery("warehouse", "//tmp/books_warehouse", warehouse_attribute_id)},
+            {satellite_subquery("other", "//tmp/books_warehouse", other_attribute_id)},
+            {satellite_subquery("capacity", "//tmp/books_capacity", 0)}
+            from `//tmp/books` as b
+            """,
+            expression_builder_version=2,
+            syntax_version=2,
+        )
+
+        for row in actual:
+            for column in ("warehouse", "other", "capacity"):
+                row[column] = sorted(row[column], key=lambda entry: entry["s.map_key"])
+        actual.sort(key=lambda row: (row["publisher_id"], row["id"], row["id2"]))
+        assert expected == actual
+
+    @authors("dgolear")
+    @pytest.mark.parametrize("with_parent_table", [False, True])
+    def test_hierarchical_join_orm_repeated_view(self, with_parent_table):
+        sync_create_cells(1)
+
+        self._create_table(
+            "//tmp/authors",
+            [
+                {"name": "meta.id", "type": "utf8", "sort_order": "ascending"},
+                {"name": "spec.name", "type": "utf8"},
+            ],
+            [
+                {"meta.id": "a", "spec.name": "Alice"},
+                {"meta.id": "b", "spec.name": "Bob"},
+                {"meta.id": "c", "spec.name": "Carol"},
+            ],
+        )
+        self._create_table(
+            "//tmp/editions",
+            [
+                {"name": "meta.id", "type": "int64", "sort_order": "ascending"},
+                {"name": "meta.id2", "type": "int64", "sort_order": "ascending"},
+                {"name": "spec.name", "type": "utf8"},
+            ],
+            [
+                {"meta.id": 1, "meta.id2": 10, "spec.name": "E1"},
+                {"meta.id": 1, "meta.id2": 11, "spec.name": "E1b"},
+                {"meta.id": 2, "meta.id2": 20, "spec.name": "E2"},
+            ],
+        )
+        self._create_table(
+            "//tmp/books",
+            [
+                {
+                    "name": "hash",
+                    "type": "uint64",
+                    "expression": "farm_hash([meta.publisher_id])",
+                    "sort_order": "ascending",
+                },
+                {"name": "meta.publisher_id", "type": "int64", "sort_order": "ascending"},
+                {"name": "meta.id", "type": "int64", "sort_order": "ascending"},
+                {"name": "meta.id2", "type": "int64", "sort_order": "ascending"},
+                {"name": "spec.author_ids", "type": "any"},
+                {"name": "status.related_books_ids", "type": "any"},
+                {"name": "status.related_books_id2s", "type": "any"},
+            ],
+            [
+                {
+                    "meta.publisher_id": 100,
+                    "meta.id": 1,
+                    "meta.id2": 10,
+                    "spec.author_ids": ["c", "a", "c", "missing"],
+                    "status.related_books_ids": [2, 1, 1],
+                    "status.related_books_id2s": [20, 10, 12],
+                },
+                {
+                    "meta.publisher_id": 100,
+                    "meta.id": 1,
+                    "meta.id2": 20,
+                    "spec.author_ids": [],
+                    "status.related_books_ids": [],
+                    "status.related_books_id2s": [],
+                },
+                {
+                    "meta.publisher_id": 200,
+                    "meta.id": 3,
+                    "meta.id2": 10,
+                    "spec.author_ids": ["b"],
+                    "status.related_books_ids": [1],
+                    "status.related_books_id2s": [11],
+                },
+            ],
+        )
+
+        book_source = "`//tmp/books` as b"
+        if with_parent_table:
+            self._create_table(
+                "//tmp/books_to_publishers",
+                [
+                    {
+                        "name": "hash",
+                        "type": "uint64",
+                        "expression": "farm_hash([meta.id], [meta.id2])",
+                        "sort_order": "ascending",
+                    },
+                    {"name": "meta.id", "type": "int64", "sort_order": "ascending"},
+                    {"name": "meta.id2", "type": "int64", "sort_order": "ascending"},
+                    {"name": "meta.publisher_id", "type": "int64"},
+                ],
+                [
+                    {"meta.id": 1, "meta.id2": 10, "meta.publisher_id": 100},
+                    {"meta.id": 1, "meta.id2": 20, "meta.publisher_id": 100},
+                    {"meta.id": 3, "meta.id2": 10, "meta.publisher_id": 200},
+                ],
+            )
+            book_source = """
+                `//tmp/books_to_publishers` as p
+                join `//tmp/books` as b
+                    on (p.`meta.publisher_id`, p.`meta.id`, p.`meta.id2`) =
+                        (b.`meta.publisher_id`, b.`meta.id`, b.`meta.id2`)
+            """
+
+        actual = select_rows(
+            f"""
+            b.`meta.id` as id,
+            b.`meta.id2` as id2,
+            b.`meta.publisher_id` as publisher_id,
+            (select a.`spec.name` as author_name
+                from (cast(b.`spec.author_ids` as `List<String>`) as author_id)
+                join `//tmp/authors` as a on author_id = a.`meta.id`
+            ) as authors,
+            (select left_author_id, la.`spec.name` as left_author_name
+                from (cast(b.`spec.author_ids` as `List<String>`) as left_author_id)
+                left join `//tmp/authors` as la on left_author_id = la.`meta.id`
+            ) as authors_with_missing,
+            (select e.`spec.name` as edition_name
+                from (
+                    cast(b.`status.related_books_ids` as `List<Int64>`) as related_id,
+                    cast(b.`status.related_books_id2s` as `List<Int64>`) as related_id2)
+                join `//tmp/editions` as e on (related_id, related_id2) = (e.`meta.id`, e.`meta.id2`)
+            ) as related_books
+            from {book_source}
+            order by id, id2
+            limit 100
+            """,
+            expression_builder_version=2,
+            syntax_version=2,
+        )
+
+        assert actual == [
+            {
+                "id": 1,
+                "id2": 10,
+                "publisher_id": 100,
+                "authors": [{"author_name": "Carol"}, {"author_name": "Alice"}, {"author_name": "Carol"}],
+                "authors_with_missing": [
+                    {"left_author_id": "c", "left_author_name": "Carol"},
+                    {"left_author_id": "a", "left_author_name": "Alice"},
+                    {"left_author_id": "c", "left_author_name": "Carol"},
+                    {"left_author_id": "missing", "left_author_name": None},
+                ],
+                "related_books": [{"edition_name": "E2"}, {"edition_name": "E1"}],
+            },
+            {
+                "id": 1,
+                "id2": 20,
+                "publisher_id": 100,
+                "authors": [],
+                "authors_with_missing": [],
+                "related_books": [],
+            },
+            {
+                "id": 3,
+                "id2": 10,
+                "publisher_id": 200,
+                "authors": [{"author_name": "Bob"}],
+                "authors_with_missing": [{"left_author_id": "b", "left_author_name": "Bob"}],
+                "related_books": [{"edition_name": "E1b"}],
+            },
+        ]
+
+    @authors("deep")
+    def test_scan_order_in_statistics(self):
+        sync_create_cells(1)
+
+        self._create_table(
+            "//tmp/t",
+            [
+                {"name": "a", "type": "int64", "sort_order": "ascending"},
+                {"name": "b", "type": "int64", "sort_order": "ascending"},
+                {"name": "c", "type": "int64"},
+            ],
+            [{"a": i, "b": i, "c": i} for i in range(10)],
+        )
+
+        def select_rows_returning_scan_order(query):
+            response_parameters = {}
+            select_rows(query, response_parameters=response_parameters, enable_statistics=True)
+            # Response parameters arrive as YSON, so the scan order comes back as bytes.
+            return response_parameters["scan_order"].decode()
+
+        for query, scan_order in [
+            ("* from [//tmp/t] order by a asc limit 10", "ordered"),
+            ("* from [//tmp/t] where a > 5 order by a asc limit 10", "ordered"),
+            ("* from [//tmp/t] order by b desc limit 10", "unordered"),
+            ("* from [//tmp/t] where a in (1, 3, 5) order by b desc limit 10", "unordered"),
+        ]:
+            assert select_rows_returning_scan_order(query) == scan_order
+            assert explain_query(query)["query"]["scan_order"] == scan_order
+
 
 class TestQueryRpcProxy(TestQuery):
     ENABLE_MULTIDAEMON = True
     DRIVER_BACKEND = "rpc"
     ENABLE_RPC_PROXY = True
+
+    @authors("dtorilov")
+    def test_hierarchical_join_composite_key_top_distinct_values(self):
+        sync_create_cells(1)
+
+        self._create_table(
+            "//tmp/t",
+            [
+                {"name": "hash", "type": "uint64", "sort_order": "ascending",
+                 "expression": "farm_hash([meta.group_id])"},
+                {"name": "meta.group_id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "meta.id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "dummy", "type": "int64"},
+            ],
+            [{"meta.group_id": 1, "meta.id": key_id} for key_id in (10, 20, 30)],
+        )
+        foreign_rows = [
+            {"group_id": 1, "source_id": 10, "value_id": value_id}
+            for value_id in range(1, 103)
+        ] + [
+            {"group_id": 1, "source_id": 20, "value_id": 200},
+            {"group_id": 1, "source_id": 20, "value_id": 201},
+            {"group_id": 2, "source_id": 10, "value_id": 0},
+        ]
+        self._create_table(
+            "//tmp/foreign",
+            [
+                {"name": "hash", "type": "uint64", "sort_order": "ascending",
+                 "expression": "farm_hash([group_id])"},
+                {"name": "group_id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "source_id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "value_id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "dummy", "type": "int64"},
+            ],
+            foreign_rows,
+        )
+
+        query = """
+        SELECT
+            t.`meta.id` AS key_id,
+            (
+                SELECT value_id
+                FROM (
+                    CAST(make_list(t.`meta.group_id`) AS `List<Uint64>`) AS group_id,
+                    CAST(make_list(t.`meta.id`) AS `List<Uint64>`) AS join_key
+                )
+                JOIN `//tmp/foreign` AS f
+                    ON (group_id, join_key) =
+                       (f.group_id, f.source_id)
+                GROUP BY f.value_id AS value_id
+                ORDER BY value_id ASC
+                LIMIT 100
+            ) AS value_ids
+        FROM `//tmp/t` AS t
+        """
+        # COMPAT(dtorilov): Remove after 26.2.
+        with self.RpcProxyDynamicConfig("/query_engine_config/enable_scalar_subquery_order_by_and_limit", True):
+            actual = select_rows(query, expression_builder_version=2, syntax_version=2)
+
+        expected = [
+            {"key_id": 10, "value_ids": [{"value_id": value_id} for value_id in range(1, 101)]},
+            {"key_id": 20, "value_ids": [{"value_id": 200}, {"value_id": 201}]},
+            {"key_id": 30, "value_ids": []},
+        ]
+        assert sorted(actual, key=lambda row: row["key_id"]) == expected
+
+    @authors("dtorilov")
+    def test_hierarchical_join_filtered_top_values(self):
+        sync_create_cells(1)
+
+        self._create_table(
+            "//tmp/t",
+            [
+                {"name": "hash", "type": "uint64", "sort_order": "ascending",
+                 "expression": "farm_hash([meta.id])"},
+                {"name": "meta.id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "dummy", "type": "int64"},
+            ],
+            [{"meta.id": 1}, {"meta.id": 2}],
+        )
+        foreign_rows = [
+            {"id": 1, "kind": "selected", "name": f"item{index:02d}", "value": value}
+            for index, value in enumerate([5, 100, 20, 20, 10, 9, 8, 7, 6, 4, 3, 2], start=1)
+        ] + [
+            {"id": 1, "kind": "selected", "name": "negative", "value": -1},
+            {"id": 1, "kind": "selected", "name": "zero", "value": 0},
+            {"id": 1, "kind": "unrelated", "name": "other", "value": 1000},
+        ]
+        self._create_table(
+            "//tmp/foreign",
+            [
+                {"name": "hash", "type": "uint64", "sort_order": "ascending",
+                 "expression": "farm_hash([id])"},
+                {"name": "id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "kind", "type": "string", "sort_order": "ascending"},
+                {"name": "name", "type": "string", "sort_order": "ascending"},
+                {"name": "value", "type": "int64", "aggregate": "sum", "lock": "value", "group": "value"},
+            ],
+            foreign_rows,
+        )
+
+        query = """
+        SELECT
+            t.`meta.id` AS key_id,
+            (
+                SELECT f.name AS item, f.value AS score
+                FROM (CAST(make_list(t.`meta.id`) AS `List<Uint64>`) AS join_key)
+                JOIN `//tmp/foreign` AS f
+                    ON join_key = f.id
+                WHERE
+                    f.kind = 'selected'
+                    AND f.value > 0
+                ORDER BY f.value DESC, f.name ASC
+                LIMIT 10
+            ) AS top_items
+        FROM `//tmp/t` AS t
+        """
+        # COMPAT(dtorilov): Remove after 26.2.
+        with self.RpcProxyDynamicConfig("/query_engine_config/enable_scalar_subquery_order_by_and_limit", True):
+            actual = select_rows(query, expression_builder_version=2, syntax_version=2)
+
+        expected = [
+            {"key_id": 1, "top_items": [
+                {"item": "item02", "score": 100},
+                {"item": "item03", "score": 20},
+                {"item": "item04", "score": 20},
+                {"item": "item05", "score": 10},
+                {"item": "item06", "score": 9},
+                {"item": "item07", "score": 8},
+                {"item": "item08", "score": 7},
+                {"item": "item09", "score": 6},
+                {"item": "item01", "score": 5},
+                {"item": "item10", "score": 4},
+            ]},
+            {"key_id": 2, "top_items": []},
+        ]
+        assert sorted(actual, key=lambda row: row["key_id"]) == expected
+
+    @authors("dtorilov")
+    def test_hierarchical_join_filtered_top_aggregates(self):
+        sync_create_cells(1)
+
+        self._create_table(
+            "//tmp/t",
+            [
+                {"name": "hash", "type": "uint64", "sort_order": "ascending",
+                 "expression": "farm_hash([meta.group_id])"},
+                {"name": "meta.group_id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "meta.id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "dummy", "type": "int64"},
+            ],
+            [{"meta.group_id": 1, "meta.id": key_id} for key_id in (10, 20, 30)],
+        )
+        foreign_rows = [
+            {"key_id": 10, "category_id": 1, "timestamp": 999, "amount": 1000.0, "count": 100},
+            {"key_id": 10, "category_id": 1, "timestamp": 1000, "amount": 40.25, "count": 2},
+            {"key_id": 10, "category_id": 1, "timestamp": 1999, "amount": 59.75, "count": 3},
+            {"key_id": 10, "category_id": 1, "timestamp": 2000, "amount": 1000.0, "count": 100},
+            {"key_id": 10, "category_id": 2, "timestamp": 1500, "amount": 100.0, "count": 4},
+        ] + [
+            {"key_id": 10, "category_id": category_id, "timestamp": 1500,
+             "amount": float(100 - category_id), "count": category_id}
+            for category_id in range(3, 13)
+        ] + [
+            {"key_id": 10, "category_id": 99, "timestamp": 1500, "amount": 1000.0, "count": 100},
+            {"key_id": 20, "category_id": 1, "timestamp": 1100, "amount": 1.5, "count": 1},
+            {"key_id": 20, "category_id": 1, "timestamp": 1200, "amount": 2.5, "count": 2},
+            {"key_id": 20, "category_id": 2, "timestamp": 1500, "amount": 4.0, "count": 5},
+            {"key_id": 30, "category_id": 1, "timestamp": 2000, "amount": 1000.0, "count": 100},
+        ]
+        self._create_table(
+            "//tmp/foreign",
+            [
+                {"name": "key_id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "category_id", "type": "uint64", "sort_order": "ascending"},
+                {"name": "timestamp", "type": "uint64", "sort_order": "ascending"},
+                {"name": "amount", "type": "double"},
+                {"name": "count", "type": "int64"},
+            ],
+            foreign_rows,
+        )
+
+        query = """
+        SELECT
+            t.`meta.id` AS key_id,
+            (
+                SELECT
+                    category_id,
+                    sum(f.amount) AS amount,
+                    sum(f.count) AS total_count
+                FROM (CAST(make_list(t.`meta.id`) AS `List<Uint64>`) AS join_key)
+                JOIN `//tmp/foreign` AS f
+                    ON join_key = f.key_id
+                WHERE
+                    f.timestamp >= {from_time}
+                    AND f.timestamp < {to_time}
+                    AND f.category_id IN {category_ids}
+                GROUP BY f.category_id AS category_id
+                ORDER BY sum(f.amount) DESC, category_id ASC
+                LIMIT 10
+            ) AS top_groups
+        FROM `//tmp/t` AS t
+        """
+        # COMPAT(dtorilov): Remove after 26.2.
+        with self.RpcProxyDynamicConfig("/query_engine_config/enable_scalar_subquery_order_by_and_limit", True):
+            actual = select_rows(
+                query,
+                expression_builder_version=2,
+                syntax_version=2,
+                placeholder_values={
+                    "from_time": yson.YsonUint64(1000),
+                    "to_time": yson.YsonUint64(2000),
+                    "category_ids": [yson.YsonUint64(category_id) for category_id in range(1, 13)],
+                },
+            )
+
+        expected = [
+            {"key_id": 10, "top_groups": [
+                {"category_id": 1, "amount": 100.0, "total_count": 5},
+                {"category_id": 2, "amount": 100.0, "total_count": 4},
+            ] + [
+                {"category_id": category_id, "amount": float(100 - category_id), "total_count": category_id}
+                for category_id in range(3, 11)
+            ]},
+            {"key_id": 20, "top_groups": [
+                {"category_id": 1, "amount": 4.0, "total_count": 3},
+                {"category_id": 2, "amount": 4.0, "total_count": 5},
+            ]},
+            {"key_id": 30, "top_groups": []},
+        ]
+        assert sorted(actual, key=lambda row: row["key_id"]) == expected
 
     @authors("akozhikhov", "alexelexa")
     def test_detailed_select_profiling(self):
@@ -3306,11 +3914,19 @@ class TestQueryRpcProxy(TestQuery):
         assert statistics[length//2] != 0
         assert all(map(lambda x : x == 0, statistics[(length//2+3):]))
 
-    @authors("dtorilov")
-    def test_yt_27954_1(self):
+    @pytest.fixture
+    def enable_heavy_range_inference_in_joins(self):
         set("//sys/rpc_proxies/@config", {})
         set("//sys/rpc_proxies/@config/query_engine_config", {})
-        set("//sys/rpc_proxies/@config/query_engine_config/allow_heavy_range_inference_in_joins", True)
+        config_path = "//sys/rpc_proxies/@config/query_engine_config/allow_heavy_range_inference_in_joins"
+        set(config_path, True)
+        try:
+            yield
+        finally:
+            set(config_path, False)
+
+    @authors("dtorilov")
+    def test_yt_27954_1(self, enable_heavy_range_inference_in_joins):
         sync_create_cells(1)
         self._create_table(
             "//tmp/l",
@@ -3358,13 +3974,9 @@ class TestQueryRpcProxy(TestQuery):
         ]
         actual = select_rows(query, allow_join_without_index=False)
         assert expected == actual
-        set("//sys/rpc_proxies/@config/query_engine_config/allow_heavy_range_inference_in_joins", False)
 
     @authors("dtorilov")
-    def test_yt_27954_2(self):
-        set("//sys/rpc_proxies/@config", {})
-        set("//sys/rpc_proxies/@config/query_engine_config", {})
-        set("//sys/rpc_proxies/@config/query_engine_config/allow_heavy_range_inference_in_joins", True)
+    def test_yt_27954_2(self, enable_heavy_range_inference_in_joins):
         sync_create_cells(1)
         self._create_table(
             "//tmp/l",
@@ -3412,13 +4024,9 @@ class TestQueryRpcProxy(TestQuery):
         ]
         actual = select_rows(query, allow_join_without_index=False)
         assert expected == actual
-        set("//sys/rpc_proxies/@config/query_engine_config/allow_heavy_range_inference_in_joins", False)
 
     @authors("dtorilov")
-    def test_yt_27954_3(self):
-        set("//sys/rpc_proxies/@config", {})
-        set("//sys/rpc_proxies/@config/query_engine_config", {})
-        set("//sys/rpc_proxies/@config/query_engine_config/allow_heavy_range_inference_in_joins", True)
+    def test_yt_27954_3(self, enable_heavy_range_inference_in_joins):
         sync_create_cells(1)
         self._create_table(
             "//tmp/l",
@@ -3461,7 +4069,6 @@ class TestQueryRpcProxy(TestQuery):
         )
         with raises_yt_error("Foreign table key is not used in the join clause"):
             select_rows(query, allow_join_without_index=False)
-        set("//sys/rpc_proxies/@config/query_engine_config/allow_heavy_range_inference_in_joins", False)
 
     @authors("dtorilov")
     def test_reverse_scan_for_order_by_1(self):
@@ -3505,6 +4112,7 @@ class TestQueryRpcProxy(TestQuery):
         def select_rows_returning_statistics(query):
             response_parameters = {}
             result = select_rows(query, response_parameters=response_parameters, enable_statistics=True)
+            assert response_parameters['scan_order'].decode() == 'reversed'
             return result, response_parameters['inner_statistics'][0]['rows_read']
 
         result, rows_read = select_rows_returning_statistics(f"* from [{path}] order by key desc limit 4")
@@ -3604,6 +4212,7 @@ class TestQueryRpcProxy(TestQuery):
         def select_rows_returning_statistics(query):
             response_parameters = {}
             result = select_rows(query, response_parameters=response_parameters, enable_statistics=True)
+            assert response_parameters['scan_order'].decode() == 'unordered'
             return result, response_parameters['inner_statistics'][0]['rows_read']
 
         assert explain_query(f"* from [{path}] order by key desc limit 10")["query"]["scan_order"] == "unordered"
@@ -3662,6 +4271,7 @@ class TestQueryRpcProxy(TestQuery):
         def select_rows_returning_statistics(query):
             response_parameters = {}
             result = select_rows(query, response_parameters=response_parameters, enable_statistics=True)
+            assert response_parameters['scan_order'].decode() == 'reversed'
             return result, response_parameters['inner_statistics'][0]['rows_read']
 
         for k0_value in (4, 0):
@@ -3854,8 +4464,47 @@ class TestQueryRpcProxy(TestQuery):
             for baseline, sideline, query in zip(baselines, sidelines, queries):
                 assert baseline == sideline, "OFFSET/LIMIT differs in parallel GROUP BY: " + query
 
+    @authors("deep")
+    def test_scan_order_with_prefetched_join(self):
+        sync_create_cells(2)
 
-class TestSelectWithRowCache(TestLookupCache):
+        table = "//tmp/t"
+        create("table", table, attributes={"dynamic": True, "schema": [
+            make_sorted_column("key", "int64"),
+            make_column("value", "int64"),
+        ]})
+        reshard_table(table, [[], [50]])
+        sync_mount_table(table)
+        insert_rows(table, [{"key": i, "value": i % 7} for i in range(100)])
+
+        dictionary = "//tmp/d"
+        create("table", dictionary, attributes={"dynamic": True, "schema": [
+            make_sorted_column("dkey1", "int64"),
+            make_sorted_column("dkey2", "int64"),
+            make_column("dvalue", "int64"),
+        ]})
+        sync_mount_table(dictionary)
+        insert_rows(dictionary, [{"dkey1": i, "dkey2": 0, "dvalue": i % 11} for i in range(100)])
+
+        response_parameters = {}
+        with self.RpcProxyDynamicConfig("/query_engine_config/prefetch_join_tables", True), \
+                self.RpcProxyDynamicConfig("/query_engine_config/allow_reverse_scan_for_order_by", True):
+            select_rows(
+                f"* from [{table}] join [{dictionary}] ON (42, 0) = (dkey1, dkey2) order by key desc limit 10",
+                response_parameters=response_parameters,
+                enable_statistics=True,
+                statistics_aggregation="depth_omit_node",
+            )
+
+        # Prefetched joins are not merged into the top-level statistics, so mixed is not reported.
+        assert response_parameters["scan_order"].decode() == "reversed"
+        assert [inner["scan_order"].decode() for inner in response_parameters["inner_statistics"]] == [
+            "unordered",
+            "ordered",
+        ]
+
+
+class TestSelectWithRowCache(test_lookup.TestLookupCache):
     ENABLE_MULTIDAEMON = True
     COUNTER_NAME = "select"
 

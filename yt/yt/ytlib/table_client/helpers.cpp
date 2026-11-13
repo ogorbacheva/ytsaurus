@@ -115,6 +115,17 @@ public:
         return UnderlyingReader_->GetDataStatistics();
     }
 
+    NApi::TTableReaderTimingStatistics GetTimingStatistics() const override
+    {
+        auto timing = UnderlyingReader_->GetTimingStatistics();
+        // NB(achains): The adapter has no phases of its own,
+        // so its total time is the lifetime of the wrapped reader.
+        return NApi::TTableReaderTimingStatistics{
+            .DataReadTiming = timing,
+            .TotalTime = timing.GetTotalTime(),
+        };
+    }
+
     TFuture<void> GetReadyEvent() const override
     {
         return UnderlyingReader_->GetReadyEvent();
@@ -405,6 +416,7 @@ TInputTableInfo CollectInputTableInfo(
     auto rlsReadSpec = TRlsReadSpec::BuildFromRowLevelAclAndTableSchema(
         schema,
         userObject.RowLevelAcl,
+        client->GetOptions().GetAuthenticatedUser(),
         Logger());
 
     return TInputTableInfo{
@@ -930,17 +942,38 @@ IAttributeDictionaryPtr ResolveExternalTable(
     const TYPath& path,
     TTableId* tableId,
     TCellTag* externalCellTag,
-    const std::vector<std::string>& extraAttributeKeys)
+    const std::vector<std::string>& extraAttributeKeys,
+    std::optional<EMasterFeature> requiredServerFeature)
 {
     TMasterReadOptions options;
-    auto proxy = std::make_unique<TObjectServiceProxy>(CreateObjectServiceReadProxy(
+    auto proxy = CreateObjectServiceReadProxy(
         client,
         options.ReadFrom,
         PrimaryMasterCellTagSentinel,
-        client->GetNativeConnection()->GetStickyGroupSizeCache()));
+        client->GetNativeConnection()->GetStickyGroupSizeCache());
 
+    return ResolveExternalTable(
+        &proxy,
+        path,
+        tableId,
+        externalCellTag,
+        extraAttributeKeys,
+        requiredServerFeature);
+}
+
+IAttributeDictionaryPtr ResolveExternalTable(
+    TObjectServiceProxy* proxy,
+    const TYPath& path,
+    TTableId* tableId,
+    TCellTag* externalCellTag,
+    const std::vector<std::string>& extraAttributeKeys,
+    std::optional<EMasterFeature> requiredServerFeature)
+{
     {
         auto req = TObjectYPathProxy::GetBasicAttributes(path);
+        if (requiredServerFeature) {
+            req->RequireServerFeature(*requiredServerFeature);
+        }
         auto rspOrError = WaitFor(proxy->Execute(req));
         THROW_ERROR_EXCEPTION_IF_FAILED(rspOrError, "Error getting basic attributes of table %v", path);
         const auto& rsp = rspOrError.Value();

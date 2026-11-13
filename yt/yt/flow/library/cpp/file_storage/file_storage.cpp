@@ -14,17 +14,19 @@
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
 
 #include <library/cpp/yt/misc/guid.h>
-#include <library/cpp/yt/threading/spin_lock.h>
+
+#include <library/cpp/yt/system/spin_lock.h>
 
 #include <util/folder/path.h>
 #include <util/generic/scope.h>
 #include <util/stream/file.h>
 #include <util/string/cast.h>
 #include <util/system/file.h>
-#include <util/system/file_lock.h>
+#include <util/system/flock.h>
 #include <util/system/fstat.h>
 #include <util/system/sysstat.h>
 
+#include <cerrno>
 #include <list>
 #include <memory>
 
@@ -174,15 +176,6 @@ void WriteFile(const TFsPath& path, TStringBuf value)
     output.Finish();
 }
 
-void SetPermissions(const TFsPath& path, int mode)
-{
-    THROW_ERROR_EXCEPTION_UNLESS(
-        Chmod(path.GetPath().c_str(), mode) == 0,
-        "Failed to change permissions of %Qv",
-        path.GetPath())
-        .With(TError::FromSystem());
-}
-
 void FlushFile(const TFsPath& path)
 {
     TFile(path.GetPath(), OpenExisting | RdOnly).FlushData();
@@ -266,34 +259,6 @@ void ValidateStagingRoot(const TFsPath& stagingDirectory)
         .With("staging_path", stagingDirectory.GetPath());
 }
 
-void MakeTreeReadOnly(const TFsPath& path)
-{
-    auto stat = GetFileStatus(path);
-    THROW_ERROR_EXCEPTION_IF(
-        stat.IsSymlink(),
-        "File storage payload contains symlink %Qv",
-        path.GetPath());
-
-    if (stat.IsDir()) {
-        TVector<TFsPath> children;
-        ListDirectory(path, &children);
-        for (const auto& child : children) {
-            MakeTreeReadOnly(child);
-        }
-        SetPermissions(
-            path,
-            (stat.Mode & ~(S_IWUSR | S_IWGRP | S_IWOTH)) | S_IRUSR | S_IXUSR);
-    } else {
-        THROW_ERROR_EXCEPTION_UNLESS(
-            stat.IsFile(),
-            "File storage payload contains unsupported entry %Qv",
-            path.GetPath());
-        SetPermissions(
-            path,
-            stat.Mode & ~(S_IWUSR | S_IWGRP | S_IWOTH));
-    }
-}
-
 void FlushTree(const TFsPath& path)
 {
     auto stat = GetFileStatus(path);
@@ -307,26 +272,6 @@ void FlushTree(const TFsPath& path)
     } else {
         FlushFile(path);
     }
-}
-
-bool IsTreeReadOnly(const TFsPath& path)
-{
-    auto stat = GetFileStatus(path);
-    if (stat.IsSymlink() || (stat.Mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0) {
-        return false;
-    }
-    if (!stat.IsDir()) {
-        return stat.IsFile();
-    }
-
-    TVector<TFsPath> children;
-    ListDirectory(path, &children);
-    for (const auto& child : children) {
-        if (!IsTreeReadOnly(child)) {
-            return false;
-        }
-    }
-    return true;
 }
 
 bool AreManifestsEqual(const TManifestPtr& lhs, const TManifestPtr& rhs)
@@ -482,11 +427,20 @@ public:
             "Invalid file storage size limits");
 
         EnsureDirectoryDurable(Root_);
-        RootLock_ = std::make_unique<TFileLock>((Root_ / ".lock").GetPath());
-        THROW_ERROR_EXCEPTION_UNLESS(
-            RootLock_->TryAcquire(),
-            "File storage root %Qv is already owned by another process",
-            Root_.GetPath());
+        // A flock belongs to the open file description, so an inherited descriptor would let a spawned
+        // child, such as a companion outliving the worker, keep the root locked after a restart.
+        RootLock_ = std::make_unique<TFile>((Root_ / ".lock").GetPath(), OpenAlways | RdOnly | CloseOnExec);
+        if (::Flock(RootLock_->GetHandle(), LOCK_EX | LOCK_NB) != 0) {
+            auto error = errno;
+            THROW_ERROR_EXCEPTION_IF(
+                error == EWOULDBLOCK,
+                "File storage root %Qv is already owned by another process",
+                Root_.GetPath());
+            THROW_ERROR_EXCEPTION(
+                "Failed to lock file storage root %Qv",
+                Root_.GetPath())
+                .With(TError::FromSystem(error));
+        }
         FlushDirectory(Root_);
 
         Reconcile();
@@ -530,6 +484,10 @@ public:
         if (hit) {
             HitCounter_.Increment();
             RefreshMetrics();
+            YT_TLOG_INFO("File storage cache hit")
+                .With("ObjectId", id.Underlying())
+                .With("Path", hit->GetPath())
+                .With("CacheLevel", "memory");
             return MakeFuture<IFileStorageObjectPtr>(std::move(hit));
         }
 
@@ -557,6 +515,10 @@ public:
         if (hit) {
             HitCounter_.Increment();
             RefreshMetrics();
+            YT_TLOG_INFO("File storage cache hit")
+                .With("ObjectId", id.Underlying())
+                .With("Path", hit->GetPath())
+                .With("CacheLevel", "memory");
             return MakeFuture<IFileStorageObjectPtr>(std::move(hit));
         }
 
@@ -627,9 +589,17 @@ private:
 
         if (auto object = Probe(id, digest, finalDirectory)) {
             HitCounter_.Increment();
+            YT_TLOG_INFO("File storage cache hit")
+                .With("ObjectId", id.Underlying())
+                .With("Path", object->GetPath())
+                .With("CacheLevel", "disk");
             return object;
         }
         MissCounter_.Increment();
+        YT_TLOG_INFO("File storage cache miss")
+            .With("ObjectId", id.Underlying())
+            .With("ExpectedSize", expectedSize);
+        auto startedAt = TInstant::Now();
 
         auto stagingDirectory = Root_ / "staging" / ToString(TGuid::Create());
         auto payload = stagingDirectory / "payload";
@@ -665,7 +635,6 @@ private:
             WaitFor(filler(payload.GetPath())).ThrowOnError();
             ValidateStagingRoot(stagingDirectory);
             auto manifest = BuildManifest(payload, id);
-            MakeTreeReadOnly(payload);
             FlushTree(payload);
 
             auto manifestYson = ConvertToYsonString(manifest);
@@ -708,6 +677,11 @@ private:
             auto object = AdoptAndPin(id, digest, finalDirectory, manifest);
             CapacityError_->ClearError();
             DiskFullError_->ClearError();
+            YT_TLOG_INFO("File storage object published")
+                .With("ObjectId", id.Underlying())
+                .With("Path", object->GetPath())
+                .With("Size", manifest->TotalSize)
+                .With("Elapsed", TInstant::Now() - startedAt);
             return object;
         } catch (const std::exception& ex) {
             auto error = TError(ex);
@@ -849,9 +823,7 @@ private:
             }
             auto manifestStatus = GetFileStatus(manifestPath);
             auto payloadStatus = GetFileStatus(payload);
-            if (!manifestStatus.IsFile() || !payloadStatus.IsDir() ||
-                !IsTreeReadOnly(payload))
-            {
+            if (!manifestStatus.IsFile() || !payloadStatus.IsDir()) {
                 return EObjectValidationResult::Invalid;
             }
             manifestYson = ReadFile(manifestPath);
@@ -1237,11 +1209,17 @@ private:
             return EEvictionResult::Failed;
         }
 
-        return DeleteKnownTrashEntry(
+        auto result = DeleteKnownTrashEntry(
             trashName,
             trashPath,
             entry->Size,
             error);
+        if (result == EEvictionResult::Evicted) {
+            YT_TLOG_INFO("Evicted file storage object")
+                .With("ObjectId", rawId)
+                .With("Size", entry->Size);
+        }
+        return result;
     }
 
     void Reconcile()
@@ -1690,7 +1668,7 @@ private:
 
     const TFileStorageConfigPtr Config_;
     const TFsPath Root_;
-    std::unique_ptr<TFileLock> RootLock_;
+    std::unique_ptr<TFile> RootLock_;
     const IInvokerPtr Invoker_;
     const TLogger Logger_;
     const IStatusErrorStatePtr CapacityError_;
@@ -1710,7 +1688,7 @@ private:
     const TCounter RejectedPublicationCounter_;
     const TPeriodicExecutorPtr CleanupExecutor_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     THashMap<std::string, TObjectEntryPtr> Objects_;
     THashMap<std::string, TInflightEntry> Inflight_;
     THashSet<std::string> ActiveStaging_;

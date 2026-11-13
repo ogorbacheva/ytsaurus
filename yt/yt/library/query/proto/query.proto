@@ -162,6 +162,9 @@ message TSubqueryExpression
     optional TProjectClause project_clause = 6;
 
     repeated TJoinClause join_clauses = 7;
+    optional TOrderClause order_clause = 8;
+    optional int64 offset = 10;
+    optional int64 limit = 9;
 }
 
 message TNamedItem
@@ -287,7 +290,7 @@ message TQuery
     required int64 output_row_limit = 3;
 
     optional int64 offset = 16 [default = 0];
-    required int64 limit = 4;
+    optional int64 limit = 4;
 
     required NYT.NTableClient.NProto.TTableSchemaExt original_schema = 5;
     repeated TColumnDescriptor schema_mapping = 6;
@@ -305,6 +308,9 @@ message TQuery
     optional bool use_disjoint_group_by = 13 [default = false];
     optional bool infer_ranges = 14 [default = true];
     required bool is_final = 15;
+
+    // EScanOrder; COMPAT(sabdenovch): absent means that scan order is derived from other clauses.
+    optional uint32 scan_order = 20;
 }
 
 message TQueryOptions
@@ -341,6 +347,7 @@ message TQueryOptions
     optional int64 join_cache_size = 30;
     optional bool enable_parallelize_unordered_group_by = 31;
     optional bool allow_udf_object_code_cache = 32;
+    optional int32 max_jit_stack_frame_size = 33;
 }
 
 message TFeatureFlags

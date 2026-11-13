@@ -2,8 +2,9 @@
 
 #include "computation.h"
 #include "computation_controller.h"
-#include "file_source.h"
+#include "file_provider.h"
 #include "process_function.h"
+#include "process_function_graph.h"
 #include "resource.h"
 #include "resource_controller.h"
 #include "sink.h"
@@ -27,6 +28,8 @@
 #include <library/cpp/string_utils/levenshtein_diff/levenshtein_diff.h>
 
 #include <util/charset/wide.h>
+
+#include <set>
 
 namespace NYT::NFlow {
 
@@ -190,16 +193,29 @@ NYTree::TYsonStructPtr TRegistry::ParseResourceDynamicParameters(
     return dynamicParameters;
 }
 
-IFileSourcePtr TRegistry::CreateFileSource(const TFileSourceContextPtr& context)
+IFileProviderPtr TRegistry::CreateFileProvider(
+    const TFileProviderContextPtr& context,
+    const TDynamicFileProviderContextPtr& dynamicContext)
 {
-    return GetFileSourceDescriptor(context->SourceSpec->FileSourceClassName).Factory(context);
+    return GetFileProviderDescriptor(context->ProviderSpec->FileProviderClassName).Factory(context, dynamicContext);
 }
 
-NYTree::TYsonStructPtr TRegistry::ParseFileSourceParameters(const TFileSourceSpecPtr& spec)
+NYTree::TYsonStructPtr TRegistry::ParseFileProviderParameters(const TFileProviderSpecPtr& spec)
 {
-    auto parameters = GetFileSourceDescriptor(spec->FileSourceClassName).ParametersFactory();
+    auto parameters = GetFileProviderDescriptor(spec->FileProviderClassName).ParametersFactory();
     parameters->Load(spec->Parameters);
     return parameters;
+}
+
+NYTree::TYsonStructPtr TRegistry::ParseDynamicFileProviderParameters(
+    const TFileProviderSpecPtr& spec,
+    const TDynamicFileProviderSpecPtr& dynamicSpec)
+{
+    auto dynamicParameters = GetFileProviderDescriptor(spec->FileProviderClassName).DynamicParametersFactory();
+    if (dynamicParameters && dynamicSpec->Parameters) {
+        dynamicParameters->Load(dynamicSpec->Parameters);
+    }
+    return dynamicParameters;
 }
 
 IExternalStateManagerPtr TRegistry::CreateExternalStateManager(
@@ -272,13 +288,20 @@ std::vector<TRichYPath> ReadRichYPaths(const INodePtr& node)
 
 } // namespace
 
-std::vector<TYTPathClaim> TRegistry::CollectYTPathClaims(const NYTree::TYsonStructPtr& parameters) const
+std::vector<TYTPathClaim> TRegistry::CollectYTPathClaims(
+    const NYTree::TYsonStructPtr& parameters,
+    const std::optional<std::string>& pipelineCluster) const
 {
     auto parametersNode = ConvertToNode(parameters);
 
     std::vector<TYTPathClaim> claims;
     parameters->GetMeta()->Traverse([&] (const TYsonStructTraverseContext& context) {
         auto ownership = context.Parameter->FindOption<EYTPathOwnership>();
+        if (!ownership) {
+            if (auto resolver = context.Parameter->FindOption<TYTPathOwnershipResolver>()) {
+                ownership = resolver->Resolve(*parameters);
+            }
+        }
         if (!ownership) {
             return;
         }
@@ -293,12 +316,26 @@ std::vector<TYTPathClaim> TRegistry::CollectYTPathClaims(const NYTree::TYsonStru
             if (normalized.GetPath().empty()) {
                 continue;
             }
-            claims.push_back(TYTPathClaim{
-                .Cluster = normalized.GetCluster().value_or(""),
-                .Path = normalized.GetPath(),
-                .Ownership = *ownership,
-                .ParameterKey = TString(context.Key),
-            });
+            // A path is claimed on the union of its `cluster` and `clusters` attributes, else on the pipeline cluster;
+            // a cluster listed in both is claimed once so that the owner does not conflict with itself.
+            std::set<std::string> clusters;
+            if (auto cluster = normalized.GetCluster()) {
+                clusters.insert(std::move(*cluster));
+            }
+            if (auto pathClusters = normalized.GetClusters()) {
+                clusters.insert(pathClusters->begin(), pathClusters->end());
+            }
+            if (clusters.empty()) {
+                clusters.insert(pipelineCluster.value_or(""));
+            }
+            for (const auto& cluster : clusters) {
+                claims.push_back(TYTPathClaim{
+                    .Cluster = cluster,
+                    .Path = normalized.GetPath(),
+                    .Ownership = *ownership,
+                    .ParameterKey = TString(context.Key),
+                });
+            }
         }
     });
     return claims;
@@ -323,6 +360,9 @@ TPayloadMigrationFunction TRegistry::GetPayloadMigrationFunction(TStringBuf name
 
 void TRegistry::ValidateComputationSpec(const TComputationSpecPtr& spec) const
 {
+    THROW_ERROR_EXCEPTION_IF(spec->ProcessFunctionGraph,
+        "Computation with \"process_function_graph\" must be resolved first; the pipeline runner resolves it, "
+        "so start the pipeline binary instead of setting this spec directly");
     {
         const auto& typeName = spec->ComputationClassName;
         if (!TypeNameToComputationDescriptor_.contains(typeName)) {
@@ -371,12 +411,20 @@ void TRegistry::ValidateResourceSpec(const TResourceSpecPtr& spec) const
     if (!TypeNameToResourceDescriptor_.contains(typeName)) {
         THROW_ERROR_EXCEPTION("No resource %Qv is registered", typeName);
     }
-    GetResourceDescriptor(typeName).ValidateSpec(*spec);
+    const auto& descriptor = GetResourceDescriptor(typeName);
+    THROW_ERROR_EXCEPTION_UNLESS(
+        spec->FileProviders.empty() || descriptor.SupportsFileProviderDiscovery,
+        "Resource %Qv declares file providers, but its controller does not support file provider discovery; derive the controller from TResourceControllerBase",
+        typeName);
+    descriptor.ValidateSpec(*spec);
+    for (const auto& [_, fileProviderSpec] : spec->FileProviders) {
+        ValidateFileProviderSpec(fileProviderSpec);
+    }
 }
 
-void TRegistry::ValidateFileSourceSpec(const TFileSourceSpecPtr& spec) const
+void TRegistry::ValidateFileProviderSpec(const TFileProviderSpecPtr& spec) const
 {
-    const auto& descriptor = GetFileSourceDescriptor(spec->FileSourceClassName);
+    const auto& descriptor = GetFileProviderDescriptor(spec->FileProviderClassName);
     descriptor.ValidateSpec(*spec);
 
     auto parameters = descriptor.ParametersFactory();
@@ -479,7 +527,8 @@ std::vector<std::string> TRegistry::GetYsonMessageTypeNames() const
 
 namespace {
 
-void ValidateParameters(
+//! Returns the parsed parameters, null on error.
+NYTree::TYsonStructPtr ValidateParameters(
     TStringBuf specType,
     TYPath path,
     auto factory,
@@ -497,8 +546,11 @@ void ValidateParameters(
         if (!parametersUnrecognized->GetKeys().empty()) {
             SetNodeByYPath(unrecognizedOutput, path, parametersUnrecognized, /*force*/ true);
         }
+
+        return parameters;
     } catch (const std::exception& exception) {
         errors->push_back(TError(exception));
+        return nullptr;
     }
 }
 
@@ -521,11 +573,13 @@ const TRegistry::TProcessFunctionDescriptor* TRegistry::FindProcessFunctionDescr
     return it == TypeNameToProcessFunctionDescriptor_.end() ? nullptr : &it->second;
 }
 
-IProcessFunctionBasePtr TRegistry::CreateProcessFunction(const std::string& name) const
+IProcessFunctionBasePtr TRegistry::CreateProcessFunction(
+    const std::string& name,
+    const TProcessFunctionContextPtr& context) const
 {
     const auto* descriptor = FindProcessFunctionDescriptor(name);
     THROW_ERROR_EXCEPTION_UNLESS(descriptor, "Unknown processing function %Qv", name);
-    return descriptor->Factory();
+    return descriptor->Factory(context);
 }
 
 ISyncProcessFunction* TRegistry::ViewProcessFunctionAsSync(const std::string& name, const IProcessFunctionBasePtr& function) const
@@ -535,9 +589,79 @@ ISyncProcessFunction* TRegistry::ViewProcessFunctionAsSync(const std::string& na
     return descriptor->SyncView(function.Get());
 }
 
+bool TRegistry::IsSyncProcessFunction(const std::string& name) const
+{
+    const auto* descriptor = FindProcessFunctionDescriptor(name);
+    THROW_ERROR_EXCEPTION_UNLESS(descriptor, "Unknown processing function %Qv", name);
+    return descriptor->OverridesSync;
+}
+
+NYTree::TYsonStructPtr TRegistry::ParseProcessFunctionParameters(const TComputationSpecPtr& spec) const
+{
+    YT_VERIFY(spec->ProcessingFunction);
+    const auto* descriptor = FindProcessFunctionDescriptor(*spec->ProcessingFunction);
+    THROW_ERROR_EXCEPTION_UNLESS(descriptor, "Unknown processing function %Qv", *spec->ProcessingFunction);
+    auto parameters = descriptor->StaticParametersFactory();
+    parameters->Load(ProcessingFunctionParametersNodeOrEmpty(spec->ProcessingFunctionParameters));
+    return parameters;
+}
+
+void TRegistry::ValidateStaticProcessFunctionParameters(
+    const std::string& name,
+    const NYTree::IMapNodePtr& node) const
+{
+    const auto* descriptor = FindProcessFunctionDescriptor(name);
+    THROW_ERROR_EXCEPTION_UNLESS(descriptor, "Unknown processing function %Qv", name);
+    auto parameters = descriptor->StaticParametersFactory();
+    parameters->SetUnrecognizedStrategy(EUnrecognizedStrategy::ThrowRecursive);
+    parameters->Load(ProcessingFunctionParametersNodeOrEmpty(node));
+}
+
+void TRegistry::ValidateProcessFunctionGraphDynamicParameters(
+    const TComputationSpecPtr& spec,
+    const NYTree::IMapNodePtr& parameters) const
+{
+    auto graphParameters = ConvertTo<TProcessFunctionGraphParametersPtr>(spec->ProcessingFunctionParameters);
+    auto dynamicParameters = New<TProcessFunctionGraphDynamicParameters>();
+    dynamicParameters->SetUnrecognizedStrategy(EUnrecognizedStrategy::ThrowRecursive);
+    dynamicParameters->Load(ProcessingFunctionParametersNodeOrEmpty(parameters));
+    for (const auto& [nodeId, _] : dynamicParameters->Nodes) {
+        THROW_ERROR_EXCEPTION_UNLESS(graphParameters->Graph->Nodes.contains(nodeId),
+            "Unknown process function graph node %Qv in dynamic parameters",
+            nodeId);
+    }
+    for (const auto& [nodeId, node] : graphParameters->Graph->Nodes) {
+        try {
+            const auto* descriptor = FindProcessFunctionDescriptor(node->ProcessingFunction);
+            THROW_ERROR_EXCEPTION_UNLESS(descriptor, "Unknown processing function %Qv", node->ProcessingFunction);
+            auto typed = descriptor->DynamicParametersFactory();
+            typed->SetUnrecognizedStrategy(EUnrecognizedStrategy::ThrowRecursive);
+            auto it = dynamicParameters->Nodes.find(nodeId);
+            typed->Load(ProcessingFunctionParametersNodeOrEmpty(
+                it == dynamicParameters->Nodes.end() ? nullptr : it->second));
+        } catch (const std::exception& ex) {
+            THROW_ERROR_EXCEPTION("Invalid dynamic parameters of process function graph node %Qv", nodeId).With(ex);
+        }
+    }
+}
+
+NYTree::TYsonStructPtr TRegistry::ParseDynamicProcessFunctionParameters(
+    const TComputationSpecPtr& spec,
+    const NYTree::IMapNodePtr& parameters) const
+{
+    YT_VERIFY(spec->ProcessingFunction);
+    const auto* descriptor = FindProcessFunctionDescriptor(*spec->ProcessingFunction);
+    THROW_ERROR_EXCEPTION_UNLESS(descriptor, "Unknown processing function %Qv", *spec->ProcessingFunction);
+    auto dynamicParameters = descriptor->DynamicParametersFactory();
+    dynamicParameters->Load(ProcessingFunctionParametersNodeOrEmpty(parameters));
+    return dynamicParameters;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
-std::vector<TError> TRegistry::ValidatePipelineSpecParseability(const NYTree::IMapNodePtr& specNode) const
+std::vector<TError> TRegistry::ValidatePipelineSpecParseability(
+    const NYTree::IMapNodePtr& specNode,
+    TParsedPipelineParameters* parsedParameters) const
 {
     std::vector<TError> errors;
 
@@ -564,22 +688,28 @@ std::vector<TError> TRegistry::ValidatePipelineSpecParseability(const NYTree::IM
                 &errors,
                 unrecognized);
             for (const auto& [streamId, sourceSpec] : computationSpec->SourceStreams) {
-                ValidateParameters(
+                auto parameters = ValidateParameters(
                     "static_pipeline_spec",
                     Format("/computations/%v/source_streams/%v/parameters", computationName, streamId),
                     GetSourceDescriptor(sourceSpec->SourceClassName).ParametersFactory,
                     sourceSpec->Parameters,
                     &errors,
                     unrecognized);
+                if (parsedParameters && parameters) {
+                    parsedParameters->Sources.emplace(std::pair(computationName, streamId), std::move(parameters));
+                }
             }
             for (const auto& [sinkId, sinkSpec] : computationSpec->Sinks) {
-                ValidateParameters(
+                auto parameters = ValidateParameters(
                     "static_pipeline_spec",
                     Format("/computations/%v/sinks/%v/parameters", computationName, sinkId),
                     GetSinkDescriptor(sinkSpec->SinkClassName).ParametersFactory,
                     sinkSpec->Parameters,
                     &errors,
                     unrecognized);
+                if (parsedParameters && parameters) {
+                    parsedParameters->Sinks.emplace(std::pair(computationName, sinkId), std::move(parameters));
+                }
             }
             if (GetComputationDescriptor(computationSpec->ComputationClassName).RequiresProcessingFunction &&
                 !computationSpec->ProcessingFunction)
@@ -600,6 +730,34 @@ std::vector<TError> TRegistry::ValidatePipelineSpecParseability(const NYTree::IM
                         ProcessingFunctionParametersNodeOrEmpty(computationSpec->ProcessingFunctionParameters),
                         &errors,
                         unrecognized);
+                    if (*computationSpec->ProcessingFunction == ProcessFunctionGraphFunctionName) {
+                        // The graph structure is validated by ValidatePipelineSpec(); node parameters are
+                        // checked here like parameters of any other processing function.
+                        auto parameters = DynamicPointerCast<TProcessFunctionGraphParameters>(
+                            ParseProcessFunctionParameters(computationSpec));
+                        YT_VERIFY(parameters);
+                        for (const auto& [nodeId, node] : parameters->Graph->Nodes) {
+                            const auto* nodeDescriptor = FindProcessFunctionDescriptor(node->ProcessingFunction);
+                            if (!nodeDescriptor) {
+                                errors.push_back(TError("Unknown processing function %Qv in process function graph node %Qv of computation %Qv",
+                                    node->ProcessingFunction,
+                                    nodeId,
+                                    computationName));
+                                continue;
+                            }
+                            // clang-format off
+                            ValidateParameters(
+                                "static_pipeline_spec",
+                                Format("/computations/%v/processing_function_parameters/graph/nodes/%v/processing_function_parameters",
+                                    computationName,
+                                    nodeId),
+                                nodeDescriptor->StaticParametersFactory,
+                                ProcessingFunctionParametersNodeOrEmpty(node->ProcessingFunctionParameters),
+                                &errors,
+                                unrecognized);
+                            // clang-format on
+                        }
+                    }
                     if (functionDescriptor->OverridesSync &&
                         !GetComputationDescriptor(computationSpec->ComputationClassName).InvokesProcessFunctionSync)
                     {
@@ -611,6 +769,23 @@ std::vector<TError> TRegistry::ValidatePipelineSpecParseability(const NYTree::IM
                             computationSpec->ComputationClassName));
                     }
                 }
+            }
+        } catch (const std::exception& exception) {
+            errors.push_back(TError(exception));
+        }
+    }
+
+    for (const auto& [resourceId, resourceSpec] : pipelineSpec->Resources) {
+        try {
+            for (const auto& [name, fileProviderSpec] : resourceSpec->FileProviders) {
+                ValidateFileProviderSpec(fileProviderSpec);
+                ValidateParameters(
+                    "static_pipeline_spec",
+                    Format("/resources/%v/file_providers/%v/parameters", resourceId, name),
+                    GetFileProviderDescriptor(fileProviderSpec->FileProviderClassName).ParametersFactory,
+                    fileProviderSpec->Parameters,
+                    &errors,
+                    unrecognized);
             }
         } catch (const std::exception& exception) {
             errors.push_back(TError(exception));
@@ -697,6 +872,11 @@ std::vector<TError> TRegistry::ValidateDynamicPipelineSpecParseability(const TPi
                         ProcessingFunctionParametersNodeOrEmpty(dynamicComputationSpec->ProcessingFunctionParameters),
                         &errors,
                         unrecognized);
+                    if (*computationSpec->ProcessingFunction == ProcessFunctionGraphFunctionName) {
+                        ValidateProcessFunctionGraphDynamicParameters(
+                            computationSpec,
+                            dynamicComputationSpec->ProcessingFunctionParameters);
+                    }
                 }
             }
 
@@ -759,12 +939,24 @@ std::vector<TError> TRegistry::ValidateDynamicPipelineSpecParseability(const TPi
 
     // Validate that all resources in dynamic spec exist in static spec.
     for (const auto& [resourceId, dynamicResourceSpec] : dynamicPipelineSpec->Resources) {
-        if (!pipelineSpec->Resources.contains(resourceId)) {
+        auto resourceSpecIt = pipelineSpec->Resources.find(resourceId);
+        if (resourceSpecIt == pipelineSpec->Resources.end()) {
             errors.push_back(
                 TError(
                     "Dynamic spec contains resource %Qv that does not exist in static spec. Closest existing names: %v",
                     resourceId,
                     GetClosestNames(resourceId, GetKeys(pipelineSpec->Resources))));
+            continue;
+        }
+        for (const auto& [fileProviderId, _] : dynamicResourceSpec->FileProviders) {
+            if (!resourceSpecIt->second->FileProviders.contains(fileProviderId)) {
+                errors.push_back(TError(
+                    "Dynamic spec contains file provider %Qv in resource %Qv "
+                    "that does not exist in static spec. Closest existing names: %v",
+                    fileProviderId,
+                    resourceId,
+                    GetClosestNames(fileProviderId, GetKeys(resourceSpecIt->second->FileProviders))));
+            }
         }
     }
 
@@ -783,6 +975,20 @@ std::vector<TError> TRegistry::ValidateDynamicPipelineSpecParseability(const TPi
                 dynamicResourceSpec->Parameters,
                 &errors,
                 unrecognized);
+
+            for (const auto& [fileProviderId, fileProviderSpec] : resourceSpec->FileProviders) {
+                auto dynamicFileProviderSpecIt = dynamicResourceSpec->FileProviders.find(fileProviderId);
+                if (dynamicFileProviderSpecIt == dynamicResourceSpec->FileProviders.end()) {
+                    continue;
+                }
+                ValidateParameters(
+                    "dynamic_pipeline_spec",
+                    Format("/resources/%v/file_providers/%v/parameters", resourceId, fileProviderId),
+                    GetFileProviderDescriptor(fileProviderSpec->FileProviderClassName).DynamicParametersFactory,
+                    dynamicFileProviderSpecIt->second->Parameters,
+                    &errors,
+                    unrecognized);
+            }
         } catch (const std::exception& exception) {
             errors.push_back(TError(exception));
         }
@@ -851,9 +1057,9 @@ const TRegistry::TResourceDescriptor& TRegistry::GetResourceDescriptor(TStringBu
     return GetDescriptor("resource", TypeNameToResourceDescriptor_, typeName);
 }
 
-const TRegistry::TFileSourceDescriptor& TRegistry::GetFileSourceDescriptor(TStringBuf typeName) const
+const TRegistry::TFileProviderDescriptor& TRegistry::GetFileProviderDescriptor(TStringBuf typeName) const
 {
-    return GetDescriptor("file source", TypeNameToFileSourceDescriptor_, typeName);
+    return GetDescriptor("file provider", TypeNameToFileProviderDescriptor_, typeName);
 }
 
 const TRegistry::TExternalStateManagerDescriptor& TRegistry::GetExternalStateManagerDescriptor(TStringBuf typeName) const

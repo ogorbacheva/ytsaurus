@@ -1,4 +1,5 @@
 #include <yt/yt/core/test_framework/framework.h>
+#include <yt/yt/core/test_framework/test_key.h>
 
 #include <yt/yt/flow/library/cpp/misc/debug_build_warning.h>
 #include <yt/yt/flow/library/cpp/misc/node_address_provider.h>
@@ -8,6 +9,20 @@
 #include <yt/yt/flow/library/cpp/runner/config.h>
 #include <yt/yt/flow/library/cpp/runner/node_info.h>
 
+#include <yt/yt/core/bus/bus.h>
+#include <yt/yt/core/bus/client.h>
+#include <yt/yt/core/bus/message_handler.h>
+#include <yt/yt/core/bus/server.h>
+
+#include <yt/yt/core/bus/tcp/client.h>
+#include <yt/yt/core/bus/tcp/config.h>
+#include <yt/yt/core/bus/tcp/server.h>
+
+#include <yt/yt/core/concurrency/scheduler_api.h>
+
+#include <yt/yt/core/crypto/config.h>
+#include <yt/yt/core/crypto/tls.h>
+
 #include <yt/yt/core/net/address.h>
 #include <yt/yt/core/net/config.h>
 #include <yt/yt/core/net/local_address.h>
@@ -16,6 +31,14 @@
 #include <yt/yt/core/ytree/convert.h>
 
 #include <yt/yt/library/program/helpers.h>
+
+#include <library/cpp/testing/common/network.h>
+
+#include <util/stream/file.h>
+#include <util/system/tempfile.h>
+
+#include <openssl/pem.h>
+#include <openssl/x509v3.h>
 
 #include <cstdlib>
 
@@ -226,6 +249,10 @@ TEST(TGetNodeInfoTest, VanillaJobIPv4AddressWithIPv4Config)
     TEnvGuard opGuard("YT_OPERATION_ID", "1-2-3-4");
     TEnvGuard jobGuard("YT_JOB_ID", "5-6-7-8");
 
+    TEnvGuard factorGuard("YT_CPU_TO_VCPU_FACTOR", "1.5");
+    TEnvGuard cpuLimitGuard("YT_FLOW_CPU_LIMIT", "10");
+    TEnvGuard vcpuLimitGuard("YT_VCPU_LIMIT");
+
     auto config = MakeConfig(TString(R"({
         cluster_url = "test-cluster";
         path = "//home/test";
@@ -242,6 +269,16 @@ TEST(TGetNodeInfoTest, VanillaJobIPv4AddressWithIPv4Config)
     ConfigureAddressResolver(config);
 
     auto nodeInfo = GetNodeInfo(config, Logger);
+
+    EXPECT_EQ(nodeInfo->VcpuLimit, std::optional<double>(15000));
+    {
+        TEnvGuard explicitLimitGuard("YT_VCPU_LIMIT", "23000");
+        EXPECT_EQ(GetNodeInfo(config, Logger)->VcpuLimit, std::optional<double>(23000));
+    }
+    {
+        TEnvGuard noCpuLimitGuard("YT_FLOW_CPU_LIMIT");
+        EXPECT_FALSE(GetNodeInfo(config, Logger)->VcpuLimit);
+    }
 
     EXPECT_THAT(nodeInfo->RpcAddress, testing::HasSubstr("127.0.0.1"));
     EXPECT_THAT(nodeInfo->RpcAddress, testing::HasSubstr("9999"));
@@ -547,6 +584,267 @@ TEST(TGetNodeInfoTest, DefaultConfigRejectsIPv4Address)
         GetNodeInfo(config, Logger),
         "non-IPv6 address");
 }
+
+////////////////////////////////////////////////////////////////////////////////
+
+NCrypto::TX509Ptr ReadCertificate(const std::string& pem)
+{
+    NCrypto::TBioPtr bio(BIO_new_mem_buf(pem.data(), pem.size()));
+    NCrypto::TX509Ptr certificate(PEM_read_bio_X509(bio.get(), /*x*/ nullptr, /*cb*/ nullptr, /*u*/ nullptr));
+    YT_VERIFY(certificate);
+    return certificate;
+}
+
+TEST(TGenerateIncarnationCertificateTest, IPv6AddressAndHostName)
+{
+    TNodeInfoBase nodeInfo;
+    nodeInfo.Name = "flow-node.example.net";
+    nodeInfo.RpcAddress = "[2001:db8::1]:8080";
+    nodeInfo.IncarnationId = TIncarnationId(TGuid::Create());
+
+    auto certificate = ReadCertificate(GenerateIncarnationCertificate(nodeInfo).CertificatePem);
+    EXPECT_EQ(X509_check_ip_asc(certificate.get(), "2001:db8::1", /*flags*/ 0), 1);
+    EXPECT_EQ(X509_check_host(certificate.get(), "flow-node.example.net", /*chklen*/ 0, /*flags*/ 0, /*peername*/ nullptr), 1);
+
+    char commonName[64] = {};
+    X509_NAME_get_text_by_NID(X509_get_subject_name(certificate.get()), NID_commonName, commonName, sizeof(commonName));
+    EXPECT_EQ(std::string(commonName), Format("yt-flow-%v", nodeInfo.IncarnationId));
+}
+
+TEST(TGenerateIncarnationCertificateTest, IPv4AddressAsName)
+{
+    TNodeInfoBase nodeInfo;
+    nodeInfo.Name = "127.0.0.1";
+    nodeInfo.RpcAddress = "[127.0.0.1]:8080";
+
+    auto certificate = ReadCertificate(GenerateIncarnationCertificate(nodeInfo).CertificatePem);
+    EXPECT_EQ(X509_check_ip_asc(certificate.get(), "127.0.0.1", /*flags*/ 0), 1);
+    EXPECT_EQ(X509_check_host(certificate.get(), "127.0.0.1", /*chklen*/ 0, /*flags*/ 0, /*peername*/ nullptr), 0);
+}
+
+TEST(TGenerateIncarnationCertificateTest, CertificateIsSerializedOnlyWhenSet)
+{
+    auto nodeInfo = New<TNodeInfo>();
+    nodeInfo->RpcAddress = "[::1]:8080";
+    EXPECT_EQ(NYTree::ConvertToNode(nodeInfo)->AsMap()->FindChild("certificate_pem"), nullptr);
+
+    auto certificate = GenerateIncarnationCertificate(*nodeInfo);
+    nodeInfo->CertificatePem = certificate.CertificatePem;
+    nodeInfo->CertificateSha256 = certificate.CertificateSha256;
+    auto parsed = NYTree::ConvertTo<TNodeInfoPtr>(NYson::ConvertToYsonString(nodeInfo));
+    EXPECT_EQ(parsed->CertificatePem, certificate.CertificatePem);
+    EXPECT_EQ(parsed->CertificateSha256, certificate.CertificateSha256);
+}
+
+NBus::NTcp::TBusServerConfigPtr MakeBusServerConfig()
+{
+    return NBus::NTcp::TBusServerConfig::CreateTcp(/*port*/ 8080);
+}
+
+TNodeInfoPtr MakeControllerNodeInfo()
+{
+    auto nodeInfo = New<TNodeInfo>();
+    nodeInfo->RpcAddress = "[::1]:8080";
+    return nodeInfo;
+}
+
+TEST(TIncarnationCertificateTest, ServesAndPublishesGeneratedCertificate)
+{
+    auto nodeInfo = MakeControllerNodeInfo();
+    auto busServerConfig = MakeBusServerConfig();
+    auto servingConfig = CreateBusServerConfigWithIncarnationCertificate(
+        nodeInfo.Get(),
+        busServerConfig,
+        NLogging::TLogger("Test"));
+
+    ASSERT_TRUE(nodeInfo->CertificatePem);
+    ASSERT_TRUE(nodeInfo->CertificateSha256);
+    ASSERT_TRUE(servingConfig->CertificateChain);
+    ASSERT_TRUE(servingConfig->PrivateKey);
+    EXPECT_EQ(servingConfig->CertificateChain->Value, *nodeInfo->CertificatePem);
+    EXPECT_EQ(NCrypto::GetFingerprintSHA256(ReadCertificate(*nodeInfo->CertificatePem)), *nodeInfo->CertificateSha256);
+    // Encryption stays optional: peers that do not ask for TLS keep plain TCP.
+    EXPECT_EQ(servingConfig->EncryptionMode, NBus::EEncryptionMode::Optional);
+    // The rest of the bus server configuration survives the copy.
+    EXPECT_EQ(servingConfig->Port, busServerConfig->Port);
+
+    // The private key reaches neither the node config nor the published node info.
+    EXPECT_NE(servingConfig, busServerConfig);
+    EXPECT_FALSE(busServerConfig->CertificateChain);
+    EXPECT_FALSE(busServerConfig->PrivateKey);
+    EXPECT_THAT(
+        NYson::ConvertToYsonString(busServerConfig).ToString(),
+        ::testing::Not(::testing::HasSubstr("PRIVATE KEY")));
+    EXPECT_EQ(NYTree::ConvertToNode(nodeInfo)->AsMap()->FindChild("private_key"), nullptr);
+    EXPECT_THAT(NYson::ConvertToYsonString(nodeInfo).ToString(), ::testing::Not(::testing::HasSubstr("PRIVATE KEY")));
+}
+
+TEST(TIncarnationCertificateTest, KeepsConfiguredTlsMaterial)
+{
+    auto configured = GenerateSelfSignedCertificate({.CommonName = "configured"});
+    auto busServerConfig = MakeBusServerConfig();
+    busServerConfig->CertificateChain = New<NCrypto::TPemBlobConfig>();
+    busServerConfig->CertificateChain->Value = configured.CertificatePem;
+    busServerConfig->PrivateKey = New<NCrypto::TPemBlobConfig>();
+    busServerConfig->PrivateKey->Value = configured.PrivateKeyPem;
+    auto certificateChain = busServerConfig->CertificateChain;
+    auto privateKey = busServerConfig->PrivateKey;
+
+    auto nodeInfo = MakeControllerNodeInfo();
+    auto servingConfig = CreateBusServerConfigWithIncarnationCertificate(
+        nodeInfo.Get(),
+        busServerConfig,
+        NLogging::TLogger("Test"));
+
+    EXPECT_EQ(servingConfig, busServerConfig);
+    EXPECT_EQ(busServerConfig->CertificateChain, certificateChain);
+    EXPECT_EQ(busServerConfig->CertificateChain->Value, configured.CertificatePem);
+    EXPECT_EQ(busServerConfig->PrivateKey, privateKey);
+    EXPECT_EQ(busServerConfig->PrivateKey->Value, configured.PrivateKeyPem);
+    EXPECT_FALSE(nodeInfo->CertificatePem);
+    EXPECT_FALSE(nodeInfo->CertificateSha256);
+}
+
+TEST(TIncarnationCertificateTest, IncompleteConfiguredCertificateIsRejected)
+{
+    for (bool configureCertificate : {false, true}) {
+        auto busServerConfig = MakeBusServerConfig();
+        auto blob = NCrypto::TPemBlobConfig::CreateFileReference("unused.pem");
+        if (configureCertificate) {
+            busServerConfig->CertificateChain = blob;
+        } else {
+            busServerConfig->PrivateKey = blob;
+        }
+
+        auto nodeInfo = MakeControllerNodeInfo();
+        EXPECT_THROW_WITH_SUBSTRING(
+            CreateBusServerConfigWithIncarnationCertificate(nodeInfo.Get(), busServerConfig, Logger),
+            "requires both \"cert_chain\" and \"private_key\" to be configured together");
+        EXPECT_FALSE(nodeInfo->CertificatePem);
+        EXPECT_FALSE(nodeInfo->CertificateSha256);
+    }
+}
+
+TEST(TIncarnationCertificateTest, NothingWithDisabledEncryption)
+{
+    auto busServerConfig = MakeBusServerConfig();
+    busServerConfig->EncryptionMode = NBus::EEncryptionMode::Disabled;
+
+    auto nodeInfo = MakeControllerNodeInfo();
+    auto servingConfig = CreateBusServerConfigWithIncarnationCertificate(
+        nodeInfo.Get(),
+        busServerConfig,
+        NLogging::TLogger("Test"));
+
+    EXPECT_EQ(servingConfig, busServerConfig);
+    EXPECT_FALSE(busServerConfig->CertificateChain);
+    EXPECT_FALSE(busServerConfig->PrivateKey);
+    EXPECT_FALSE(nodeInfo->CertificatePem);
+    EXPECT_FALSE(nodeInfo->CertificateSha256);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TEmptyBusHandler
+    : public NBus::IMessageHandler
+{
+public:
+    void HandleMessage(
+        TSharedRefArray /*message*/,
+        NBus::IBusPtr /*replyBus*/,
+        NBus::IDirectPlacementTransferPtr /*transfer*/,
+        NBus::TPacketId /*packetId*/) noexcept override
+    { }
+};
+
+class TConfiguredControllerCertificateTest
+    : public testing::TestWithParam<bool>
+{
+protected:
+    ::NTesting::TPortHolder Port_ = ::NTesting::GetFreePort();
+    TTempFileHandle CertificateFile_;
+    TTempFileHandle PrivateKeyFile_;
+    TEnvGuard CertificateEnv_{"YT_FLOW_TEST_CONTROLLER_CERTIFICATE", GetTestKeyContent("cert_with_ip_in_san.pem")};
+    TEnvGuard PrivateKeyEnv_{"YT_FLOW_TEST_CONTROLLER_PRIVATE_KEY", GetTestKeyContent("key_with_ip_in_san.pem")};
+    NBus::IBusServerPtr Server_;
+
+    void SetUp() override
+    {
+        TFileOutput(CertificateFile_.Name()).Write(GetTestKeyContent("cert_with_ip_in_san.pem"));
+        TFileOutput(PrivateKeyFile_.Name()).Write(GetTestKeyContent("key_with_ip_in_san.pem"));
+        auto config = MakeConfig(TString(Format(R"({
+            cluster_url = "test-cluster";
+            path = "//tmp/test";
+            bus_server = {
+                port = %v;
+                encryption_mode = required;
+                cert_chain = {%v = %Qv};
+                private_key = {%v = %Qv};
+            };
+        })",
+            static_cast<ui16>(Port_),
+            GetParam() ? "environment_variable" : "file_name",
+            GetParam() ? "YT_FLOW_TEST_CONTROLLER_CERTIFICATE" : CertificateFile_.Name(),
+            GetParam() ? "environment_variable" : "file_name",
+            GetParam() ? "YT_FLOW_TEST_CONTROLLER_PRIVATE_KEY" : PrivateKeyFile_.Name())));
+        auto nodeInfo = MakeControllerNodeInfo();
+        auto servingConfig = CreateBusServerConfigWithIncarnationCertificate(nodeInfo.Get(), config->BusServer, Logger);
+
+        EXPECT_EQ(servingConfig, config->BusServer);
+        EXPECT_FALSE(nodeInfo->CertificatePem);
+        EXPECT_FALSE(nodeInfo->CertificateSha256);
+        EXPECT_FALSE(servingConfig->CertificateChain->Value);
+        EXPECT_FALSE(servingConfig->PrivateKey->Value);
+        EXPECT_THAT(NYson::ConvertToYsonString(config).ToString(), ::testing::Not(::testing::HasSubstr("PRIVATE KEY")));
+        EXPECT_THAT(NYson::ConvertToYsonString(nodeInfo).ToString(), ::testing::Not(::testing::HasSubstr("PRIVATE KEY")));
+
+        Server_ = NBus::NTcp::CreateBusServer(servingConfig);
+        Server_->Start(New<TEmptyBusHandler>());
+    }
+
+    void TearDown() override
+    {
+        if (Server_) {
+            NConcurrency::WaitFor(Server_->Stop()).ThrowOnError();
+        }
+    }
+
+    TError Connect(NBus::EVerificationMode verificationMode, const NCrypto::TPemBlobConfigPtr& ca)
+    {
+        auto config = NBus::NTcp::TBusClientConfig::CreateTcp(Format("127.0.0.1:%v", static_cast<ui16>(Port_)));
+        config->EncryptionMode = NBus::EEncryptionMode::Required;
+        config->VerificationMode = verificationMode;
+        config->CertificateAuthority = ca;
+        auto bus = NBus::NTcp::CreateBusClient(config)->CreateBus(New<TEmptyBusHandler>());
+        auto result = NConcurrency::WaitFor(bus->GetReadyFuture());
+        if (result.IsOK()) {
+            EXPECT_TRUE(bus->IsEncrypted());
+        }
+        return result;
+    }
+};
+
+TEST_P(TConfiguredControllerCertificateTest, ServesConfiguredCertificate)
+{
+    for (auto mode : {NBus::EVerificationMode::Ca, NBus::EVerificationMode::Full}) {
+        auto error = Connect(mode, CreateTestKeyBlob("ca_with_ip_in_san.pem"));
+        EXPECT_TRUE(error.IsOK()) << ToString(error);
+    }
+}
+
+TEST_P(TConfiguredControllerCertificateTest, RejectsUntrustedCertificate)
+{
+    auto error = Connect(NBus::EVerificationMode::Full, CreateTestKeyBlob("ca.pem"));
+    EXPECT_EQ(error.GetCode(), NBus::EErrorCode::SslError) << ToString(error);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Sources,
+    TConfiguredControllerCertificateTest,
+    ::testing::Values(false, true),
+    [] (const ::testing::TestParamInfo<bool>& info) {
+        return info.param ? "Environment" : "Files";
+    });
 
 ////////////////////////////////////////////////////////////////////////////////
 

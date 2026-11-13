@@ -573,7 +573,7 @@ public:
                         EmplaceOrCrash(operationIdToOperationJobMetrics, operationId, std::move(operationInfo.JobMetrics));
 
                         for (const auto& [alertType, alert] : operationInfo.AlertMap) {
-                            YT_UNUSED_FUTURE(scheduler->SetOperationAlert(operationId, alertType, alert));
+                            scheduler->SetOperationAlertSync(operationId, alertType, alert);
                         }
 
                         if (operationInfo.SuspiciousJobsYson) {
@@ -583,12 +583,12 @@ public:
                         auto controllerRuntimeDataError = CheckControllerRuntimeData(operationInfo.ControllerRuntimeData);
                         if (controllerRuntimeDataError.IsOK()) {
                             operation->GetController()->SetControllerRuntimeData(operationInfo.ControllerRuntimeData);
-                            YT_UNUSED_FUTURE(scheduler->SetOperationAlert(operationId, EOperationAlertType::InvalidControllerRuntimeData, TError()));
+                            scheduler->SetOperationAlertSync(operationId, EOperationAlertType::InvalidControllerRuntimeData, TError());
                         } else {
                             auto error = TError("Controller agent reported invalid data for operation")
                                 .With("operation_id", operation->GetId())
                                 .With(std::move(controllerRuntimeDataError));
-                            YT_UNUSED_FUTURE(scheduler->SetOperationAlert(operationId, EOperationAlertType::InvalidControllerRuntimeData, error));
+                            scheduler->SetOperationAlertSync(operationId, EOperationAlertType::InvalidControllerRuntimeData, error);
                         }
                     }
 
@@ -802,8 +802,8 @@ public:
         auto* response = &context->Response();
 
         const auto& agentId = request->agent_id();
-        context->SetRequestInfo("AgentId: %v",
-            agentId);
+        context->AnnotateRequest()
+            .With("AgentId", agentId);
 
         auto existingAgent = FindAgent(agentId);
         if (existingAgent) {
@@ -874,7 +874,8 @@ public:
         response->set_config(ToProto(ConvertToYsonString(SchedulerConfig_)));
         response->set_scheduler_version(GetVersion());
 
-        context->SetResponseInfo("IncarnationId: %v", incarnationId);
+        context->AnnotateResponse()
+            .With("IncarnationId", incarnationId);
     }
 
     // TODO(arkady-e1ppa): This method is overly bloated. Split into several methods.
@@ -890,12 +891,11 @@ public:
         const auto& agentId = request->agent_id();
         auto incarnationId = FromProto<NControllerAgent::TIncarnationId>(request->incarnation_id());
 
-        context->SetRequestInfo("AgentId: %v, IncarnationId: %v, OperationCount: %v, Memory: %v/%v",
-            agentId,
-            incarnationId,
-            request->operations_size(),
-            request->controller_memory_usage(),
-            request->controller_memory_limit());
+        context->AnnotateRequest()
+            .With("AgentId", agentId)
+            .With("IncarnationId", incarnationId)
+            .With("OperationCount", request->operations_size())
+            .WithFormat("Memory", "%v/%v", request->controller_memory_usage(), request->controller_memory_limit());
 
         auto agent = GetMirroredAgentOrThrow(agentId);
 
@@ -1029,7 +1029,8 @@ public:
 
         response->set_operations_archive_version(Bootstrap_->GetScheduler()->GetOperationsArchiveVersion());
 
-        context->SetResponseInfo("IncarnationId: %v", incarnationId);
+        context->AnnotateResponse()
+            .With("IncarnationId", incarnationId);
     }
 
     void DoProcessAgentScheduleAllocationHeartbeat(const TCtxAgentScheduleAllocationHeartbeatPtr& context)
@@ -1040,9 +1041,9 @@ public:
         const auto& agentId = request->agent_id();
         auto incarnationId = FromProto<NControllerAgent::TIncarnationId>(request->incarnation_id());
 
-        context->SetRequestInfo("AgentId: %v, IncarnationId: %v",
-            agentId,
-            incarnationId);
+        context->AnnotateRequest()
+            .With("AgentId", agentId)
+            .With("IncarnationId", incarnationId);
 
         auto agent = GetMirroredAgentOrThrow(agentId);
 
@@ -1070,7 +1071,8 @@ public:
             })
             .ThrowOnError();
 
-        context->SetResponseInfo("IncarnationId: %v", incarnationId);
+        context->AnnotateResponse()
+            .With("IncarnationId", incarnationId);
     }
 
 private:
@@ -1155,7 +1157,7 @@ private:
             .With("IncarnationId", agent->GetIncarnationId());
     }
 
-    void UnregisterAgent(const TControllerAgentPtr& agent, TGuard<NThreading::TSpinLock>&& guard)
+    void UnregisterAgent(const TControllerAgentPtr& agent, TGuard<TSpinLock>&& guard)
     {
         auto agentState = agent->GetState();
         if (agentState == EControllerAgentState::Unregistering ||
@@ -1213,7 +1215,7 @@ private:
         scheduler->GetNodeManager()->UnregisterAgentFromNodeShards(agent->GetId());
     }
 
-    void TerminateAgent(const TControllerAgentPtr& agent, TGuard<NThreading::TSpinLock>&& guard)
+    void TerminateAgent(const TControllerAgentPtr& agent, TGuard<TSpinLock>&& guard)
     {
         TLeaseManager::CloseLease(agent->GetLease());
         agent->SetLease(TLease());
@@ -1291,7 +1293,9 @@ private:
                     try {
                         return node->Attributes().Get<THashSet<std::string>>("tags");
                     } catch (const std::exception& ex) {
-                        YT_LOG_WARNING(ex, "Cannot parse tags of agent %v", agentId);
+                        YT_TLOG_WARNING("Cannot parse agent tags")
+                            .With("AgentId", agentId)
+                            .With(ex);
                         return {};
                     }
                 }();
@@ -1325,12 +1329,12 @@ private:
 
                 tagsWithTooFewAgents.insert(tag);
                 errors.push_back(
-                    TError{"Too few agents matching tag"}
-                        .With(TErrorAttribute{"controller_agent_tag", tag})
-                        .With(TErrorAttribute{"alive_agents", aliveAgentWithCurrentTag})
-                        .With(TErrorAttribute{"agents", agentsWithTag})
-                        .With(TErrorAttribute{"min_alive_agent_count", thresholds.Absolute})
-                        .With(TErrorAttribute{"min_alive_agent_ratio", thresholds.Relative}));
+                    TError("Too few agents matching tag")
+                        .With("controller_agent_tag", tag)
+                        .With("alive_agents", aliveAgentWithCurrentTag)
+                        .With("agents", agentsWithTag)
+                        .With("min_alive_agent_count", thresholds.Absolute)
+                        .With("min_alive_agent_ratio", thresholds.Relative));
             }
         }
 
@@ -1339,8 +1343,11 @@ private:
 
         TError error;
         if (!errors.empty()) {
-            error = TError{EErrorCode::WatcherHandlerFailed, "Too few matching agents"}.With(std::move(errors));
-            YT_LOG_WARNING(error);
+            static constexpr auto Message = "Too few matching agents"_sb;
+            error = TError(EErrorCode::WatcherHandlerFailed, Message)
+                .With(std::move(errors));
+            YT_TLOG_WARNING(Message)
+                .With(error);
         }
         Bootstrap_->GetScheduler()->GetMasterConnector()->SetSchedulerAlert(
             ESchedulerAlertType::TooFewControllerAgentsAlive, error);

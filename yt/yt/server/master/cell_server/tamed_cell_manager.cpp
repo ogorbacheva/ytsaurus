@@ -14,6 +14,7 @@
 #include <yt/yt/server/master/cell_master/config.h>
 #include <yt/yt/server/master/cell_master/config_manager.h>
 #include <yt/yt/server/master/cell_master/bootstrap.h>
+#include <yt/yt/server/master/cell_master/gossip_value_helpers.h>
 #include <yt/yt/server/master/cell_master/hydra_facade.h>
 #include <yt/yt/server/master/cell_master/serialize.h>
 
@@ -30,8 +31,10 @@
 #include <yt/yt/server/master/chaos_server/chaos_replicated_table_node.h>
 
 #include <yt/yt/server/master/cypress_server/cypress_manager.h>
+#include <yt/yt/server/master/cypress_server/grafting_manager.h>
 #include <yt/yt/server/master/cypress_server/portal_exit_node.h>
 #include <yt/yt/server/master/cypress_server/portal_manager.h>
+#include <yt/yt/server/master/cypress_server/scion_node.h>
 
 #include <yt/yt/server/master/node_tracker_server/node.h>
 #include <yt/yt/server/master/node_tracker_server/node_tracker.h>
@@ -150,6 +153,7 @@ public:
     DEFINE_SIGNAL_OVERRIDE(void(TArea* area), AreaDestroyed);
     DEFINE_SIGNAL_OVERRIDE(void(TArea* area), AreaNodeTagFilterChanged);
     DEFINE_SIGNAL_OVERRIDE(void(TCellBase* cell), CellCreated);
+    DEFINE_SIGNAL_OVERRIDE(void(TCellBase* cell), CellReconfigured);
     DEFINE_SIGNAL_OVERRIDE(void(TCellBase* cell), CellDecommissionStarted);
     DEFINE_SIGNAL_OVERRIDE(void(), CellPeersAssigned);
     DEFINE_SIGNAL_OVERRIDE(void(), AfterSnapshotLoaded);
@@ -471,7 +475,7 @@ public:
             cell->SetLeadingPeerId(0);
         }
 
-        cell->GossipStatus().Initialize(Bootstrap_);
+        InitializeGossipValue(&cell->GossipStatus(), Bootstrap_);
 
         MaybeRegisterGlobalCell(cell);
         ReconfigureCell(cell);
@@ -643,12 +647,17 @@ public:
         }
     }
 
-    const TCellSet* FindAssignedCells(const std::string& address) const override
+    TCellSet FindAssignedCells(const std::string& address, ECellarType cellarType) const override
     {
-        auto it = AddressToCell_.find(address);
-        return it != AddressToCell_.end()
-            ? &it->second
-            : nullptr;
+        TCellSet assignedCells;
+        if (auto it = AddressToCell_.find(address); it != AddressToCell_.end()) {
+            for (const auto& [cell, peerId] : it->second) {
+                if (cell->GetCellarType() == cellarType) {
+                    assignedCells.emplace_back(cell, peerId);
+                }
+            }
+        }
+        return assignedCells;
     }
 
     const IBundleNodeTrackerPtr& GetBundleNodeTracker() override
@@ -1246,7 +1255,7 @@ private:
                 }
             }
 
-            cell->GossipStatus().Initialize(Bootstrap_);
+            InitializeGossipValue(&cell->GossipStatus(), Bootstrap_);
         }
 
         AfterSnapshotLoaded_.Fire();
@@ -1401,6 +1410,7 @@ private:
             }
 
             auto& health = cell->GossipStatus().Local().Health;
+            auto oldHealth = health;
             auto newHealth = cell->GetHealth();
 
             if (health != newHealth) {
@@ -1411,9 +1421,21 @@ private:
                 health = newHealth;
             }
 
-            if (multicellManager->IsMulticell() && multicellManager->IsPrimaryMaster()) {
-                cell->RecomputeClusterStatus();
-                tabletManager->RecomputeTabletCellStatistics(cell);
+            if (multicellManager->IsPrimaryMaster()) {
+                const auto& config = Bootstrap_->GetConfigManager()->GetConfig()->CellManager;
+
+                if (multicellManager->IsMulticell()) {
+                    oldHealth = cell->GossipStatus().Cluster().Health;
+                    cell->RecomputeClusterStatus();
+                    tabletManager->RecomputeTabletCellStatistics(cell);
+                    newHealth = cell->GossipStatus().Cluster().Health;
+                }
+
+                cell->UpdateHealthHistory(
+                    oldHealth,
+                    newHealth,
+                    config->CellHealthHistoryMaxSize,
+                    config->CellHealthHistoryExpirationTime);
             }
 
             cell->ExpireDiagnosticErrors(peerRevocationReasonDeadline);
@@ -1681,7 +1703,7 @@ private:
         for (int slotIndex = 0; slotIndex < request->cell_slots_size(); ++slotIndex) {
             // Pre-erase slot.
             auto& slot = (*cellar)[slotIndex];
-            slot = TNode::TCellSlot();
+            slot = TCellSlot();
 
             const auto& slotInfo = request->cell_slots(slotIndex);
 
@@ -1702,11 +1724,11 @@ private:
             }
 
             if (GetCellarTypeFromCellId(cellId) != cellarType) {
-                YT_LOG_DEBUG("Cell with unexpected cellar type is running (Address: %v, CellId: %v, CellarType: %v, CellarType: %v)",
-                    address,
-                    cellId,
-                    GetCellarTypeFromCellId(cellId),
-                    cellarType);
+                YT_TLOG_DEBUG("Cell with unexpected cellar type is running")
+                    .With("Address", address)
+                    .With("CellId", cellId)
+                    .With("ActualCellarType", GetCellarTypeFromCellId(cellId))
+                    .With("ExpectedCellarType", cellarType);
                 requestRemoveSlot(cellId);
                 continue;
             }
@@ -1721,12 +1743,11 @@ private:
             }
 
             if (CountVotingPeers(cell) > 1 && slotInfo.peer_id() != InvalidPeerId && slotInfo.peer_id() != peerId) {
-                YT_LOG_DEBUG(
-                    "Invalid peer id for cell: %v instead of %v (Address: %v, CellId: %v)",
-                    slotInfo.peer_id(),
-                    peerId,
-                    address,
-                    cellId);
+                YT_TLOG_DEBUG("Invalid peer id for cell")
+                    .With("ReportedPeerId", slotInfo.peer_id())
+                    .With("ExpectedPeerId", peerId)
+                    .With("Address", address)
+                    .With("CellId", cellId);
                 requestRemoveSlot(cellId);
                 continue;
             }
@@ -1804,7 +1825,7 @@ private:
             int availableSlots = node->GetAvailableSlotCount(cellarType);
             auto it = AddressToCell_.find(address);
             if (it != AddressToCell_.end() && availableSlots > 0) {
-                for (auto [cell, peerId] : it->second) {
+                for (const auto& [cell, peerId] : it->second) {
                     if (!IsObjectAlive(cell) || cell->GetCellarType() != cellarType) {
                         continue;
                     }
@@ -1972,8 +1993,9 @@ private:
             revokedPeers.push_back(peerId);
         }
 
+        auto revokeReason = FromProto<TError>(request->reason());
         for (auto peerId : revokedPeers) {
-            DoRevokePeer(cell, peerId, FromProto<TError>(request->reason()));
+            DoRevokePeer(cell, peerId, revokeReason);
         }
 
         const auto& multicellManager = Bootstrap_->GetMulticellManager();
@@ -2114,6 +2136,8 @@ private:
         YT_TLOG_DEBUG("Cell reconfigured")
             .With("CellId", cell->GetId())
             .With("Version", cell->GetConfigVersion());
+
+        CellReconfigured_.Fire(cell);
     }
 
     void ReconfigureCellBundle(TCellBundle* cellBundle)
@@ -2284,10 +2308,10 @@ private:
 
         auto* transaction = cell->GetPrerequisiteTransaction(peerId);
 
-        YT_LOG_DEBUG("Aborting cell prerequisite transaction (CellId: %v, PeerId: %v, transactionId: %v)",
-            cell->GetId(),
-            peerId,
-            GetObjectId(transaction));
+        YT_TLOG_DEBUG("Aborting cell prerequisite transaction")
+            .With("CellId", cell->GetId())
+            .With("PeerId", peerId)
+            .With("TransactionId", GetObjectId(transaction));
 
         if (!transaction) {
             return;
@@ -2652,19 +2676,19 @@ private:
 
         const auto& cypressManager = Bootstrap_->GetCypressManager();
         for (auto [nodeId, node] : cypressManager->Nodes()) {
-            // Also, tablet cell bundles are referenced by tablet owners in them...
-            if (IsTabletOwnerType(node->GetType())) {
-                auto* table = node->As<TTableNode>();
-                if (table->TabletCellBundle()) {
-                    ++refCounters[table->TabletCellBundle().Get()];
+            // Also, tablet cell bundles are referenced by trunk tablet owners in them...
+            if (IsTabletOwnerType(node->GetType()) && node->IsTrunk()) {
+                auto* tabletOwner = node->As<NTabletServer::TTabletOwnerBase>();
+                if (auto* cellBundle = tabletOwner->GetTabletCellBundle().Get()) {
+                    ++refCounters[cellBundle];
                 }
             }
 
-            // ... and chaos cell bundles are referenced by replicated chaos tables in them.
-            if (node->GetType() == EObjectType::ChaosReplicatedTable) {
+            // ... and chaos cell bundles are referenced by trunk replicated chaos tables in them.
+            if (node->GetType() == EObjectType::ChaosReplicatedTable && node->IsTrunk()) {
                 auto* table = node->As<TChaosReplicatedTableNode>();
-                if (table->ChaosCellBundle()) {
-                    ++refCounters[table->ChaosCellBundle().Get()];
+                if (auto* cellBundle = table->GetChaosCellBundle().Get()) {
+                    ++refCounters[cellBundle];
                 }
             }
 
@@ -2684,6 +2708,18 @@ private:
         const auto& portalManager = Bootstrap_->GetPortalManager();
         for (auto [exitId, exit] : portalManager->GetExitNodes()) {
             if (const auto& attributes = exit->EffectiveInheritableAttributes()) {
+                if (auto tabletCellBundle = attributes->TabletCellBundle.ToOptional()) {
+                    ++refCounters[*tabletCellBundle];
+                }
+                if (auto chaosCellBundle = attributes->ChaosCellBundle.ToOptional()) {
+                    ++refCounters[*chaosCellBundle];
+                }
+            }
+        }
+
+        const auto& graftingManager = Bootstrap_->GetGraftingManager();
+        for (auto [scionId, scion] : graftingManager->ScionNodes()) {
+            if (const auto& attributes = scion->EffectiveInheritableAttributes()) {
                 if (auto tabletCellBundle = attributes->TabletCellBundle.ToOptional()) {
                     ++refCounters[*tabletCellBundle];
                 }

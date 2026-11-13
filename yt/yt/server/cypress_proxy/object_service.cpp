@@ -21,6 +21,11 @@
 
 #include <yt/yt/server/lib/object_server/helpers.h>
 
+#include <yt/yt/ytlib/api/native/client.h>
+#include <yt/yt/ytlib/api/native/connection.h>
+#include <yt/yt/ytlib/api/native/options.h>
+#include <yt/yt/ytlib/api/native/two_phase_table_operation.h>
+
 #include <yt/yt/ytlib/cell_master_client/cell_directory.h>
 
 #include <yt/yt/ytlib/cypress_client/rpc_helpers.h>
@@ -37,6 +42,8 @@
 #include <yt/yt/ytlib/sequoia_client/connection.h>
 #include <yt/yt/ytlib/sequoia_client/prerequisite_revision.h>
 #include <yt/yt/ytlib/sequoia_client/transaction_service_proxy.h>
+
+#include <yt/yt/ytlib/tablet_client/proto/master_tablet_service.pb.h>
 
 #include <yt/yt/ytlib/transaction_client/helpers.h>
 
@@ -97,11 +104,26 @@ public:
     {
         RegisterMethod(RPC_SERVICE_METHOD_DESC(Execute)
             .SetQueueSizeLimit(10'000)
-            .SetConcurrencyLimit(10'000)
+            .SetConcurrencyLimit(100'000)
             .SetRequestQueueProvider(RequestQueueProvider_));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(Mount)
+            .SetHeavy(true));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(Unmount)
+            .SetHeavy(true));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(Remount)
+            .SetHeavy(true));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(Freeze)
+            .SetHeavy(true));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(Unfreeze)
+            .SetHeavy(true));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(Reshard)
+            .SetHeavy(true));
+        RegisterMethod(RPC_SERVICE_METHOD_DESC(TwoPhaseAlter)
+            .SetHeavy(true));
 
         DeclareServerFeature(EMasterFeature::Portals);
         DeclareServerFeature(EMasterFeature::PortalExitSynchronization);
+        DeclareServerFeature(EMasterFeature::AlterTable2PC);
 
         const auto& userDirectorySynchronizer = bootstrap->GetUserDirectorySynchronizer();
         userDirectorySynchronizer->SubscribeUserDescriptorUpdated(
@@ -128,6 +150,48 @@ public:
 
 private:
     DECLARE_RPC_SERVICE_METHOD(NObjectClient::NProto, Execute);
+
+    // COMPAT(danilalexeev)
+    DECLARE_RPC_SERVICE_METHOD(NTabletClient::NProto, Mount);
+    DECLARE_RPC_SERVICE_METHOD(NTabletClient::NProto, Unmount);
+    DECLARE_RPC_SERVICE_METHOD(NTabletClient::NProto, Remount);
+    DECLARE_RPC_SERVICE_METHOD(NTabletClient::NProto, Freeze);
+    DECLARE_RPC_SERVICE_METHOD(NTabletClient::NProto, Unfreeze);
+    DECLARE_RPC_SERVICE_METHOD(NTabletClient::NProto, Reshard);
+    DECLARE_RPC_SERVICE_METHOD(NTabletClient::NProto, TwoPhaseAlter);
+
+    template <NNative::CTwoPhaseTableRequest TRequest>
+    void ExecuteTwoPhaseTableOperation(
+        const auto& context,
+        TTypedServiceRequest<TRequest>* request,
+        TStringBuf action)
+    {
+        auto path = NYPath::TYPath(GetRequestTargetYPath(context->GetRequestHeader()));
+        context->AnnotateRequest()
+            .With("Path", path);
+
+        auto clientOptions = NNative::TClientOptions::FromAuthenticationIdentity(
+            context->GetAuthenticationIdentity());
+        auto client = Connection_->CreateNativeClient(clientOptions);
+
+        auto proxy = TObjectServiceProxy::FromDirectMasterChannel(
+            client->GetMasterChannelOrThrow(EMasterChannelKind::Follower));
+        auto target = [&] {
+            if constexpr (std::same_as<TRequest, NTabletClient::NProto::TReqTwoPhaseAlter>) {
+                return NNative::ResolveTwoPhaseTableOperationTarget(
+                    &proxy,
+                    path,
+                    /*allowSequoia*/ false,
+                    EMasterFeature::AlterTable2PC);
+            } else {
+                return NNative::ResolveTwoPhaseTableOperationTarget(&proxy, path);
+            }
+        }();
+        // TODO(danilalexeev): Add Sequoia bundle |use| and table |mount| permission checks
+        // for Sequoia nodes.
+        NNative::ExecuteTwoPhaseTableOperationViaMaster<TRequest>(client, target, action, request);
+        context->Reply();
+    }
 
     const NNative::IConnectionPtr Connection_;
 
@@ -381,7 +445,10 @@ private:
     {
         const auto& user = AuthenticationIdentity_.User;
         if (Owner_->Bootstrap_->GetBanService()->IsBanned(user)) {
-            THROW_ERROR_EXCEPTION("User %Qv is banned via ban service", user);
+            THROW_ERROR_EXCEPTION(
+                NSecurityClient::EErrorCode::UserBanned,
+                "User %Qv is banned",
+                user);
         }
     }
 
@@ -488,23 +555,35 @@ private:
                 }
             }
 
-            // If this is a rootstock creation request then don't bother master
-            // with it.
-            if (subrequest.RequestHeader->method() != "Create") {
-                continue;
-            }
+            if (subrequest.RequestHeader->method() == "CreateObject") {
+                auto context = CreateSequoiaServiceContext(subrequest.RequestMessage);
+                auto reqCreateObject = TryParseReqCreateObject(context);
+                if (!reqCreateObject) {
+                    // Parse failure.
+                    subrequest.Target = ERequestTarget::None;
+                    ReplyOnSubrequest(index, context->GetResponseMessage());
+                    continue;
+                }
 
-            auto context = CreateSequoiaServiceContext(subrequest.RequestMessage);
-            auto reqCreate = TryParseReqCreate(context);
-            if (!reqCreate) {
-                // Parse failure.
-                subrequest.Target = ERequestTarget::None;
-                ReplyOnSubrequest(index, context->GetResponseMessage());
-                continue;
-            }
+                if (reqCreateObject->Type == EObjectType::SecondaryIndex) {
+                    auto tableId = reqCreateObject->ExplicitAttributes->Get<TObjectId>("table_id", NullObjectId);
+                    if (IsSequoiaId(tableId)) {
+                        subrequest.Target = ERequestTarget::Sequoia;
+                    }
+                }
+            } else if (subrequest.RequestHeader->method() == "Create") {
+                auto context = CreateSequoiaServiceContext(subrequest.RequestMessage);
+                auto reqCreate = TryParseReqCreate(context);
+                if (!reqCreate) {
+                    // Parse failure.
+                    subrequest.Target = ERequestTarget::None;
+                    ReplyOnSubrequest(index, context->GetResponseMessage());
+                    continue;
+                }
 
-            if (reqCreate->Type == EObjectType::Rootstock) {
-                subrequest.Target = ERequestTarget::Sequoia;
+                if (reqCreate->Type == EObjectType::Rootstock) {
+                    subrequest.Target = ERequestTarget::Sequoia;
+                }
             }
         }
     }
@@ -971,9 +1050,17 @@ private:
         TSequoiaSessionPtr session;
         TMaybeUnreachableResolveResult resolveResult;
         try {
+            TStringBuilder descriptionBuilder;
+            descriptionBuilder.AppendFormat("%v %v", header.method(), originalTargetPath);
+            const auto& ypathExt = header.GetExtension(NYTree::NProto::TYPathHeaderExt::ypath_header_ext);
+            if (ypathExt.original_additional_paths_size() > 0) {
+                descriptionBuilder.AppendFormat("; additional paths: %v", ypathExt.original_additional_paths());
+            }
+
             session = TSequoiaSession::Start(
                 Owner_->Bootstrap_,
                 std::move(authenticationIdentity),
+                descriptionBuilder.Flush(),
                 cypressTransactionId,
                 prerequisiteTransactionIds);
             // TODO(cherepashka): add resolve cache YT-25661.
@@ -1121,6 +1208,34 @@ private:
         RpcContext_->Reply(error);
     }
 
+    void MaybeWrapSubresponseRetriableError(TSharedRefArray* subresponseMessage)
+    {
+        NRpc::NProto::TResponseHeader subresponseHeader;
+        if (!TryParseResponseHeader(*subresponseMessage, &subresponseHeader)) {
+            YT_TLOG_ALERT("Failed to parse subresponse header");
+            return;
+        }
+
+        if (!subresponseHeader.has_error()) {
+            return;
+        }
+
+        auto error = FromProto<TError>(subresponseHeader.error());
+        const auto* effectiveError = &error;
+        if (error.GetCode() == NObjectClient::EErrorCode::ForwardedRequestFailed && !error.InnerErrors().empty()) {
+            effectiveError = &error.InnerErrors().front();
+        }
+
+        if (NRpc::IsRetriableError(*effectiveError)) {
+            YT_TLOG_DEBUG("Wrapping subresponse retriable error")
+                .With("EffectiveError", *effectiveError);
+            ToProto(subresponseHeader.mutable_error(),
+                TError(NSequoiaClient::EErrorCode::SequoiaRetriableError, "Retriable Sequoia error")
+                    .With(error));
+            *subresponseMessage = SetResponseHeader(*subresponseMessage, subresponseHeader);
+        }
+    }
+
     void ReplyOnSubrequest(
         int subrequestIndex,
         TSharedRefArray subresponseMessage,
@@ -1128,6 +1243,8 @@ private:
     {
         // Caller is responsible for marking subrequest as executed.
         YT_VERIFY(Subrequests_[subrequestIndex].Target == ERequestTarget::None);
+
+        MaybeWrapSubresponseRetriableError(&subresponseMessage);
 
         auto& response = RpcContext_->Response();
 
@@ -1228,8 +1345,8 @@ DEFINE_RPC_SERVICE_METHOD(TObjectService, Execute)
     auto cellTag = context->GetTargetMasterCellTag();
     auto masterChannelKind = context->GetTargetMasterChannelKind();
 
-    context->SetRequestInfo("RequestCount: %v",
-        request->part_counts_size());
+    context->AnnotateRequest()
+        .With("RequestCount", request->part_counts_size());
 
     if (masterChannelKind != EMasterChannelKind::Leader &&
         masterChannelKind != EMasterChannelKind::Follower)
@@ -1246,6 +1363,45 @@ DEFINE_RPC_SERVICE_METHOD(TObjectService, Execute)
         cellTag,
         masterChannelKind);
     session->Run();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+DEFINE_RPC_SERVICE_METHOD(TObjectService, Mount)
+{
+    ExecuteTwoPhaseTableOperation(context, request, "Mounting");
+}
+
+DEFINE_RPC_SERVICE_METHOD(TObjectService, Unmount)
+{
+    ExecuteTwoPhaseTableOperation(context, request, "Unmounting");
+}
+
+DEFINE_RPC_SERVICE_METHOD(TObjectService, Remount)
+{
+    ExecuteTwoPhaseTableOperation(context, request, "Remounting");
+}
+
+DEFINE_RPC_SERVICE_METHOD(TObjectService, Freeze)
+{
+    ExecuteTwoPhaseTableOperation(context, request, "Freezing");
+}
+
+DEFINE_RPC_SERVICE_METHOD(TObjectService, Unfreeze)
+{
+    ExecuteTwoPhaseTableOperation(context, request, "Unfreezing");
+}
+
+DEFINE_RPC_SERVICE_METHOD(TObjectService, Reshard)
+{
+    ExecuteTwoPhaseTableOperation(context, request, "Resharding");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+DEFINE_RPC_SERVICE_METHOD(TObjectService, TwoPhaseAlter)
+{
+    ExecuteTwoPhaseTableOperation(context, request, "Altering");
 }
 
 ////////////////////////////////////////////////////////////////////////////////

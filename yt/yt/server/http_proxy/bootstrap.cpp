@@ -113,6 +113,21 @@ constinit const auto Logger = HttpProxyLogger;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+namespace {
+
+IThreadPoolPtr CreateHeavyCommandThreadPool(const TProxyBootstrapConfigPtr& config)
+{
+    if (!config->HeavyCommandThreadPoolSize) {
+        return nullptr;
+    }
+
+    return CreateThreadPool(*config->HeavyCommandThreadPoolSize, "HeavyCommand");
+}
+
+} // namespace
+
+////////////////////////////////////////////////////////////////////////////////
+
 TBootstrap::TBootstrap(
     TProxyBootstrapConfigPtr config,
     INodePtr configNode,
@@ -123,6 +138,7 @@ TBootstrap::TBootstrap(
     , Control_(New<TActionQueue>("Control"))
     , Poller_(CreateThreadPoolPoller(Config_->ThreadCount, "Poller"))
     , Acceptor_(CreateThreadPoolPoller(1, "Acceptor"))
+    , HeavyCommandThreadPool_(CreateHeavyCommandThreadPool(Config_))
 {
     // TODO(gepardo): Pass native authenticator here.
     if (Config_->AbortOnUnrecognizedOptions) {
@@ -260,19 +276,28 @@ void TBootstrap::DoInitialize()
         GetControlInvoker());
     Connection_->SetSignatureGenerator(SignatureComponents_->GetSignatureGenerator());
 
+    IInvokerPtr heavyCommandInvoker;
+    if (HeavyCommandThreadPool_) {
+        heavyCommandInvoker = HeavyCommandThreadPool_->GetInvoker();
+        YT_TLOG_INFO("Heavy command thread pool enabled")
+            .With("ThreadCount", HeavyCommandThreadPool_->GetThreadCount());
+    }
+
     auto driverV3Config = CloneYsonStruct(Config_->Driver);
     driverV3Config->ApiVersion = ApiVersion3;
     DriverV3_ = CreateDriver(
         Connection_,
         driverV3Config,
-        SignatureComponents_->GetSignatureValidator());
+        SignatureComponents_->GetSignatureValidator(),
+        heavyCommandInvoker);
 
     auto driverV4Config = CloneYsonStruct(Config_->Driver);
     driverV4Config->ApiVersion = ApiVersion4;
     DriverV4_ = CreateDriver(
         Connection_,
         driverV4Config,
-        SignatureComponents_->GetSignatureValidator());
+        SignatureComponents_->GetSignatureValidator(),
+        heavyCommandInvoker);
 
     AuthenticationManager_ = CreateAuthenticationManager(
         Config_->Auth,
@@ -431,7 +456,7 @@ void TBootstrap::ReconfigureMemoryUsageTracker(
 }
 
 void TBootstrap::OnDynamicConfigChanged(
-    const TProxyDynamicConfigPtr& /*oldConfig*/,
+    const TProxyDynamicConfigPtr& oldConfig,
     const TProxyDynamicConfigPtr& newConfig)
 {
     TSingletonManager::Reconfigure(newConfig);
@@ -457,11 +482,22 @@ void TBootstrap::OnDynamicConfigChanged(
 
     Coordinator_->GetTraceSampler()->UpdateConfig(newConfig->Tracing);
 
-    if (newConfig->SignatureComponents) {
-        YT_UNUSED_FUTURE(SignatureComponents_->Reconfigure(newConfig->SignatureComponents));
+    if (newConfig->SignatureComponents || oldConfig->SignatureComponents) {
+        YT_UNUSED_FUTURE(SignatureComponents_->Reconfigure(
+            newConfig->SignatureComponents
+                ? newConfig->SignatureComponents
+                : Config_->SignatureComponents));
     }
 
     Connection_->GetMasterCellDirectorySynchronizer()->ApplyDynamicConfigOverride(newConfig->MasterCellDirectorySynchronizer);
+
+    if (HeavyCommandThreadPool_) {
+        HeavyCommandThreadPool_->SetThreadCount(
+            newConfig->HeavyCommandThreadPoolSize.value_or(*Config_->HeavyCommandThreadPoolSize));
+    } else if (newConfig->HeavyCommandThreadPoolSize) {
+        YT_TLOG_WARNING("Heavy command thread pool size from dynamic config ignored since the pool is not enabled in static config")
+            .With("ThreadCount", *newConfig->HeavyCommandThreadPoolSize);
+    }
 
     AuthenticationManager_->Reconfigure(newConfig->Auth);
     if (TvmOnlyAuthenticationManager_) {
@@ -506,11 +542,14 @@ void TBootstrap::DoStart()
         MonitoringHttpsServer_->Start();
     }
 
+    // Apply the first dynamic config before starting key rotation.
     // NB(pavook):
     // We don't wait for key rotation completion anywhere in bootstrap, because proxy bootstrap
     // should be possible even in master read-only mode.
     // So, we just throw on all signature-requiring operations until the key rotation actually happens.
-    YT_UNUSED_FUTURE(SignatureComponents_->StartRotation());
+    YT_UNUSED_FUTURE(DynamicConfigManager_->GetConfigLoadedFuture().Apply(
+        BIND(&TSignatureComponents::StartRotation, SignatureComponents_)
+            .AsyncVia(GetControlInvoker())));
 
     ApiHttpServer_->Start();
     if (ApiHttpsServer_) {

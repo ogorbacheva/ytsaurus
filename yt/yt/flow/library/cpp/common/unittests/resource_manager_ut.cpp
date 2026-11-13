@@ -10,6 +10,8 @@
 
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
 
+#include <yt/yt/library/profiling/solomon/registry.h>
+
 #include <yt/yt/core/logging/log.h>
 
 #include <yt/yt/core/concurrency/action_queue.h>
@@ -37,7 +39,7 @@ YT_DEFINE_LEAKY_GLOBAL(NLogging::TLogger, Logger, "TestLogger");
 DECLARE_REFCOUNTED_CLASS(TSharedVector);
 
 class TSharedVector
-    : public IResource
+    : public TResourceLifecycleBase
 {
 public:
     TSharedVector(TResourceContextPtr context, TDynamicResourceContextPtr /*dynamicContext*/)
@@ -92,7 +94,7 @@ YT_FLOW_DEFINE_RESOURCE(TSharedVector);
 DECLARE_REFCOUNTED_CLASS(TTestResource);
 
 class TTestResource
-    : public IResource
+    : public TResourceLifecycleBase
 {
 public:
     TTestResource(TResourceContextPtr context, TDynamicResourceContextPtr /*dynamicContext*/)
@@ -143,7 +145,7 @@ YT_FLOW_DEFINE_RESOURCE(TTestResource);
 DECLARE_REFCOUNTED_CLASS(TReconfigurableResource);
 
 class TReconfigurableResource
-    : public IResource
+    : public TResourceLifecycleBase
 {
 public:
     TReconfigurableResource(TResourceContextPtr context, TDynamicResourceContextPtr /*dynamicContext*/)
@@ -195,7 +197,7 @@ DECLARE_REFCOUNTED_CLASS(TSlowResource);
 
 // A resource whose Load() completes only when the test explicitly resolves the promise.
 class TSlowResource
-    : public IResource
+    : public TResourceLifecycleBase
 {
 public:
     TSlowResource(TResourceContextPtr context, TDynamicResourceContextPtr /*dynamicContext*/)
@@ -291,12 +293,12 @@ private:
     TPromise<void> LoadPromise_ = NewPromise<void>();
     bool LoadStarted_ = false;
     static std::atomic<TSlowResource*> LastResource_;
-    static NThreading::TSpinLock InstancesLock_;
+    static TSpinLock InstancesLock_;
     static THashMap<TResourceId, TSlowResource*> Instances_;
 };
 
 std::atomic<TSlowResource*> TSlowResource::LastResource_;
-NThreading::TSpinLock TSlowResource::InstancesLock_;
+TSpinLock TSlowResource::InstancesLock_;
 THashMap<TResourceId, TSlowResource*> TSlowResource::Instances_;
 
 DEFINE_REFCOUNTED_TYPE(TSlowResource);
@@ -310,11 +312,13 @@ DECLARE_REFCOUNTED_CLASS(TRevisionAwareResource);
 // Records target revisions delivered through Reconfigure and reports an applied revision id:
 // by default the delivered one (instant switching), or an explicitly set lagging one.
 class TRevisionAwareResource
-    : public IResource
+    : public TResourceLifecycleBase
 {
 public:
-    TRevisionAwareResource(TResourceContextPtr /*context*/, TDynamicResourceContextPtr dynamicContext)
-        : DynamicContext_(std::move(dynamicContext))
+    TRevisionAwareResource(TResourceContextPtr context, TDynamicResourceContextPtr dynamicContext)
+        : ResourceInstanceId_(context->ResourceInstanceId)
+        , ResourceIncarnationGeneration_(context->ResourceIncarnationGeneration)
+        , DynamicContext_(std::move(dynamicContext))
     { }
 
     TFuture<void> Load(const THashMap<TResourceId, IResourcePtr>& /*dependencies*/) override
@@ -337,6 +341,8 @@ public:
         return {
             .AppliedRevisionId = ReportedRevisionId_ ? ReportedRevisionId_ : targetRevisionId,
             .TargetRevisionId = targetRevisionId,
+            .ResourceInstanceId = ResourceInstanceId_,
+            .ResourceIncarnationGeneration = ResourceIncarnationGeneration_,
         };
     }
 
@@ -366,6 +372,8 @@ public:
     }
 
 private:
+    const TResourceInstanceId ResourceInstanceId_;
+    const ui64 ResourceIncarnationGeneration_;
     TDynamicResourceContextPtr DynamicContext_;
     std::optional<i64> ReportedRevisionId_;
     int ReconfigureCount_ = 0;
@@ -622,6 +630,30 @@ TEST_F(TResourceManagerTest, ReconfigureSkipsUnchangedSpec)
     ASSERT_EQ(resource->GetReconfigureCount(), 1);
 }
 
+TEST_F(TResourceManagerTest, ReconfigureObservesDirectDynamicResourceFields)
+{
+    THashMap<TResourceId, TResourceSpecPtr> resources;
+    resources["res"] = BuildReconfigurableResourceSpec();
+    auto resourceManager = CreateManager(resources);
+
+    WaitFor(resourceManager->Load("res")).ThrowOnError();
+    auto resource = resourceManager->Get("res")->As<TReconfigurableResource>();
+
+    auto initial = BuildDynamicResourceSpec("value1");
+    resourceManager->Reconfigure({{"res", initial}}, /*targetRevisions*/ {});
+    ASSERT_EQ(resource->GetReconfigureCount(), 1);
+
+    auto changedDirectField = BuildDynamicResourceSpec("value1");
+    changedDirectField->FileProviderDiscoverPeriod = TDuration::Seconds(47);
+    resourceManager->Reconfigure({{"res", changedDirectField}}, /*targetRevisions*/ {});
+    ASSERT_EQ(resource->GetReconfigureCount(), 2);
+
+    auto unchanged = BuildDynamicResourceSpec("value1");
+    unchanged->FileProviderDiscoverPeriod = TDuration::Seconds(47);
+    resourceManager->Reconfigure({{"res", unchanged}}, /*targetRevisions*/ {});
+    ASSERT_EQ(resource->GetReconfigureCount(), 2);
+}
+
 TEST_F(TResourceManagerTest, ReconfigureSkipsUnknownResource)
 {
     THashMap<TResourceId, TResourceSpecPtr> resources;
@@ -854,6 +886,10 @@ TEST_F(TResourceManagerTest, PreloadAddResource)
     auto states = resourceManager->GetPreloadedStates();
     ASSERT_EQ(states.size(), 1u);
     EXPECT_EQ(states.at("res"), EPreloadedResourceState::Preloading);
+
+    TSlowResource::GetLastResource()->CompleteLoad();
+    WaitFor(resourceManager->Load("res")).ThrowOnError();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 TEST_F(TResourceManagerTest, PreloadResourceBecomesPreloaded)
@@ -1022,6 +1058,9 @@ TEST_F(TResourceManagerTest, PreloadRemoveRecreatesResource)
 
     // The resource object must have been replaced.
     EXPECT_NE(originalResource.Get(), newResource.Get());
+
+    originalResource->CompleteLoad();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 TEST_F(TResourceManagerTest, PreloadRecreationAdvancesIncarnationGeneration)
@@ -1047,6 +1086,10 @@ TEST_F(TResourceManagerTest, PreloadRecreationAdvancesIncarnationGeneration)
     auto thirdResource = TSlowResource::GetLastResource();
     EXPECT_NE(secondResource->GetResourceInstanceId(), thirdResource->GetResourceInstanceId());
     EXPECT_EQ(2u, thirdResource->GetResourceIncarnationGeneration());
+
+    firstResource->CompleteLoad();
+    secondResource->CompleteLoad();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 TEST_F(TResourceManagerTest, ManagerRecreationAdvancesIncarnationGeneration)
@@ -1143,6 +1186,10 @@ TEST_F(TResourceManagerTest, PreloadIdempotentUpdate)
     auto states = resourceManager->GetPreloadedStates();
     ASSERT_EQ(states.size(), 1u);
     EXPECT_EQ(states.at("res"), EPreloadedResourceState::Preloading);
+
+    TSlowResource::GetLastResource()->CompleteLoad();
+    WaitFor(resourceManager->Load("res")).ThrowOnError();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 TEST_F(TResourceManagerTest, PreloadMultipleResources)
@@ -1173,6 +1220,10 @@ TEST_F(TResourceManagerTest, PreloadMultipleResources)
     states = resourceManager->GetPreloadedStates();
     EXPECT_EQ(states.at("res1"), EPreloadedResourceState::Preloading);
     EXPECT_EQ(states.at("res2"), EPreloadedResourceState::Preloaded);
+
+    TSlowResource::GetById("res1")->CompleteLoad();
+    WaitFor(resourceManager->Load("res1")).ThrowOnError();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1205,6 +1256,10 @@ TEST_F(TResourceManagerTest, GetThrowsForPreloadRequiredNotLoaded)
 
     // State is Preloading — Get must throw.
     EXPECT_THROW(resourceManager->Get("res"), NYT::TErrorException);
+
+    TSlowResource::GetLastResource()->CompleteLoad();
+    WaitFor(resourceManager->Load("res")).ThrowOnError();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 TEST_F(TResourceManagerTest, LoadThrowsForPreloadRequiredNotStarted)
@@ -1234,6 +1289,10 @@ TEST_F(TResourceManagerTest, LoadSuccessForPreloadRequiredNotLoaded)
     // State is Preloading — Load returns non ready future.
     auto future = resourceManager->Load("res");
     EXPECT_FALSE(future.IsSet());
+
+    TSlowResource::GetLastResource()->CompleteLoad();
+    WaitFor(future).ThrowOnError();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 //! An always-on resource required by a computation is Load'ed eagerly at manager construction,
@@ -1260,6 +1319,9 @@ TEST_F(TResourceManagerTest, AlwaysOnResourceIsLoadedEagerly)
     auto resource = TSlowResource::GetLastResource();
     ASSERT_TRUE(resource);
     EXPECT_TRUE(resource->IsLoadStarted());
+
+    resource->CompleteLoad();
+    WaitFor(resourceManager->Load("always")).ThrowOnError();
 }
 
 //! An always_on resource's eager-load is scoped by the units on which some computation requires it
@@ -1323,6 +1385,11 @@ TEST_F(TResourceManagerTest, AlwaysOnRespectsUnitScope)
         EXPECT_TRUE(workerOnly->IsLoadStarted());
         EXPECT_TRUE(both->IsLoadStarted());
         EXPECT_FALSE(unreferenced->IsLoadStarted());
+
+        workerOnly->CompleteLoad();
+        both->CompleteLoad();
+        WaitFor(resourceManager->Load("worker_only")).ThrowOnError();
+        WaitFor(resourceManager->Load("both")).ThrowOnError();
     }
 
     // Controller manager: only both loads -- worker_only is required only on the worker and
@@ -1345,10 +1412,121 @@ TEST_F(TResourceManagerTest, AlwaysOnRespectsUnitScope)
         EXPECT_FALSE(workerOnly->IsLoadStarted());
         EXPECT_TRUE(both->IsLoadStarted());
         EXPECT_FALSE(unreferenced->IsLoadStarted());
+
+        both->CompleteLoad();
+        WaitFor(resourceManager->Load("both")).ThrowOnError();
     }
 }
 
 //! LoadRequiredResources({}) resolves only once every always-on resource has finished loading.
+TEST_F(TResourceManagerTest, FailedLoadStartsAfreshOnNextLoad)
+{
+    auto actionQueue = New<TActionQueue>();
+
+    THashMap<TResourceId, TResourceSpecPtr> resources;
+    resources["res"] = BuildSlowResourceSpec();
+    auto resourceManager = CreateManager(resources, actionQueue->GetInvoker());
+
+    auto firstLoad = resourceManager->Load("res");
+    DrainInvoker(actionQueue->GetInvoker());
+    auto first = TSlowResource::GetById("res");
+    ASSERT_TRUE(first);
+    first->FailLoad(TError("File is not delivered yet"));
+    EXPECT_FALSE(WaitFor(firstLoad).IsOK());
+
+    // The next load replaces the failed resource object and runs on the new one.
+    auto secondLoad = resourceManager->Load("res");
+    DrainInvoker(actionQueue->GetInvoker());
+    auto second = TSlowResource::GetById("res");
+    ASSERT_TRUE(second);
+    EXPECT_NE(first, second);
+    EXPECT_TRUE(second->IsLoadStarted());
+
+    second->CompleteLoad();
+    WaitFor(secondLoad).ThrowOnError();
+    EXPECT_EQ(resourceManager->Get("res").Get(), static_cast<IResource*>(second.Get()));
+}
+
+TEST_F(TResourceManagerTest, SynchronouslyFailedLoadStartsAfreshOnNextLoad)
+{
+    // A resource of an unknown class fails its load synchronously on the current invoker.
+    auto failedSpec = New<TResourceSpec>();
+    failedSpec->ResourceClassName = "NonExistentResourceClass";
+    auto resourceManager = CreateManager({{"res", failedSpec}});
+
+    auto first = resourceManager->Get("res");
+    EXPECT_FALSE(WaitFor(resourceManager->Load("res")).IsOK());
+    EXPECT_FALSE(WaitFor(resourceManager->Load("res")).IsOK());
+    EXPECT_NE(first, resourceManager->Get("res"));
+}
+
+TEST_F(TResourceManagerTest, FailedAlwaysOnLoadStartsAfreshOnNextLoadRequiredResources)
+{
+    auto actionQueue = New<TActionQueue>();
+
+    THashMap<TResourceId, TResourceSpecPtr> resources;
+    resources["a"] = BuildSlowResourceSpec(/*dependencies*/ {}, /*alwaysOn*/ true);
+    auto resourceManager = CreateManager(
+        resources,
+        actionQueue->GetInvoker(),
+        /*isController*/ false,
+        WorkerComputationRequiring({"a"}));
+
+    auto firstReady = resourceManager->LoadRequiredResources({});
+    DrainInvoker(actionQueue->GetInvoker());
+    auto first = TSlowResource::GetById("a");
+    ASSERT_TRUE(first);
+    first->FailLoad(TError("File is not delivered yet"));
+    EXPECT_FALSE(WaitFor(firstReady).IsOK());
+
+    auto secondReady = resourceManager->LoadRequiredResources({});
+    DrainInvoker(actionQueue->GetInvoker());
+    auto second = TSlowResource::GetById("a");
+    ASSERT_TRUE(second);
+    EXPECT_NE(first, second);
+    EXPECT_TRUE(second->IsLoadStarted());
+    EXPECT_FALSE(secondReady.IsSet());
+
+    second->CompleteLoad();
+    WaitFor(secondReady).ThrowOnError();
+}
+
+TEST_F(TResourceManagerTest, FailedDependencyLoadStartsAfreshWithDependent)
+{
+    auto actionQueue = New<TActionQueue>();
+
+    THashMap<TResourceId, TResourceSpecPtr> resources;
+    resources["dep"] = BuildSlowResourceSpec();
+    resources["main"] = BuildSlowResourceSpec(/*dependencies*/ {"dep"});
+    auto resourceManager = CreateManager(resources, actionQueue->GetInvoker());
+
+    auto firstLoad = resourceManager->Load("main");
+    DrainInvoker(actionQueue->GetInvoker());
+    auto firstDep = TSlowResource::GetById("dep");
+    auto firstMain = TSlowResource::GetById("main");
+    ASSERT_TRUE(firstDep);
+    ASSERT_TRUE(firstMain);
+    firstDep->FailLoad(TError("File is not delivered yet"));
+    EXPECT_FALSE(WaitFor(firstLoad).IsOK());
+    EXPECT_FALSE(firstMain->IsLoadStarted());
+
+    auto secondLoad = resourceManager->Load("main");
+    DrainInvoker(actionQueue->GetInvoker());
+    auto secondDep = TSlowResource::GetById("dep");
+    auto secondMain = TSlowResource::GetById("main");
+    ASSERT_TRUE(secondDep);
+    ASSERT_TRUE(secondMain);
+    EXPECT_NE(firstDep, secondDep);
+    EXPECT_NE(firstMain, secondMain);
+    EXPECT_TRUE(secondDep->IsLoadStarted());
+
+    secondDep->CompleteLoad();
+    DrainInvoker(actionQueue->GetInvoker());
+    EXPECT_TRUE(secondMain->IsLoadStarted());
+    secondMain->CompleteLoad();
+    WaitFor(secondLoad).ThrowOnError();
+}
+
 TEST_F(TResourceManagerTest, ReadyFutureAwaitsAllAlwaysOnLoads)
 {
     auto actionQueue = New<TActionQueue>();
@@ -1511,6 +1689,10 @@ TEST_F(TResourceManagerTest, AppliedRevisionReportedByResource)
     ASSERT_TRUE(statuses.contains("res"));
     EXPECT_EQ(statuses["res"]->AppliedRevisionId, std::optional<i64>(2));
     EXPECT_EQ(statuses["res"]->TargetRevisionId, std::optional<i64>(3));
+    EXPECT_EQ(statuses["res"]->ResourceInstanceId, resource->GetRevisionState().ResourceInstanceId);
+    EXPECT_EQ(
+        statuses["res"]->ResourceIncarnationGeneration,
+        resource->GetRevisionState().ResourceIncarnationGeneration);
 }
 
 TEST_F(TResourceManagerTest, AppliedRevisionNotReportedForUnloadedResource)
@@ -1541,6 +1723,172 @@ TEST_F(TResourceManagerTest, PlainResourceReportsNoRevision)
     EXPECT_EQ(resource->GetReconfigureCount(), 0);
     auto statuses = manager->CollectResourceStatuses();
     EXPECT_FALSE(statuses.contains("plain"));
+}
+
+std::optional<double> ReadResourceQueueSize(const NProfiling::TSolomonRegistryPtr& registry, const std::string& resourceId)
+{
+    registry->ProcessRegistrations();
+    registry->Collect();
+    const auto dump = registry->DumpSensors();
+    for (const auto& cube : dump.cubes()) {
+        if (cube.name() != "yt/test/resource/queue_size") {
+            continue;
+        }
+        for (const auto& projection : cube.projections()) {
+            for (auto id : projection.tag_ids()) {
+                const auto& tag = dump.tags(id);
+                if (tag.key() == "resource" && tag.value() == resourceId && projection.has_gauge()) {
+                    return projection.gauge();
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+IResourceManagerPtr CreateProfiledResourceManager(
+    const NProfiling::TSolomonRegistryPtr& registry,
+    const THashMap<TResourceId, TResourceSpecPtr>& resources,
+    IInvokerPtr invoker = nullptr)
+{
+    auto context = New<TResourceManagerContext>();
+    context->Invoker = invoker ? invoker : GetCurrentInvoker();
+    context->Logger = Logger();
+    context->StatusProfiler = CreateSyncStatusProfiler();
+    context->Profiler = NProfiling::TProfiler(registry, "/test");
+    return CreateResourceManager(std::move(context), resources, {});
+}
+
+TEST_F(TResourceManagerTest, FedQueueSizeExportedAsGauge)
+{
+    auto registry = New<NProfiling::TSolomonRegistry>();
+    registry->SetWindowSize(12);
+    auto manager = CreateProfiledResourceManager(
+        registry,
+        {
+            {"fed", BuildReconfigurableResourceSpec()},
+            {"silent", BuildReconfigurableResourceSpec()},
+        });
+    // Only a loaded resource feeds its status.
+    WaitFor(manager->Load("fed")).ThrowOnError();
+
+    manager->FeedStatus("fed", 5, 0);
+    manager->FeedStatus("fed", 2, 3);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "fed"), std::optional<double>(4));
+
+    // A loaded resource keeps its sensor with an empty queue.
+    manager->FeedStatus("fed", 0, 4);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "fed"), std::optional<double>(0));
+
+    // A resource that never reports its queue gets no sensor.
+    EXPECT_EQ(ReadResourceQueueSize(registry, "silent"), std::nullopt);
+}
+
+TEST_F(TResourceManagerTest, AssignedInstanceQueueSizeFollowsReplacement)
+{
+    auto registry = New<NProfiling::TSolomonRegistry>();
+    registry->SetWindowSize(12);
+    auto actionQueue = New<TActionQueue>();
+    auto context = New<TResourceManagerContext>();
+    context->Invoker = actionQueue->GetInvoker();
+    context->StatusProfiler = CreateSyncStatusProfiler();
+    context->Profiler = NProfiling::TProfiler(registry, "/test");
+    auto manager = CreateResourceManager(context);
+    THashMap<TResourceId, TResourceSpecPtr> specs{{"res", BuildReconfigurableResourceSpec()}};
+    auto instance = New<TResourceInstance>();
+    instance->ResourceId = TResourceId("res");
+    instance->ResourceInstanceId = TResourceInstanceId(TGuid::Create());
+    auto dynamicSpec = New<TResourceInstanceDynamicSpec>();
+    auto id = instance->ResourceInstanceId;
+    manager->ReconfigureInstances(specs, {{id, instance}}, {{id, dynamicSpec}});
+    WaitFor(manager->Load(THashSet<TResourceInstanceId>{id})).ThrowOnError();
+
+    manager->FeedStatus(id, 5, 0);
+    manager->FeedStatus(id, 2, 3);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(4));
+    manager->FeedStatus(id, 0, 4);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(0));
+    manager->FeedStatus(id, 7, 0);
+
+    auto replacement = New<TResourceInstance>();
+    replacement->ResourceId = instance->ResourceId;
+    replacement->ResourceInstanceId = TResourceInstanceId(TGuid::Create());
+    auto replacementId = replacement->ResourceInstanceId;
+    manager->ReconfigureInstances(specs, {{replacementId, replacement}}, {{replacementId, dynamicSpec}});
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::nullopt);
+    WaitFor(manager->Load(THashSet<TResourceInstanceId>{replacementId})).ThrowOnError();
+    manager->FeedStatus(replacementId, 3, 1);
+    manager->FeedStatus(id, 0, 7);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(2));
+
+    manager->ReconfigureInstances({}, {}, {});
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::nullopt);
+    manager->FeedStatus(replacementId, 0, 2);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::nullopt);
+}
+
+TEST_F(TResourceManagerTest, DroppedPreloadLosesQueueSizeGaugeAfterDrain)
+{
+    auto registry = New<NProfiling::TSolomonRegistry>();
+    registry->SetWindowSize(12);
+    auto actionQueue = New<TActionQueue>();
+    auto manager = CreateProfiledResourceManager(
+        registry,
+        {{"res", BuildPreloadRequiredSlowResourceSpec()}},
+        actionQueue->GetInvoker());
+
+    manager->UpdatePreloadedResources({"res"});
+    auto resource = TSlowResource::GetLastResource();
+    auto loadFuture = manager->Load("res");
+    manager->FeedStatus("res", 5, 0);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(5));
+
+    // Requests of the dropped instance are still in flight.
+    manager->UpdatePreloadedResources({});
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(5));
+
+    manager->FeedStatus("res", 0, 2);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(3));
+
+    manager->FeedStatus("res", 0, 3);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::nullopt);
+
+    resource->CompleteLoad();
+    WaitFor(loadFuture).ThrowOnError();
+    DrainInvoker(actionQueue->GetInvoker());
+}
+
+TEST_F(TResourceManagerTest, DroppedPreloadWithEmptyQueueLosesQueueSizeGauge)
+{
+    auto registry = New<NProfiling::TSolomonRegistry>();
+    registry->SetWindowSize(12);
+    auto actionQueue = New<TActionQueue>();
+    auto manager = CreateProfiledResourceManager(
+        registry,
+        {{"res", BuildPreloadRequiredSlowResourceSpec()}},
+        actionQueue->GetInvoker());
+
+    manager->UpdatePreloadedResources({"res"});
+    auto firstResource = TSlowResource::GetLastResource();
+    auto firstLoadFuture = manager->Load("res");
+    manager->FeedStatus("res", 4, 4);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(0));
+
+    manager->UpdatePreloadedResources({});
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::nullopt);
+
+    // A preload issued again brings the sensor back.
+    manager->UpdatePreloadedResources({"res"});
+    auto secondResource = TSlowResource::GetLastResource();
+    auto secondLoadFuture = manager->Load("res");
+    manager->FeedStatus("res", 1, 0);
+    EXPECT_EQ(ReadResourceQueueSize(registry, "res"), std::optional<double>(1));
+
+    firstResource->CompleteLoad();
+    secondResource->CompleteLoad();
+    WaitFor(firstLoadFuture).ThrowOnError();
+    WaitFor(secondLoadFuture).ThrowOnError();
+    DrainInvoker(actionQueue->GetInvoker());
 }
 
 ////////////////////////////////////////////////////////////////////////////////

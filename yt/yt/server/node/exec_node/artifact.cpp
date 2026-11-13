@@ -20,18 +20,19 @@ using namespace NChunkClient::NProto;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TArtifactKey::TArtifactKey(TChunkId chunkId)
+TArtifactKey::TArtifactKey(
+    EDataSourceType dataSource,
+    std::vector<TChunkSpec> specs)
 {
-    mutable_data_source()->set_type(ToProto(EDataSourceType::File));
+    mutable_data_source()->set_type(ToProto(dataSource));
+    for (auto& spec : specs) {
+        *add_chunk_specs() = std::move(spec);
+    }
+}
 
-    NChunkClient::NProto::TChunkSpec chunkSpec;
-    ToProto(chunkSpec.mutable_chunk_id(), chunkId);
-
-    TMiscExt miscExt;
-    miscExt.set_compression_codec(ToProto(NCompression::ECodec::None));
-    SetProtoExtension(chunkSpec.mutable_chunk_meta()->mutable_extensions(), miscExt);
-
-    *add_chunk_specs() = chunkSpec;
+TArtifactKey::TArtifactKey(const NProto::TArtifactKey& key)
+{
+    CopyFrom(key);
 }
 
 TArtifactKey::TArtifactKey(const NControllerAgent::NProto::TFileDescriptor& descriptor)
@@ -65,14 +66,47 @@ i64 TArtifactKey::GetCompressedDataSize() const
     return compressedDataSize;
 }
 
-i64 TArtifactKey::GetUncompressedDataSize() const
+std::optional<i64> TArtifactKey::TryGetFileSizeEstimate() const
 {
-    i64 uncompressedDataSize = 0;
-    for (const auto& chunkSpec : chunk_specs()) {
-        uncompressedDataSize += GetChunkUncompressedDataSize(chunkSpec);
+    i64 fileSizeEstimate = 0;
+
+    if (!data_source().has_type()) {
+        return std::nullopt;
+    }
+    auto type = FromProto<EDataSourceType>(data_source().type());
+    switch (type) {
+        case EDataSourceType::File:
+            // TFileChunkWriter does not set data_weight.
+            for (const auto& chunkSpec : chunk_specs()) {
+                auto miscExt = FindProtoExtension<TMiscExt>(chunkSpec.chunk_meta().extensions());
+                if (!miscExt.has_value() || !miscExt->has_uncompressed_data_size()) {
+                    return std::nullopt;
+                }
+                fileSizeEstimate += miscExt->uncompressed_data_size();
+            }
+            break;
+        case EDataSourceType::UnversionedTable:
+        case EDataSourceType::VersionedTable:
+            for (const auto& chunkSpec : chunk_specs()) {
+                if (chunkSpec.has_data_weight_override()) {
+                    fileSizeEstimate += chunkSpec.data_weight_override();
+                    continue;
+                }
+                auto miscExt = FindProtoExtension<TMiscExt>(chunkSpec.chunk_meta().extensions());
+                if (!miscExt.has_value() || !miscExt->has_data_weight()) {
+                    return std::nullopt;
+                }
+                fileSizeEstimate += miscExt->data_weight();
+            }
+            break;
     }
 
-    return uncompressedDataSize;
+    return fileSizeEstimate;
+}
+
+i64 TArtifactKey::GetFileSizeEstimateOrCrash() const
+{
+    return GetOrCrash(TryGetFileSizeEstimate());
 }
 
 TArtifactKey::operator size_t() const
@@ -108,6 +142,7 @@ TArtifactKey::operator size_t() const
     }
 
     if (data_source().has_rls_read_spec()) {
+        HashCombine(result, data_source().rls_read_spec().authenticated_user());
         HashCombine(result, data_source().rls_read_spec().has_trivial_deny());
         if (data_source().rls_read_spec().has_predicate()) {
             HashCombine(result, data_source().rls_read_spec().predicate());
@@ -191,6 +226,9 @@ bool TArtifactKey::operator==(const TArtifactKey& other) const
     if (data_source().has_rls_read_spec()) {
         const auto& rlsReadSpec = data_source().rls_read_spec();
         const auto& otherRlsReadSpec = other.data_source().rls_read_spec();
+        if (rlsReadSpec.authenticated_user() != otherRlsReadSpec.authenticated_user()) {
+            return false;
+        }
         if (rlsReadSpec.has_trivial_deny() != otherRlsReadSpec.has_trivial_deny()) {
             return false;
         }

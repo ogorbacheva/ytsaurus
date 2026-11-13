@@ -17,6 +17,9 @@ Warm-up period when the controller starts. ||
 || `scheduler_period` | **Type**: [TDuration](./all_yson_structs#TDuration)
 **Default value**: `5s`
 Scheduler invocation period. ||
+|| `no_spec_iteration_backoff` | **Type**: [TDuration](./all_yson_structs#TDuration)
+**Default value**: `1s`
+ ||
 || `cache_period` | **Type**: [TDuration](./all_yson_structs#TDuration)
 **Default value**: `1s`
  ||
@@ -35,8 +38,18 @@ Period during which the controller attempts to tell {{product-name}} that it is 
 || `publish_timeout` | **Type**: [TDuration](./all_yson_structs#TDuration)
 **Default value**: `2h`
  ||
-|| `election_manager` | **Type**: `NYT::TIntrusivePtr<`[NYT::NFlow::NController::TElectionManagerConfig](./all_yson_structs#NYT_NFlow_NController_TElectionManagerConfig)`>`
-**Default value**: `{}`
+|| `election_manager` | **Type**: `NYT::NYTree::TPolymorphicYsonStruct<NYT::NYTree::NDetail::TPolymorphicMapping<&NYT::NFlow::NController::ElectionBackendDiscriminator.<char const at offset 0>, NYT::NFlow::NController::EElectionBackend, NYT::NYTree::NDetail::TOptionalValue<NYT::NFlow::NController::EElectionBackend, (NYT::NFlow::NController::EElectionBackend)0>, NYT::NFlow::NController::TElectionBackendConfigBase, NYT::NYTree::NDetail::TLeafTag<(NYT::NFlow::NController::EElectionBackend)0, NYT::NFlow::NController::TCypressElectionBackendConfig>, NYT::NYTree::NDetail::TLeafTag<(NYT::NFlow::NController::EElectionBackend)1, NYT::NFlow::NController::TDyntableElectionBackendConfig>, NYT::NYTree::NDetail::TLeafTag<(NYT::NFlow::NController::EElectionBackend)2, NYT::NFlow::NController::TChaosElectionBackendConfig>>>`
+**Default value**:
+
+```yson
+{
+    "backend" = "cypress";
+    "leader_cache_update_period" = 1000;
+    "leader_lease_ping_period" = 1000;
+    "leader_lease_ttl" = 5000;
+    "lock_acquisition_period" = 1000;
+}
+```
 Leader election settings for multiple controllers. ||
 || `persisted_state_manager` | **Type**: `NYT::TIntrusivePtr<`[NYT::NFlow::NController::TPersistedStateManagerConfig](./all_yson_structs#NYT_NFlow_NController_TPersistedStateManagerConfig)`>`
 **Default value**: `{}`
@@ -52,3 +65,15 @@ Leader election settings for multiple controllers. ||
  ||
 |#
 
+
+{% cut "**Additional parameters**" %}
+
+
+#|
+|| `publish_request_timeout` | **Type**: [TDuration](./all_yson_structs#TDuration)
+**Default value**: `1s`
+Timeout of a single request of a publication attempt. A failed attempt is retried, so this only decides how long one attempt may hang before the retry. ||
+|#
+
+
+{% endcut %}

@@ -54,7 +54,7 @@
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 namespace NYT::NScheduler::NStrategy {
 
@@ -189,7 +189,7 @@ private:
     TInstant LastLocalUpdateTime_;
 
     // This maps is updated rarely and accessed from Control thread.
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     THashMap<std::string, TResourceVolume> PoolToAccumulatedResourceUsage_;
     THashMap<TOperationId, TAccumulatedResourceDistribution> OperationIdToAccumulatedResourceDistribution_;
     TInstant LastUpdateTime_;
@@ -298,7 +298,7 @@ public:
         , Logger(StrategyLogger().WithTag("TreeId", TreeId_))
         , Host_(host)
         , StrategyHost_(strategyHost)
-        , ResourceTree_(New<TResourceTree>(Config_, feasibleInvokers))
+        , ResourceTree_(New<TResourceTree>(Logger, Config_, feasibleInvokers))
         , Profiler_(
             SchedulerProfiler()
                 .WithGlobal()
@@ -347,6 +347,12 @@ public:
 
         SchedulingPolicy_->Initialize();
         DryRunGpuSchedulingPolicy_->Initialize();
+
+        MinNodeResourceLimitsCheckExecutor_ = New<TPeriodicExecutor>(
+            StrategyHost_->GetControlInvoker(EControlQueue::Strategy),
+            BIND(&TPoolTree::CheckMinNodeResourceLimits, MakeWeak(this)),
+            Config_->MinNodeResourceLimitsCheckPeriod);
+        MinNodeResourceLimitsCheckExecutor_->Start();
 
         YT_TLOG_INFO("Pool tree created");
     }
@@ -406,6 +412,8 @@ public:
 
         SchedulingPolicy_->UpdateConfig(Config_);
         DryRunGpuSchedulingPolicy_->UpdateConfig(Config_);
+
+        MinNodeResourceLimitsCheckExecutor_->SetPeriod(Config_->MinNodeResourceLimitsCheckPeriod);
 
         auto pool = FindPool(Config_->DefaultParentPool);
         if (!pool && Config_->DefaultParentPool != RootPoolName) {
@@ -903,7 +911,11 @@ public:
                     if (pool->IsEmpty()) {
                         UnregisterPool(pool);
                     } else {
+                        bool lightweightOperationsEnabledBefore = pool->GetEffectiveLightweightOperationsEnabled();
                         pool->SetDefaultConfig();
+                        if (lightweightOperationsEnabledBefore != pool->GetEffectiveLightweightOperationsEnabled()) {
+                            ReaccountLightweightRunningOperationsInPool(pool);
+                        }
 
                         auto defaultParent = GetDefaultParentPoolForUser(updatePoolAction.Name);
                         if (pool->GetId() == defaultParent->GetId()) {  // Someone is deleting default pool.
@@ -1381,6 +1393,9 @@ private:
 
     const std::vector<IInvokerPtr> FeasibleInvokers_;
 
+    TPeriodicExecutorPtr MinNodeResourceLimitsCheckExecutor_;
+    THashMap<std::string, TInstant> NodeToResourceLimitsViolationStartTime_;
+
 
     INodePtr LastPoolsNodeUpdate_;
     TError LastPoolsNodeUpdateError_;
@@ -1838,6 +1853,102 @@ private:
     mutable TResourceDistributionAccumulator AccumulatedOperationsResourceDistributionForProfiling_;
     mutable TResourceDistributionAccumulator AccumulatedOperationsResourceDistributionForLogging_;
 
+    void CheckMinNodeResourceLimits()
+    {
+        YT_ASSERT_INVOKER_AFFINITY(StrategyHost_->GetControlInvoker(EControlQueue::Strategy));
+
+        static const int MaxViolatingNodesInError = 10;
+
+        if (!Host_->IsConnected()) {
+            return;
+        }
+
+        auto now = TInstant::Now();
+        auto gracePeriod = Config_->MinNodeResourceLimitsViolationTimeout;
+        auto minResourceLimits = ToJobResources(Config_->MinNodeResourceLimits, TJobResources());
+        i64 minDiskSpace = Config_->MinNodeResourceLimits->DiskSpace.value_or(0);
+
+        THashMap<std::string, TError> currentlyViolatingNodes;
+        for (const auto& descriptor : SchedulingPolicy_->GetNodeDescriptors()) {
+            // Ignore nodes with disabled jobs.
+            if (descriptor->ResourceLimits.GetUserSlots() == 0) {
+                continue;
+            }
+
+            i64 maxDiskSpace = 0;
+            for (const auto& locationResources : descriptor->DiskResources.DiskLocationResources) {
+                maxDiskSpace = std::max(maxDiskSpace, locationResources.Limit);
+            }
+
+            std::vector<TError> resourceErrors;
+            auto checkResource = [&] (TStringBuf resource, const auto& actualLimit, const auto& minLimit) {
+                if (actualLimit < minLimit) {
+                    resourceErrors.push_back(
+                        TError("Node %Qv limit is below the configured minimum", resource)
+                            .With("resource", resource)
+                            .With("resource_limit", actualLimit)
+                            .With("min_resource_limit", minLimit));
+                }
+            };
+
+            const auto& resourceLimits = descriptor->ResourceLimits;
+            checkResource("user_slots", resourceLimits.GetUserSlots(), minResourceLimits.GetUserSlots());
+            checkResource("cpu", resourceLimits.GetCpu(), minResourceLimits.GetCpu());
+            checkResource("gpu", resourceLimits.GetGpu(), minResourceLimits.GetGpu());
+            checkResource("memory", resourceLimits.GetMemory(), minResourceLimits.GetMemory());
+            checkResource("network", resourceLimits.GetNetwork(), minResourceLimits.GetNetwork());
+            checkResource("disk_space", maxDiskSpace, minDiskSpace);
+
+            if (!resourceErrors.empty()) {
+                const auto& address = descriptor->GetDefaultAddress();
+                currentlyViolatingNodes.emplace(
+                    address,
+                    TError("Node %Qv has insufficient resource limits", address)
+                        .With("node_address", address)
+                        .With(std::move(resourceErrors)));
+            }
+        }
+
+        std::vector<std::string> addressesToRemove;
+        for (const auto& [address, _] : NodeToResourceLimitsViolationStartTime_) {
+            if (!currentlyViolatingNodes.contains(address)) {
+                addressesToRemove.push_back(address);
+            }
+        }
+        for (const auto& address : addressesToRemove) {
+            NodeToResourceLimitsViolationStartTime_.erase(address);
+        }
+
+        for (const auto& [address, _] : currentlyViolatingNodes) {
+            NodeToResourceLimitsViolationStartTime_.emplace(address, now);
+        }
+
+        std::vector<std::string> violatingNodes;
+        for (const auto& [address, violationStartTime] : NodeToResourceLimitsViolationStartTime_) {
+            if (now >= violationStartTime + gracePeriod) {
+                violatingNodes.push_back(address);
+            }
+        }
+
+        TError error;
+        if (violatingNodes.size() > 0) {
+            error = TError("Found violating nodes in tree %Qv", TreeId_);
+            if (violatingNodes.size() > MaxViolatingNodesInError) {
+                violatingNodes.resize(MaxViolatingNodesInError);
+                error = error.With("violating_nodes_truncated", true);
+            }
+            error = error.With("violating_nodes", violatingNodes);
+
+            std::vector<TError> nodeErrors;
+            for (const auto& address : violatingNodes) {
+                nodeErrors.push_back(std::move(GetOrCrash(currentlyViolatingNodes, address)));
+            }
+            error = error.With(std::move(nodeErrors));
+        }
+
+        Host_->SetSchedulerTreeAlert(TreeId_, ESchedulerAlertType::NodesWithInsufficientResourceLimits, error);
+    }
+
     void ThrowOrchidIsNotReady() const
     {
         THROW_ERROR_EXCEPTION("Pool tree orchid is not ready yet")
@@ -1926,6 +2037,8 @@ private:
                             .IntegralPoolCapacitySaturationPeriod = config->IntegralGuarantees->PoolCapacitySaturationPeriod,
                             .IntegralSmoothPeriod = config->IntegralGuarantees->SmoothPeriod,
                             .EnableStepFunctionForGangOperations = config->EnableStepFunctionForGangOperations,
+                            .EnableFifoChildrenReorderingForGuaranteeUtilization =
+                                config->EnableFifoChildrenReorderingForGuaranteeUtilization,
                             .EnableImprovedFairShareByFitFactorComputation = config->EnableImprovedFairShareByFitFactorComputation,
                             .EnableImprovedFairShareByFitFactorComputationDistributionGap =
                                 config->EnableImprovedFairShareByFitFactorComputationDistributionGap,
@@ -2291,12 +2404,11 @@ private:
             .With("SlotIndex", *slotIndex);
     }
 
-    void BuildElementLoggingStringAttributes(
+    NLogging::TLoggingTagList BuildElementLoggingTags(
         const TPoolTreeSnapshotPtr& treeSnapshot,
-        const TPoolTreeElement* element,
-        TDelimitedStringBuilderWrapper& delimitedBuilder) const override
+        const TPoolTreeElement* element) const override
     {
-        SchedulingPolicy_->BuildElementLoggingStringAttributes(treeSnapshot, element, delimitedBuilder);
+        return SchedulingPolicy_->BuildElementLoggingTags(treeSnapshot, element);
     }
 
     void OnOperationRemovedFromPool(
@@ -2442,16 +2554,22 @@ private:
     {
         YT_ASSERT_INVOKERS_AFFINITY(FeasibleInvokers_);
 
-        auto tryGetValidPool = [&] (const std::string& poolName, const char* poolCaption, const std::string& loggedAttributes) -> TPoolTreeCompositeElementPtr {
+        auto tryGetValidPool = [&] (const std::string& poolName, TStringBuf poolKind) -> TPoolTreeCompositeElementPtr {
             auto pool = FindPool(poolName);
             if (pool) {
                 if (pool->GetMode() != ESchedulingMode::Fifo) {
                     return pool;
                 } else {
-                    YT_LOG_INFO("%v has FIFO mode and won't be used %v", poolCaption, loggedAttributes);
+                    YT_TLOG_INFO("Pool has FIFO mode and will not be used")
+                        .With("PoolKind", poolKind)
+                        .With("PoolName", poolName)
+                        .With("UserName", userName);
                 }
             } else {
-                YT_LOG_INFO("%v is not registered in tree %v", poolCaption, loggedAttributes);
+                YT_TLOG_INFO("Pool is not registered in tree")
+                    .With("PoolKind", poolKind)
+                    .With("PoolName", poolName)
+                    .With("UserName", userName);
             }
             return nullptr;
         };
@@ -2460,15 +2578,13 @@ private:
             const auto& userToDefaultPoolMap = StrategyHost_->GetUserDefaultParentPoolMap();
             auto it = userToDefaultPoolMap.find(userName);
             if (it != userToDefaultPoolMap.end()) {
-                auto loggedAttributes = Format("(PoolName: %v, UserName: %v)", it->second, userName);
-                if (auto pool = tryGetValidPool(it->second, "User default parent pool", loggedAttributes)) {
+                if (auto pool = tryGetValidPool(it->second, "UserDefaultParent")) {
                     return pool;
                 }
             }
         }
 
-        auto loggedAttributes = Format("(PoolName: %v)", Config_->DefaultParentPool);
-        if (auto pool = tryGetValidPool(Config_->DefaultParentPool, "Default parent pool", loggedAttributes)) {
+        if (auto pool = tryGetValidPool(Config_->DefaultParentPool, "DefaultParent")) {
             return pool;
         }
 
@@ -2962,28 +3078,26 @@ private:
         *customMeteringTags = treeSnapshot->TreeConfig()->MeteringTags;
     }
 
-    void BuildSchedulingAttributesStringForNode(
+    NLogging::TLoggingTagList BuildSchedulingAttributeTagsForNode(
         const ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
-        TNodeId nodeId,
-        TDelimitedStringBuilderWrapper& delimitedBuilder) const override
+        TNodeId nodeId) const override
     {
-        SchedulingPolicy_->BuildSchedulingAttributesStringForNode(
+        return SchedulingPolicy_->BuildSchedulingAttributeTagsForNode(
+            GetAtomicTreeSnapshot(),
             schedulingHeartbeatContext,
-            nodeId,
-            delimitedBuilder);
+            nodeId);
     }
 
     void BuildSchedulingAttributesForNode(TNodeId nodeId, TFluentMap fluent) const override
     {
-        SchedulingPolicy_->BuildSchedulingAttributesForNode(nodeId, fluent);
+        SchedulingPolicy_->BuildSchedulingAttributesForNode(GetAtomicTreeSnapshot(), nodeId, fluent);
     }
 
-    void BuildSchedulingAttributesStringForOngoingAllocations(
+    NLogging::TLoggingTagList BuildSchedulingAttributeTagsForOngoingAllocations(
         const std::vector<TAllocationPtr>& allocations,
-        TInstant now,
-        TDelimitedStringBuilderWrapper& delimitedBuilder) const override
+        TInstant now) const override
     {
-        SchedulingPolicy_->BuildSchedulingAttributesStringForOngoingAllocations(GetAtomicTreeSnapshot(), allocations, now, delimitedBuilder);
+        return SchedulingPolicy_->BuildSchedulingAttributeTagsForOngoingAllocations(GetAtomicTreeSnapshot(), allocations, now);
     }
 
     void ProfileFairShare() const override
@@ -3063,14 +3177,65 @@ private:
 
         YT_VERIFY(treeSnapshot);
 
-        StrategyHost_->LogAccumulatedUsageEventFluently(TInstant::Now())
-            .Item(EventLogPoolTreeKey).Value(TreeId_)
-            .Item("pools").BeginMap()
-                .Do(BIND(&TPoolTree::DoBuildPoolsStructureInfo, Unretained(this), ConstRef(treeSnapshot)))
-            .EndMap()
-            .Item("operations").BeginMap()
-                .Do(BIND(&TPoolTree::DoBuildOperationsAccumulatedResourceDistribution, Unretained(this), ConstRef(treeSnapshot)))
-            .EndMap();
+        auto accumulatedUsageInfoEventId = TGuid::Create();
+        auto now = TInstant::Now();
+
+        std::vector<TYsonString> splitPoolsInfo;
+        TYsonMapFragmentBatcher poolsConsumer(&splitPoolsInfo, treeSnapshot->TreeConfig()->MaxAccumulatedUsageLogPoolBatchSize);
+        BuildYsonMapFragmentFluently(&poolsConsumer)
+            .Do(BIND(&TPoolTree::DoBuildPoolsStructureInfo, Unretained(this), ConstRef(treeSnapshot)));
+        poolsConsumer.Flush();
+
+        std::vector<TYsonString> splitOperationsInfo;
+        TYsonMapFragmentBatcher operationsConsumer(&splitOperationsInfo, treeSnapshot->TreeConfig()->MaxAccumulatedUsageLogOperationBatchSize);
+        BuildYsonMapFragmentFluently(&operationsConsumer)
+            .Do(BIND(&TPoolTree::DoBuildOperationsAccumulatedResourceDistribution, Unretained(this), ConstRef(treeSnapshot)));
+        operationsConsumer.Flush();
+
+        bool splitEvent = splitPoolsInfo.size() > 1 || splitOperationsInfo.size() > 1;
+        auto logAccumulatedUsageEventFluently = [&] {
+            return StrategyHost_->LogAccumulatedUsageEventFluently(now)
+                .Item(EventLogPoolTreeKey).Value(TreeId_)
+                .Item("accumulated_usage_info_event_id").Value(accumulatedUsageInfoEventId)
+                .Item("tree_snapshot_id").Value(treeSnapshot->GetId())
+                .DoIf(splitEvent, [&] (TFluentMap fluent) {
+                    fluent
+                        .Item("pools_batch_count").Value(std::ssize(splitPoolsInfo))
+                        .Item("operations_batch_count").Value(std::ssize(splitOperationsInfo));
+                });
+        };
+
+        // Preserve the combined event for existing clients until batching is needed.
+        if (!splitEvent) {
+            logAccumulatedUsageEventFluently()
+                .Item("pools").BeginMap()
+                    .DoFor(splitPoolsInfo, [] (TFluentMap fluent, const TYsonString& batch) {
+                        fluent.Items(batch);
+                    })
+                .EndMap()
+                .Item("operations").BeginMap()
+                    .DoFor(splitOperationsInfo, [] (TFluentMap fluent, const TYsonString& batch) {
+                        fluent.Items(batch);
+                    })
+                .EndMap();
+            return;
+        }
+
+        for (int batchIndex = 0; batchIndex < std::ssize(splitPoolsInfo); ++batchIndex) {
+            logAccumulatedUsageEventFluently()
+                .Item("pools_batch_index").Value(batchIndex)
+                .Item("pools").BeginMap()
+                    .Items(splitPoolsInfo[batchIndex])
+                .EndMap();
+        }
+
+        for (int batchIndex = 0; batchIndex < std::ssize(splitOperationsInfo); ++batchIndex) {
+            logAccumulatedUsageEventFluently()
+                .Item("operations_batch_index").Value(batchIndex)
+                .Item("operations").BeginMap()
+                    .Items(splitOperationsInfo[batchIndex])
+                .EndMap();
+        }
     }
 
     void EssentialLogFairShareAt(TInstant now) const override
@@ -3125,10 +3290,9 @@ private:
 
         auto doLogOperationsInfo = [&] (const auto& operationIdToElement) {
             for (const auto& [operationId, element] : operationIdToElement) {
-                // TODO(eshcherbin): Rethink format of fair share info log message.
-                YT_LOG_DEBUG("FairShareInfo: %v (OperationId: %v)",
-                    element->GetLoggingString(treeSnapshot),
-                    operationId);
+                YT_TLOG_DEBUG("Scheduling info of operation")
+                    .With("OperationId", operationId)
+                    .With(element->GetLoggingTags(treeSnapshot));
             }
         };
 
@@ -3141,9 +3305,9 @@ private:
         auto Logger = this->Logger().WithTag("TreeSnapshotId", treeSnapshot->GetId());
 
         for (const auto& [poolName, element] : treeSnapshot->PoolMap()) {
-            YT_LOG_DEBUG("FairShareInfo: %v (Pool: %v)",
-                element->GetLoggingString(treeSnapshot),
-                poolName);
+            YT_TLOG_DEBUG("Scheduling info of pool")
+                .With("Pool", poolName)
+                .With(element->GetLoggingTags(treeSnapshot));
         }
     }
 
@@ -3291,7 +3455,11 @@ private:
             })
             .DoIf(pool->GetMode() == ESchedulingMode::Fifo, [&] (TFluentMap fluent) {
                 fluent
-                    .ITEM_VALUE_IF_SUITABLE_FOR_FILTER(filter, "fifo_sort_parameters", pool->GetFifoSortParameters());
+                    .ITEM_VALUE_IF_SUITABLE_FOR_FILTER(filter, "fifo_sort_parameters", pool->GetFifoSortParameters())
+                    .ITEM_VALUE_IF_SUITABLE_FOR_FILTER(
+                        filter,
+                        "fifo_children_reordering_for_guarantee_utilization_enabled",
+                        pool->GetEffectiveFifoChildrenReorderingForGuaranteeUtilizationEnabled());
             })
             .ITEM_VALUE_IF_SUITABLE_FOR_FILTER(filter, "abc", pool->GetConfig()->Abc)
             .ITEM_VALUE_IF_SUITABLE_FOR_FILTER(filter, "full_path", pool->GetFullPath(/*explicitOnly*/ false, /*withTreeId*/ false))
@@ -3458,6 +3626,7 @@ private:
             .Item("slot_index").Value(element->GetSlotIndex())
             .Item("start_time").Value(element->GetStartTime())
             .OptionalItem("fifo_index", element->Attributes().FifoIndex)
+            .OptionalItem("effective_fifo_index", element->Attributes().EffectiveFifoIndex)
             .Item("grouped_needed_resources").Value(element->GroupedNeededResources())
             // COMPAT(eshcherbin)
             .Item("detailed_min_needed_job_resources").BeginList()

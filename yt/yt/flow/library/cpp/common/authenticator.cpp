@@ -1,5 +1,6 @@
 #include "authenticator.h"
 #include "internal_urls.h"
+#include "job_proxy_client.h"
 #include "private.h"
 
 #include <yt/yt/flow/library/cpp/client/authentication.h>
@@ -14,9 +15,11 @@
 #include <yt/yt/library/signature/validation/cypress_key_reader.h>
 #include <yt/yt/library/signature/validation/signature_validator.h>
 
+#include <yt/yt/client/api/client.h>
+#include <yt/yt/client/api/connection.h>
+#include <yt/yt/client/api/rpc_proxy/connection.h>
 #include <yt/yt/client/cache/cache.h>
 #include <yt/yt/client/cache/config.h>
-#include <yt/yt/client/cache/rpc.h>
 #include <yt/yt/client/signature/signature.h>
 #include <yt/yt/client/signature/validator.h>
 
@@ -66,6 +69,9 @@ constexpr auto AuthInfoRequestTimeout = TDuration::Seconds(5);
 constexpr std::string_view ProxySignatureUser = "yt-proxy";
 constexpr std::string_view ProxySignatureRealm = "yt-proxy-signature";
 constexpr std::string_view ProxySignatureBypassRealm = "yt-proxy-signature-bypass";
+
+//! Authentication realm reported for requests sent directly by a runner with its own YT credentials.
+constexpr std::string_view ClientCredentialsRealm = "yt-client-credentials";
 
 constexpr auto& TvmInfoUrlPrefix = NInternalUrls::TvmInfoUrlPrefix;
 
@@ -131,7 +137,7 @@ private:
 
     const std::string StaticSecret_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     TInstant TicketInstant_ = TInstant::Zero();
     std::string Ticket_;
 
@@ -401,6 +407,75 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+class TClientCredentialsAuthenticator
+    : public NRpc::IAuthenticator
+{
+public:
+    explicit TClientCredentialsAuthenticator(IConnectionPtr connection)
+        : Connection_(std::move(connection))
+    {
+        YT_VERIFY(Connection_);
+    }
+
+    bool CanAuthenticate(const NRpc::TAuthenticationContext& context) override
+    {
+        return IsDirectRequest(*context.Header);
+    }
+
+    TFuture<NRpc::TAuthenticationResult> AsyncAuthenticate(
+        const NRpc::TAuthenticationContext& context) override
+    {
+        // The cluster validates the credentials and reports their owner; the proxy also rejects
+        // the request when the user named in the header does not match that owner.
+        TClientOptions options;
+        const auto& ext = context.Header->GetExtension(NRpc::NProto::TCredentialsExt::credentials_ext);
+        if (!ext.token().empty()) {
+            options.Token = ext.token();
+        } else if (!ext.service_ticket().empty()) {
+            options.ServiceTicketAuth = New<TServiceTicketFixedAuth>(ext.service_ticket());
+        } else if (!ext.user_ticket().empty()) {
+            options.UserTicket = ext.user_ticket();
+        } else {
+            return MakeFuture<NRpc::TAuthenticationResult>(TError(
+                NRpc::EErrorCode::AuthenticationError,
+                "Direct request carries no token or ticket"));
+        }
+        if (context.Header->has_user()) {
+            options.User = context.Header->user();
+        }
+
+        TGetCurrentUserOptions getCurrentUserOptions;
+        getCurrentUserOptions.Timeout = AuthInfoRequestTimeout;
+        auto client = Connection_->CreateClient(options);
+        return client->GetCurrentUser(getCurrentUserOptions)
+            .Apply(BIND([] (const TErrorOr<TGetCurrentUserResult>& resultOrError) {
+                if (!resultOrError.IsOK()) {
+                    YT_TLOG_DEBUG("Client credentials authentication failed")
+                        .With(resultOrError);
+                    THROW_ERROR_EXCEPTION(
+                        NRpc::EErrorCode::AuthenticationError,
+                        "Client credentials authentication failed")
+                        .With(resultOrError);
+                }
+                NRpc::TAuthenticationResult result;
+                result.User = resultOrError.Value().User;
+                result.Realm = std::string(ClientCredentialsRealm);
+                return result;
+            }));
+    }
+
+private:
+    //! Connection to the pipeline's YT cluster, which tells whom the credentials belong to.
+    const IConnectionPtr Connection_;
+};
+
+NRpc::IAuthenticatorPtr CreateClientCredentialsAuthenticator(IConnectionPtr connection)
+{
+    return New<TClientCredentialsAuthenticator>(std::move(connection));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TPipelineAuthenticator
     : public IPipelineAuthenticator
 {
@@ -476,14 +551,21 @@ public:
 
     NRpc::IAuthenticatorPtr CreateYTControllerRpcAuthenticator() override
     {
-        return ProxySignatureAuthenticator_.Acquire();
+        return YTControllerAuthenticator_.Acquire();
     }
 
     void Initialize()
     {
         YT_VERIFY(NodeInfo_);
 
-        auto client = CreateClient(BuildConnectionConfig(), ClientOptions_);
+        auto connection = NApi::NRpcProxy::CreateConnection(BuildConnectionConfig());
+        Connection_ = GetJobProxyClient(
+            connection->CreateClient(ClientOptions_),
+            *PipelinePath_.GetCluster(),
+            GetEnv("YT_FLOW_JOB_PROXY_CLUSTER"),
+            GetEnv("YT_JOB_PROXY_SOCKET_PATH"))
+            ->GetConnection();
+        auto client = Connection_->CreateClient(ClientOptions_);
 
         auto pipelineObjectId = FetchPipelineObjectId(client);
         const auto& controllerAddress = NodeInfo_->RpcAddress;
@@ -506,7 +588,7 @@ public:
         NSignature::ISignatureValidatorPtr validator =
             New<NSignature::TSignatureValidator>(std::move(keyReader));
 
-        auto authenticator = New<TProxySignatureAuthenticator>(
+        auto proxySignatureAuthenticator = New<TProxySignatureAuthenticator>(
             std::move(validator),
             pipelineObjectId,
             controllerAddress,
@@ -517,18 +599,44 @@ public:
             .With("ControllerAddress", controllerAddress)
             .With("Required", Config_->RequireProxySignature);
 
-        ProxySignatureAuthenticator_.Store(std::move(authenticator));
+        // The proxy signature authenticator claims every request, so it must go last.
+        YTControllerAuthenticator_.Store(NRpc::CreateCompositeAuthenticator({
+            CreateClientCredentialsAuthenticator(Connection_),
+            std::move(proxySignatureAuthenticator),
+        }));
     }
 
-    std::string GetAuthDescription() override
+    TPipelineAuthenticationDescriptionPtr GetPipelineAuthenticationDescription() override
     {
+        auto description = New<TPipelineAuthenticationDescription>();
         if (ClientOptions_.Token.has_value()) {
-            return Format("OAUTH token of %v", GetUserLogin());
+            description->Method = EPipelineAuthenticationMethod::OAuth;
+            description->SubjectType = EPipelineAuthenticationSubjectType::User;
+            if (auto userLogin = GetUserLogin()) {
+                description->Subject = userLogin;
+                description->DisplayName = std::move(*userLogin);
+            } else {
+                description->DisplayName = "unknown OAuth user";
+            }
+            return description;
         }
-        if (TvmService_) {
-            return Format("TVM service %v", GetTvmName());
+
+        YT_VERIFY(TvmService_);
+        description->Method = EPipelineAuthenticationMethod::Tvm;
+        description->SubjectType = EPipelineAuthenticationSubjectType::Tvm;
+        auto tvmId = TvmService_->TryGetSelfTvmId();
+        if (!tvmId) {
+            description->DisplayName = "unknown TVM service";
+            return description;
         }
-        return "unknown authentication method";
+
+        description->Subject = Format("%v", *tvmId);
+        if (auto tvmName = GetTvmName(*tvmId)) {
+            description->DisplayName = Format("%v (%v)", *tvmName, *description->Subject);
+        } else {
+            description->DisplayName = *description->Subject;
+        }
+        return description;
     }
 
     NYTree::IMapNodePtr RequestHttpJson(std::string url, NHttp::THeadersPtr headers = nullptr)
@@ -549,29 +657,27 @@ public:
         return result;
     }
 
-    std::string GetTvmName()
+    std::optional<std::string> GetTvmName(TTvmId tvmId)
     {
         YT_VERIFY(TvmService_);
-        auto tvmId = TvmService_->TryGetSelfTvmId().value_or(TTvmId(0));
         auto url = FormatTvmInfoUrl(tvmId);
         if (url.empty()) {
-            return Format("%v", tvmId);
+            return std::nullopt;
         }
         try {
-            auto name = RequestHttpJson(url)->GetChildValueOrThrow<std::string>("name");
-            return Format("%v (%v)", name, tvmId);
+            return RequestHttpJson(url)->GetChildValueOrThrow<std::string>("name");
         } catch (const std::exception& ex) {
             YT_TLOG_WARNING("Failed to get TVM name by token")
                 .With(ex);
-            return Format("%v", tvmId);
+            return std::nullopt;
         }
     }
 
-    std::string GetUserLogin()
+    std::optional<std::string> GetUserLogin()
     {
         YT_VERIFY(ClientOptions_.Token.has_value());
         try {
-            auto client = CreateClient(BuildConnectionConfig(), ClientOptions_);
+            auto client = Connection_->CreateClient(ClientOptions_);
 
             TGetCurrentUserOptions options;
             options.Timeout = AuthInfoRequestTimeout;
@@ -579,7 +685,7 @@ public:
         } catch (const std::exception& ex) {
             YT_TLOG_WARNING("Failed to get user login by token")
                 .With(ex);
-            return "unknown-user";
+            return std::nullopt;
         }
     }
 
@@ -646,10 +752,12 @@ private:
     IDynamicTvmServicePtr TvmService_;
     THmacTicketAuthPtr HmacTicketAuth_;
     TClientOptions ClientOptions_;
+    //! The node's own connection to the pipeline cluster; set once in #Initialize.
+    IConnectionPtr Connection_;
 
     NConcurrency::TSyncMap<std::string, NYTree::IMapNodePtr> Cache_;
 
-    TAtomicIntrusivePtr<NRpc::IAuthenticator> ProxySignatureAuthenticator_;
+    TAtomicIntrusivePtr<NRpc::IAuthenticator> YTControllerAuthenticator_;
 };
 
 IPipelineAuthenticatorPtr CreatePipelineAuthenticator(
@@ -682,11 +790,23 @@ void TAuthenticatorConfig::Register(TRegistrar registrar)
         .Default(false);
 }
 
+void TPipelineAuthenticationDescription::Register(TRegistrar registrar)
+{
+    registrar.Parameter("method", &TThis::Method)
+        .Default(EPipelineAuthenticationMethod::OAuth);
+    registrar.Parameter("subject_type", &TThis::SubjectType)
+        .Default(EPipelineAuthenticationSubjectType::User);
+    registrar.Parameter("subject", &TThis::Subject)
+        .Default();
+    registrar.Parameter("display_name", &TThis::DisplayName)
+        .Default();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TDefaultTvmAliases final
 {
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock);
     bool AllRegistered = false;
     THashMap<std::string, NAuth::TTvmId> Aliases = {
         {std::string{TPipelineAuthenticator::YTTvmAlias}, TPipelineAuthenticator::YTTvmId},

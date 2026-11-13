@@ -1,6 +1,8 @@
 from .proxy_format_config import _TestProxyFormatConfigBase
 
-from yt_env_setup import YTEnvSetup, Restarter, MASTERS_SERVICE, NODES_SERVICE, is_asan_build
+from yt_env_setup import (
+    YTEnvSetup, Restarter, HTTP_PROXIES_SERVICE, MASTERS_SERVICE, NODES_SERVICE, is_asan_build,
+)
 
 from yt_helpers import profiler_factory, read_structured_log, write_log_barrier
 
@@ -11,11 +13,11 @@ from yt.environment.tls_helpers import (
 )
 
 from yt_commands import (
-    authors, wait, wait_no_assert, create, ls, get, set, remove, map,
+    authors, wait, wait_no_assert, create, ls, get, set, remove, exists, map,
     create_user, create_proxy_role, issue_token, make_ace,
     create_access_control_object_namespace, create_access_control_object,
     with_breakpoint, wait_breakpoint, print_debug, raises_yt_error,
-    read_table, write_table, add_member, Operation, discover_proxies,
+    read_table, write_table, write_file, add_member, Operation, discover_proxies,
     start_transaction,
 )
 
@@ -58,18 +60,14 @@ def try_parse_yt_error_trailers(rsp):
 
 class HttpProxyTestBase(YTEnvSetup):
     NUM_MASTERS = 1
-    NUM_NODES = 5
-    NUM_SCHEDULERS = 1
+    NUM_NODES = 3
     ENABLE_HTTP_PROXY = True
-    ENABLE_RPC_PROXY = True
-    NUM_SECONDARY_MASTER_CELLS = 2
     NUM_HTTP_PROXIES = 1
-    NUM_RPC_PROXIES = 2
 
     DELTA_HTTP_PROXY_CONFIG = {
         "coordinator": {
             "heartbeat_interval": 100,
-            "death_age": 500,
+            "death_age": 2000,
             "cypress_timeout": 50,
         },
         "api": {
@@ -82,11 +80,6 @@ class HttpProxyTestBase(YTEnvSetup):
             },
         },
         "cancel_fiber_on_connection_close": True,
-    }
-
-    MASTER_CELL_DESCRIPTORS = {
-        "11": {"roles": ["chunk_host"]},
-        "12": {"roles": ["chunk_host"]},
     }
 
     USER = "root"
@@ -157,6 +150,12 @@ class TestHttpProxy(HttpProxyTestBase):
     def test_ping(self):
         rsp = requests.get(self._get_proxy_address() + "/ping")
         rsp.raise_for_status()
+
+    @authors("shamteev")
+    def test_pull_rows_requires_root(self):
+        create_user("careless_ai_user")
+        with raises_yt_error("PullRows is only allowed", code=yt_error_codes.AuthorizationErrorCode):
+            self._execute_command("POST", "pull_rows", params={}, user="careless_ai_user")
 
     @authors("prime")
     def test_version(self):
@@ -417,50 +416,6 @@ class TestHttpProxy(HttpProxyTestBase):
     @authors("prime")
     def test_supported_api_versions(self):
         assert ["v3", "v4"] == requests.get(self._get_proxy_address() + "/api").json()
-
-    @authors("prime")
-    def test_discover_versions_v2(self):
-        # Give all components some time to be considered online.
-        time.sleep(5)
-
-        rsp = requests.get(self._get_proxy_address() + "/internal/discover_versions/v2")
-        rsp.raise_for_status()
-
-        versions = rsp.json()
-        assert "details" in versions
-        assert "summary" in versions
-
-        print_debug(f"Collected component versions: {versions}")
-
-        counts = collections.Counter()
-
-        for instance in versions["details"]:
-            assert "address" in instance
-            assert "start_time" in instance
-            assert "type" in instance
-            assert "version" in instance
-
-            if "state" in instance:
-                assert instance["state"] == "online"
-
-            counts[instance["type"]] += 1
-
-        summary = versions["summary"]
-        # All components run on the same version + there is a total summary.
-        assert len(summary) == 2
-        for version_summary in summary.values():
-            for type, component_summary in version_summary.items():
-                assert component_summary["total"] == counts[type]
-                assert component_summary["banned"] == 0
-                assert component_summary["offline"] == 0
-
-        assert counts["primary_master"] == 1
-        assert counts["secondary_master"] == 2
-        assert counts["cluster_node"] == 5
-        assert counts["scheduler"] == 1
-        assert counts["controller_agent"] == 1
-        assert counts["http_proxy"] == 1
-        assert counts["rpc_proxy"] == 2
 
     @authors("prime")
     def test_cache_control(self):
@@ -810,6 +765,102 @@ class TestHttpProxyMemoryDrop(HttpProxyTestBase):
         self._execute_command("GET", "get", {"path": "//@"})
         self._execute_command("GET", "read_table", {"path": "//tmp/test"})
 
+    def _wait_heavy_request_memory_reservation_config(self, proxy_name, enable):
+        def config_updated():
+            config = get(
+                f"//sys/http_proxies/{proxy_name}/orchid/dynamic_config_manager/effective_config")
+            reservation_config = config.get("api", {}).get("heavy_request_memory_reservation", {})
+            return reservation_config.get("enable") == enable
+
+        wait(config_updated)
+
+    def _start_streaming_read_file(self, path):
+        headers = {
+            "X-YT-Parameters": yson.dumps({"path": path}),
+            "X-YT-Header-Format": "<format=text>yson",
+            "X-YT-User-Name": "root",
+            # Identity, otherwise compressed output might fit into the socket buffer,
+            # so the response would finish before the client reads it.
+            "Accept-Encoding": "identity",
+        }
+        rsp = requests.get(
+            f"{self._get_proxy_address()}/api/v4/read_file",
+            headers=headers,
+            stream=True,
+        )
+        try_parse_yt_error_headers(rsp)
+        return rsp
+
+    @authors("achains")
+    @pytest.mark.timeout(180)
+    def test_heavy_request_memory_reservation(self):
+        proxy_name = ls("//sys/http_proxies")[0]
+        reservation = 300 * 10**6
+
+        create("file", "//tmp/file")
+        write_file("//tmp/file", b"x" * (64 * 2**20))
+
+        set("//sys/http_proxies/@config", {
+            "api": {
+                "default_memory_limit_ratios": {
+                    "heavy_request_memory_limit_ratio": 0.5,
+                },
+                "heavy_request_memory_reservation": {
+                    "enable": True,
+                    "commands": {"read_file": {"reservation": reservation}},
+                },
+            },
+        })
+        self._wait_heavy_request_memory_reservation_config(proxy_name, True)
+
+        profiler = profiler_factory().at_http_proxy(
+            proxy_name,
+            fixed_tags={"category": "heavy_request"},
+        )
+        heavy_request_memory_usage = profiler.gauge("http_proxy/memory_usage/used")
+
+        # The body is not consumed, so the proxy blocks on the socket and keeps the reservation.
+        blocked_rsp = self._start_streaming_read_file("//tmp/file")
+        wait(lambda: heavy_request_memory_usage.get(default=0) >= reservation)
+
+        with raises_yt_error("Request is dropped due to high memory pressure") as err:
+            self._execute_command("GET", "read_file", {"path": "//tmp/file"})
+        assert err[0].is_rpc_unavailable()
+        assert err[0].find_matching_error(
+            predicate=lambda error: "heavy_request_memory_reservation" in error.attributes)
+
+        self._execute_command("GET", "get", {"path": "//@"})
+
+        blocked_rsp.close()
+        wait(lambda: heavy_request_memory_usage.get(default=0) < reservation)
+
+        self._execute_command("GET", "read_file", {"path": "//tmp/file"})
+
+    @authors("achains")
+    @pytest.mark.timeout(180)
+    def test_heavy_request_memory_reservation_disabled(self):
+        proxy_name = ls("//sys/http_proxies")[0]
+
+        create("file", "//tmp/file")
+        write_file("//tmp/file", b"x" * (128 * 2**20))
+
+        set("//sys/http_proxies/@config", {
+            "api": {
+                "default_memory_limit_ratios": {
+                    "heavy_request_memory_limit_ratio": 0.5,
+                },
+                "heavy_request_memory_reservation": {
+                    "enable": False,
+                    "commands": {"read_file": {"reservation": 300 * 10**6}},
+                },
+            },
+        })
+        self._wait_heavy_request_memory_reservation_config(proxy_name, False)
+
+        blocked_rsp = self._start_streaming_read_file("//tmp/file")
+        self._execute_command("GET", "read_file", {"path": "//tmp/file"})
+        blocked_rsp.close()
+
 
 class TestHttpProxyUserMemoryDrop(HttpProxyTestBase):
     ENABLE_MULTIDAEMON = True
@@ -1065,6 +1116,14 @@ class TestHttpProxyPoolMetrics(HttpProxyTestBase):
 
 class TestFullDiscoverVersions(HttpProxyTestBase):
     ENABLE_MULTIDAEMON = False  # Cell balancer crashes in multidaemon mode.
+    NUM_SECONDARY_MASTER_CELLS = 2
+    MASTER_CELL_DESCRIPTORS = {
+        "11": {"roles": ["chunk_host"]},
+        "12": {"roles": ["chunk_host"]},
+    }
+    NUM_SCHEDULERS = 1
+    ENABLE_RPC_PROXY = True
+    NUM_RPC_PROXIES = 2
     NUM_DISCOVERY_SERVERS = 1
     NUM_TIMESTAMP_PROVIDERS = 1
     NUM_MASTER_CACHES = 1
@@ -1112,13 +1171,14 @@ class TestFullDiscoverVersions(HttpProxyTestBase):
 
         assert counts["primary_master"] == 1
         assert counts["secondary_master"] == 2
-        assert counts["cluster_node"] == 5
+        assert counts["cluster_node"] == 3
         assert counts["scheduler"] == 1
         assert counts["controller_agent"] == 1
         assert counts["http_proxy"] == 1
         assert counts["rpc_proxy"] == 2
         assert counts["discovery"] == 1
         assert counts["timestamp_provider"] == 1
+        assert counts["timestamp_proxy"] == 1
         assert counts["master_cache"] == 1
         assert counts["bundle_controller"] == 1
         assert counts["queue_agent"] == 1
@@ -1130,6 +1190,15 @@ class TestCypressProxyDiscoverVersions(HttpProxyTestBase):
     ENABLE_MULTIDAEMON = True
 
     USE_SEQUOIA = True
+    NUM_SECONDARY_MASTER_CELLS = 2
+    MASTER_CELL_DESCRIPTORS = {
+        "11": {"roles": ["chunk_host"]},
+        "12": {"roles": ["chunk_host"]},
+    }
+    MASTER_CELL_DESCRIPTORS_REMOTE_0 = {}
+    ENABLE_RPC_PROXY = True
+    NUM_SCHEDULERS = 1
+    NUM_RPC_PROXIES = 2
     NUM_CLOCKS = 1
     NUM_REMOTE_CLUSTERS = 1
     USE_SEQUOIA_REMOTE_0 = False
@@ -1172,7 +1241,7 @@ class TestCypressProxyDiscoverVersions(HttpProxyTestBase):
 
         assert counts["primary_master"] == 1
         assert counts["secondary_master"] == 2
-        assert counts["cluster_node"] == 5
+        assert counts["cluster_node"] == 3
         assert counts["scheduler"] == 1
         assert counts["http_proxy"] == 1
         assert counts["rpc_proxy"] == 2
@@ -1187,6 +1256,7 @@ class TestSolomonProxy(HttpProxyTestBase):
     NUM_MASTERS = 1
     NUM_SCHEDULERS = 1
     NUM_HTTP_PROXIES = 1
+    ENABLE_RPC_PROXY = True
     NUM_RPC_PROXIES = 1
 
     # Just to make the test run faster.
@@ -1462,13 +1532,12 @@ class TestHttpProxyAccessChecker(HttpProxyAccessCheckerTestBase):
 class TestHttpProxyAccessCheckerWithAco(HttpProxyAccessCheckerTestBase):
     ENABLE_MULTIDAEMON = True
 
-    @classmethod
-    def setup_class(cls):
-        cls.DELTA_HTTP_PROXY_CONFIG["access_checker"].update({
+    DELTA_HTTP_PROXY_CONFIG = {
+        "access_checker": {
             "use_access_control_objects": True,
             "path_prefix": "//sys/access_control_object_namespaces/http_proxy_roles",
-        })
-        super().setup_class()
+        }
+    }
 
     def create_proxy_role_namespace(self):
         create_access_control_object_namespace("http_proxy_roles")
@@ -1508,12 +1577,11 @@ class TestHttpProxyRoleFromStaticConfig(HttpProxyTestBase):
 class TestHttpProxyAuth(HttpProxyTestBase):
     ENABLE_MULTIDAEMON = True
 
-    @classmethod
-    def setup_class(cls):
-        cls.DELTA_HTTP_PROXY_CONFIG["auth"] = {
+    DELTA_HTTP_PROXY_CONFIG = {
+        "auth": {
             "enable_authentication": True,
         }
-        super(TestHttpProxyAuth, cls).setup_class()
+    }
 
     def create_user_with_token(self, user):
         create_user(user)
@@ -1753,7 +1821,7 @@ class TestHttpProxyFraming(HttpProxyTestBase):
             self._execute_command("GET", "get_table_columnar_statistics", params)
 
     @authors("galtsev")
-    @pytest.mark.parametrize("encoding", ["identity", "gzip", "deflate", "brotly"])
+    @pytest.mark.parametrize("encoding", ["identity", "gzip", "deflate", "br"])
     def test_partition_tables(self, encoding):
         create("table", self.SUSPENDING_TABLE)
         write_table(self.SUSPENDING_TABLE, [{"column_1": 1, "column_2": "foo"}])
@@ -1776,11 +1844,7 @@ class TestHttpProxyFraming(HttpProxyTestBase):
 
 
 class TestHttpProxyJobShellAudit(HttpProxyTestBase):
-    NUM_MASTERS = 1
-    NUM_NODES = 3
     NUM_SCHEDULERS = 1
-    ENABLE_HTTP_PROXY = True
-    NUM_HTTP_PROXIES = 1
 
     DELTA_NODE_CONFIG = {
         "exec_node": {
@@ -1836,7 +1900,7 @@ class TestHttpProxyJobShellAudit(HttpProxyTestBase):
             in_="//tmp/t_in",
             command=with_breakpoint("cat > /dev/null; BREAKPOINT"))
 
-        jobs = wait_breakpoint()
+        jobs = wait_breakpoint(op)
 
         headers = {
             "X-YT-Parameters": yson.dumps({
@@ -1880,6 +1944,8 @@ class TestHttpProxyJobShellAudit(HttpProxyTestBase):
 
 class TestHttpProxyFormatConfig(HttpProxyTestBase, _TestProxyFormatConfigBase):
     NUM_TEST_PARTITIONS = 6
+    NUM_SCHEDULERS = 1
+    NUM_NODES = 2
     ENABLE_MULTIDAEMON = True
 
     def setup_method(self, method):
@@ -2035,19 +2101,9 @@ class TestHttpProxyFormatConfig(HttpProxyTestBase, _TestProxyFormatConfigBase):
 
 
 class TestHttpProxyBuildSnapshotBase(HttpProxyTestBase):
-    NUM_SCHEDULERS = 0
-
     DELTA_MASTER_CONFIG = {
         "hydra_manager": {
             "build_snapshot_delay": 10000,
-        },
-    }
-
-    DELTA_HTTP_PROXY_CONFIG = {
-        "coordinator": {
-            "heartbeat_interval": 100,
-            "cypress_timeout": 50,
-            "death_age": 500,
         },
     }
 
@@ -2177,8 +2233,8 @@ class TestHttpProxyBuildSnapshotReadonly(TestHttpProxyBuildSnapshotBase):
 
 @pytest.mark.skipif(is_asan_build(), reason="Memory allocation is not reported under ASAN")
 class TestHttpProxyHeapUsageStatisticsBase(HttpProxyTestBase):
-    NUM_HTTP_PROXIES = 1
     ENABLE_MULTIDAEMON = True
+    ENABLE_TCMALLOC_PROFILING = True
 
     def enable_allocation_tags(self, proxy):
         set(f"//sys/{proxy}/@config", {
@@ -2287,20 +2343,8 @@ class TestHttpProxyNullApiTestingOptions(TestHttpProxyHeapUsageStatisticsBase):
 
 
 class TestHttpProxySignaturesBase(HttpProxyTestBase):
-    DELTA_HTTP_PROXY_CONFIG = {
-        "signature_components": {
-            "validation": {
-                "cypress_key_reader": dict(),
-            },
-            "generation": {
-                "cypress_key_writer": dict(),
-                "key_rotator": dict(),
-                "generator": dict(),
-            },
-        },
-    }
+    DELTA_HTTP_PROXY_CONFIG = {}
 
-    # NB(pavook): to avoid owner collision.
     NUM_HTTP_PROXIES = 1
 
     OWNERS_PATH = "//sys/public_keys/by_owner"
@@ -2329,7 +2373,8 @@ class TestHttpProxySignatures(TestHttpProxySignaturesBase):
         # commit and actual key emplace, this won't be enough: the key still won't be available.
         # But this probability should be neglectable, as some network packeting should happen before the signatures
         # even start generating.
-        wait(lambda: len(ls(cls.OWNERS_PATH)) > 0)
+        owner = ls("//sys/http_proxies")[0]
+        wait(lambda: exists(f"{cls.OWNERS_PATH}/{owner}"))
 
     @authors("ermolovd")
     def test_partition_tables_with_modified_cookie(self):
@@ -2418,18 +2463,21 @@ class TestHttpProxySignaturesKeyRotation(TestHttpProxySignaturesBase):
     @authors("pavook")
     @pytest.mark.timeout(60)
     def test_public_key_rotates(self):
-        wait(lambda: ls(self.OWNERS_PATH))
-        owner = ls(self.OWNERS_PATH)[0]
-        wait(lambda: len(ls(f"{self.OWNERS_PATH}/{owner}")) > 1)
+        owner = ls("//sys/http_proxies")[0]
+        owner_path = f"{self.OWNERS_PATH}/{owner}"
+        wait(lambda: exists(owner_path) and len(ls(owner_path)) > 1)
 
     @authors("pavook")
     def test_dynamic_config(self):
-        wait(lambda: ls(self.OWNERS_PATH))
+        owner = ls("//sys/http_proxies")[0]
+        owner_path = f"{self.OWNERS_PATH}/{owner}"
+        wait(lambda: exists(owner_path))
+
         new_path = "//tmp/dynamic_test_public_keys"
         create("map_node", new_path)
         set(
             "//sys/http_proxies/@config",
-            deep_update(self.DELTA_HTTP_PROXY_CONFIG, {
+            {
                 "signature_components": {
                     "generation": {
                         "cypress_key_writer": {
@@ -2442,8 +2490,118 @@ class TestHttpProxySignaturesKeyRotation(TestHttpProxySignaturesBase):
                         },
                     },
                 },
-            }))
-        wait(lambda: ls(new_path))
+            })
+
+        wait(lambda: exists(f"{new_path}/{owner}"))
+
+        static_keys = frozenset(ls(owner_path))
+        with Restarter(self.Env, HTTP_PROXIES_SERVICE):
+            pass
+
+        # Wait for a fresh rotation after restart, using the persisted dynamic config.
+        dynamic_keys = frozenset(ls(f"{new_path}/{owner}"))
+        wait(lambda: frozenset(ls(f"{new_path}/{owner}")) != dynamic_keys)
+        assert frozenset(ls(owner_path)) == static_keys
+
+        set("//sys/http_proxies/@config", {})
+        wait(lambda: frozenset(ls(owner_path)) != static_keys)
+
+
+class TestHttpProxyHeavyCommandThreadPool(HttpProxyTestBase):
+    NUM_HTTP_PROXIES = 1
+
+    HEAVY_COMMAND_THREAD_POOL_SIZE = 2
+    HEAVY_COMMAND_THREAD_NAME = "HeavyCommand"
+    ENABLE_RESOURCE_TRACKING = True
+
+    DELTA_HTTP_PROXY_CONFIG = deep_update(HttpProxyTestBase.DELTA_HTTP_PROXY_CONFIG, {
+        "heavy_command_thread_pool_size": HEAVY_COMMAND_THREAD_POOL_SIZE,
+    })
+
+    @classmethod
+    def setup_class(cls):
+        super(TestHttpProxyHeavyCommandThreadPool, cls).setup_class()
+        # Distributed write needs signatures, so wait until the proxy publishes its keys.
+        owner = ls("//sys/http_proxies")[0]
+        wait(lambda: exists(f"{TestHttpProxySignaturesBase.OWNERS_PATH}/{owner}"))
+
+    def teardown_method(self, method):
+        set("//sys/http_proxies/@config", {})
+        super(TestHttpProxyHeavyCommandThreadPool, self).teardown_method(method)
+
+    def _heavy_pool_profiler(self):
+        proxy = ls("//sys/http_proxies")[0]
+        return profiler_factory().at_http_proxy(
+            proxy,
+            fixed_tags={"thread": self.HEAVY_COMMAND_THREAD_NAME})
+
+    @authors("achains")
+    def test_heavy_commands_run_in_dedicated_pool(self):
+        table_path = "//tmp/heavy_command_pool_table"
+        create("table", table_path, attributes={"schema": [
+            {"name": "key", "type": "int64"},
+            {"name": "values", "type_v3": {"type_name": "list", "item": "uint32"}},
+        ]})
+
+        dequeued = self._heavy_pool_profiler().counter("action_queue/dequeued")
+
+        # Light commands stay on the connection thread pool.
+        for _ in range(5):
+            self._execute_command("GET", "get", {"path": table_path + "/@row_count"})
+            self._execute_command("GET", "exists", {"path": table_path})
+        assert dequeued.get_delta() == 0
+
+        # Distributed write: session commands are light, fragments are heavy.
+        rsp = self._execute_command(
+            "POST",
+            "start_distributed_write_session",
+            {"path": table_path, "cookie_count": 2})
+        session_with_cookies = yson.loads(rsp.content)
+
+        rows = [
+            {"key": i, "values": [yson.YsonUint64(i), yson.YsonUint64(i + 1)]}
+            for i in range(100)
+        ]
+        results = []
+        for cookie in session_with_cookies["cookies"]:
+            rsp = self._execute_command(
+                "PUT",
+                "write_table_fragment",
+                {"cookie": cookie},
+                data=yson.dumps(rows, yson_type="list_fragment"))
+            results.append(yson.loads(rsp.content))
+
+        self._execute_command(
+            "POST",
+            "finish_distributed_write_session",
+            {"session": session_with_cookies["session"], "results": results})
+
+        assert read_table(table_path) == rows * 2
+        wait(lambda: dequeued.get_delta() > 0)
+
+        # A plain heavy command goes to the same pool.
+        dequeued = self._heavy_pool_profiler().counter("action_queue/dequeued")
+        self._execute_command("GET", "read_table", {"path": table_path})
+        wait(lambda: dequeued.get_delta() > 0)
+
+    @authors("achains")
+    def test_heavy_command_thread_pool_dynamic_config(self):
+        # Thread pools spawn their threads lazily, so run a heavy command first.
+        table_path = "//tmp/heavy_command_pool_warmup_table"
+        create("table", table_path)
+        self._execute_command("GET", "read_table", {"path": table_path})
+
+        thread_count = self._heavy_pool_profiler().gauge("resource_tracker/thread_count")
+        wait(lambda: thread_count.get() == self.HEAVY_COMMAND_THREAD_POOL_SIZE)
+
+        set("//sys/http_proxies/@config", {
+            "heavy_command_thread_pool_size": self.HEAVY_COMMAND_THREAD_POOL_SIZE + 1,
+        })
+        wait(lambda: thread_count.get() == self.HEAVY_COMMAND_THREAD_POOL_SIZE + 1)
+
+        # Dropping the override returns the pool to the static size.
+        set("//sys/http_proxies/@config", {})
+        wait(lambda: thread_count.get() == self.HEAVY_COMMAND_THREAD_POOL_SIZE)
 
 
 class TestHttpsProxy(HttpProxyTestBase):

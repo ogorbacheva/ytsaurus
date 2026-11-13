@@ -38,7 +38,7 @@
 
 #include <library/cpp/yt/memory/atomic_intrusive_ptr.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 namespace NYT::NScheduler::NStrategy {
 
@@ -2022,7 +2022,9 @@ private:
                 auto error = TError("Error parsing configuration of tree %Qv", treeId)
                     .With(ex);
                 errors->push_back(error);
-                YT_LOG_WARNING(error);
+                YT_TLOG_WARNING("Error parsing tree configuration")
+                    .With("TreeId", treeId)
+                    .With(ex);
                 continue;
             }
 
@@ -2446,8 +2448,8 @@ private:
         YT_VERIFY(!Initialized_);
         YT_VERIFY(persistentStrategyState);
 
-        YT_LOG_INFO("Initializing persistent strategy state %v",
-            ConvertToYsonString(persistentStrategyState, EYsonFormat::Text));
+        YT_TLOG_INFO("Initializing persistent strategy state")
+            .With("PersistentStrategyState", ConvertToYsonString(persistentStrategyState, EYsonFormat::Text));
 
         for (const auto& [treeId, tree] : IdToTree_) {
             auto stateIt = persistentStrategyState->TreeStates.find(treeId);
@@ -2558,23 +2560,21 @@ private:
             return Tree_ ? Tree_->GetSchedulingHeartbeatComplexity() : 0;
         }
 
-        void BuildSchedulingAttributesString(
-            const NPolicy::ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext,
-            TDelimitedStringBuilderWrapper& delimitedBuilder) const override
+        NLogging::TLoggingTagList BuildSchedulingAttributeTags(
+            const NPolicy::ISchedulingHeartbeatContextPtr& schedulingHeartbeatContext) const override
         {
-            if (Tree_) {
-                Tree_->BuildSchedulingAttributesStringForNode(schedulingHeartbeatContext, NodeId_, delimitedBuilder);
-            }
+            return Tree_
+                ? Tree_->BuildSchedulingAttributeTagsForNode(schedulingHeartbeatContext, NodeId_)
+                : NLogging::TLoggingTagList();
         }
 
-        void BuildSchedulingAttributesStringForOngoingAllocations(
+        NLogging::TLoggingTagList BuildSchedulingAttributeTagsForOngoingAllocations(
             const std::vector<TAllocationPtr>& allocations,
-            TInstant now,
-            TDelimitedStringBuilderWrapper& delimitedBuilder) const override
+            TInstant now) const override
         {
-            if (Tree_) {
-                Tree_->BuildSchedulingAttributesStringForOngoingAllocations(allocations, now, delimitedBuilder);
-            }
+            return Tree_
+                ? Tree_->BuildSchedulingAttributeTagsForOngoingAllocations(allocations, now)
+                : NLogging::TLoggingTagList();
         }
 
         TMatchingTreeCookie GetMatchingTreeCookie() const override

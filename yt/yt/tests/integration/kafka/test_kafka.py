@@ -4,6 +4,12 @@ from yt_helpers import profiler_factory
 
 from yt_queue_agent_test_base import TestQueueAgentBase
 
+from yt.environment.tls_helpers import (
+    create_certificate,
+    get_certificate_fingerprint,
+    get_server_certificate,
+)
+
 from yt_commands import (
     authors, get, ls, create, sync_mount_table, insert_rows, sync_create_cells,
     create_user, issue_token, raises_yt_error, pull_queue, pull_consumer, set,
@@ -22,6 +28,7 @@ import builtins
 import functools
 import logging
 import pytest
+import threading
 import time
 
 
@@ -407,6 +414,65 @@ class TestKafkaProxy(KafkaProxyBase):
 
         _check_rows(rows_count)
 
+    @authors("panesher")
+    def test_same_key_same_partition_and_order(self):
+        username = "u"
+        create_user(username)
+        token, _ = issue_token(username)
+
+        self._create_cells()
+
+        queue_path = "primary://tmp/queue"
+
+        TestKafkaProxy._create_kafka_queue(queue_path, tablet_count=5)
+
+        address = self.Env.get_kafka_proxy_address()
+        p = Producer(get_producer_config(address, token))
+        serializer = StringSerializer("utf_8")
+
+        keys = [f"key_{i}" for i in range(10)]
+        repeats = 5
+
+        for seq in range(repeats):
+            for key in keys:
+                p.poll(0.0)
+                p.produce(topic=queue_path,
+                          key=serializer(key),
+                          value=serializer(f"{seq}"),
+                          on_delivery=_fail_on_error)
+            p.flush()
+        p.flush()
+
+        def _check():
+            rows = select_rows("key, value, [$tablet_index], [$row_index] from [//tmp/queue]")
+            if len(rows) != len(keys) * repeats:
+                return False
+
+            # Same key must always land on the same tablet (partition).
+            key_to_tablet = {}
+            for row in rows:
+                tablet_index = row["$tablet_index"]
+                if row["key"] in key_to_tablet:
+                    assert key_to_tablet[row["key"]] == tablet_index, \
+                        f"Key '{row['key']}' landed on tablets {key_to_tablet[row['key']]} and {tablet_index}"
+                else:
+                    key_to_tablet[row["key"]] = tablet_index
+
+            # Within a partition messages are ordered by row index, so per key
+            # the produce order must be preserved.
+            rows.sort(key=lambda row: (row["$tablet_index"], row["$row_index"]))
+            key_to_values = {}
+            for row in rows:
+                key_to_values.setdefault(row["key"], []).append(row["value"])
+
+            for key, values in key_to_values.items():
+                assert values == [f"{seq}" for seq in range(repeats)], \
+                    f"Key '{key}' has out-of-order values {values}"
+
+            return True
+
+        wait(_check)
+
     @authors("apachee")
     def test_fetch(self):
         username = "u"
@@ -784,6 +850,7 @@ class TestKafkaProxy(KafkaProxyBase):
 
     @authors("panesher")
     @with_additional_threads
+    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("partitions_count", [1, 5])
     @pytest.mark.parametrize("is_kafka_queue", [True, False])
     def test_producer_consumer_parallel(self, partitions_count, is_kafka_queue):
@@ -805,13 +872,15 @@ class TestKafkaProxy(KafkaProxyBase):
 
         address = self.Env.get_kafka_proxy_address()
         rows_count = 100
+        batch_size = 10
 
         received_messages = []
         errors = []
+        assigned = threading.Event()
 
         def consumer_func():
             c = Consumer(get_consumer_config(address, token, consumer_path))
-            c.subscribe([queue_path])
+            c.subscribe([queue_path], on_assign=lambda *_: assigned.set())
 
             # Wait for messages with a timeout
             i = 0
@@ -841,6 +910,9 @@ class TestKafkaProxy(KafkaProxyBase):
 
         consumer_thread = self.spawn_additional_thread(target=consumer_func, name="consumer_thread")
 
+        # Start writing only once the consumer is ready to read, so that reads and writes overlap.
+        wait(assigned.is_set)
+
         written_messages = []
         if is_kafka_queue:
             p = Producer(get_producer_config(address, token))
@@ -855,17 +927,18 @@ class TestKafkaProxy(KafkaProxyBase):
                     value=serializer(f"value_{i}"),
                     on_delivery=_fail_on_error)
                 p.poll(0)
-                p.flush()
-                if i % 30 == 0:
+                if (i + 1) % batch_size == 0:
+                    p.flush()
                     time.sleep(0.1)
         else:
-            for i in range(rows_count):
-                written_messages.append((None, {"surname": f"foo-{i}", "number": i}))
-                insert_rows(queue_path, [
-                    {"surname": f"foo-{i}", "number": i},
-                ])
-                if i % 30 == 0:
-                    time.sleep(0.1)
+            for start in range(0, rows_count, batch_size):
+                rows = [
+                    {"surname": f"foo-{i}", "number": i}
+                    for i in range(start, start + batch_size)
+                ]
+                written_messages += [(None, row) for row in rows]
+                insert_rows(queue_path, rows)
+                time.sleep(0.1)
 
         consumer_thread.join()
 
@@ -882,3 +955,135 @@ class TestKafkaProxy(KafkaProxyBase):
         assert len(received_messages) == len(written_messages) == rows_count
         for i, (kv, expected_kv) in enumerate(zip(received_messages, written_messages)):
             assert kv == expected_kv, f"Key value is missing: index '{i}' value: '{expected_kv}'"
+
+
+##################################################################
+
+
+class TestKafkaProxyTls(KafkaProxyBase):
+    ENABLE_TLS = True
+
+    DELTA_KAFKA_PROXY_CONFIG = {
+        "server": {
+            "credentials": {
+                "update_period": 1000,
+            },
+        },
+    }
+
+    def _get_proxy_cert_path(self, index=0):
+        proxy_config = self.Env.configs["kafka_proxy"][index]
+        proxy_cert = proxy_config["server"]["credentials"]["cert_chain"]["file_name"]
+        proxy_cert_key = proxy_config["server"]["credentials"]["private_key"]["file_name"]
+        return proxy_cert, proxy_cert_key
+
+    def _get_tls_consumer_config(self, address, token, consumer_path, sasl_mechanism="PLAIN"):
+        consumer_config = get_consumer_config(address, token, consumer_path, sasl_mechanism)
+        consumer_config["security.protocol"] = "SASL_SSL"
+        consumer_config["ssl.ca.location"] = self.Env.yt_config.public_ca_cert
+        return consumer_config
+
+    def _get_tls_producer_config(self, address, token):
+        producer_config = get_producer_config(address, token)
+        producer_config["security.protocol"] = "SASL_SSL"
+        producer_config["ssl.ca.location"] = self.Env.yt_config.public_ca_cert
+        return producer_config
+
+    def _produce_and_consume(self):
+        username = "u"
+        create_user(username)
+        token, _ = issue_token(username)
+
+        self._create_cells()
+
+        queue_path = f"primary:{self.create_queue_path()}"
+        consumer_path = f"primary:{self.create_consumer_path()}"
+
+        TestKafkaProxyTls._create_kafka_queue(queue_path)
+        self._create_registered_consumer(consumer_path, queue_path)
+
+        set(f"{queue_path}/@inherit_acl", False)
+        set(f"{consumer_path}/@inherit_acl", False)
+        set(f"{queue_path}/@acl/end", make_ace("allow", "u", ["read", "write"]))
+        set(f"{consumer_path}/@acl/end", make_ace("allow", "u", ["read", "write"]))
+
+        address = self.Env.get_kafka_proxy_address()
+
+        p = Producer(self._get_tls_producer_config(address, token))
+        serializer = StringSerializer('utf_8')
+
+        sent_messages = [
+            (f"key_{i}", f"value_{i}") for i in range(3)
+        ]
+        for key, value in sent_messages:
+            p.poll(0.0)
+            p.produce(
+                topic=queue_path,
+                partition=0,
+                key=serializer(key),
+                value=serializer(value),
+                on_delivery=_fail_on_error)
+
+        p.flush()
+
+        c = Consumer(self._get_tls_consumer_config(address, token, consumer_path))
+        c.assign([TopicPartition(queue_path, 0)])
+
+        messages = []
+        none_message_count = 0
+        error_count = 0
+        while True:
+            msg = c.poll(1.0)
+            if msg is None:
+                none_message_count += 1
+                assert none_message_count <= 100, "Too much none messages"
+                continue
+
+            if msg.error():
+                error_count += 1
+                assert error_count <= 10, msg.error()
+                continue
+
+            messages.append(KafkaMessageHelper(msg).parse())
+            if len(messages) >= 3:
+                break
+
+            c.commit(msg)
+
+        c.close()
+        assert messages == sent_messages
+
+    @authors("panesher")
+    def test_tls_producer_consumer(self):
+        self._produce_and_consume()
+
+    @authors("panesher")
+    def test_certificate_update(self):
+        proxy_cert, proxy_cert_key = self._get_proxy_cert_path()
+
+        old_fingerprint = get_certificate_fingerprint(proxy_cert)
+        print_debug("Old certificate fingerprint: {}", old_fingerprint)
+
+        address = self.Env.get_kafka_proxy_address()
+
+        def current_fingerprint():
+            return get_certificate_fingerprint(cert_content=get_server_certificate(address))
+
+        assert current_fingerprint() == old_fingerprint
+
+        create_certificate(
+            ca_cert=self.Env.yt_config.public_ca_cert,
+            ca_cert_key=self.Env.yt_config.public_ca_cert_key,
+            cert=proxy_cert,
+            cert_key=proxy_cert_key,
+            names=[self.Env.yt_config.fqdn, self.Env.yt_config.cluster_name],
+        )
+
+        new_fingerprint = get_certificate_fingerprint(proxy_cert)
+        print_debug("New certificate fingerprint: {}", new_fingerprint)
+
+        assert new_fingerprint != old_fingerprint
+
+        wait(lambda: current_fingerprint() == new_fingerprint)
+
+        self._produce_and_consume()

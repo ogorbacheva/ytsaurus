@@ -302,12 +302,13 @@ private:
             return subresponses;
         } catch (const std::exception& ex) {
             FailedCallCountCounter_.Increment();
-            auto error = TError("Failed to get secrets from Vault")
+            static constexpr auto Message = "Failed to get secrets from Vault"_sb;
+            YT_TLOG_DEBUG(Message)
+                .With("CallId", callId)
+                .With(ex);
+            THROW_ERROR_EXCEPTION(Message)
                 .With(ex)
                 .With("call_id", callId);
-            YT_TLOG_DEBUG("Vault call failed")
-                .With(error);
-            THROW_ERROR error;
         }
     }
 
@@ -317,9 +318,8 @@ private:
 
         YT_TLOG_DEBUG("Retrieving delegation token from Vault")
             .With("SecretId", request.SecretId)
-            .With("Signature", request.Signature)
-            .With("UserTicket", // signatures are not secret; tokens are
-                       RemoveTicketSignature(request.UserTicket))
+            .With("Signature", request.Signature) // signatures are not secret; tokens are
+            .With("UserTicket", RemoveTicketSignature(request.UserTicket))
             .With("CallId", callId);
 
         CallCountCounter_.Increment();
@@ -359,12 +359,13 @@ private:
             };
         } catch (const std::exception& ex) {
             FailedCallCountCounter_.Increment();
-            auto error = TError("Failed to get delegation token from Vault")
+            static constexpr auto Message = "Failed to get delegation token from Vault"_sb;
+            YT_TLOG_DEBUG(Message)
+                .With("CallId", callId)
+                .With(ex);
+            THROW_ERROR_EXCEPTION(Message)
                 .With(ex)
                 .With("call_id", callId);
-            YT_TLOG_DEBUG("Vault call failed")
-                .With(error);
-            THROW_ERROR error;
         }
     }
 

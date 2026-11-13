@@ -1,25 +1,31 @@
 #include "chunk_manager.h"
 
-#include "private.h"
 #include "chunk.h"
 #include "chunk_autotomizer.h"
 #include "chunk_creation_time_histogram_builder.h"
 #include "chunk_list.h"
 #include "chunk_list_type_handler.h"
+#include "chunk_location.h"
 #include "chunk_merger.h"
 #include "chunk_owner_base.h"
-#include "chunk_reincarnator.h"
-#include "chunk_replicator.h"
-#include "chunk_replica_fetcher.h"
 #include "chunk_placement.h"
+#include "chunk_reincarnator.h"
+#include "chunk_replica_fetcher.h"
+#include "chunk_replicator.h"
+#include "chunk_placement.h"
+#include "chunk_prolongator.h"
 #include "chunk_type_handler.h"
 #include "chunk_sealer.h"
 #include "chunk_tree_balancer.h"
 #include "chunk_tree_traverser.h"
+#include "chunk_type_handler.h"
 #include "chunk_view.h"
 #include "chunk_view_type_handler.h"
 #include "config.h"
+#include "consistent_chunk_placement.h"
 #include "data_node_tracker.h"
+#include "domestic_medium.h"
+#include "domestic_medium_type_handler.h"
 #include "dynamic_store.h"
 #include "dynamic_store_type_handler.h"
 #include "helpers.h"
@@ -27,9 +33,7 @@
 #include "job_controller.h"
 #include "job_registry.h"
 #include "master_cell_chunk_statistics_collector.h"
-#include "domestic_medium.h"
-#include "domestic_medium_type_handler.h"
-#include "chunk_location.h"
+#include "private.h"
 #include "s3_medium.h"
 #include "s3_medium_type_handler.h"
 #include "sequoia_chunk_refresher.h"
@@ -37,13 +41,14 @@
 
 #include <yt/yt/server/master/cell_master/alert_manager.h>
 #include <yt/yt/server/master/cell_master/bootstrap.h>
+#include <yt/yt/server/master/cell_master/config.h>
+#include <yt/yt/server/master/cell_master/config_manager.h>
 #include <yt/yt/server/master/cell_master/hydra_facade.h>
 #include <yt/yt/server/master/cell_master/multicell_manager.h>
 #include <yt/yt/server/master/cell_master/serialize.h>
-#include <yt/yt/server/master/cell_master/config_manager.h>
-#include <yt/yt/server/master/cell_master/config.h>
 
 #include <yt/yt/server/master/table_server/table_manager.h>
+#include <yt/yt/server/master/table_server/table_node.h>
 
 #include <yt/yt/server/master/cell_master/proto/multicell_node_statistics.pb.h>
 
@@ -76,12 +81,13 @@
 
 #include <yt/yt/server/master/tablet_server/tablet.h>
 #include <yt/yt/server/master/tablet_server/tablet_manager.h>
+#include <yt/yt/server/master/tablet_server/tablet_owner_base.h>
 
 #include <yt/yt/server/master/transaction_server/transaction.h>
 #include <yt/yt/server/master/transaction_server/transaction_manager.h>
 
-#include <yt/yt/server/master/journal_server/journal_node.h>
 #include <yt/yt/server/master/journal_server/journal_manager.h>
+#include <yt/yt/server/master/journal_server/journal_node.h>
 
 #include <yt/yt/server/lib/chunk_server/helpers.h>
 #include <yt/yt/server/lib/chunk_server/job_tracker_service_proxy.h>
@@ -97,25 +103,28 @@
 #include <yt/yt/ytlib/node_tracker_client/channel.h>
 #include <yt/yt/ytlib/node_tracker_client/helpers.h>
 
+#include <yt/yt/ytlib/object_client/object_service_proxy.h>
+
 #include <yt/yt/ytlib/chunk_client/chunk_meta_extensions.h>
-#include <yt/yt/ytlib/chunk_client/session_id.h>
 #include <yt/yt/ytlib/chunk_client/helpers.h>
+#include <yt/yt/ytlib/chunk_client/session_id.h>
+
 #include <yt/yt/ytlib/chunk_client/proto/chunk_service.pb.h>
 
 #include <yt/yt/ytlib/journal_client/helpers.h>
 
 #include <yt/yt/ytlib/cypress_client/rpc_helpers.h>
 
-#include <yt/yt/ytlib/sequoia_client/connection.h>
 #include <yt/yt/ytlib/sequoia_client/client.h>
+#include <yt/yt/ytlib/sequoia_client/connection.h>
 #include <yt/yt/ytlib/sequoia_client/helpers.h>
-#include <yt/yt/ytlib/sequoia_client/transaction.h>
 #include <yt/yt/ytlib/sequoia_client/table_descriptor.h>
+#include <yt/yt/ytlib/sequoia_client/transaction.h>
 
+#include <yt/yt/ytlib/sequoia_client/records/chunk_refresh_queue.record.h>
 #include <yt/yt/ytlib/sequoia_client/records/chunk_replicas.record.h>
 #include <yt/yt/ytlib/sequoia_client/records/location_replicas.record.h>
 #include <yt/yt/ytlib/sequoia_client/records/unapproved_chunk_replicas.record.h>
-#include <yt/yt/ytlib/sequoia_client/records/chunk_refresh_queue.record.h>
 
 #include <yt/yt/ytlib/table_client/chunk_meta_extensions.h>
 #include <yt/yt/ytlib/table_client/hunks.h>
@@ -140,8 +149,9 @@
 #include <yt/yt/library/profiling/simple_sensor_impl.h>
 
 #include <yt/yt/core/concurrency/fair_share_action_queue.h>
-#include <yt/yt/core/concurrency/thread_affinity.h>
 #include <yt/yt/core/concurrency/parallel_runner.h>
+#include <yt/yt/core/concurrency/periodic_executor.h>
+#include <yt/yt/core/concurrency/thread_affinity.h>
 
 #include <yt/yt/core/compression/codec.h>
 
@@ -421,10 +431,12 @@ public:
         RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraAttachChunkTrees, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraDetachChunkTrees, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraUnstageChunkTree, Unretained(this)));
+        RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraUnstageChunkTrees, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraUnstageExpiredChunks, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraRedistributeConsistentReplicaPlacementTokens, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraTopUpSequoiaChunkPurgatory, Unretained(this)));
         RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraScheduleMultipleChunkSeals, Unretained(this)));
+        RegisterMethod(BIND_NO_PROPAGATE(&TChunkManager::HydraTrimChunkProlongationQueue, Unretained(this)));
 
         RegisterLoader(
             "ChunkManager.Keys",
@@ -721,11 +733,35 @@ public:
             this);
     }
 
+    std::unique_ptr<TMutation> CreateExecuteBatchMutation(
+        TCtxExecuteBatchPtr context,
+        TReqExecuteBatch* request) override
+    {
+        return CreateMutation(
+            Bootstrap_->GetHydraFacade()->GetHydraManager(),
+            context,
+            *request,
+            &TChunkManager::HydraExecuteBatch,
+            this);
+    }
+
     std::unique_ptr<TMutation> CreateCreateChunkMutation(TCtxCreateChunkPtr context) override
     {
         return CreateMutation(
             Bootstrap_->GetHydraFacade()->GetHydraManager(),
             std::move(context),
+            &TChunkManager::HydraCreateChunk,
+            this);
+    }
+
+    std::unique_ptr<TMutation> CreateCreateChunkMutation(
+        TCtxCreateChunkPtr context,
+        NChunkClient::NProto::TReqCreateChunk* request) override
+    {
+        return CreateMutation(
+            Bootstrap_->GetHydraFacade()->GetHydraManager(),
+            context,
+            *request,
             &TChunkManager::HydraCreateChunk,
             this);
     }
@@ -775,6 +811,15 @@ public:
             Bootstrap_->GetHydraFacade()->GetHydraManager(),
             std::move(context),
             &TChunkManager::HydraUnstageChunkTree,
+            this);
+    }
+
+    std::unique_ptr<TMutation> CreateUnstageChunkTreesMutation(TCtxUnstageChunkTreesPtr context) override
+    {
+        return CreateMutation(
+            Bootstrap_->GetHydraFacade()->GetHydraManager(),
+            std::move(context),
+            &TChunkManager::HydraUnstageChunkTrees,
             this);
     }
 
@@ -1099,7 +1144,15 @@ public:
             auto referencedDataSize = validationResult.ReferencedDataSizePerChunk[index];
 
             YT_VERIFY(IsObjectAlive(hunkChunk));
+
+            const auto updateResourceUsage = hunkChunk->IsNative() && hunkChunk->IsDiskSizeFinal();
+            if (updateResourceUsage) {
+                UpdateResourceUsage(hunkChunk, -1);
+            }
             AccumulateNewlyReferencedHunkStatistics(hunkChunk, referencedDataWeight, referencedDataSize);
+            if (updateResourceUsage) {
+                UpdateResourceUsage(hunkChunk, +1);
+            }
             objectManager->RefObject(hunkChunk);
         }
 
@@ -1188,7 +1241,7 @@ public:
         }
 
         for (auto [chunkTree, cardinality] : chunk->Parents()) {
-            const auto* chunkList = chunkTree->As<TChunkList>();
+            const auto* chunkList = chunkTree->AsChunkList();
             if (chunkList->GetKind() != EChunkListKind::JournalRoot) {
                 continue;
             }
@@ -1212,7 +1265,7 @@ public:
         ScheduleChunkRefresh(chunk);
 
         for (auto [chunkTree, cardinality] : chunk->Parents()) {
-            const auto* chunkList = chunkTree->As<TChunkList>();
+            const auto* chunkList = chunkTree->AsChunkList();
             if (chunkList->GetKind() != EChunkListKind::JournalRoot) {
                 continue;
             }
@@ -1305,34 +1358,25 @@ public:
             AttachToChunkList(chunkList, {chunk});
         }
 
-        YT_LOG_DEBUG(
-            "Chunk created "
-            "(ChunkId: %v, ChunkListId: %v, TransactionId: %v, Account: %v, Medium: %v, "
-            "RequisitionIndex: %v, ReplicationFactor: %v, ErasureCodec: %v, Movable: %v, Vital: %v%v%v)",
-            chunk->GetId(),
-            GetObjectId(chunkList),
-            transaction->GetId(),
-            account->GetName(),
-            medium->GetName(),
-            requisitionIndex,
-            replicationFactor,
-            erasureCodecId,
-            movable,
-            vital,
-            MakeFormatterWrapper([&] (auto* builder) {
-                if (isJournal) {
-                    builder->AppendFormat(", ReadQuorum: %v, WriteQuorum: %v, Overlayed: %v",
-                        readQuorum,
-                        writeQuorum,
-                        overlayed);
-                }
-            }),
-            MakeFormatterWrapper([&] (auto* builder) {
-                if (consistentReplicaPlacementHash != NullConsistentReplicaPlacementHash) {
-                    builder->AppendFormat(", ConsistentReplicaPlacementHash: %x",
-                        consistentReplicaPlacementHash);
-                }
-            }));
+        YT_TLOG_DEBUG("Chunk created")
+            .With("ChunkId", chunk->GetId())
+            .With("ChunkListId", GetObjectId(chunkList))
+            .With("TransactionId", transaction->GetId())
+            .With("Account", account->GetName())
+            .With("Medium", medium->GetName())
+            .With("RequisitionIndex", requisitionIndex)
+            .With("ReplicationFactor", replicationFactor)
+            .With("ErasureCodec", erasureCodecId)
+            .With("Movable", movable)
+            .With("Vital", vital)
+            .WithIf(isJournal, "ReadQuorum", readQuorum)
+            .WithIf(isJournal, "WriteQuorum", writeQuorum)
+            .WithIf(isJournal, "Overlayed", overlayed)
+            .WithFormatIf(
+                consistentReplicaPlacementHash != NullConsistentReplicaPlacementHash,
+                "ConsistentReplicaPlacementHash",
+                "%x",
+                consistentReplicaPlacementHash);
 
         return chunk;
     }
@@ -1371,7 +1415,7 @@ public:
                 .With("ChunkId", chunkId);
 
             auto schemaId = FromProto<TMasterTableSchemaId>(protoChunkInfo.schema_id());
-            auto requestId = FromProto<TGuid>(protoChunkInfo.request_id());
+            auto requestId = FromProto<NRpc::TRequestId>(protoChunkInfo.request_id());
             auto* chunk = FindChunk(chunkId);
             if (!IsObjectAlive(chunk)) {
                 // Chunk is dead, but we consider it a "success" here, so that we don't fail
@@ -1388,9 +1432,11 @@ public:
                 /*validateChunkMeta*/ false);
 
             if (!result.IsOK()) {
+                YT_TLOG_DEBUG("Chunk validation failed")
+                    .With("ChunkId", chunkId)
+                    .With(result);
                 auto error = TError("Chunk %v validation failed", chunkId)
                     .With(result);
-                YT_LOG_DEBUG(error);
                 batchConfirmErrors.emplace(requestId, error);
                 continue;
             }
@@ -1482,10 +1528,17 @@ public:
                     continue;
                 }
 
+                const auto updateResourceUsage = hunkChunk->IsNative() && hunkChunk->IsDiskSizeFinal();
+                if (updateResourceUsage) {
+                    UpdateResourceUsage(hunkChunk, -1);
+                }
                 AccumulateNewlyReferencedHunkStatistics(
                     hunkChunk,
                     -1 * protoRef.total_hunk_length(),
                     -1 * ComputeHunkDataSize(protoRef));
+                if (updateResourceUsage) {
+                    UpdateResourceUsage(hunkChunk, +1);
+                }
 
                 objectManager->UnrefObject(hunkChunk);
             }
@@ -1529,6 +1582,9 @@ public:
         }
 
         UpdateChunkWeightStatisticsHistogram(chunk, /*add*/ false);
+
+        auto replicaCount = std::ssize(chunk->GetStoredReplicaList(/*includeNonOnlineReplicas*/ true));
+        UpdateMasterStoredChunkReplicaCount(chunk, -replicaCount);
 
         // Unregister chunk replicas from all known locations including non-online nodes.
         // Schedule removal jobs.
@@ -1866,7 +1922,7 @@ public:
                 .With("RootId", chunklistId)
                 .With("Mode", settingsMode);
 
-            auto rebalanceStatistics = ChunkTreeBalancer_.Rebalance(chunkList);
+            auto rebalanceStatistics = ChunkTreeBalancer_.RebalanceStaticChunkListSubtree(chunkList);
             ChunkMerger_->TweakTraversalInfoAfterRebalance(chunkList, rebalanceStatistics);
 
             YT_TLOG_DEBUG("Chunk tree rebalancing completed")
@@ -2460,6 +2516,7 @@ public:
         UnregisterMedium(medium);
 
         MediumMap_.Release(medium->GetId());
+        ChunkPlacement_->OnMediumChanged();
     }
 
     void RenameMedium(TMedium* medium, const std::string& newName) override
@@ -2500,11 +2557,19 @@ public:
         TDomesticMedium* medium,
         TDomesticMediumConfigPtr newConfig) override
     {
-        auto oldMaxReplicationFactor = medium->Config()->MaxReplicationFactor;
+        auto oldConfig = medium->Config();
 
         medium->Config() = std::move(newConfig);
-        if (medium->Config()->MaxReplicationFactor != oldMaxReplicationFactor) {
+        auto maxReplicationFactorChanged = medium->Config()->MaxReplicationFactor != oldConfig->MaxReplicationFactor;
+        auto dataCentersChanged =
+            medium->Config()->StorageDataCenters != oldConfig->StorageDataCenters ||
+            medium->Config()->BannedStorageDataCenters != oldConfig->BannedStorageDataCenters;
+
+        if (maxReplicationFactorChanged || dataCentersChanged) {
             ScheduleGlobalChunkRefresh();
+        }
+        if (dataCentersChanged) {
+            ChunkPlacement_->OnMediumChanged();
         }
     }
 
@@ -2671,7 +2736,8 @@ public:
             replicaLagLimit,
             replicaDescriptors,
             GetDynamicConfig()->JournalRpcTimeout,
-            Bootstrap_->GetNodeChannelFactory());
+            Bootstrap_->GetNodeChannelFactory(),
+            TWorkloadDescriptor(EWorkloadCategory::SystemTabletRecovery));
     }
 
     TChunkRequisitionRegistry* GetChunkRequisitionRegistry() override
@@ -2800,6 +2866,24 @@ public:
         return VerboselyLoggedChunks_.contains(chunk->GetId());
     }
 
+    void ProlongChunk(
+        TChunkId chunkId,
+        TChunkProlongationCookie prolongationCookie,
+        TInstant prolongationInstant) override
+    {
+        ProlongedChunksDisplaced_ += ChunkProlongator_.ProlongChunk(
+            FindChunk(chunkId),
+            prolongationCookie,
+            prolongationInstant);
+    }
+
+    void ExpireProlongedChunk(
+        TChunkId chunkId,
+        TChunkProlongationCookie prolongationCookie) override
+    {
+        ChunkProlongator_.ExpireProlongedChunk(chunkId, prolongationCookie);
+    }
+
 private:
     template <class T>
     class TEntityMapTypeTraits
@@ -2826,13 +2910,17 @@ private:
 
     TChunkTreeBalancer ChunkTreeBalancer_;
 
-    int TotalReplicaCount_ = 0;
+    int MasterStoredBlobReplicaCount_ = 0;
+    int MasterStoredJournalReplicaCount_ = 0;
 
     // COMPAT(h0pless)
     bool NeedRecomputeChunkWeightStatisticsHistogram_ = false;
 
     // COMPAT(aleksandra-zh)
     bool RecomputeHistoricallyNonVital_ = false;
+
+    // COMPAT(aleksandra-zh)
+    bool ClearSequoiaLastSeenReplicasOnMaster_ = false;
 
     // COMPAT(akozhikhov)
     bool RecomputeHunkRelatedChunkStatistics_ = false;
@@ -2850,8 +2938,6 @@ private:
 
     i64 ChunksCreated_ = 0;
     i64 ChunksDestroyed_ = 0;
-    i64 ChunkReplicasAdded_ = 0;
-    i64 ChunkReplicasRemoved_ = 0;
     i64 ChunkViewsCreated_ = 0;
     i64 ChunkViewsDestroyed_ = 0;
     i64 ChunkListsCreated_ = 0;
@@ -2870,6 +2956,8 @@ private:
     i64 EndorsementCount_ = 0;
 
     i64 DestroyedReplicaCount_ = 0;
+
+    i64 ProlongedChunksDisplaced_ = 0;
 
     TGaugeHistogram ChunkRowCountHistogram_;
     TGaugeHistogram ChunkCompressedDataSizeHistogram_;
@@ -2963,6 +3051,9 @@ private:
 
     std::queue<std::pair<TChunkId, TCpuInstant>> RecentlyConfirmedChunksByConfirmTime_;
     THashSet<TChunkId> RecentlyConfirmedChunks_;
+
+    TChunkProlongator ChunkProlongator_;
+    TPeriodicExecutorPtr TrimChunkProlongationQueueExecutor_;
 
     DECLARE_THREAD_AFFINITY_SLOT(AutomatonThread);
 
@@ -3113,6 +3204,9 @@ private:
                 .Item("sequoia_chunk_refresher_status").Value(ChunkReplicator_->GetSequoiaChunkRefresher()->GetStatus())
                 .Item("verbosely_logged_chunks").DoListFor(VerboselyLoggedChunks_, [&] (auto fluent, const auto& pair) {
                     fluent.Item().Value(pair.first);
+                })
+                .Do([&] (auto fluent) {
+                    ChunkProlongator_.BuildOrchidYson(fluent);
                 })
             .EndMap();
     }
@@ -3858,6 +3952,10 @@ private:
         const auto& nodeTracker = Bootstrap_->GetNodeTracker();
         auto* node = nodeTracker->GetNodeOrThrow(nodeId);
 
+        ValidateHeartbeatRegistrationRevision(
+            node,
+            FromProto<TRevision>(request.registration_revision()));
+
         if (!request.caused_by_node_disposal()) {
             node->ValidateRegistered();
         }
@@ -3872,6 +3970,44 @@ private:
                     request.caused_by_validation());
             }
         }
+    }
+
+    void ValidateHeartbeatRegistrationRevision(
+        const TNode* node,
+        TRevision receivedRevision) const override
+    {
+        YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+        const auto& config = GetDynamicConfig()->DataNodeTracker;
+        if (config->Testing->SuppressRegistrationRevisionValidation) {
+            return;
+        }
+
+        auto expectedRevision = node->GetRegistrationRevision();
+        if (receivedRevision == expectedRevision) {
+            return;
+        }
+
+        bool enforceValidation = config->EnableRegistrationRevisionValidation;
+        if (!enforceValidation || receivedRevision > expectedRevision) {
+            YT_TLOG_ALERT("Data node heartbeat registration revision mismatch")
+                .With("NodeId", node->GetId())
+                .With("NodeAddress", node->GetDefaultAddress())
+                .With("ExpectedRegistrationRevision", expectedRevision)
+                .With("ReceivedRegistrationRevision", receivedRevision);
+        }
+
+        if (!enforceValidation) {
+            return;
+        }
+
+        THROW_ERROR_EXCEPTION(
+            NNodeTrackerClient::EErrorCode::InvalidState,
+            "Data node heartbeat belongs to an outdated registration")
+            .With("node_id", node->GetId())
+            .With("node_address", node->GetDefaultAddress())
+            .With("expected_registration_revision", expectedRevision)
+            .With("received_registration_revision", receivedRevision);
     }
 
     void DoPrepareModifyReplicas(const TReqModifyReplicas& request)
@@ -4190,6 +4326,51 @@ private:
         return RecentlyConfirmedChunks_.contains(chunkId);
     }
 
+    TFuture<THashMap<TChunkId, ECrossMediumChunkStatus>> GetChunksReplicationStatuses(const std::vector<TChunkRawPtr>& chunks) override
+    {
+        std::vector<TEphemeralObjectPtr<TChunk>> chunksToFetchReplicas;
+        std::vector<TEphemeralObjectPtr<TChunk>> chunksToCalculateStatuses;
+
+        chunksToFetchReplicas.reserve(chunks.size());
+        chunksToCalculateStatuses.reserve(chunks.size());
+
+        for (const auto& chunk : chunks) {
+            chunksToFetchReplicas.emplace_back(chunk);
+            chunksToCalculateStatuses.emplace_back(chunk);
+        }
+
+        return ChunkReplicaFetcher_->GetChunkReplicasAsync(std::move(chunksToFetchReplicas), /*includeUnapproved*/ true)
+            .Apply(BIND([
+                this,
+                this_ = MakeStrong(this),
+                chunks = std::move(chunksToCalculateStatuses)
+            ] (const THashMap<TChunkId, TErrorOr<std::vector<TSequoiaChunkReplica>>>& chunkIdToReplicas) {
+                THashMap<TChunkId, ECrossMediumChunkStatus> result;
+                for (const auto& chunk : chunks) {
+                    if (!IsObjectAlive(chunk)) {
+                        result[chunk->GetId()] = ECrossMediumChunkStatus::Dead;
+                        continue;
+                    }
+
+                    auto it = chunkIdToReplicas.find(chunk->GetId());
+                    if (it == chunkIdToReplicas.end()) {
+                        YT_LOG_ALERT_AND_THROW("Chunk has no records in chunk replica fetch result (ChunkId: %v)",
+                            chunk->GetId());
+                    }
+
+                    const auto& allReplicas = it->second
+                        .ValueOrThrow();
+
+                    auto replicas = ChunkReplicaFetcher_->FilterAliveReplicas(allReplicas);
+                    result[chunk->GetId()] = ChunkReplicator_->ComputeCrossMediumChunkStatus(chunk.Get(), replicas);
+                }
+                return result;
+            })
+            .AsyncViaGuarded(
+                Bootstrap_->GetHydraFacade()->GetAutomatonInvoker(EAutomatonThreadQueue::ChunkManager),
+                TError("Error computing chunk replication statuses")));
+    }
+
     void MarkChunkRecentlyConfirmed(TChunkId chunkId)
     {
         const auto& config = GetDynamicConfig();
@@ -4235,6 +4416,21 @@ private:
             promise.SetFrom(replicasModifier->ModifyReplicas());
         } catch (const std::exception& ex) {
             promise.Set(ex);
+        }
+    }
+
+    void TrimChunkProlongationQueue()
+    {
+        auto expirationTime = TInstant::Now() - GetDynamicConfig()->ChunkProlongator->QueueTtl;
+        if (ChunkProlongator_.ShouldTrimQueue(expirationTime)) {
+            NProto::TReqTrimChunkProlongationQueue request;
+            request.set_expiration_time(ToProto(expirationTime));
+            auto mutation = CreateMutation(
+                Bootstrap_->GetHydraFacade()->GetHydraManager(),
+                request,
+                &TChunkManager::HydraTrimChunkProlongationQueue,
+                this);
+            YT_UNUSED_FUTURE(mutation->CommitAndLog(Logger()));
         }
     }
 
@@ -5104,6 +5300,8 @@ private:
 
         auto* requisitionRegistry = GetChunkRequisitionRegistry();
 
+        auto recomputeHistoricallyNonVital = GetDynamicConfig()->RecomputeHistoricallyNonVitalOnRequisitionUpdate;
+
         auto setChunkRequisitionIndex = [&] (TChunk* chunk, TChunkRequisitionIndex requisitionIndex) {
             if (local) {
                 chunk->SetLocalRequisitionIndex(requisitionIndex, requisitionRegistry, objectManager);
@@ -5118,6 +5316,8 @@ private:
             auto aggregatedRequisitionIndex = chunk->GetAggregatedRequisitionIndex();
             if (!isDurabilityRequired(aggregatedRequisitionIndex, chunk)) {
                 chunk->SetHistoricallyNonVital(true);
+            } else if (recomputeHistoricallyNonVital) {
+                chunk->SetHistoricallyNonVital(false);
             }
         };
 
@@ -5142,6 +5342,14 @@ private:
             auto curRequisitionIndex = local ? chunk->GetLocalRequisitionIndex() : chunk->GetExternalRequisitionIndex(requestCellTag);
 
             if (newRequisitionIndex == curRequisitionIndex) {
+                if (recomputeHistoricallyNonVital &&
+                    chunk->GetHistoricallyNonVital() &&
+                    isDurabilityRequired(chunk->GetAggregatedRequisitionIndex(), chunk))
+                {
+                    chunk->SetHistoricallyNonVital(false);
+                    ScheduleChunkRefresh(chunk);
+                }
+
                 continue;
             }
 
@@ -5466,6 +5674,12 @@ private:
                 chunk = DoCreateChunk(chunkId);
                 chunk->SetForeign();
 
+                // COMPAT(theevilbird)
+                if (GetDynamicConfig()->SetEmptyRequisitionIndexOnImport) {
+                    const auto& objectManager = Bootstrap_->GetObjectManager();
+                    chunk->SetLocalRequisitionIndex(EmptyChunkRequisitionIndex, GetChunkRequisitionRegistry(), objectManager, /*forceAggregatedRequisitionUpdate*/ true);
+                }
+
                 if (importData.has_chunk_schema_id()) {
                     auto chunkSchemaId = FromProto<TMasterTableSchemaId>(importData.chunk_schema_id());
                     auto* existingChunkSchema = tableManager->GetMasterTableSchema(chunkSchemaId);
@@ -5543,7 +5757,8 @@ private:
                 try {
                     (this->*handler)(&subrequest, subresponse);
                 } catch (const std::exception& ex) {
-                    YT_LOG_DEBUG(TError(errorMessage).With(ex));
+                    YT_TLOG_DEBUG("Failed to execute subrequest")
+                        .With(TError(errorMessage).With(ex));
                     if (subresponse) {
                         ToProto(subresponse->mutable_error(), TError(ex));
                     }
@@ -5657,6 +5872,31 @@ private:
         ExecuteUnstageChunkTreeSubrequest(request, response);
     }
 
+    void HydraUnstageChunkTrees(
+        const TCtxUnstageChunkTreesPtr& /*context*/,
+        TReqUnstageChunkTrees* request,
+        TRspUnstageChunkTrees* /*response*/)
+    {
+        YT_VERIFY(HasMutationContext());
+
+        const auto recursive = request->recursive();
+        std::vector<TChunkTree*> chunkTrees;
+        chunkTrees.reserve(request->chunk_tree_ids_size());
+        for (const auto& chunkTreeIdProto : request->chunk_tree_ids()) {
+            auto chunkTreeId = FromProto<TChunkTreeId>(chunkTreeIdProto);
+            chunkTrees.push_back(GetChunkTreeOrThrow(chunkTreeId));
+        }
+
+        const auto& transactionManager = Bootstrap_->GetTransactionManager();
+        for (auto* chunkTree : chunkTrees) {
+            transactionManager->UnstageObject(chunkTree->GetStagingTransaction(), chunkTree, recursive);
+        }
+
+        YT_TLOG_DEBUG("Chunk trees unstaged")
+            .With("ChunkTreeCount", request->chunk_tree_ids_size())
+            .With("Recursive", recursive);
+    }
+
     void HydraAttachChunkTrees(
         const TCtxAttachChunkTreesPtr& /*context*/,
         TReqAttachChunkTrees* request,
@@ -5739,6 +5979,9 @@ private:
         ValidateReplicationFactor(replicationFactor);
 
         auto transactionId = FromProto<TTransactionId>(subrequest->transaction_id());
+
+        MaybeLogCypressTransactionInChunkServiceRequest(transactionId, *subrequest);
+
         const auto& transactionManager = Bootstrap_->GetTransactionManager();
         auto* transaction = transactionManager->GetTransactionOrThrow(transactionId);
 
@@ -5860,6 +6103,8 @@ private:
         auto transactionId = FromProto<TTransactionId>(subrequest->transaction_id());
         int count = subrequest->count();
 
+        MaybeLogCypressTransactionInChunkServiceRequest(transactionId, *subrequest);
+
         const auto& transactionManager = Bootstrap_->GetTransactionManager();
         auto* transaction = transactionManager->GetTransactionOrThrow(transactionId);
 
@@ -5916,6 +6161,8 @@ private:
         auto transactionId = subrequest->has_transaction_id()
             ? FromProto<TTransactionId>(subrequest->transaction_id())
             : NullTransactionId;
+
+        MaybeLogCypressTransactionInChunkServiceRequest(transactionId, *subrequest);
 
         if (parent->GetKind() == EChunkListKind::HunkStorageRoot ||
             parent->GetKind() == EChunkListKind::HunkTablet)
@@ -6021,6 +6268,28 @@ private:
             .With("TransactionId", transactionId);
     }
 
+    void MaybeLogCypressTransactionInChunkServiceRequest(
+        TTransactionId transactionId,
+        const ::google::protobuf::Message& subrequest)
+    {
+        constexpr static auto AllowedRoles =
+            EMasterCellRoles::CypressNodeHost |
+            EMasterCellRoles::SequoiaNodeHost |
+            EMasterCellRoles::TransactionCoordinator |
+            EMasterCellRoles::ExTransactionCoordinator;
+
+        const auto& multicellManager = Bootstrap_->GetMulticellManager();
+        if (Any(multicellManager->GetMasterCellRoles(Bootstrap_->GetCellTag()) & AllowedRoles)) {
+            return;
+        }
+
+        YT_TLOG_TRACE_IF(
+            transactionId && IsCypressTransactionType(TypeFromId(transactionId)) && CellTagFromId(transactionId) != Bootstrap_->GetCellTag(),
+            "Unexpected Cypress transaction in ChunkService request")
+            .With("TransactionId", transactionId)
+            .With("RequestType", subrequest.GetTypeName());
+    }
+
     void SaveKeys(NCellMaster::TSaveContext& context) const
     {
         ChunkMap_.SaveKeys(context);
@@ -6059,6 +6328,9 @@ private:
 
         Save(context, SequoiaChunkPurgatory_);
         Save(context, VerboselyLoggedChunks_);
+        Save(context, LastSequoiaReplicasCommitTimestamp_);
+
+        ChunkProlongator_.Save(context);
     }
 
     void LoadKeys(NCellMaster::TLoadContext& context)
@@ -6142,7 +6414,16 @@ private:
             Load(context, VerboselyLoggedChunks_);
         }
 
+        if (context.GetVersion() >= EMasterReign::PersistLastSequoiaReplicasCommitTimestamp) {
+            Load(context, LastSequoiaReplicasCommitTimestamp_);
+        }
+
+        if (context.GetVersion() >= EMasterReign::DynamicTableChunkProlongation) {
+            ChunkProlongator_.Load(context);
+        }
+
         RecomputeHistoricallyNonVital_ = context.GetVersion() < EMasterReign::IncreaseVitalReplicationFactor;
+        ClearSequoiaLastSeenReplicasOnMaster_ = context.GetVersion() < EMasterReign::ClearSequoiaLastSeenReplicasOnMaster;
 
         RecomputeHunkRelatedChunkStatistics_ = context.GetVersion() < EMasterReign::HunkChunkTreeStatisticsOverhaul ||
             (context.GetVersion() >= EMasterReign::Start_26_2 &&
@@ -6181,6 +6462,15 @@ private:
         }
     }
 
+    void UpdateMasterStoredChunkReplicaCount(TChunk* chunk, int delta)
+    {
+        if (chunk->IsJournal()) {
+            MasterStoredJournalReplicaCount_ += delta;
+        } else {
+            MasterStoredBlobReplicaCount_ += delta;
+        }
+    }
+
     void OnAfterSnapshotLoaded() override
     {
         TMasterAutomatonPart::OnAfterSnapshotLoaded();
@@ -6198,6 +6488,13 @@ private:
             for (auto [_, chunk] : ChunkMap_) {
                 RegisterChunk(chunk);
 
+                if (ClearSequoiaLastSeenReplicasOnMaster_) {
+                    auto chunkSequoiaConfig = GetChunkSequoiaConfig(chunk->GetId(), GetDynamicConfig()->SequoiaChunkReplicas);
+                    if (chunkSequoiaConfig.StoreInSequoia && !chunkSequoiaConfig.StoreSequoiaReplicasOnMaster) {
+                        chunk->ClearLastSeenReplicas();
+                    }
+                }
+
                 if (chunk->HasConsistentReplicaPlacementHash()) {
                     crpChunks.push_back(chunk);
                 }
@@ -6212,15 +6509,17 @@ private:
                     EmplaceOrCrash(ForeignChunks_, chunk);
                 }
 
-                // TODO(aleksandra-zh): account for Sequoia replicas.
                 // We may have replicas from non-online nodes here.
-                TotalReplicaCount_ += std::ssize(chunk->GetStoredReplicaList(/*includeNonOnlineReplicas*/ true));
+                auto replicaCount = std::ssize(chunk->GetStoredReplicaList(/*includeNonOnlineReplicas*/ true));
+                UpdateMasterStoredChunkReplicaCount(chunk, replicaCount);
 
                 runner.Add(chunk);
 
                 UpdateChunkCount(chunk, +1);
 
-                if (RecomputeHistoricallyNonVital_ && !IsDurabilityRequiredForChunk(chunk, chunk->GetAggregatedRequisitionIndex())) {
+                if (RecomputeHistoricallyNonVital_ &&
+                    !IsDurabilityRequiredForChunk(chunk, chunk->GetAggregatedRequisitionIndex()))
+                {
                     chunk->SetHistoricallyNonVital(true);
                 }
             }
@@ -6364,7 +6663,7 @@ private:
             if (auto hunkChunkRefsExt = chunk->ChunkMeta()->FindExtension<NTableClient::NProto::THunkChunkRefsExt>()) {
                 TChunkTreeStatistics statisticsDelta;
 
-                TEnumIndexedArray<NErasure::ECodec, int> codecToDataSize;
+                TEnumIndexedArray<NErasure::ECodec, i64> codecToDataSize;
                 for (const auto& protoRef : hunkChunkRefsExt->refs()) {
                     auto hunkChunkId = FromProto<TChunkId>(protoRef.chunk_id());
                     auto* hunkChunk = FindChunk(hunkChunkId);
@@ -6426,7 +6725,7 @@ private:
                     parent->Statistics().Accumulate(statisticsDelta);
 
                     for (auto grandparent : parent->Parents()) {
-                        chunkListQueue.push(grandparent);
+                        chunkListQueue.push(grandparent->AsChunkList());
                     }
                 }
             }
@@ -6464,7 +6763,7 @@ private:
             if (auto hunkChunkRefsExt = chunk->ChunkMeta()->FindExtension<NTableClient::NProto::THunkChunkRefsExt>()) {
                 TChunkTreeStatistics statisticsDelta;
 
-                TEnumIndexedArray<NErasure::ECodec, int> codecToDataSize;
+                TEnumIndexedArray<NErasure::ECodec, i64> codecToDataSize;
                 for (const auto& protoRef : hunkChunkRefsExt->refs()) {
                     auto hunkChunkId = FromProto<TChunkId>(protoRef.chunk_id());
                     auto* hunkChunk = FindChunk(hunkChunkId);
@@ -6515,7 +6814,7 @@ private:
                     parent->Statistics().Accumulate(statisticsDelta);
 
                     for (auto grandparent : parent->Parents()) {
-                        chunkListQueue.push(grandparent);
+                        chunkListQueue.push(grandparent->AsChunkList());
                     }
                 }
             }
@@ -6540,7 +6839,9 @@ private:
         ChunkListMap_.Clear();
         ChunkViewMap_.Clear();
         ForeignChunks_.clear();
-        TotalReplicaCount_ = 0;
+
+        MasterStoredJournalReplicaCount_ = 0;
+        MasterStoredBlobReplicaCount_ = 0;
 
         ChunkRequisitionRegistry_.Clear();
 
@@ -6556,8 +6857,6 @@ private:
 
         ChunksCreated_ = 0;
         ChunksDestroyed_ = 0;
-        ChunkReplicasAdded_ = 0;
-        ChunkReplicasRemoved_ = 0;
         ChunkViewsCreated_ = 0;
         ChunkViewsDestroyed_ = 0;
         ChunkListsCreated_ = 0;
@@ -6574,6 +6873,8 @@ private:
 
         DestroyedReplicaCount_ = 0;
 
+        ProlongedChunksDisplaced_ = 0;
+
         ChunkRowCountHistogram_.Reset();
         ChunkCompressedDataSizeHistogram_.Reset();
         ChunkUncompressedDataSizeHistogram_.Reset();
@@ -6583,6 +6884,7 @@ private:
 
         NeedRecomputeChunkWeightStatisticsHistogram_ = false;
         RecomputeHistoricallyNonVital_ = false;
+        ClearSequoiaLastSeenReplicasOnMaster_ = false;
 
         LastSequoiaReplicasCommitTimestamp_ = NullTimestamp;
 
@@ -6591,6 +6893,8 @@ private:
         RecomputeHunkRelatedChunkStatistics_ = false;
         RecomputeHunkRelatedChunkStatisticsAgain_ = false;
         FixHunkChunkWeightStatisticsHistogram_ = false;
+
+        ChunkProlongator_.Clear();
     }
 
     void SetZeroState() override
@@ -6910,6 +7214,14 @@ private:
             BIND(&TChunkManager::FlushWaitingSequoiaIncrementalHeartbeatRequests, MakeWeak(this)),
             sequoiaReplicasConfig->BatchIncrementalHeartbeatPeriod);
         SequoiaBatchIncrementalHeartbeatExecutor_->Start();
+
+        TrimChunkProlongationQueueExecutor_ = New<TPeriodicExecutor>(
+            Bootstrap_->GetHydraFacade()->GetEpochAutomatonInvoker(EAutomatonThreadQueue::ChunkManager),
+            BIND(&TChunkManager::TrimChunkProlongationQueue, MakeWeak(this)),
+            GetDynamicConfig()->ChunkProlongator->QueueTrimPeriod);
+        TrimChunkProlongationQueueExecutor_->Start();
+
+        ChunkProlongator_.Reconfigure(GetDynamicConfig()->ChunkProlongator);
     }
 
     void OnStopLeading() override
@@ -6940,6 +7252,11 @@ private:
             BatchSequoiaIncrementalHeartbeatPromise_.Reset();
             WaitingSequoiaIncrementalHeartbeatRequests_.clear();
             ReplicasInWaitingSequoiaIncrementalHeartbeatRequests_ = 0;
+        }
+
+        if (TrimChunkProlongationQueueExecutor_) {
+            YT_UNUSED_FUTURE(TrimChunkProlongationQueueExecutor_->Stop());
+            TrimChunkProlongationQueueExecutor_.Reset();
         }
 
         ChunkConfirmErrors_.clear();
@@ -7079,6 +7396,12 @@ private:
                 ScheduleChunkSeal(chunk);
             }
         }
+    }
+
+    void HydraTrimChunkProlongationQueue(NProto::TReqTrimChunkProlongationQueue* request)
+    {
+        auto expirationTime = FromProto<TInstant>(request->expiration_time());
+        ChunkProlongator_.TrimQueue(expirationTime);
     }
 
     TFuture<void> RemoveDeadSequoiaChunkReplicas(std::unique_ptr<NProto::TReqRemoveDeadSequoiaChunkReplicas> request)
@@ -7291,9 +7614,7 @@ private:
             .With("Address", node->GetDefaultAddress())
             .With("Reason", reason);
 
-        if (reason == EAddReplicaReason::IncrementalHeartbeat || reason == EAddReplicaReason::Confirmation) {
-            ++ChunkReplicasAdded_;
-        }
+        UpdateMasterStoredChunkReplicaCount(chunk, 1);
 
         ScheduleChunkRefresh(chunk);
         ScheduleChunkSeal(chunk);
@@ -7335,10 +7656,10 @@ private:
         TChunkLocationPtrWithReplicaIndex locationWithIndex(chunkLocation, replica.GetReplicaIndex());
 
         if (!chunkLocation->HasReplica(replica) && (
-                reason == ERemoveReplicaReason::IncrementalHeartbeat ||
-                reason == ERemoveReplicaReason::SequoiaModified ||
-                reason == ERemoveReplicaReason::NodeDisposed ||
-                reason == ERemoveReplicaReason::SequoiaNodeDisposed))
+            reason == ERemoveReplicaReason::IncrementalHeartbeat ||
+            reason == ERemoveReplicaReason::SequoiaModified ||
+            reason == ERemoveReplicaReason::NodeDisposed ||
+            reason == ERemoveReplicaReason::SequoiaNodeDisposed))
         {
             return;
         }
@@ -7379,7 +7700,7 @@ private:
 
         ScheduleChunkRefresh(chunk);
 
-        ++ChunkReplicasRemoved_;
+        UpdateMasterStoredChunkReplicaCount(chunk, -1);
     }
 
     std::pair<TChunkLocation*, TDomesticMedium*> FindLocationAndMediumOnProcessChunk(
@@ -7455,12 +7776,11 @@ private:
                 if (isUnknown) {
                     ++DestroyedReplicaCount_;
                 }
-                YT_LOG_DEBUG(
-                    "%v removal scheduled (NodeId: %v, Address: %v, ChunkId: %v)",
-                    isUnknown ? "Unknown chunk added," : "Destroyed chunk",
-                    nodeId,
-                    node->GetDefaultAddress(),
-                    chunkIdWithIndexes);
+                YT_TLOG_DEBUG("Chunk removal scheduled")
+                    .With("ChunkUnknown", isUnknown)
+                    .With("NodeId", nodeId)
+                    .With("Address", node->GetDefaultAddress())
+                    .With("ChunkId", chunkIdWithIndexes);
             }
             return nullptr;
         }
@@ -7508,17 +7828,18 @@ private:
         }
 
         const auto& config = GetDynamicConfig();
-        auto isDestroyed = config->Testing->DisableRemovingReplicasFromDestroyedQeueue ? false : location->RemoveDestroyedReplica(chunkIdWithIndex);
+        auto isDestroyed = !config->Testing->DisableRemovingReplicasFromDestroyedQeueue && location->RemoveDestroyedReplica(chunkIdWithIndex);
         if (isDestroyed) {
             --DestroyedReplicaCount_;
         }
         // NB: Chunk could already be a zombie but we still need to remove the replica.
-        YT_LOG_DEBUG(
-            "%v replica removed (ChunkId: %v, Address: %v, NodeId: %v)",
-            isDestroyed ? "Destroyed chunk" : "Chunk",
-            chunkIdWithIndex,
-            node->GetDefaultAddress(),
-            nodeId);
+        YT_TLOG_DEBUG("Chunk replica removed from location")
+            .With("Destroyed", isDestroyed)
+            .With("ChunkId", chunkIdWithIndex)
+            .With("Address", node->GetDefaultAddress())
+            .With("LocationUuid", location->GetUuid())
+            .With("LocationId", location->GetId())
+            .With("NodeId", nodeId);
 
         auto* chunk = FindChunk(chunkIdWithIndex.Id);
         if (!chunk) {
@@ -7590,7 +7911,7 @@ private:
             return;
         }
 
-        auto* chunkList = GetUniqueParent(chunk)->As<TChunkList>();
+        auto* chunkList = GetUniqueParent(chunk)->AsChunkList();
         // A scratch chunk list keeps no statistics, so a sealed child requires no propagation (and
         // calling GetStatistics on a hunk-format chunk would even alert).
         if (!chunkList->HasStatistics()) {
@@ -7723,9 +8044,8 @@ private:
             buffer.AddCounter("/erasure_chunk_count", ErasureChunkCount_);
             buffer.AddCounter("/regular_chunk_count", RegularChunkCount_);
 
-            buffer.AddGauge("/chunk_replica_count", TotalReplicaCount_);
-            buffer.AddCounter("/chunk_replicas_added", ChunkReplicasAdded_);
-            buffer.AddCounter("/chunk_replicas_removed", ChunkReplicasRemoved_);
+            buffer.AddGauge("/master_stored_blob_chunk_replica_count", MasterStoredBlobReplicaCount_);
+            buffer.AddGauge("/master_stored_journal_chunk_replica_count", MasterStoredJournalReplicaCount_);
 
             buffer.AddGauge("/chunk_view_count", ChunkViewMap_.GetSize());
             buffer.AddCounter("/chunk_views_created", ChunkViewsCreated_);
@@ -7758,6 +8078,8 @@ private:
             buffer.AddCounter("/endorsements_confirmed", EndorsementsConfirmed_);
 
             buffer.AddGauge("/destroyed_replica_count", DestroyedReplicaCount_);
+
+            buffer.AddCounter("/prolonged_chunks_displaced", ProlongedChunksDisplaced_);
         }
 
         BufferedProducer_->Update(std::move(buffer));
@@ -7800,6 +8122,7 @@ private:
 
         // Make the fake reference.
         YT_VERIFY(medium->RefObject() == 1);
+        ChunkPlacement_->OnMediumChanged();
 
         return medium;
     }
@@ -7861,8 +8184,16 @@ private:
 
     void InitializeMediumConfig(TDomesticMedium* medium)
     {
+        InitializeMediumDataCenters(medium);
         InitializeMediumMaxReplicasPerRack(medium);
         InitializeMediumMaxReplicationFactor(medium);
+    }
+
+    void InitializeMediumDataCenters(TDomesticMedium* medium)
+    {
+        const auto& dynamicConfig = GetDynamicConfig();
+        medium->Config()->StorageDataCenters = dynamicConfig->StorageDataCenters;
+        medium->Config()->BannedStorageDataCenters = dynamicConfig->BannedStorageDataCenters;
     }
 
     void InitializeMediumMaxReplicasPerRack(TDomesticMedium* medium)
@@ -7998,7 +8329,9 @@ private:
                 auto processResponse = [&] (const TIntrusivePtr<TObjectServiceProxy::TRspExecuteBatch>& rsp, int index, TStringBuf name) {
                     auto currentRspOrError = rsp->GetResponse<TYPathProxy::TRspGet>(index);
                     if (!currentRspOrError.IsOK()) {
-                        YT_LOG_WARNING(currentRspOrError, "Failed to get local cell statistics (StatiscicsName: %v)", name);
+                        YT_TLOG_WARNING("Failed to get local cell statistics")
+                            .With("StatisticsName", name)
+                            .With(currentRspOrError);
                         return;
                     }
                     auto response = ConvertTo<INodePtr>(TYsonString{currentRspOrError.Value()->value()});
@@ -8139,6 +8472,13 @@ private:
             sequoiaReplicasConfig->MaxConcurrentSequoiaReplicaModifications);
         ModifySequoiaReplicasPerReplicaSemaphore_->SetTotal(
             sequoiaReplicasConfig->MaxConcurrentReplicasInSequoiaReplicaModifications);
+
+        ChunkProlongator_.Reconfigure(GetDynamicConfig()->ChunkProlongator);
+
+        if (TrimChunkProlongationQueueExecutor_) {
+            TrimChunkProlongationQueueExecutor_->SetPeriod(
+                GetDynamicConfig()->ChunkProlongator->QueueTrimPeriod);
+        }
     }
 };
 

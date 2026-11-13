@@ -20,6 +20,7 @@ public:
     {
         TMessage Message;
         bool Distribute = true;
+        TOutputMessageIdSuffix MessageIdSuffix = TOutputMessageIdSuffix::FromSequenceNumber();
         std::vector<TMessageId> ParentIds;
     };
 
@@ -40,6 +41,7 @@ public:
     {
         std::vector<TRecordedMessage> Messages;
         std::vector<TRecordedTimer> Timers;
+        std::vector<TFailedMessage> FailedMessages;
     };
 
     using TSinkPtr = TIntrusivePtr<TSink>;
@@ -53,17 +55,21 @@ public:
         const std::vector<TInputMessageConstPtr>& messages,
         const std::vector<TInputTimerConstPtr>& timers,
         const std::vector<TInputVisitConstPtr>& visits) override;
-    void AddMessage(TMessage&& message, bool distribute) override;
     void AddTimer(TSystemTimestamp triggerTimestamp, std::optional<TSystemTimestamp> eventTimestamp = {}) override;
     void AddTimer(const TStreamId& streamId, TSystemTimestamp triggerTimestamp, std::optional<TSystemTimestamp> eventTimestamp = {}) override;
     void AddTimer(TTimer&& timer) override;
 
     const std::vector<TRecordedMessage>& GetMessages() const;
     const std::vector<TRecordedTimer>& GetTimers() const;
+    const std::vector<TFailedMessage>& GetFailedMessages() const;
 
 private:
+    void DoAddMessage(TMessage&& message, TAddMessageOptions options) override;
+
     const TSinkPtr Sink_;
     const std::vector<TMessageId> ParentIds_;
+
+    void DoAddFailedMessage(const TInputMessageConstPtr& message, const TError& reason) override;
 };
 
 DEFINE_REFCOUNTED_TYPE(TRecordingOutputCollector)

@@ -294,15 +294,14 @@ Events:
 
 Another possible reason is that pods cannot be scheduled due to an insufficient number of k8s nodes. If your k8s cluster has fewer nodes than the number of {{product-name}} master servers, they will not be able to start because of antiaffinity constraints. To disable this restriction, set the option `ephemeralCluster: true`.
 
-## Installing {{product-name}} UI helm chart
+## Installing {{product-name}} UI helm chart {#ui}
 
 ### Using with [ytop-chart](https://github.com/ytsaurus/ytsaurus-k8s-operator/pkgs/container/ytop-chart)
 
 Follow all required steps to [start the {{product-name}} cluster](#starting-cluster). Then install the chart:
 
 ```
-git clone https://github.com/ytsaurus/ytsaurus-ui.git
-helm upgrade --install ytsaurus-ui ytsaurus-ui/packages/ui-helm-chart/
+helm upgrade --install ytsaurus-ui oci://ghcr.io/ytsaurus/ytsaurus-ui-chart
 ```
 
 ### Using with a custom cluster
@@ -355,10 +354,9 @@ _EOF
 Then you are ready to install or upgrade the chart:
 
 ```
-git clone https://github.com/ytsaurus/ytsaurus-ui.git
-helm upgrade --install yt-ui ytsaurus-ui/packages/ui-helm-chart/ -f values.yaml
+helm upgrade --install yt-ui oci://ghcr.io/ytsaurus/ytsaurus-ui-chart -f values.yaml
 # or run specific version of UI (all versions: https://github.com/ytsaurus/ytsaurus-ui/pkgs/container/ui)
-helm upgrade --install yt-ui ytsaurus-ui/packages/ui-helm-chart/ -f values.yaml --set ui.image.tag=1.60.1
+helm upgrade --install yt-ui oci://ghcr.io/ytsaurus/ytsaurus-ui-chart -f values.yaml --set ui.image.tag=1.60.1
 ```
 
 You may want to add port-forwarding to open the {{product-name}} UI in your browser:

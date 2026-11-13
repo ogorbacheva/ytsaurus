@@ -1,3 +1,5 @@
+INCLUDE(${ARCADIA_ROOT}/yt/ya_features.make.inc)
+
 GTEST(unittester-controller-agent)
 
 INCLUDE(${ARCADIA_ROOT}/yt/ya_cpp.make.inc)
@@ -10,12 +12,18 @@ SRCS(
     experiments_ut.cpp
     job_monitoring_index_manager_ut.cpp
     input_statistics_collector_ut.cpp
+    job_phase_ut.cpp
     job_splitter_ut.cpp
     partition_keys_builder_ut.cpp
     partitioning_parameters_ut.cpp
     partitions_ut.cpp
+    push_based_shuffle_registry_ut.cpp
     universal_monitoring_descriptor_manager_ut.cpp
 )
+
+IF (YT_ENABLE_JOURNAL_NBD)
+    SRCS(journal_nbd_helpers_ut.cpp)
+ENDIF()
 
 INCLUDE(${ARCADIA_ROOT}/yt/opensource.inc)
 

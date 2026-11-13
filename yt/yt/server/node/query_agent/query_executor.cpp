@@ -62,6 +62,7 @@
 #include <yt/yt/core/concurrency/scheduler.h>
 
 #include <yt/yt/core/misc/collection_helpers.h>
+#include <yt/yt/core/misc/configurable_singleton_def.h>
 #include <yt/yt/core/misc/mpsc_queue.h>
 #include <yt/yt/core/misc/tls_cache.h>
 
@@ -79,8 +80,6 @@
 #include <yt/yt/library/query/engine_api/coordinator.h>
 #include <yt/yt/library/query/engine_api/evaluator.h>
 #include <yt/yt/library/query/engine_api/query_engine_config.h>
-
-#include <yt/yt/core/misc/configurable_singleton_def.h>
 
 #include <yt/yt/library/query/misc/rowset_subrange_reader.h>
 
@@ -440,7 +439,7 @@ public:
     TExecutePlan Build(const TJoinSubqueryOptionsPatch& patch) const
     {
         auto joinSubqueryOptions = GetJoinSubqueryOptions(BaseOptions_);
-        joinSubqueryOptions = ApplyPatch(joinSubqueryOptions, patch);
+        joinSubqueryOptions = ApplyJoinSubqueryOptionsPatch(joinSubqueryOptions, patch);
         return [
             joinSubqueryOptions,
             remoteExecutor = RemoteExecutor_,
@@ -462,11 +461,11 @@ public:
     }
 
 private:
-    IExecutorPtr RemoteExecutor_;
-    TConstExternalCGInfoPtr ExternalCGInfo_;
-    IInvokerPtr Invoker_;
-    TFeatureFlags RequestFeatureFlags_;
-    TQueryOptions BaseOptions_;
+    const IExecutorPtr RemoteExecutor_;
+    const TConstExternalCGInfoPtr ExternalCGInfo_;
+    const IInvokerPtr Invoker_;
+    const TFeatureFlags RequestFeatureFlags_;
+    const TQueryOptions BaseOptions_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -660,7 +659,6 @@ private:
 
         auto [frontQuery, bottomQueryPattern] = GetDistributedQueryPattern(Query_);
 
-        bool ordered = frontQuery->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit) == EScanOrder::Ordered;
         auto classifiedDataSources = GetClassifiedDataSources();
         auto minKeyWidth = GetMinKeyWidth(classifiedDataSources);
 
@@ -673,13 +671,13 @@ private:
         bool regroupByTablets = Query_->GroupClause && Query_->GroupClause->CommonPrefixWithPrimaryKey > 0;
 
         YT_TLOG_DEBUG("Coordinating query")
-            .With("ScanOrder", Query_->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit))
-            .With("Prefetching", Query_->IsPrefetching())
+            .With("ScanOrder", Query_->ScanOrder)
+            .With("Prefetching", Query_->Prefetching)
             .With("RegroupByTablets", regroupByTablets)
             .With("MergeVersionedRows", QueryOptions_.MergeVersionedRows);
 
         TGetSubreader getSubqueryReader;
-        if (!QueryOptions_.MergeVersionedRows && !regroupByTablets && Query_->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit) == EScanOrder::Unordered) {
+        if (!QueryOptions_.MergeVersionedRows && !regroupByTablets && Query_->ScanOrder == EScanOrder::Unordered) {
             splitCount = std::min(splitCount, 16);
 
             auto dataSourceQueue = MakeDataSourcesQueue(groupedDataSplits);
@@ -737,8 +735,7 @@ private:
             if (!ShouldPrefetchJoinSource(
                 Query_,
                 joinClause,
-                minKeyWidth,
-                ordered))
+                minKeyWidth))
             {
                 return std::nullopt;
             }
@@ -754,11 +751,11 @@ private:
             QueryOptions_);
 
         return CoordinateAndExecute(
-            Query_->GetScanOrder(QueryOptions_.AllowUnorderedGroupByWithLimit),
-            Query_->IsPrefetching(),
+            Query_->ScanOrder,
+            Query_->Prefetching,
             splitCount,
             Query_->Offset,
-            Query_->Limit,
+            Query_->Limit.value_or(std::numeric_limits<i64>::max()),
             QueryOptions_.AdaptiveOrderedSchemafulReader,
             [
                 &,
@@ -1541,10 +1538,10 @@ private:
                     YT_TLOG_DEBUG("Got grouped by samples ranges")
                         .With("PartitionIndex", partitionIndex)
                         .With("SampleRanges", MakeFormattableView(sampleRanges, [] (TStringBuilderBase* builder, const TSampleRange& item) {
-                                builder->AppendFormat("Sample: %kv .. %kv, Ranges: %v",
-                                    item.LowerSampleKey,
-                                    item.UpperSampleKey,
-                                    MakeFormattableView(item.Ranges, TRangeFormatter()));
+                            builder->AppendFormat("Sample: %kv .. %kv, Ranges: %v",
+                                item.LowerSampleKey,
+                                item.UpperSampleKey,
+                                MakeFormattableView(item.Ranges, TRangeFormatter()));
                         }));
                 }
                 partitionRanges.push_back({std::move(sampleRanges), partitionIndex});

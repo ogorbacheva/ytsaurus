@@ -230,16 +230,6 @@ TStringBuf TExpression::GetSource(TStringBuf source) const
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TTableHint::Register(TRegistrar registrar)
-{
-    registrar.Parameter("require_sync_replica", &TThis::RequireSyncReplica)
-        .Default(true);
-    registrar.Parameter("push_down_group_by", &TThis::PushDownGroupBy)
-        .Default(false);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 TStringBuf GetSource(TSourceLocation sourceLocation, TStringBuf source)
 {
     auto begin = sourceLocation.first;
@@ -248,23 +238,11 @@ TStringBuf GetSource(TSourceLocation sourceLocation, TStringBuf source)
     return source.substr(begin, end - begin);
 }
 
-void FormatValue(TStringBuilderBase* builder, const TTableHint& hint, TStringBuf /*spec*/)
-{
-    builder->AppendString("\"{");
-    if (hint.PushDownGroupBy) {
-        builder->AppendString("push_down_group_by=%true;");
-    }
-    if (!hint.RequireSyncReplica) {
-        builder->AppendString("require_sync_replica=%false;");
-    }
-    builder->AppendString("}\"");
-}
-
 bool operator==(const TTableDescriptor& lhs, const TTableDescriptor& rhs)
 {
     return
-        std::tie(lhs.Path, lhs.Alias, *lhs.Hint) ==
-        std::tie(rhs.Path, rhs.Alias, *rhs.Hint);
+        std::tie(lhs.Path, lhs.Alias, lhs.Hint) ==
+        std::tie(rhs.Path, rhs.Alias, rhs.Hint);
 }
 
 bool operator==(const TJoin& lhs, const TJoin& rhs)
@@ -272,6 +250,68 @@ bool operator==(const TJoin& lhs, const TJoin& rhs)
     return
         std::tie(lhs.IsLeft, lhs.Table, lhs.Fields, lhs.Lhs, lhs.Rhs, lhs.Predicate) ==
         std::tie(rhs.IsLeft, rhs.Table, rhs.Fields, rhs.Lhs, rhs.Rhs, rhs.Predicate);
+}
+
+bool TQuery::operator==(const TQuery& other) const
+{
+    if (FromClause.index() != other.FromClause.index()) {
+        return false;
+    }
+
+    auto areAstHeadEqual = [] (const TQueryAstHeadPtr& lhs, const TQueryAstHeadPtr& rhs) {
+        if (!lhs || !rhs) {
+            return lhs == rhs;
+        }
+        return
+            lhs->Ast == rhs->Ast &&
+            lhs->Alias == rhs->Alias;
+    };
+
+    auto fromClauseEqual = Visit(FromClause,
+        [&] (const TTableDescriptor& table) {
+            return table == std::get<TTableDescriptor>(other.FromClause);
+        },
+        [&] (TQueryAstHeadPtr subquery) {
+            return areAstHeadEqual(subquery, std::get<TQueryAstHeadPtr>(other.FromClause));
+        },
+        [&] (const TExpressionList& expressions) {
+            return expressions == std::get<TExpressionList>(other.FromClause);
+        },
+        [&] (const TUnionAllClause& unionAllClause) {
+            const auto& otherUnionAllClause = std::get<TUnionAllClause>(other.FromClause);
+
+            if (unionAllClause.Alias != otherUnionAllClause.Alias) {
+                return false;
+            }
+
+            if (unionAllClause.Subqueries.size() != otherUnionAllClause.Subqueries.size()) {
+                return false;
+            }
+
+            for (int index = 0; index < std::ssize(unionAllClause.Subqueries); ++index) {
+                if (!areAstHeadEqual(
+                    unionAllClause.Subqueries[index],
+                    otherUnionAllClause.Subqueries[index]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+
+    return
+        fromClauseEqual &&
+        WithIndex == other.WithIndex &&
+        Joins == other.Joins &&
+        SelectExprs == other.SelectExprs &&
+        WherePredicate == other.WherePredicate &&
+        GroupExprs == other.GroupExprs &&
+        TotalsMode == other.TotalsMode &&
+        HavingPredicate == other.HavingPredicate &&
+        OrderExpressions == other.OrderExpressions &&
+        Offset == other.Offset &&
+        Limit == other.Limit;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -374,6 +414,8 @@ std::vector<TStringBuf> GetKeywords()
     XX(false)
     XX(true)
     XX(inf)
+    XX(union)
+    XX(all)
 
 #undef XX
 
@@ -501,8 +543,6 @@ void FormatReference(TStringBuilderBase* builder, const TReference& ref, int dep
 
 void FormatTableDescriptor(TStringBuilderBase* builder, const TTableDescriptor& descriptor, const TFormatOptions& options)
 {
-    static const TTableHintPtr DefaultHint = New<TTableHint>();
-
     // Preserving existing behavior, see YT-28316.
     auto compatOptions = options;
     compatOptions.IsFinal = false;
@@ -511,8 +551,8 @@ void FormatTableDescriptor(TStringBuilderBase* builder, const TTableDescriptor& 
         builder->AppendString(" AS ");
         FormatId(builder, *descriptor.Alias, compatOptions);
     }
-    if (*descriptor.Hint != *DefaultHint) {
-        Format(builder, " WITH HINT %v", *descriptor.Hint);
+    if (descriptor.Hint != TTableHint()) {
+        Format(builder, " WITH HINT %v", descriptor.Hint);
     }
 }
 
@@ -744,8 +784,9 @@ void FormatJoin(TStringBuilderBase* builder, const TJoin& join, const TFormatOpt
             formatter);
     }
     if (join.Predicate) {
-        builder->AppendString(" AND ");
+        builder->AppendString(" AND (");
         FormatExpression(builder, *join.Predicate, /*depth*/ 0, options);
+        builder->AppendChar(')');
     }
 }
 
@@ -780,9 +821,28 @@ void FormatArrayJoin(TStringBuilderBase* builder, const TArrayJoin& join, const 
             formatter);
     }
     if (join.Predicate) {
-        builder->AppendString(" AND ");
+        builder->AppendString(" AND (");
         FormatExpression(builder, *join.Predicate, /*depth*/ 0, options);
+        builder->AppendChar(')');
     }
+}
+
+void FormatUnionAllSubqueries(
+    TStringBuilderBase* builder,
+    const TUnionAllClause& unionAll,
+    const TFormatOptions& options)
+{
+    builder->AppendChar('(');
+    bool first = true;
+    for (const auto* subquery : unionAll.Subqueries) {
+        if (!first) {
+            builder->AppendString(" UNION ALL ");
+        }
+        first = false;
+        builder->AppendString("SELECT ");
+        FormatQuery(builder, subquery->Ast, options);
+    }
+    builder->AppendChar(')');
 }
 
 void FormatQuery(TStringBuilderBase* builder, const TQuery& query, const TFormatOptions& options)
@@ -829,6 +889,13 @@ void FormatQuery(TStringBuilderBase* builder, const TQuery& query, const TFormat
             builder->AppendChar('(');
             FormatExpression(builder, expression, /*depth*/ 0, options);
             builder->AppendChar(')');
+        },
+        [&] (const TUnionAllClause& unionAll) {
+            FormatUnionAllSubqueries(builder, unionAll, options);
+            if (unionAll.Alias) {
+                builder->AppendString(" AS ");
+                FormatId(builder, *unionAll.Alias, options);
+            }
         });
 
     if (query.WithIndex) {
@@ -930,6 +997,13 @@ std::string FormatExpression(const TExpressionList& exprs)
     return builder.Flush();
 }
 
+std::string FormatExpressionConcise(const TExpression& expr)
+{
+    TStringBuilder builder;
+    FormatExpression(&builder, expr, /*depth*/ 0, {.ExpandAliases = false, .IsFinal = true, .Concise = true});
+    return builder.Flush();
+}
+
 std::string FormatJoin(const TJoin& join)
 {
     TStringBuilder builder;
@@ -978,6 +1052,12 @@ NYPath::TYPath GetMainTablePath(const TQuery& query)
         },
         [] (const TExpressionList& /*expression*/) -> NYPath::TYPath {
             THROW_ERROR_EXCEPTION("Unknown main table path");
+        },
+        [] (const TUnionAllClause& unionAll) -> NYPath::TYPath {
+            if (unionAll.Subqueries.empty()) {
+                THROW_ERROR_EXCEPTION("UNION ALL clause has no subqueries");
+            }
+            return GetMainTablePath(unionAll.Subqueries.front()->Ast);
         });
 }
 

@@ -37,7 +37,6 @@ using NYT::ToProto;
 
 using testing::Return;
 using testing::InSequence;
-using testing::Invoke;
 using testing::_;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -76,10 +75,11 @@ public:
         }
 
         auto cellConfig = New<TCellConfig>();
+        YT_VERIFY(weights.empty() || std::ssize(weights) == peerCount);
         for (int id = 0; id < peerCount; ++id) {
             auto peerConfig = New<TCellPeerConfig>();
             peerConfig->Address = GetPeerAddress(id);
-            if (id < std::ssize(weights)) {
+            if (!weights.empty()) {
                 peerConfig->Weight = weights[id];
             }
             cellConfig->Peers.push_back(peerConfig);
@@ -109,11 +109,11 @@ public:
             .ThrowOnError();
 
         EXPECT_CALL(*CallbacksMock, FormatPriority(_))
-            .WillRepeatedly(Invoke([] (TPeerPriority priority) {
+            .WillRepeatedly([] (TPeerPriority priority) {
                 return Format("{First: %v, Second: %v}",
                     priority.first,
                     priority.second);
-            }));
+            });
     }
 
     void Sleep()
@@ -340,17 +340,17 @@ TEST_F(TElectionTest, BecomeLeaderQuorumLostOnce)
     {
         InSequence dummy;
         EXPECT_CALL(*CallbacksMock, OnStartLeading(_))
-            .WillOnce(::testing::Invoke([&startLeadingCounter] (TEpochContextPtr /*epochContext*/) {
+            .WillOnce([&startLeadingCounter] (TEpochContextPtr /*epochContext*/) {
                 ++startLeadingCounter;
-            }));
+            });
         EXPECT_CALL(*CallbacksMock, OnStopLeading(_))
-            .WillOnce(::testing::Invoke([this] (const TError&) {
+            .WillOnce([this] (const TError&) {
                 ElectionManager->Participate();
-            }));
+            });
         EXPECT_CALL(*CallbacksMock, OnStartLeading(_))
-            .WillOnce(::testing::Invoke([&startLeadingCounter] (TEpochContextPtr /*epochContext*/) {
+            .WillOnce([&startLeadingCounter] (TEpochContextPtr /*epochContext*/) {
                 ++startLeadingCounter;
-            }));
+            });
         EXPECT_CALL(*CallbacksMock, OnStopLeading(_));
     }
 
@@ -392,9 +392,9 @@ TEST_F(TElectionTest, BecomeLeaderGracePeriod)
         InSequence dummy;
         EXPECT_CALL(*CallbacksMock, OnStartLeading(_));
         EXPECT_CALL(*CallbacksMock, OnStopLeading(_))
-            .WillOnce(::testing::Invoke([this] (const TError& /*error*/) {
+            .WillOnce([this] (const TError& /*error*/) {
                 ElectionManager->Participate();
-            }));
+            });
         EXPECT_CALL(*CallbacksMock, OnStartLeading(_));
         EXPECT_CALL(*CallbacksMock, OnStopLeading(_));
     }

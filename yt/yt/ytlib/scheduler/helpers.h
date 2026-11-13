@@ -2,6 +2,9 @@
 
 #include "public.h"
 
+#include <yt/yt/core/phoenix/context.h>
+#include <yt/yt/core/phoenix/type_decl.h>
+
 #include <yt/yt/ytlib/controller_agent/helpers.h>
 #include <yt/yt/ytlib/controller_agent/proto/job.pb.h>
 
@@ -15,6 +18,8 @@
 #include <yt/yt/ytlib/chunk_client/public.h>
 
 #include <yt/yt/ytlib/api/native/public.h>
+
+#include <yt/yt/client/api/public.h>
 
 #include <yt/yt/client/node_tracker_client/node_directory.h>
 
@@ -148,10 +153,13 @@ public:
 
     std::string GetAclString() const;
 
-    void Persist(const TStreamPersistenceContext& context);
+    using TSaveContext = NPhoenix::TSaveContext;
+    using TLoadContext = NPhoenix::TLoadContext;
 
 private:
     std::variant<NSecurityClient::TSerializableAccessControlList, std::string> AccessControlRule_;
+
+    PHOENIX_DECLARE_TYPE(TAccessControlRule, 0x92de7eca);
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -280,46 +288,6 @@ void ToProto(
     NControllerAgent::NProto::TVolumeMount* volumeMountProto,
     const TVolumeMount& volumeMount);
 
-void BuildTmpfsVolumeSpec(
-    NControllerAgent::NProto::TTmpfsVolume* protoTmpfsVolume,
-    const TTmpfsVolumeConfig& tmpfsVolumeConfig);
-
-void BuildChunkNbdDiskSpec(
-    NProto::TChunkNbdDisk* protoChunkNbdDisk,
-    const TNbdDiskConfig& nbdDiskConfig);
-
-template <class TProtoDiskRequest>
-void BuildNbdDiskRequestSpec(
-    TProtoDiskRequest* protoDiskRequestConfig,
-    const TNbdDiskRequest& diskRequestConfig);
-
-template <class TProtoDiskRequest>
-void BuildLocalDiskRequestSpec(
-    TProtoDiskRequest* protoDiskRequestConfig,
-    const TLocalDiskRequest& diskRequestConfig);
-
-template <class TProtoDiskRequest>
-void BuildCommonDiskRequestSpec(
-    TProtoDiskRequest* protoDiskRequestConfig,
-    const TDiskRequestConfig& diskRequestConfig);
-
-void BuildTmpfsStorageRequestSpec(
-    NProto::TTmpfsStorageRequest* protoDiskRequestConfig,
-    const TTmpfsStorageRequest& diskRequestConfig);
-
-template <class TProtoDiskRequest>
-void BuildCommonStorageRequestSpec(
-    TProtoDiskRequest* protoDiskRequestConfig,
-    const TStorageRequestBase& diskRequestConfig);
-
-////////////////////////////////////////////////////////////////////////////////
-
-bool IsDiskRequestTmpfs(const std::optional<NScheduler::TStorageRequestConfig>& diskRequest);
-
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace NYT::NScheduler
-
-#define HELPERS_INL_H
-#include "helpers-inl.h"
-#undef HELPERS_INL_H

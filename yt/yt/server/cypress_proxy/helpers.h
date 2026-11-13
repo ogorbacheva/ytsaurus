@@ -10,6 +10,8 @@
 
 #include <yt/yt/client/object_client/public.h>
 
+#include <yt/yt_proto/yt/core/ytree/proto/ypath.pb.h>
+
 namespace NYT::NCypressProxy {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -109,6 +111,7 @@ struct TParsedReqCreate
 
 //! On parse error replies it to underlying context and returns |nullopt|.
 std::optional<TParsedReqCreate> TryParseReqCreate(const ISequoiaServiceContextPtr& context);
+std::optional<TParsedReqCreate> TryParseReqCreateObject(const ISequoiaServiceContextPtr& context);
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -1,15 +1,19 @@
 #pragma once
 
 #include "public.h"
+#include "session.h"
 
 #include <yt/yt/core/ytree/fluent.h>
 #include <yt/yt/core/ytree/ypath_service.h>
 
 #include <yt/yt/ytlib/chunk_client/session_id.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <yt/yt/library/syncmap/map.h>
+
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <atomic>
+#include <string>
 
 namespace NYT::NDataNode {
 
@@ -78,12 +82,16 @@ private:
 
     std::atomic<int> AdjustedMaxWriteSessions_ = std::numeric_limits<int>::max();
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, SessionMapLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, SessionMapLock_);
     THashMap<TChunkId, ISessionPtr> SessionMap_;
 
     std::atomic<bool> DisableWriteSessions_ = false;
 
     std::set<TSessionCreatedAtSortIndex> SessionToCreatedAt_;
+
+    NConcurrency::TSyncMap<std::string, TWriteSessionStartCountersPtr> WriteSessionStartCounters_;
+
+    TWriteSessionStartCountersPtr GetOrCreateWriteSessionStartCounters(const std::string& mediumName);
 
     ISessionPtr CreateSession(TSessionId sessionId, const TSessionOptions& options);
 
@@ -107,4 +115,3 @@ DEFINE_REFCOUNTED_TYPE(TSessionManager)
 ////////////////////////////////////////////////////////////////////////////////
 
 } // namespace NYT::NDataNode
-

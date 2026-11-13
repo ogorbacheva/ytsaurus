@@ -13,6 +13,21 @@ namespace NYql {
 
 struct TWorkerRuntimeData;
 
+struct TGlobalWorkerManagerActorIdOptions {
+    // Register GWM under MakeWorkerManagerActorID in addition to its dedicated id.
+    // Must be false when LWM and GWM are hosted by the same actor system.
+    bool RegisterLegacyActorId = true;
+
+    // Address GWM nodes by MakeGlobalWorkerManagerActorID. Keep false until every
+    // possible target has the dedicated id registered.
+    bool UseGlobalActorId = false;
+};
+
+enum class EGwmHostAddress {
+    Hostname,
+    Ip,
+};
+
 class ICoordinationHelper: public TThrRefBase {
 public:
     using TPtr = TIntrusivePtr<ICoordinationHelper>;
@@ -27,18 +42,28 @@ public:
         ui32 maxNodeId,
         const THashMap<TString, TString>& attributes) = 0;
 
-    virtual TString GetHostname() = 0;
-    virtual TString GetIp() = 0;
+    virtual TString GetHostname() const = 0;
+    virtual TString GetIp() const = 0;
+
+    // Use the RegisterNode IP, adding brackets for IPv6 gRPC authorities.
+    // Upload-only helpers have no IP and keep the hostname for lock metadata.
+    TString GetGrpcHost() const;
 
     virtual NActors::IActor* CreateLockOnCluster(NActors::TActorId ytWrapper, const TString& prefix, const TString& lockName, bool temporary = true) = 0;
 
     virtual NActors::IActor* CreateLock(const TString& lockName, bool temporary = true) = 0;
 
-    virtual NActors::IActor* CreateServiceNodePinger(const IServiceNodeResolver::TPtr& ptr, const TResourceManagerOptions& rmOptions, const THashMap<TString, TString>& attributes = {}) = 0;
+    virtual NActors::IActor* CreateServiceNodePinger(
+        const IServiceNodeResolver::TPtr& ptr,
+        const TResourceManagerOptions& rmOptions,
+        const THashMap<TString, TString>& attributes = {}) = 0;
 
     virtual void StartRegistrator(NActors::TActorSystem* actorSystem) = 0;
 
-    virtual void StartGlobalWorker(NActors::TActorSystem* actorSystem, const TVector<TResourceManagerOptions>& resourceUploaderOptions, IMetricsRegistryPtr metricsRegistry) = 0;
+    virtual void StartGlobalWorker(
+        NActors::TActorSystem* actorSystem,
+        const TVector<TResourceManagerOptions>& resourceUploaderOptions,
+        IMetricsRegistryPtr metricsRegistry) = 0;
 
     virtual void StartCleaner(NActors::TActorSystem* actorSystem, const TMaybe<TString>& role) = 0;
 
@@ -51,7 +76,7 @@ public:
 
     virtual NActors::TActorId GetWrapper() = 0;
 
-    virtual NActors::TActorId GetWrapper(NActors::TActorSystem* actorSystem, const TString& proxyAddress, const TString& user, const TString& token) = 0;
+    virtual NActors::TActorId GetWrapper(NActors::TActorSystem* actorSystem, const TString& proxyAddress, const TString& user, const TString& token, const TString& jobProxySocketPath = {}) = 0;
 
     virtual TWorkerRuntimeData* GetRuntimeData() = 0;
 
@@ -60,6 +85,18 @@ public:
     virtual TString GetRevision() = 0;
 };
 
-ICoordinationHelper::TPtr CreateCoordiantionHelper(const NProto::TDqConfig::TYtCoordinator& config, const NProto::TDqConfig::TScheduler& schedulerConfig, const TString& role, ui16 interconnectPort, const TString& host, const TString& ip);
+ICoordinationHelper::TPtr CreateCoordiantionHelper(
+    const NProto::TDqConfig::TYtCoordinator& config,
+    const NProto::TDqConfig::TScheduler& schedulerConfig,
+    const TString& role,
+    ui16 interconnectPort,
+    const TString& host,
+    const TString& ip,
+    TGlobalWorkerManagerActorIdOptions actorIdOptions = {},
+    EGwmHostAddress gwmHostAddress = EGwmHostAddress::Hostname);
+
+// YT clients and upload locks only. No YtCoordinator config or worker node ID
+// is required; each request supplies the selected backend's credentials/prefix.
+ICoordinationHelper::TPtr CreateUploadCoordinationHelper(const TString& hostName);
 
 } // namespace NYql

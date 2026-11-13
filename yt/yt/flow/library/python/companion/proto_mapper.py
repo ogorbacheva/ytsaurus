@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 from yt.common import parts_to_uuid, uuid_to_parts
 
+from .computation import MessageIdSuffixMode
 from .context import RequestContext, ResponseContext
 from .job import Job
 from .row import (
@@ -19,7 +20,7 @@ from .row import (
     YT_TYPE_NAME_TO_TI,
     EMPTY_SCHEMA,
 )
-from .state import ExternalState, State, StatesHolder
+from .state import ExternalState, ProtoExternalState, State, StateFormat, StatesHolder
 from .stream import (
     FlowStreamsContext,
     RawStream,
@@ -259,59 +260,49 @@ def internal_states_from_proto(proto_states, key_schema) -> Dict[str, StatesHold
 
 
 def external_states_from_proto(proto_states, job_id, request_id, key_schema) -> Dict[str, StatesHolder]:
-    """Map proto TState list to dict of external StatesHolders."""
+    """Decode external states without marking loaded values modified."""
     states = {}
     for proto_state in proto_states:
-        if not proto_state.schema:
-            raise ValueError(
-                f"External state must have a schema (StateName: {proto_state.name}, "
-                f"JobId: {job_id}, RequestId: {request_id})"
-            )
-        state_schema = _table_schema_from_yson(proto_state.schema)
-        for state_item in proto_state.stateItems:
-            name = proto_state.name
-            if name not in states:
-                states[name] = StatesHolder(name, key_schema, state_schema)
-            row_key = WireProtocolReader(state_item.key).read_unversioned_row()
-            state_value = WireProtocolReader(state_item.state).read_unversioned_row()
-            states[name].load(
-                row_key,
-                ExternalState(
-                    reset=state_item.reset,
-                    state=Payload(state_value, state_schema),
-                ),
-            )
+        name = proto_state.name
+        context = f"StateName: {name}, JobId: {job_id}, RequestId: {request_id}"
+        try:
+            state_format = StateFormat(proto_state.format)
+        except ValueError as error:
+            raise ValueError(f"Unknown external state format ({context})") from error
+        if name in states:
+            raise ValueError(f"Duplicate external state ({context})")
+        proto_type = proto_state.proto_type
+        if state_format == StateFormat.SIMPLE_ROW:
+            if not proto_state.schema:
+                raise ValueError(f"External state must have a schema ({context})")
+            state_schema = _table_schema_from_yson(proto_state.schema)
+        else:
+            if not proto_type:
+                raise ValueError(f"Proto external state must have a proto_type ({context})")
+            state_schema = None
+        # Preserve the descriptor even when every row in the request is absent.
+        holder = StatesHolder(name, key_schema, state_schema, state_format=state_format, proto_type=proto_type)
+        states[name] = holder
+        for item in proto_state.stateItems:
+            row_key = WireProtocolReader(item.key).read_unversioned_row()
+            if state_format == StateFormat.PROTO:
+                value = ProtoExternalState(reset=item.reset, state=None if item.reset else bytes(item.state))
+            else:
+                value = ExternalState(
+                    reset=item.reset,
+                    state=(
+                        None
+                        if item.reset
+                        else Payload(WireProtocolReader(item.state).read_unversioned_row(), state_schema)
+                    ),
+                )
+            holder.load(row_key, value)
     return states
 
 
 def joined_external_states_from_proto(proto_states, job_id, request_id, key_schema) -> Dict[str, StatesHolder]:
-    """Map proto TState list to dict of read-only joined external StatesHolders.
-
-    Holders are populated via ``load()`` so the joined rows are never marked modified and are
-    never echoed back: joined external state is read-only at the protocol layer.
-    """
-    states = {}
-    for proto_state in proto_states:
-        if not proto_state.schema:
-            raise ValueError(
-                f"Joined external state must have a schema (StateName: {proto_state.name}, "
-                f"JobId: {job_id}, RequestId: {request_id})"
-            )
-        state_schema = _table_schema_from_yson(proto_state.schema)
-        for state_item in proto_state.stateItems:
-            name = proto_state.name
-            if name not in states:
-                states[name] = StatesHolder(name, key_schema, state_schema)
-            row_key = WireProtocolReader(state_item.key).read_unversioned_row()
-            state_value = WireProtocolReader(state_item.state).read_unversioned_row()
-            states[name].load(
-                row_key,
-                ExternalState(
-                    reset=state_item.reset,
-                    state=Payload(state_value, state_schema),
-                ),
-            )
-    return states
+    """Decode joined states; their holders are never included in the response."""
+    return external_states_from_proto(proto_states, job_id, request_id, key_schema)
 
 
 def internal_states_to_proto(states_holder: StatesHolder, TState, TStateItem):
@@ -322,24 +313,32 @@ def internal_states_to_proto(states_holder: StatesHolder, TState, TStateItem):
     for row_key, state_val in states_holder.modified_items():
         item = TStateItem()
         item.key = writer.write_unversioned_row(row_key)
-        item.reset = state_val.reset
-        if not state_val.reset and state_val.state is not None:
+        # A value that encodes to no bytes is no value, and the wire says that with a reset:
+        # the worker rejects a non-reset item with an empty payload.
+        item.reset = state_val.reset or not state_val.state
+        if not item.reset:
             item.state = state_val.state
         state.stateItems.append(item)
     return state
 
 
 def external_states_to_proto(states_holder: StatesHolder, TState, TStateItem):
-    """Map external StatesHolder to proto TState."""
+    """Encode modified external values, preserving protobuf presence and format."""
     state = TState()
     state.name = states_holder.name
+    if states_holder.state_format == StateFormat.PROTO:
+        state.format = int(StateFormat.PROTO)
+        state.proto_type = states_holder.proto_type
     writer = WireProtocolWriter()
-    for row_key, state_val in states_holder.modified_items():
+    for row_key, value in states_holder.modified_items():
         item = TStateItem()
         item.key = writer.write_unversioned_row(row_key)
-        item.reset = state_val.reset
-        if not state_val.reset and state_val.state is not None:
-            item.state = writer.write_unversioned_row(state_val.state.row)
+        item.reset = value.reset
+        if not value.reset and value.state is not None:
+            if states_holder.state_format == StateFormat.PROTO:
+                item.state = value.state
+            else:
+                item.state = writer.write_unversioned_row(value.state.row)
         state.stateItems.append(item)
     return state
 
@@ -422,18 +421,35 @@ def map_process_batch_response(stream_specs: StreamSpecs, response: ResponseCont
         for distribute in transform_result.distribute:
             group.distribute.append(distribute)
 
+        if transform_result.message_id_suffixes and len(transform_result.message_id_suffixes) != len(
+            transform_result.messages
+        ):
+            raise ValueError("Message ID suffixes count must match output messages count")
+
+        if any(suffix.mode != MessageIdSuffixMode.SEQUENCE_NUMBER for suffix in transform_result.message_id_suffixes):
+            for suffix in transform_result.message_id_suffixes:
+                proto_suffix = group.message_id_suffixes.add()
+                if suffix.mode == MessageIdSuffixMode.SEQUENCE_NUMBER:
+                    proto_suffix.mode = proto_module.TMessageIdSuffix.MIS_SEQUENCE_NUMBER
+                elif suffix.mode == MessageIdSuffixMode.PAYLOAD_HASH:
+                    proto_suffix.mode = proto_module.TMessageIdSuffix.MIS_PAYLOAD_HASH
+                else:
+                    proto_suffix.mode = proto_module.TMessageIdSuffix.MIS_USER_DEFINED
+                    proto_suffix.user_defined = suffix.value.encode("utf-8")
+
         for timer in transform_result.timers:
             group.timers.append(timer_to_proto(timer, TNewTimerProto))
 
         data.output.append(group)
 
-    # Only states changed via accessors are sent back; skip holders with no modifications.
+    # Only changed states are sent back; collect_modified() is what picks up the values changed
+    # in place, so holders with no modifications are skipped after it ran.
     for states_holder in response.internal_states.values():
-        if states_holder.has_modified():
+        if states_holder.collect_modified():
             data.internal_states.append(internal_states_to_proto(states_holder, TState, TStateItem))
 
     for states_holder in response.external_states.values():
-        if states_holder.has_modified():
+        if states_holder.collect_modified():
             data.external_states.append(external_states_to_proto(states_holder, TState, TStateItem))
 
     return data

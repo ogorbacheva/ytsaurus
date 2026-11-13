@@ -1,11 +1,15 @@
 GTEST()
 
+EXPLICIT_DATA()
+
 INCLUDE(${ARCADIA_ROOT}/yt/yt/flow/flow.make.inc)
 
 SRCS(
     endpoint_provider_ut.cpp
+    init_ut.cpp
     node_info_ut.cpp
     root_clients_cache_ut.cpp
+    job_proxy_client_ut.cpp
     vanilla_launcher_ut.cpp
 )
 
@@ -16,6 +20,8 @@ ELSE()
 ENDIF()
 
 PEERDIR(
+    library/cpp/testing/common
+    yt/yt/core/test_framework
     yt/yt/flow/library/cpp/misc/testing
     yt/yt/flow/library/cpp/runner
     yt/yt/library/program

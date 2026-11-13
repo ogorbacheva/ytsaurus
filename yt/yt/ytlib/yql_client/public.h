@@ -23,6 +23,20 @@ DEFINE_ENUM(EQueryType,
 YT_DEFINE_ERROR_ENUM(
     ((RequestThrottled)     (40100))
     ((YqlAgentBanned)       (40101))
+    ((YqlAgentNotReady)     (40102))
+);
+
+DEFINE_STRING_SERIALIZABLE_ENUM(EProgressPart,
+    ((YqlPlan)                (0))
+    ((YqlStatistics)          (1))
+    ((YqlProgress)            (2))
+    ((YqlTaskInfo)            (3))
+    ((YqlAst)                 (4))
+    ((YqlPlanTruncated)       (5))
+    ((YqlStatisticsTruncated) (6))
+    ((YqlProgressTruncated)   (7))
+    ((YqlTaskInfoTruncated)   (8))
+    ((YqlAstTruncated)        (9))
 );
 
 ////////////////////////////////////////////////////////////////////////////////

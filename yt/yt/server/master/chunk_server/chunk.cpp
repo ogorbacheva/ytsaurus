@@ -1,16 +1,15 @@
 #include "chunk.h"
 
-#include "chunk_list.h"
 #include "chunk_location.h"
 #include "chunk_tree_statistics.h"
-#include "helpers.h"
 #include "domestic_medium.h"
+#include "helpers.h"
 #include "private.h"
 
-#include <yt/yt/server/master/cell_master/serialize.h>
 #include <yt/yt/server/master/cell_master/bootstrap.h>
-
-#include <yt/yt/server/master/chunk_server/chunk_manager.h>
+#include <yt/yt/server/master/cell_master/config.h>
+#include <yt/yt/server/master/cell_master/config_manager.h>
+#include <yt/yt/server/master/cell_master/serialize.h>
 
 #include <yt/yt/server/master/node_tracker_server/node.h>
 
@@ -116,7 +115,7 @@ TChunkTreeStatistics TChunk::GetStatistics(bool includeReferencedHunkData) const
 
         if (includeReferencedHunkData) {
             if (auto hunkChunkRefsExt = ChunkMeta_->FindExtension<NTableClient::NProto::THunkChunkRefsExt>()) {
-                TEnumIndexedArray<NErasure::ECodec, int> codecToDataSize;
+                TEnumIndexedArray<NErasure::ECodec, i64> codecToDataSize;
                 for (const auto& protoRef : hunkChunkRefsExt->refs()) {
                     result.HunkDataWeight += protoRef.total_hunk_length();
                     result.LogicalHunkDataWeight += protoRef.total_hunk_length();
@@ -174,8 +173,8 @@ i64 TChunk::GetPartDiskSpace() const
     auto result = GetDiskSpace();
     auto codecId = GetErasureCodec();
     if (codecId != NErasure::ECodec::None) {
-        auto* codec = NErasure::GetCodec(codecId);
-        result /= codec->GetTotalPartCount();
+        auto* codec = NErasure::GetCodecOrThrow(codecId);
+        result /= codec->GetParams().TotalPartCount;
     }
 
     return result;
@@ -424,6 +423,22 @@ void TChunk::AddReplica(
     }
 }
 
+void TChunk::ClearLastSeenReplicas()
+{
+    if (!ReplicasData_) {
+        return;
+    }
+
+    if (ReplicasData_->StoredReplicaList().empty()) {
+        ReplicasData_.reset();
+        return;
+    }
+
+    auto lastSeenReplicas = ReplicasData_->MutableLastSeenReplicas();
+    std::fill(lastSeenReplicas.begin(), lastSeenReplicas.end(), InvalidNodeId);
+    ReplicasData_->LastSeenReplicaCount = 0;
+}
+
 void TChunk::RemoveReplica(
     TChunkLocationPtrWithReplicaIndex replica,
     bool approved)
@@ -589,8 +604,8 @@ bool TChunk::IsAvailable() const
 
         case EObjectType::ErasureChunk:
         case EObjectType::ErasureJournalChunk: {
-            auto* codec = NErasure::GetCodec(GetErasureCodec());
-            int dataPartCount = codec->GetDataPartCount();
+            auto* codec = NErasure::GetCodecOrThrow(GetErasureCodec());
+            int dataPartCount = codec->GetParams().DataPartCount;
             NErasure::TPartIndexSet missingIndexSet((1 << dataPartCount) - 1);
             for (auto replica : storedReplicas) {
                 missingIndexSet.reset(replica.GetReplicaIndex());
@@ -688,9 +703,9 @@ void TChunk::Seal(const TChunkSealInfo& info)
     // An approximation.
     auto diskSpace = info.uncompressed_data_size();
     if (IsErasure()) {
-        auto* codec = NErasure::GetCodec(GetErasureCodec());
+        auto* codec = NErasure::GetCodecOrThrow(GetErasureCodec());
         // NB: Chunk seal info contains statistics from a single replica hence we multiply.
-        diskSpace *= codec->GetTotalPartCount();
+        diskSpace *= codec->GetParams().TotalPartCount;
     }
 
     SetDiskSpace(diskSpace);
@@ -725,10 +740,10 @@ int TChunk::GetPhysicalReplicationFactor(int mediumIndex, const TChunkRequisitio
     }
 
     if (IsErasure()) {
-        auto* codec = NErasure::GetCodec(GetErasureCodec());
+        const auto& codecParams = NErasure::GetCodecOrThrow(GetErasureCodec())->GetParams();
         return mediumReplicationPolicy.GetDataPartsOnly()
-            ? codec->GetDataPartCount()
-            : codec->GetTotalPartCount();
+            ? codecParams.DataPartCount
+            : codecParams.TotalPartCount;
     } else {
         return mediumReplicationPolicy.GetReplicationFactor();
     }
@@ -746,8 +761,8 @@ int TChunk::GetMaxReplicasPerFailureDomain(
         }
 
         case EObjectType::ErasureChunk: {
-            auto* codec = NErasure::GetCodec(GetErasureCodec());
-            return codec->GetGuaranteedRepairablePartCount();
+            auto* codec = NErasure::GetCodecOrThrow(GetErasureCodec());
+            return codec->GetParams().GuaranteedRepairablePartCount;
         }
 
         case EObjectType::JournalChunk:

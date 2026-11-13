@@ -13560,6 +13560,14 @@ THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ====================COPYRIGHT====================
+// Copyright 2024 The gRPC Authors
+
+
+====================COPYRIGHT====================
+// Copyright 2024 gRPC authors.
+
+
+====================COPYRIGHT====================
 Copyright 2014 gRPC authors.
 
 
@@ -14608,34 +14616,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
---------------------contrib/libs/nayuki_md5--------------------
-====================COPYRIGHT====================
- * Copyright (c) 2016 Project Nayuki. (MIT License)
- * https://www.nayuki.io/page/fast-md5-hash-implementation-in-x86-assembly
-
-
-====================MIT====================
- * Copyright (c) 2016 Project Nayuki. (MIT License)
-
-
-====================MIT====================
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- * - The above copyright notice and this permission notice shall be included in
- *   all copies or substantial portions of the Software.
- * - The Software is provided "as is", without warranty of any kind, express or
- *   implied, including but not limited to the warranties of merchantability,
- *   fitness for a particular purpose and noninfringement. In no event shall the
- *   authors or copyright holders be liable for any claim, damages or other
- *   liability, whether in an action of contract, tort or otherwise, arising from,
- *   out of or in connection with the Software or the use or other dealings in the
- *   Software.
-
 
 --------------------contrib/libs/isa-l/erasure_code--------------------
 ====================BSD-3-Clause====================
@@ -15710,6 +15690,12 @@ trademarks mentioned herein are the property of their respective owners.
 
 --------------------contrib/restricted/boost/container--------------------
 ====================BSL-1.0====================
+ * Distributed under the Boost Software License, Version 1.0.
+ * (See accompanying file LICENSE_1_0.txt or copy at
+ * http://www.boost.org/LICENSE_1_0.txt)
+
+
+====================BSL-1.0====================
 ### License
 
 Distributed under the [Boost Software License, Version 1.0](http://www.boost.org/LICENSE_1_0.txt).
@@ -15822,6 +15808,12 @@ Distributed under the [Boost Software License, Version 1.0](http://www.boost.org
 
 
 ====================BSL-1.0====================
+// (C) Copyright Ion Gaztanaga 2024-2024. Distributed under the Boost
+// Software License, Version 1.0. (See accompanying file
+// LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+
+
+====================BSL-1.0====================
 // (C) Copyright Ion Gaztanaga 2025-2025. Distributed under the Boost
 // Software License, Version 1.0. (See accompanying file
 // LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -15923,6 +15915,12 @@ DEALINGS IN THE SOFTWARE.
 ====================CC0-1.0====================
   Doug Lea and released to the public domain, as explained at
   http://creativecommons.org/publicdomain/zero/1.0/ Send questions,
+
+
+====================COPYRIGHT====================
+ * Copyright 2025-2026 Joaquin M Lopez Munoz.
+ * Distributed under the Boost Software License, Version 1.0.
+ * (See accompanying file LICENSE_1_0.txt or copy at
 
 
 ====================COPYRIGHT====================
@@ -16045,6 +16043,12 @@ DEALINGS IN THE SOFTWARE.
 
 
 ====================COPYRIGHT====================
+// (C) Copyright Ion Gaztanaga 2024-2024. Distributed under the Boost
+// Software License, Version 1.0. (See accompanying file
+// LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+
+
+====================COPYRIGHT====================
 // (C) Copyright Ion Gaztanaga 2025-2025. Distributed under the Boost
 // Software License, Version 1.0. (See accompanying file
 // LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -16063,14 +16067,10 @@ DEALINGS IN THE SOFTWARE.
 
 
 ====================COPYRIGHT====================
+// (C) Copyright Joaquin M Lopez Munoz 2025-2026.
 // (C) Copyright Ion Gaztanaga 2026. Distributed under the Boost
 // Software License, Version 1.0. (See accompanying file
 // LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
-
-
-====================COPYRIGHT====================
-// (C) Copyright Joaquin M Lopez Munoz 2025-2026.
-// (C) Copyright Ion Gaztanaga 2025-2026.
 
 
 ====================COPYRIGHT====================
@@ -21738,6 +21738,10 @@ zlib.h -- interface of the 'zlib' general purpose compression library
  * Licensed under the CC0 Public Domain Dedication license.
 
 
+====================CC0-1.0====================
+ * SPDX-License-Identifier: CC0-1.0
+
+
 ====================COPYRIGHT====================
    Copyright (c) 1997-2000 Thai Open Source Software Center Ltd
    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
@@ -21815,6 +21819,10 @@ zlib.h -- interface of the 'zlib' general purpose compression library
    Copyright (c) 2026      Nick Begg <nick@stunttruck.net>
    Copyright (c) 2026      Kartik Kenchi <netliomax25@gmail.com>
    Copyright (c) 2026      Haris Hussain <hextheshadow0x@gmail.com>
+   Copyright (c) 2026      Evgeny Kotkov <kotkov@apache.org>
+   Copyright (c) 2026      Darren Carreras <carrerasdarren@gmail.com>
+   Copyright (c) 2026      Alberto Maschietto <albertomaschietto9@gmail.com>
+   Copyright (c) 2026      Zeyou Liu <zeyouliu@tencent.com>
    Licensed under the MIT license:
 
 
@@ -21825,7 +21833,7 @@ zlib.h -- interface of the 'zlib' general purpose compression library
    Copyright (c) 2002      Greg Stein <gstein@users.sourceforge.net>
    Copyright (c) 2002-2016 Karl Waclawek <karl@waclawek.net>
    Copyright (c) 2005-2009 Steven Solie <steven@solie.ca>
-   Copyright (c) 2016-2024 Sebastian Pipping <sebastian@pipping.org>
+   Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
    Copyright (c) 2016      Pascal Cuoq <cuoq@trust-in-soft.com>
    Copyright (c) 2016      Don Lewis <truckman@apache.org>
    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
@@ -21839,6 +21847,7 @@ zlib.h -- interface of the 'zlib' general purpose compression library
    Copyright (c) 2023      Hanno Böck <hanno@gentoo.org>
    Copyright (c) 2025      Alfonso Gregory <gfunni234@gmail.com>
    Copyright (c) 2026      Nick Begg <nick@stunttruck.net>
+   Copyright (c) 2026      Kartik Kenchi <netliomax25@gmail.com>
    Licensed under the MIT license:
 
 
@@ -21847,7 +21856,7 @@ zlib.h -- interface of the 'zlib' general purpose compression library
    Copyright (c) 2000      Clark Cooper <coopercc@users.sourceforge.net>
    Copyright (c) 2002      Fred L. Drake, Jr. <fdrake@users.sourceforge.net>
    Copyright (c) 2002-2005 Karl Waclawek <karl@waclawek.net>
-   Copyright (c) 2016-2024 Sebastian Pipping <sebastian@pipping.org>
+   Copyright (c) 2016-2026 Sebastian Pipping <sebastian@pipping.org>
    Copyright (c) 2017      Rhodri James <rhodri@wildebeest.org.uk>
    Licensed under the MIT license:
 
@@ -21937,6 +21946,7 @@ zlib.h -- interface of the 'zlib' general purpose compression library
    Copyright (c) 2019      David Loffredo <loffredo@steptools.com>
    Copyright (c) 2023-2024 Sony Corporation / Snild Dolkow <snild@sony.com>
    Copyright (c) 2024      Taichi Haradaguchi <20001722@ymail.ne.jp>
+   Copyright (c) 2026      Matthew Wozniczka <mattheww@simba.com>
    Licensed under the MIT license:
 
 
@@ -21964,7 +21974,7 @@ zlib.h -- interface of the 'zlib' general purpose compression library
 
 
 ====================COPYRIGHT====================
-   Copyright (c) 2022 Sebastian Pipping <sebastian@pipping.org>
+   Copyright (c) 2022-2026 Sebastian Pipping <sebastian@pipping.org>
    Licensed under the MIT license:
 
 
@@ -21996,29 +22006,6 @@ Sebastian Pipping
 Steven Solie
 
 
-====================JSON====================
-   Licensed under the MIT license:
-
-   Permission is  hereby granted,  free of charge,  to any  person obtaining
-   a  copy  of  this  software   and  associated  documentation  files  (the
-   "Software"),  to  deal in  the  Software  without restriction,  including
-   without  limitation the  rights  to use,  copy,  modify, merge,  publish,
-   distribute, sublicense, and/or sell copies of the Software, and to permit
-   persons  to whom  the Software  is  furnished to  do so,  subject to  the
-   following conditions:
-
-   The above copyright  notice and this permission notice  shall be included
-   in all copies or substantial portions of the Software.
-
-   THE  SOFTWARE  IS  PROVIDED  "AS  IS",  WITHOUT  WARRANTY  OF  ANY  KIND,
-   EXPRESS  OR IMPLIED,  INCLUDING  BUT  NOT LIMITED  TO  THE WARRANTIES  OF
-   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
-   NO EVENT SHALL THE AUTHORS OR  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-   DAMAGES OR  OTHER LIABILITY, WHETHER  IN AN  ACTION OF CONTRACT,  TORT OR
-   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-   USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
 ====================MIT====================
    Licensed under the MIT license:
 
@@ -22042,6 +22029,10 @@ Steven Solie
    DAMAGES OR  OTHER LIABILITY, WHETHER  IN AN  ACTION OF CONTRACT,  TORT OR
    OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
    USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+====================MIT====================
+   SPDX-License-Identifier: MIT
 
 
 ====================MIT====================
@@ -25108,3 +25099,31 @@ licence: MIT
 
 ====================Public-Domain====================
 Public domain.
+
+
+--------------------contrib/libs/nayuki_md5--------------------
+====================COPYRIGHT====================
+ * Copyright (c) 2016 Project Nayuki. (MIT License)
+ * https://www.nayuki.io/page/fast-md5-hash-implementation-in-x86-assembly
+
+
+====================MIT====================
+ * Copyright (c) 2016 Project Nayuki. (MIT License)
+
+
+====================MIT====================
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ * - The above copyright notice and this permission notice shall be included in
+ *   all copies or substantial portions of the Software.
+ * - The Software is provided "as is", without warranty of any kind, express or
+ *   implied, including but not limited to the warranties of merchantability,
+ *   fitness for a particular purpose and noninfringement. In no event shall the
+ *   authors or copyright holders be liable for any claim, damages or other
+ *   liability, whether in an action of contract, tort or otherwise, arising from,
+ *   out of or in connection with the Software or the use or other dealings in the
+ *   Software.

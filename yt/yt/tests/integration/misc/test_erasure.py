@@ -130,8 +130,10 @@ class TestErasure(TestErasureBase):
         assert get("//tmp/table/@chunk_count") == 0
 
         write_table("//tmp/table", {"b": "hello"})
-        # TODO(gritukan): Striped erasure chunks are not meant to be read.
-        if not enable_striped_erasure:
+        if enable_striped_erasure:
+            with raises_yt_error("Reading striped erasure chunk"):
+                read_table("//tmp/table")
+        else:
             assert read_table("//tmp/table") == [{"b": "hello"}]
         assert get("//tmp/table/@row_count") == 1
 
@@ -656,7 +658,7 @@ class TestDynamicTablesErasure(TestErasureBase):
 
     @authors("akozhikhov")
     def test_erasure_reader_failures(self):
-        set("//sys/@config/tablet_manager/store_chunk_reader", {
+        set("//sys/@config/tablet_manager/io_config_template_patch/store_reader_config", {
             "pass_count": 1,
             "retry_count": 1,
             "slow_reader_expiration_timeout": 1000,

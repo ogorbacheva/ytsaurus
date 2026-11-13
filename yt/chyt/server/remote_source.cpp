@@ -6,8 +6,14 @@
 #include "secondary_query_header.h"
 #include "format.h"
 
+#include <Columns/ColumnString.h>
+
+#include <Core/ColumnWithTypeAndName.h>
 #include <Core/Settings.h>
 
+#include <DataTypes/DataTypeString.h>
+
+#include <Parsers/ASTExplainQuery.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Parsers/ASTSelectQuery.h>
 
@@ -246,6 +252,7 @@ DB::Pipe CreateRemoteSource(
     }
 
     bool isInsert = queryAst->as<DB::ASTInsertQuery>();
+    bool isExplain = queryAst->as<DB::ASTExplainQuery>();
 
     std::optional<DB::RemoteQueryExecutor::Extension> extension;
     if (taskIterator) {
@@ -304,7 +311,7 @@ DB::Pipe CreateRemoteSource(
     bool addExtremes = false;
     bool asyncRead = false;
     bool asyncQuerySending = false;
-    if (!isInsert && processingStage == DB::QueryProcessingStage::Complete) {
+    if (!isExplain && !isInsert && processingStage == DB::QueryProcessingStage::Complete) {
         addTotals = queryAst->as<DB::ASTSelectQuery &>().group_by_with_totals;
         addExtremes = context->getSettingsRef()[DB::Setting::extremes];
     }
@@ -399,8 +406,15 @@ void TDistributedQueryExecutor::Fire()
 
     YT_VERIFY(!DistributeInfo_.SecondaryQueries.empty());
     bool isInsert = DistributeInfo_.SecondaryQueries[0].Query->as<DB::ASTInsertQuery>();
+    bool isExplain = DistributeInfo_.SecondaryQueries[0].Query->as<DB::ASTExplainQuery>();
     DB::Block blockHeader;
-    if (!isInsert) {
+    if (isExplain) {
+        blockHeader = DB::Block{DB::ColumnWithTypeAndName{
+            DB::ColumnString::create(),
+            std::make_shared<DB::DataTypeString>(),
+            "explain",
+        }};
+    } else if (!isInsert) {
         auto queryTree = QueryAnalysisResult_->QueryTree;
         blockHeader = DB::InterpreterSelectQueryAnalyzer::getSampleBlock(
             queryTree,
@@ -432,7 +446,7 @@ void TDistributedQueryExecutor::Fire()
             Logger,
             DistributeInfo_.TaskIterator);
 
-        if (!isInsert && !DB::blocksHaveEqualStructure(blockHeader, DistributeInfo_.OutputHeader)) {
+        if (!isExplain && !isInsert && !DB::blocksHaveEqualStructure(blockHeader, DistributeInfo_.OutputHeader)) {
             auto renameActionsDAG = DB::ActionsDAG::makeConvertingActions(
                 blockHeader.getColumnsWithTypeAndName(),
                 DistributeInfo_.OutputHeader.getColumnsWithTypeAndName(),
@@ -462,10 +476,20 @@ DB::Pipes TDistributedQueryExecutor::ExtractPipes()
 DB::Pipe TDistributedQueryExecutor::ExtractUnitedPipe()
 {
     auto pipe = DB::Pipe::unitePipes(std::move(Pipes_));
+    // This concat only makes sense for `ORDER BY ... LIMIT N` queries: since pipes are concatenated,
+    // a step above the ReadFromYTRemote step will read one pipe after another and stop the ReadFromYTRemote step
+    // execution as soon as its output reaches N rows, allowing to fire fewer secondary nodes and read less data.
+    //
+    // However, for `ORDER BY ...` queries without `LIMIT` this will prevent parallelization from happening and make
+    // secondary queries work one by one instead of simultaneously.
+    // TODO(ivanzhukov):
+    //   1. remove this concat for queries without LIMIT;
+    //   2. (optimization) dynamically decide if we should add it for LIMIT queries. E.g. it makes sense for LIMIT queries
+    //      without any WHERE filtering, but not so much for LIMIT N, where N is far greater than one secondary node
+    //      could process.
     if (QueryAnalysisResult_->ReadInOrderMode != EReadInOrderMode::None && !pipe.empty() && pipe.numOutputPorts() > 1) {
         pipe.addTransform(std::make_shared<DB::ConcatProcessor>(pipe.getHeader(), pipe.numOutputPorts()));
     }
-
     return pipe;
 }
 
@@ -529,6 +553,11 @@ std::vector<std::shared_ptr<IChytIndexStat>> TDistributedQueryExecutor::ExtractI
 DB::Header TDistributedQueryExecutor::GetOutputHeader() const
 {
     return DistributeInfo_.OutputHeader;
+}
+
+const DB::SortDescription& TDistributedQueryExecutor::GetSortDescription() const
+{
+    return DistributeInfo_.CoordinatorSortDescription;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

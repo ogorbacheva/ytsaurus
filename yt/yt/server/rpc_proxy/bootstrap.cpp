@@ -74,6 +74,7 @@
 #include <yt/yt/core/bus/server.h>
 
 #include <yt/yt/core/bus/tcp/config.h>
+#include <yt/yt/core/bus/tcp/dispatcher.h>
 #include <yt/yt/core/bus/tcp/server.h>
 
 #include <yt/yt/core/concurrency/action_queue.h>
@@ -350,12 +351,6 @@ void TBootstrap::DoStart()
 
     QueryCorpusReporter_ = MakeQueryCorpusReporter(RootClient_);
 
-    // NB(pavook):
-    // We don't wait for key rotation completion anywhere in bootstrap, because proxy bootstrap
-    // should be possible even in master read-only mode.
-    // So, we just throw on all signature-requiring operations until the key rotation actually happens.
-    YT_UNUSED_FUTURE(SignatureComponents_->StartRotation());
-
     auto createApiService = [&] (const NAuth::IAuthenticationManagerPtr& authenticationManager) {
         return CreateApiService(
             Config_->ApiService,
@@ -387,12 +382,13 @@ void TBootstrap::DoStart()
         TvmOnlyRpcServer_->RegisterService(TvmOnlyApiService_);
     }
 
-    if (Config_->EnableShuffleService) {
+    {
         auto localServerAddress = BuildServiceAddress(GetLocalHostName(), Config_->RpcPort);
         ShuffleService_ = CreateShuffleService(
             GetWorkerInvoker(ShuffleExecutionPoolName, DefaultExecutionTag),
             RootClient_,
-            localServerAddress);
+            localServerAddress,
+            NativeAuthenticator_);
         RpcServer_->RegisterService(ShuffleService_);
         Connection_->RegisterShuffleService(localServerAddress);
     }
@@ -415,6 +411,12 @@ void TBootstrap::DoStart()
     }
 
     YT_TLOG_INFO("Dynamic config loaded");
+
+    // NB(pavook):
+    // We don't wait for key rotation completion anywhere in bootstrap, because proxy bootstrap
+    // should be possible even in master read-only mode.
+    // So, we just throw on all signature-requiring operations until the key rotation actually happens.
+    YT_UNUSED_FUTURE(SignatureComponents_->StartRotation());
 
     QueryCorpusReporter_->Reconfigure(DynamicConfigManager_->GetConfig()->Api->QueryCorpusReporter);
 
@@ -569,7 +571,7 @@ void TBootstrap::ReconfigureConnection(
 }
 
 void TBootstrap::OnDynamicConfigChanged(
-    const TProxyDynamicConfigPtr& /*oldConfig*/,
+    const TProxyDynamicConfigPtr& oldConfig,
     const TProxyDynamicConfigPtr& newConfig)
 {
     TSingletonManager::Reconfigure(newConfig);
@@ -588,8 +590,11 @@ void TBootstrap::OnDynamicConfigChanged(
 
     ReconfigureConnection(newConfig, BundleDynamicConfigManager_->GetConfig());
 
-    if (newConfig->SignatureComponents) {
-        YT_UNUSED_FUTURE(SignatureComponents_->Reconfigure(newConfig->SignatureComponents));
+    if (newConfig->SignatureComponents || oldConfig->SignatureComponents) {
+        YT_UNUSED_FUTURE(SignatureComponents_->Reconfigure(
+            newConfig->SignatureComponents
+                ? newConfig->SignatureComponents
+                : Config_->SignatureComponents));
     }
 
     Connection_->GetMasterCellDirectorySynchronizer()->ApplyDynamicConfigOverride(newConfig->MasterCellDirectorySynchronizer);
@@ -602,6 +607,16 @@ void TBootstrap::OnDynamicConfigChanged(
     if (TvmOnlyAuthenticationManager_) {
         TvmOnlyAuthenticationManager_->Reconfigure(newConfig->Auth);
     }
+
+    NTcp::TDispatcher::Get()->GetXferPoller()->SetWorkerPool(
+        newConfig->UseWorkerPoolForBusXfer
+            ? WorkerPool_
+            : nullptr);
+
+    NRpc::TDispatcher::Get()->SetWorkerPool(
+        newConfig->UseWorkerPoolForRpc
+            ? WorkerPool_
+            : nullptr);
 }
 
 void TBootstrap::OnBundleDynamicConfigChanged(

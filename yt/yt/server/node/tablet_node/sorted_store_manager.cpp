@@ -53,6 +53,8 @@
 
 #include <yt/yt/client/object_client/helpers.h>
 
+#include <yt/yt/core/concurrency/periodic_yielder.h>
+
 #include <yt/yt/core/misc/collection_helpers.h>
 #include <yt/yt/core/misc/finally.h>
 
@@ -1073,6 +1075,7 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
                 .HunkChunkReaderStatistics = CreateHunkChunkReaderStatistics(
                     tabletSnapshot->Settings.MountConfig->EnableHunkColumnarProfiling,
                     tabletSnapshot->PhysicalSchema),
+                .MemoryUsageTracker = memoryUsageTracker,
             });
 
         if (mountConfig->InsertMetaUponStoreUpdate) {
@@ -1143,7 +1146,7 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
             TColumnFilter(),
             mountConfig,
             currentTimestamp,
-            majorTimestamp,
+            mountConfig->ForceZeroMajorTimestamp ? MinTimestamp : majorTimestamp,
             tabletSnapshot->ColumnEvaluator,
             tabletSnapshot->CustomRuntimeData,
             /*mergeRowsOnFlush*/ false,
@@ -1195,7 +1198,11 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
             .MaxRowsPerRead = MaxRowsPerFlushRead
         };
 
+        auto periodicYielder = CreatePeriodicYielder(TDuration::MilliSeconds(30));
+
         while (true) {
+            periodicYielder.TryYield();
+
             // NB: Memory store reader is always synchronous.
             auto batch = reader->Read(readOptions);
             if (!batch || batch->IsEmpty()) {
@@ -1308,21 +1315,16 @@ TStoreFlushCallback TSortedStoreManager::MakeStoreFlushCallback(
             hunkChunkDiskSpace = getDiskSpace(hunkChunkWriter, tabletSnapshot->Settings.HunkWriterOptions);
         }
 
-        YT_LOG_DEBUG("Sorted store flushed (StoreId: %v, StoreChunkId: %v, StoreChunkDiskSpace: %v%v, RowsInStore %v, FoundCacheRows: %v, DiscardedCacheRows: %v, FailedByMemoryCacheRows: %v)",
-            store->GetId(),
-            storeChunkWriter->GetChunkId(),
-            getDiskSpace(storeWriter, tabletSnapshot->Settings.StoreWriterOptions),
-            MakeFormatterWrapper([&] (auto* builder) {
-                if (hunkChunkPayloadWriter->HasHunks()) {
-                    builder->AppendFormat(", HunkChunkId: %v, HunkChunkDiskSpace: %v",
-                        hunkChunkPayloadWriter->GetChunkId(),
-                        getDiskSpace(hunkChunkWriter, tabletSnapshot->Settings.HunkWriterOptions));
-                }
-            }),
-            rowsInStore,
-            cacheUpdateStatistics.FoundRows,
-            cacheUpdateStatistics.DiscardedRows,
-            cacheUpdateStatistics.FailedByMemoryRows);
+        YT_TLOG_DEBUG("Sorted store flushed")
+            .With("StoreId", store->GetId())
+            .With("StoreChunkId", storeChunkWriter->GetChunkId())
+            .With("StoreChunkDiskSpace", getDiskSpace(storeWriter, tabletSnapshot->Settings.StoreWriterOptions))
+            .WithIf(hunkChunkId.has_value(), "HunkChunkId", hunkChunkId)
+            .WithIf(hunkChunkDiskSpace.has_value(), "HunkChunkDiskSpace", hunkChunkDiskSpace)
+            .With("RowsInStore", rowsInStore)
+            .With("FoundCacheRows", cacheUpdateStatistics.FoundRows)
+            .With("DiscardedCacheRows", cacheUpdateStatistics.DiscardedRows)
+            .With("FailedByMemoryCacheRows", cacheUpdateStatistics.FailedByMemoryRows);
 
         TStoreFlushResult result;
 
@@ -1634,18 +1636,18 @@ TSortedDynamicStore::TRowBlockedHandler TSortedStoreManager::CreateRowBlockedHan
 }
 
 void TSortedStoreManager::DrainSerializationHeap(
-    TLockSerializationState* serializationStuff,
+    TLockSerializationState* serializationState,
     int lockIndex,
     bool onAfterSnapshotLoaded)
 {
-    auto barrierTimestamp = serializationStuff->PreparedTransactions.empty()
+    auto barrierTimestamp = serializationState->PreparedTransactions.empty()
         ? MaxTimestamp
-        : serializationStuff->PreparedTransactions.begin()->PrepareTimestamp;
+        : serializationState->PreparedTransactions.begin()->PrepareTimestamp;
 
-    while (!serializationStuff->SerializingTransactions.empty() &&
-        serializationStuff->CommitTimestampOfTopSerializingTransaction() < barrierTimestamp)
+    while (!serializationState->SerializingTransactions.empty() &&
+        serializationState->CommitTimestampOfTopSerializingTransaction() < barrierTimestamp)
     {
-        auto transactionToSerialize = serializationStuff->SerializingTransactions.extract_min();
+        auto transactionToSerialize = serializationState->SerializingTransactions.extract_min();
         auto* transaction = transactionToSerialize.SharedWriteTransaction.Transaction;
         Tablet_->GetTabletWriteManager()->OnTransactionPartCommitted(
             transaction,

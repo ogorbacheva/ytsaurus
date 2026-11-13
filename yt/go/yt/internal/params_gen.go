@@ -710,6 +710,7 @@ func writeStartTxOptions(w *yson.Writer, o *yt.StartTxOptions) {
 		w.Any(o.Attributes)
 	}
 	writeTransactionOptions(w, o.TransactionOptions)
+	writeMutatingOptions(w, o.MutatingOptions)
 	writeReadRetryOptions(w, o.ReadRetryOptions)
 }
 
@@ -737,6 +738,7 @@ func logStartTxOptions(o *yt.StartTxOptions) []log.Field {
 		fields = append(fields, log.Any("attributes", o.Attributes))
 	}
 	fields = append(fields, logTransactionOptions(o.TransactionOptions)...)
+	fields = append(fields, logMutatingOptions(o.MutatingOptions)...)
 	fields = append(fields, logReadRetryOptions(o.ReadRetryOptions)...)
 	return fields
 }
@@ -2100,6 +2102,10 @@ func writeReshardTableOptions(w *yson.Writer, o *yt.ReshardTableOptions) {
 		w.MapKeyString("tablet_count")
 		w.Any(o.TabletCount)
 	}
+	if o.CumulativeDataWeights != nil {
+		w.MapKeyString("cumulative_data_weights")
+		w.Any(o.CumulativeDataWeights)
+	}
 	writeTabletRangeOptions(w, o.TabletRangeOptions)
 	writeMutatingOptions(w, o.MutatingOptions)
 }
@@ -2114,6 +2120,9 @@ func logReshardTableOptions(o *yt.ReshardTableOptions) []log.Field {
 	}
 	if o.TabletCount != nil {
 		fields = append(fields, log.Any("tablet_count", o.TabletCount))
+	}
+	if o.CumulativeDataWeights != nil {
+		fields = append(fields, log.Any("cumulative_data_weights", o.CumulativeDataWeights))
 	}
 	fields = append(fields, logTabletRangeOptions(o.TabletRangeOptions)...)
 	fields = append(fields, logMutatingOptions(o.MutatingOptions)...)
@@ -2169,6 +2178,7 @@ func writeAlterTableReplicaOptions(w *yson.Writer, o *yt.AlterTableReplicaOption
 		w.MapKeyString("mode")
 		w.Any(o.Mode)
 	}
+	writeMutatingOptions(w, o.MutatingOptions)
 }
 
 func logAlterTableReplicaOptions(o *yt.AlterTableReplicaOptions) []log.Field {
@@ -2182,6 +2192,7 @@ func logAlterTableReplicaOptions(o *yt.AlterTableReplicaOptions) []log.Field {
 	if o.Mode != nil {
 		fields = append(fields, log.Any("mode", o.Mode))
 	}
+	fields = append(fields, logMutatingOptions(o.MutatingOptions)...)
 	return fields
 }
 
@@ -2213,6 +2224,10 @@ func writeLookupRowsOptions(w *yson.Writer, o *yt.LookupRowsOptions) {
 		w.MapKeyString("column_names")
 		w.Any(o.Columns)
 	}
+	if o.VersionedReadOptions != nil {
+		w.MapKeyString("versioned_read_options")
+		w.Any(o.VersionedReadOptions)
+	}
 	writeTransactionOptions(w, o.TransactionOptions)
 }
 
@@ -2229,6 +2244,9 @@ func logLookupRowsOptions(o *yt.LookupRowsOptions) []log.Field {
 	}
 	if o.Columns != nil {
 		fields = append(fields, log.Any("column_names", o.Columns))
+	}
+	if o.VersionedReadOptions != nil {
+		fields = append(fields, log.Any("versioned_read_options", o.VersionedReadOptions))
 	}
 	fields = append(fields, logTransactionOptions(o.TransactionOptions)...)
 	return fields
@@ -2419,6 +2437,10 @@ func writeSelectRowsOptions(w *yson.Writer, o *yt.SelectRowsOptions) {
 		w.MapKeyString("timestamp")
 		w.Any(o.Timestamp)
 	}
+	if o.VersionedReadOptions != nil {
+		w.MapKeyString("versioned_read_options")
+		w.Any(o.VersionedReadOptions)
+	}
 	if o.PlaceholderValues != nil {
 		w.MapKeyString("placeholder_values")
 		w.Any(o.PlaceholderValues)
@@ -2446,6 +2468,9 @@ func logSelectRowsOptions(o *yt.SelectRowsOptions) []log.Field {
 	}
 	if o.Timestamp != nil {
 		fields = append(fields, log.Any("timestamp", o.Timestamp))
+	}
+	if o.VersionedReadOptions != nil {
+		fields = append(fields, log.Any("versioned_read_options", o.VersionedReadOptions))
 	}
 	if o.PlaceholderValues != nil {
 		fields = append(fields, log.Any("placeholder_values", o.PlaceholderValues))
@@ -2801,6 +2826,7 @@ func writeStartQueryOptions(w *yson.Writer, o *yt.StartQueryOptions) {
 		w.Any(o.Secrets)
 	}
 	writeQueryTrackerOptions(w, o.QueryTrackerOptions)
+	writeMutatingOptions(w, o.MutatingOptions)
 }
 
 func logStartQueryOptions(o *yt.StartQueryOptions) []log.Field {
@@ -2827,6 +2853,7 @@ func logStartQueryOptions(o *yt.StartQueryOptions) []log.Field {
 		fields = append(fields, log.Any("secrets", o.Secrets))
 	}
 	fields = append(fields, logQueryTrackerOptions(o.QueryTrackerOptions)...)
+	fields = append(fields, logMutatingOptions(o.MutatingOptions)...)
 	return fields
 }
 
@@ -3172,6 +3199,10 @@ func writeTableFragmentWriterOptions(w *yson.Writer, o *yt.TableFragmentWriterOp
 	}
 	w.MapKeyString("table_writer")
 	w.Any(o.TableWriter)
+	if o.Format != nil {
+		w.MapKeyString("input_format")
+		w.Any(o.Format)
+	}
 	if o.MaxRowBufferSize != nil {
 		w.MapKeyString("max_row_buffer_size")
 		w.Any(o.MaxRowBufferSize)
@@ -3186,9 +3217,84 @@ func logTableFragmentWriterOptions(o *yt.TableFragmentWriterOptions) []log.Field
 	if o.TableWriter != nil {
 		fields = append(fields, log.Any("table_writer", o.TableWriter))
 	}
+	if o.Format != nil {
+		fields = append(fields, log.Any("input_format", o.Format))
+	}
 	if o.MaxRowBufferSize != nil {
 		fields = append(fields, log.Any("max_row_buffer_size", o.MaxRowBufferSize))
 	}
+	return fields
+}
+
+func writeStartDistributedWriteFileSessionOptions(w *yson.Writer, o *yt.StartDistributedWriteFileSessionOptions) {
+	if o == nil {
+		return
+	}
+	if o.CookieCount != nil {
+		w.MapKeyString("cookie_count")
+		w.Any(o.CookieCount)
+	}
+	if o.SessionTimeout != nil {
+		w.MapKeyString("session_timeout")
+		w.Any(o.SessionTimeout)
+	}
+	writeTransactionOptions(w, o.TransactionOptions)
+}
+
+func logStartDistributedWriteFileSessionOptions(o *yt.StartDistributedWriteFileSessionOptions) []log.Field {
+	if o == nil {
+		return nil
+	}
+	fields := []log.Field{}
+	if o.CookieCount != nil {
+		fields = append(fields, log.Any("cookie_count", o.CookieCount))
+	}
+	if o.SessionTimeout != nil {
+		fields = append(fields, log.Any("session_timeout", o.SessionTimeout))
+	}
+	fields = append(fields, logTransactionOptions(o.TransactionOptions)...)
+	return fields
+}
+
+func writePingDistributedWriteFileSessionOptions(w *yson.Writer, o *yt.PingDistributedWriteFileSessionOptions) {
+	if o == nil {
+		return
+	}
+}
+
+func logPingDistributedWriteFileSessionOptions(o *yt.PingDistributedWriteFileSessionOptions) []log.Field {
+	if o == nil {
+		return nil
+	}
+	fields := []log.Field{}
+	return fields
+}
+
+func writeFinishDistributedWriteFileSessionOptions(w *yson.Writer, o *yt.FinishDistributedWriteFileSessionOptions) {
+	if o == nil {
+		return
+	}
+}
+
+func logFinishDistributedWriteFileSessionOptions(o *yt.FinishDistributedWriteFileSessionOptions) []log.Field {
+	if o == nil {
+		return nil
+	}
+	fields := []log.Field{}
+	return fields
+}
+
+func writeFileFragmentWriterOptions(w *yson.Writer, o *yt.FileFragmentWriterOptions) {
+	if o == nil {
+		return
+	}
+}
+
+func logFileFragmentWriterOptions(o *yt.FileFragmentWriterOptions) []log.Field {
+	if o == nil {
+		return nil
+	}
+	fields := []log.Field{}
 	return fields
 }
 
@@ -3871,6 +3977,10 @@ func (p *StartTxParams) MarshalHTTP(w *yson.Writer) {
 
 func (p *StartTxParams) TransactionOptions() **yt.TransactionOptions {
 	return &p.options.TransactionOptions
+}
+
+func (p *StartTxParams) MutatingOptions() **yt.MutatingOptions {
+	return &p.options.MutatingOptions
 }
 
 func (p *StartTxParams) ReadRetryOptions() **yt.ReadRetryOptions {
@@ -6926,6 +7036,10 @@ func (p *AlterTableReplicaParams) MarshalHTTP(w *yson.Writer) {
 	writeAlterTableReplicaOptions(w, p.options)
 }
 
+func (p *AlterTableReplicaParams) MutatingOptions() **yt.MutatingOptions {
+	return &p.options.MutatingOptions
+}
+
 type CreateTableBackupParams struct {
 	verb     Verb
 	manifest yt.BackupManifest
@@ -7065,6 +7179,10 @@ func (p *StartQueryParams) MarshalHTTP(w *yson.Writer) {
 
 func (p *StartQueryParams) QueryTrackerOptions() **yt.QueryTrackerOptions {
 	return &p.options.QueryTrackerOptions
+}
+
+func (p *StartQueryParams) MutatingOptions() **yt.MutatingOptions {
+	return &p.options.MutatingOptions
 }
 
 type AbortQueryParams struct {
@@ -7867,6 +7985,173 @@ func (p *WriteTableFragmentParams) MarshalHTTP(w *yson.Writer) {
 	w.MapKeyString("cookie")
 	w.Any(p.cookie)
 	writeTableFragmentWriterOptions(w, p.options)
+}
+
+type StartDistributedWriteFileSessionParams struct {
+	verb    Verb
+	path    ypath.YPath
+	options *yt.StartDistributedWriteFileSessionOptions
+}
+
+func NewStartDistributedWriteFileSessionParams(
+	path ypath.YPath,
+	options *yt.StartDistributedWriteFileSessionOptions,
+) *StartDistributedWriteFileSessionParams {
+	if options == nil {
+		options = &yt.StartDistributedWriteFileSessionOptions{}
+	}
+	optionsCopy := *options
+	return &StartDistributedWriteFileSessionParams{
+		Verb("start_distributed_write_file_session"),
+		path,
+		&optionsCopy,
+	}
+}
+
+func (p *StartDistributedWriteFileSessionParams) HTTPVerb() Verb {
+	return p.verb
+}
+func (p *StartDistributedWriteFileSessionParams) YPath() (ypath.YPath, bool) {
+	return p.path, true
+}
+func (p *StartDistributedWriteFileSessionParams) Log() []log.Field {
+	fields := []log.Field{
+		log.Any("path", p.path),
+	}
+	fields = append(fields, logStartDistributedWriteFileSessionOptions(p.options)...)
+	return fields
+}
+
+func (p *StartDistributedWriteFileSessionParams) MarshalHTTP(w *yson.Writer) {
+	w.MapKeyString("path")
+	w.Any(p.path)
+	writeStartDistributedWriteFileSessionOptions(w, p.options)
+}
+
+func (p *StartDistributedWriteFileSessionParams) TransactionOptions() **yt.TransactionOptions {
+	return &p.options.TransactionOptions
+}
+
+type PingDistributedWriteFileSessionParams struct {
+	verb    Verb
+	session yt.DistributedWriteFileSession
+	options *yt.PingDistributedWriteFileSessionOptions
+}
+
+func NewPingDistributedWriteFileSessionParams(
+	session yt.DistributedWriteFileSession,
+	options *yt.PingDistributedWriteFileSessionOptions,
+) *PingDistributedWriteFileSessionParams {
+	if options == nil {
+		options = &yt.PingDistributedWriteFileSessionOptions{}
+	}
+	optionsCopy := *options
+	return &PingDistributedWriteFileSessionParams{
+		Verb("ping_distributed_write_file_session"),
+		session,
+		&optionsCopy,
+	}
+}
+
+func (p *PingDistributedWriteFileSessionParams) HTTPVerb() Verb {
+	return p.verb
+}
+func (p *PingDistributedWriteFileSessionParams) YPath() (ypath.YPath, bool) {
+	return nil, false
+}
+func (p *PingDistributedWriteFileSessionParams) Log() []log.Field {
+	fields := []log.Field{}
+	fields = append(fields, logPingDistributedWriteFileSessionOptions(p.options)...)
+	return fields
+}
+
+func (p *PingDistributedWriteFileSessionParams) MarshalHTTP(w *yson.Writer) {
+	w.MapKeyString("session")
+	w.Any(p.session)
+	writePingDistributedWriteFileSessionOptions(w, p.options)
+}
+
+type FinishDistributedWriteFileSessionParams struct {
+	verb    Verb
+	session yt.DistributedWriteFileSession
+	results []yt.WriteFileFragmentResult
+	options *yt.FinishDistributedWriteFileSessionOptions
+}
+
+func NewFinishDistributedWriteFileSessionParams(
+	session yt.DistributedWriteFileSession,
+	results []yt.WriteFileFragmentResult,
+	options *yt.FinishDistributedWriteFileSessionOptions,
+) *FinishDistributedWriteFileSessionParams {
+	if options == nil {
+		options = &yt.FinishDistributedWriteFileSessionOptions{}
+	}
+	optionsCopy := *options
+	return &FinishDistributedWriteFileSessionParams{
+		Verb("finish_distributed_write_file_session"),
+		session,
+		results,
+		&optionsCopy,
+	}
+}
+
+func (p *FinishDistributedWriteFileSessionParams) HTTPVerb() Verb {
+	return p.verb
+}
+func (p *FinishDistributedWriteFileSessionParams) YPath() (ypath.YPath, bool) {
+	return nil, false
+}
+func (p *FinishDistributedWriteFileSessionParams) Log() []log.Field {
+	fields := []log.Field{}
+	fields = append(fields, logFinishDistributedWriteFileSessionOptions(p.options)...)
+	return fields
+}
+
+func (p *FinishDistributedWriteFileSessionParams) MarshalHTTP(w *yson.Writer) {
+	w.MapKeyString("session")
+	w.Any(p.session)
+	w.MapKeyString("results")
+	w.Any(p.results)
+	writeFinishDistributedWriteFileSessionOptions(w, p.options)
+}
+
+type WriteFileFragmentParams struct {
+	verb    Verb
+	cookie  yt.WriteFileFragmentCookie
+	options *yt.FileFragmentWriterOptions
+}
+
+func NewWriteFileFragmentParams(
+	cookie yt.WriteFileFragmentCookie,
+	options *yt.FileFragmentWriterOptions,
+) *WriteFileFragmentParams {
+	if options == nil {
+		options = &yt.FileFragmentWriterOptions{}
+	}
+	optionsCopy := *options
+	return &WriteFileFragmentParams{
+		Verb("write_file_fragment"),
+		cookie,
+		&optionsCopy,
+	}
+}
+
+func (p *WriteFileFragmentParams) HTTPVerb() Verb {
+	return p.verb
+}
+func (p *WriteFileFragmentParams) YPath() (ypath.YPath, bool) {
+	return nil, false
+}
+func (p *WriteFileFragmentParams) Log() []log.Field {
+	fields := []log.Field{}
+	fields = append(fields, logFileFragmentWriterOptions(p.options)...)
+	return fields
+}
+
+func (p *WriteFileFragmentParams) MarshalHTTP(w *yson.Writer) {
+	w.MapKeyString("cookie")
+	w.Any(p.cookie)
+	writeFileFragmentWriterOptions(w, p.options)
 }
 
 func writeExecuteBatchOptions(w *yson.Writer, o *ExecuteBatchOptions) {

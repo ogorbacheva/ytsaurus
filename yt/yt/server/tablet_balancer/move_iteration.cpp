@@ -7,7 +7,7 @@
 
 #include <yt/yt/server/lib/tablet_balancer/balancing_helpers.h>
 #include <yt/yt/server/lib/tablet_balancer/config.h>
-#include <yt/yt/server/lib/tablet_balancer/parameterized_balancing_helpers.h>
+#include <yt/yt/server/lib/tablet_balancer/parameterized_move_helpers.h>
 #include <yt/yt/server/lib/tablet_balancer/table.h>
 #include <yt/yt/server/lib/tablet_balancer/tablet_cell_bundle.h>
 
@@ -92,7 +92,7 @@ public:
         return GroupConfig_;
     }
 
-    TGuard<NYT::NThreading::TSpinLock> StartApplyingActions() const override
+    TGuard<NYT::TSpinLock> StartApplyingActions() const override
     {
         return Guard(BundleSnapshot_->PublishedObjectLock);
     }
@@ -309,7 +309,7 @@ protected:
             .NodeDeviationThreshold = DynamicConfig_->ParameterizedNodeDeviationThreshold,
             .CellDeviationThreshold = DynamicConfig_->ParameterizedCellDeviationThreshold,
             .MinRelativeMetricImprovement = DynamicConfig_->ParameterizedMinRelativeMetricImprovement,
-            .Metric = DynamicConfig_->DefaultParameterizedMetric,
+            .Metrics = {DynamicConfig_->DefaultParameterizedMetric},
             .Factors = DynamicConfig_->ParameterizedFactors,
         }.MergeWith(
             GroupConfig_->Parameterized,
@@ -435,7 +435,7 @@ public:
                 for (const auto& minorTablePath : minorTablePaths) {
                     auto it = BundleSnapshot_->AlienTablePaths.find(TBundleSnapshot::TAlienTableTag(cluster, minorTablePath));
                     THROW_ERROR_EXCEPTION_IF(it == BundleSnapshot_->AlienTablePaths.end(),
-                        "Not all tables was resolved. Table id for table %v on cluster %Qv was not found. "
+                        "Not all tables were resolved. Table id for table %v on cluster %Qv was not found. "
                         "Check that table path is correct",
                         minorTablePath,
                         cluster);

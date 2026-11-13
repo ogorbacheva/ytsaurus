@@ -5,6 +5,7 @@ INCLUDE(${ARCADIA_ROOT}/yt/yt/flow/flow.make.inc)
 SRCS(
     entity_builders.cpp
     in_memory_external_state_manager.cpp
+    process_function_graph_test_harness.cpp
     process_function_test_harness.cpp
     recording_output_collector.cpp
     test_runtime_context.cpp
@@ -18,6 +19,8 @@ PEERDIR(
     yt/yt/flow/library/cpp/common
     yt/yt/flow/library/cpp/misc
     yt/yt/flow/library/cpp/tables/unittests/mock
+    yt/yt/client/cache
+    yt/yt/client/unittests/mock
     yt/yt/library/query/engine
 )
 

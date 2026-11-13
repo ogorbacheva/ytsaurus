@@ -8,33 +8,43 @@ SRCS(
     buffer_warmup.cpp
     partition_buffer_state.cpp
     checksum.cpp
+    companion_state_adapter.cpp
     computation_controller.cpp
     computation.cpp
+    computation_statistics.cpp
+    stream_statistics.cpp
     describe_traits.cpp
     distributing_tracker.cpp
+    dynamic_spec.cpp
+    dyntable_lease.cpp
     external_state_manager.cpp
-    file_source.cpp
+    file_provider.cpp
     flow_core_build_info.cpp
     flow_core_version.cpp
     flow_view.cpp
     inflight_tracker.cpp
     input_context.cpp
     job_directory.cpp
+    job_proxy_client.cpp
     key.cpp
     lag.cpp
     message_batch.cpp
     message_batcher.cpp
     message_migration.cpp
     message.cpp
+    output_collector.cpp
     payload_converter.cpp
     payload_validation.cpp
     payload.cpp
     process_function.cpp
+    process_function_graph.cpp
     public.cpp
     registry.cpp
     resource.cpp
     resource_controller.cpp
     resource_manager.cpp
+    resource_status.cpp
+    runtime_init_context.cpp
     schema.cpp
     select_literals.cpp
     time_provider.cpp
@@ -44,20 +54,26 @@ SRCS(
     spec.cpp
     state_cache.cpp
     state.cpp
+    state_provider.cpp
     stream_inflight_limits.cpp
     stream_spec_storage_state.cpp
     stream_spec_storage.cpp
     timestamp_statistics.cpp
     timer.cpp
+    timer_page.cpp
     traverse.cpp
+    trigger_condition.cpp
     visit.cpp
+    watermark_history.cpp
     yson_message.cpp
     control_table.cpp
     yt_connector.cpp
 )
 
 PEERDIR(
+    yt/yt/flow/library/cpp/source_read_delay
     yt/yt/flow/library/cpp/client
+    yt/yt/flow/library/cpp/pipeline_tables
     yt/yt/flow/library/cpp/serializer
     yt/yt/flow/library/cpp/common/proto
     yt/yt/flow/library/cpp/common/controller/proto
@@ -78,6 +94,7 @@ PEERDIR(
     library/cpp/yt/memory
     library/cpp/yt/misc
     library/cpp/iterator
+    library/cpp/containers/absl
     library/cpp/containers/insert_only_concurrent_cache
     library/cpp/string_utils/levenshtein_diff
 )

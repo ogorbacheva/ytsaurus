@@ -64,6 +64,12 @@ struct TDynamicCypressManagerConfig
 
     bool EnableSymlinkCyclicityCheck;
 
+    //! Enqueue existing Cypress symlinks on switch toggle.
+    bool EnableSymlinkBackfill;
+
+    //! Maximum number of candidate link versions allowed in a backfill.
+    int SymlinkBackfillMaxLinkCount;
+
     // COMPAT(h0pless): YT-26842. Remove in 25.4.
     bool UseBetterCheckWhenRewritingPath;
 
@@ -106,6 +112,9 @@ struct TDynamicCypressManagerConfig
     NTableClient::EOptimizeFor DefaultDynamicTableOptimizeFor;
 
     bool IgnoreRootstockAbsenceOnScionRemoval;
+
+    // COMPAT(shakurov)
+    bool EnableSequoiaNodeStateValidationInCreateLock;
 
     REGISTER_YSON_STRUCT(TDynamicCypressManagerConfig);
 

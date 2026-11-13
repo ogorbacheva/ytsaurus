@@ -1,8 +1,10 @@
 #include "decorated_automaton.h"
 
 #include "automaton.h"
+#include "causal_state_registry.h"
 #include "changelog.h"
 #include "config.h"
+#include "config_wrapper.h"
 #include "helpers.h"
 #include "serialize.h"
 #include "snapshot.h"
@@ -49,10 +51,14 @@
 
 #include <library/cpp/yt/memory/blob.h>
 
+#include <library/cpp/yt/system/local_host.h>
+
 #include <util/random/random.h>
 
 #include <util/system/file.h>
 #include <util/system/spinlock.h>
+
+#include <limits>
 
 namespace NYT::NHydra {
 
@@ -278,6 +284,7 @@ public:
         , StateHash_(Owner_->StateHash_)
         , Timestamp_(Owner_->Timestamp_)
         , LogicalTime_(Owner_->GetLogicalTime())
+        , CausalTime_(Owner_->CausalTime_)
         , SelfPeerId_(owner->GetEpochContext()->CellManager->GetSelfPeerId())
     {
         Logger = Owner_->Logger().WithTag("SnapshotId", SnapshotId_);
@@ -309,6 +316,7 @@ public:
             meta.set_last_mutation_reign(Owner_->LastMutationReign_);
             meta.set_read_only(SnapshotReadOnly_);
             meta.set_logical_time(LogicalTime_.Underlying());
+            meta.set_causal_time(CausalTime_.Underlying());
             meta.set_last_logical_record_id(logicalAutomatonVersion.RecordId);
 
             SnapshotWriter_ = Owner_->SnapshotStore_->CreateWriter(SnapshotId_, meta);
@@ -336,6 +344,7 @@ protected:
     const ui64 StateHash_;
     const TInstant Timestamp_;
     const TLogicalTime LogicalTime_;
+    const TCausalTime CausalTime_;
     const int SelfPeerId_;
 
     ISnapshotWriterPtr SnapshotWriter_;
@@ -723,7 +732,7 @@ public:
 private:
     const NLogging::TLogger Logger;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, SpinLock_);
     TPromise<void> SuspendedPromise_;
     i64 SyncSize_ = 0;
     i64 AsyncSize_ = 0;
@@ -882,6 +891,9 @@ TDecoratedAutomaton::TDecoratedAutomaton(
     , SystemInvoker_(New<TSystemInvoker>(this))
     , SnapshotStore_(std::move(snapshotStore))
     , StateHashChecker_(std::move(stateHashChecker))
+    , CausalStateRegistry_(Options_.EnableCausalStateTracking
+        ? New<TCausalStateRegistry>(Config_->Get()->CausalStateRegistry, AutomatonInvoker_, profiler)
+        : nullptr)
     , SnapshotLoadTimeGauge_(profiler.TimeGauge("/snapshot_load_time"))
     , CompressedSnapshotSizeGauge_(profiler.Gauge("/compressed_snapshot_size"))
     , UncompressedSnapshotSizeGauge_(profiler.Gauge("/uncompressed_snapshot_size"))
@@ -911,11 +923,18 @@ void TDecoratedAutomaton::ResetState()
             TPhysicalVersion(),
             TInstant::Zero(),
             /*randomSeed*/ 0,
-            /*localHostNameOverride*/ TSharedRef::FromString(std::string(UnknownHostName)));
+            /*localHostNameOverride*/ UnknownHostName);
         THydraContextGuard hydraContextGuard(&hydraContext);
 
         ClearState();
         Automaton_->SetZeroState();
+        if (CausalStateRegistry_) {
+            CausalStateRegistry_->RegisterState({
+                .CausalTime = TCausalTime(0),
+                .SequenceNumber = 0,
+                .SegmentId = 0,
+            });
+        }
     }));
 }
 
@@ -929,6 +948,10 @@ void TDecoratedAutomaton::ClearState()
     ReliablyAppliedSequenceNumber_ = 0;
     StateHash_ = 0;
     Timestamp_ = {};
+    CausalTime_ = TCausalTime(0);
+    if (CausalStateRegistry_) {
+        CausalStateRegistry_->Clear();
+    }
 
     Automaton_->Clear();
 }
@@ -1034,6 +1057,7 @@ void TDecoratedAutomaton::LoadSnapshot(
     ui64 stateHash,
     TInstant timestamp,
     TLogicalTime logicalTime,
+    TCausalTime causalTime,
     IAsyncZeroCopyInputStreamPtr reader,
     bool prepareState)
 {
@@ -1054,6 +1078,7 @@ void TDecoratedAutomaton::LoadSnapshot(
         TSnapshotLoadContext snapshotLoadContext{
             .Reader = reader,
             .ReadOnly = readOnly,
+            .CausalTime = causalTime,
         };
         TSnapshotLoadContextGuard snapshotLoadContextGuard(&snapshotLoadContext);
 
@@ -1113,6 +1138,14 @@ void TDecoratedAutomaton::LoadSnapshot(
     MutationSizeSinceLastSnapshot_ = 0;
     LogicalClock_.Initialize(timestamp, lastMutationTerm, logicalTime);
     LastSnapshotIdUsedForRecovery_ = snapshotId;
+    CausalTime_ = causalTime;
+    if (CausalStateRegistry_) {
+        CausalStateRegistry_->RegisterState({
+            .CausalTime = causalTime,
+            .SequenceNumber = sequenceNumber,
+            .SegmentId = version.GetSegmentId(),
+        });
+    }
 }
 
 void TDecoratedAutomaton::CheckInvariants()
@@ -1136,6 +1169,16 @@ void TDecoratedAutomaton::ApplyMutationsDuringRecovery(const std::vector<TShared
     PublishMutationApplicationResults(std::move(results));
 }
 
+TCausalTime TDecoratedAutomaton::AdvanceCausalTime(TCausalTime dependency)
+{
+    YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+    auto time = std::max(CausalTime_, dependency).Underlying();
+    YT_VERIFY(time != std::numeric_limits<ui64>::max());
+    CausalTime_ = TCausalTime(time + 1);
+    return CausalTime_;
+}
+
 TDecoratedAutomaton::TMutationApplicationResult TDecoratedAutomaton::ApplyMutationDuringRecovery(const TSharedRef& recordData)
 {
     YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
@@ -1148,6 +1191,7 @@ TDecoratedAutomaton::TMutationApplicationResult TDecoratedAutomaton::ApplyMutati
 
     TMutationRequest request;
     request.Reign = header.reign();
+    request.CausalDependency = TCausalTime(header.causal_dependency());
     request.Type = header.mutation_type();
     request.MutationId = FromProto<TMutationId>(header.mutation_id());
     request.Data = std::move(requestData);
@@ -1164,6 +1208,7 @@ TDecoratedAutomaton::TMutationApplicationResult TDecoratedAutomaton::ApplyMutati
         header.random_seed(),
         header.prev_random_seed(),
         header.sequence_number(),
+        AdvanceCausalTime(request.CausalDependency),
         StateHash_,
         header.term(),
         SanitizedLocalHostName_);
@@ -1321,7 +1366,7 @@ void TDecoratedAutomaton::PublishMutationApplicationResults(std::vector<TMutatio
     }
 }
 
-TSharedRef TDecoratedAutomaton::SanitizeLocalHostName() const
+TStringBuf TDecoratedAutomaton::SanitizeLocalHostName() const
 {
     auto localHost = GetLocalHostName();
 
@@ -1344,13 +1389,13 @@ TSharedRef TDecoratedAutomaton::SanitizeLocalHostName() const
             .With("LocalHost", localHost)
             .With("SanitizedLocalHost", UnknownHostName);
 
-        return TSharedRef::FromString(std::string(UnknownHostName));
+        return UnknownHostName;
     }
 
     YT_TLOG_INFO("Local host name sanitization disabled, using local host name as is")
         .With("LocalHost", localHost);
 
-    return TSharedRef::FromString(localHost);
+    return InternHostName(localHost);
 }
 
 TDecoratedAutomaton::TMutationApplicationResult TDecoratedAutomaton::ApplyMutation(
@@ -1371,6 +1416,7 @@ TDecoratedAutomaton::TMutationApplicationResult TDecoratedAutomaton::ApplyMutati
         mutation->RandomSeed,
         mutation->PrevRandomSeed,
         mutation->SequenceNumber,
+        AdvanceCausalTime(mutation->Request.CausalDependency),
         StateHash_,
         mutation->Term,
         SanitizedLocalHostName_);
@@ -1537,8 +1583,7 @@ void TDecoratedAutomaton::DoApplyMutation(
     MutationSizeSinceLastSnapshot_ += mutationSize;
 
     if (Config_->Get()->EnableStateHashChecker) {
-        const auto& cellManager = GetEpochContext()->CellManager;
-        auto peerId = cellManager->GetSelfPeerId();
+        auto peerId = GetEpochContext()->CellManager->GetSelfPeerId();
         StateHashChecker_->Report(sequenceNumber, StateHash_, peerId);
     }
 
@@ -1546,6 +1591,14 @@ void TDecoratedAutomaton::DoApplyMutation(
         if (RandomNumber<double>() <= invariantsCheckProbability) {
             CheckInvariants();
         }
+    }
+
+    if (CausalStateRegistry_) {
+        CausalStateRegistry_->RegisterState({
+            .CausalTime = mutationContext->GetCausalTime(),
+            .SequenceNumber = sequenceNumber,
+            .SegmentId = physicalMutationVersion.SegmentId,
+        });
     }
 }
 
@@ -1681,7 +1734,7 @@ void TDecoratedAutomaton::StartEpoch(TEpochContextPtr epochContext)
     YT_VERIFY(!EpochContext_.Exchange(std::move(epochContext)));
 
     SanitizedLocalHostName_ = SanitizeLocalHostName();
-    YT_VERIFY(!SanitizedLocalHostName_.Empty());
+    YT_VERIFY(!SanitizedLocalHostName_.empty());
 }
 
 void TDecoratedAutomaton::CancelSnapshot(const TError& error)
@@ -1704,7 +1757,7 @@ void TDecoratedAutomaton::StopEpoch()
     CancelSnapshot(error);
 
     EpochContext_.Store(nullptr);
-    SanitizedLocalHostName_.Reset();
+    SanitizedLocalHostName_ = {};
 }
 
 void TDecoratedAutomaton::OnSnapshotBuilt(const TErrorOr<TRemoteSnapshotParams>& snapshotInfoOrError)
@@ -1811,6 +1864,17 @@ bool TDecoratedAutomaton::GetReadOnly() const
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
     return ReadOnly_.load();
+}
+
+TCausalState TDecoratedAutomaton::GetCausalStateOrThrow(std::optional<TCausalTime> causalTime) const
+{
+    YT_ASSERT_THREAD_AFFINITY(AutomatonThread);
+
+    if (!CausalStateRegistry_) {
+        THROW_ERROR_EXCEPTION("Causal state tracking is disabled");
+    }
+
+    return CausalStateRegistry_->GetStateOrThrow(causalTime);
 }
 
 TLogicalTime TDecoratedAutomaton::GetLogicalTime() const

@@ -13,6 +13,8 @@
 
 #include <yt/yt/library/query/base/public.h>
 
+#include <yt/yt/core/misc/memory_usage_tracker.h>
+
 namespace NYT::NApi::NNative {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -76,6 +78,12 @@ struct TSyncAlienCellsResult
     bool EnableMetadataCells;
 };
 
+struct TGetChaosLeaseOptions
+    : public TTimeoutOptions
+{
+    bool BypassCache = false;
+};
+
 struct IClient
     : public IClientBase
     , public virtual NApi::IClient
@@ -85,6 +93,8 @@ struct IClient
     virtual const NTransactionClient::TTransactionManagerPtr& GetTransactionManager() = 0;
 
     virtual const TClientCounters& GetCounters() const = 0;
+
+    virtual const IMemoryUsageTrackerPtr& GetHeavyRequestMemoryUsageTracker() const = 0;
 
     virtual NQueryClient::IFunctionRegistryPtr GetFunctionRegistry() = 0;
     virtual NQueryClient::TFunctionImplCachePtr GetFunctionImplCache() = 0;
@@ -117,6 +127,10 @@ struct IClient
     virtual TFuture<TSyncAlienCellsResult> SyncAlienCells(
         const std::vector<NChaosClient::TAlienCellDescriptorLite>& alienCellDescriptors,
         const TSyncAlienCellOptions& options = {}) = 0;
+
+    virtual TFuture<NChaosClient::TChaosLeasePtr> GetChaosLease(
+        NChaosClient::TChaosLeaseId chaosLeaseId,
+        const TGetChaosLeaseOptions& options = {}) = 0;
 
     virtual bool DoesOperationsArchiveExist() = 0;
 

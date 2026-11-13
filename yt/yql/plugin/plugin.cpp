@@ -1,6 +1,8 @@
 #include "plugin.h"
 #include "config.h"
 
+#include <yt/yt/core/ytree/fluent.h>
+
 #include <iostream>
 
 namespace NYT::NYqlPlugin {
@@ -15,6 +17,11 @@ IMapNodePtr IYqlPlugin::GetOrchidNode() const
     return GetEphemeralNodeFactory()->CreateMap();
 }
 
+bool IYqlPlugin::IsReady() const
+{
+    return true;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 TYqlNativePluginOptions ConvertToNativePluginOptions(
@@ -22,7 +29,10 @@ TYqlNativePluginOptions ConvertToNativePluginOptions(
     TYqlPluginDynamicConfigPtr initialDynamicConfig,
     TYsonString singletonsConfigString,
     THolder<TLogBackend> logBackend,
-    bool startDqManager)
+    bool startDqManager,
+    bool enableClique,
+    bool useTokenResolver,
+    const std::string& tokenServiceSocketPath)
 {
     auto options = TYqlNativePluginOptions {
         .SingletonsConfig = singletonsConfigString,
@@ -40,7 +50,17 @@ TYqlNativePluginOptions ConvertToNativePluginOptions(
         .InitialDynamicConfig = ConvertToYsonString(initialDynamicConfig),
         .YTTokenPath = config->YTTokenPath,
         .StartDqManager = startDqManager,
+        .EnableClique = enableClique,
     };
+
+    if (useTokenResolver) {
+        options.YtTokenResolverConfig = BuildYsonStringFluently()
+            .BeginMap()
+                .Item("yql_agent").BeginMap()
+                    .Item("unix_socket_path").Value(tokenServiceSocketPath)
+                .EndMap()
+            .EndMap();
+    }
 
     options.LogBackend = std::move(logBackend);
     return options;
@@ -50,13 +70,15 @@ TYqlQTWorkerPluginOptions ConvertToQtWorkerPluginOptions(
     TYqlNativePluginOptions nativeOptions,
     THolder<TLogBackend> qtWorkerLogBackend,
     int qtWorkerInspectorPort,
-    TString gatewaysConfigPath)
+    TString gatewaysConfigPath,
+    bool enableGetUsedClusters)
 {
     TYqlQTWorkerPluginOptions options;
     static_cast<TYqlNativePluginOptions&>(options) = std::move(nativeOptions);
     options.QtWorkerInspectorPort = qtWorkerInspectorPort;
     options.QtWorkerLogBackend = std::move(qtWorkerLogBackend);
     options.GatewaysConfigPath = std::move(gatewaysConfigPath);
+    options.EnableGetUsedClusters = enableGetUsedClusters;
     return options;
 }
 

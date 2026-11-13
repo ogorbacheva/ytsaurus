@@ -1,11 +1,11 @@
 from yt_env_setup import (YTEnvSetup, Restarter, NODES_SERVICE)
 
-from yt_helpers import profiler_factory
+from yt_helpers import profiler_factory, read_structured_log_single_entry, write_log_barrier
 
 from yt_commands import (
     list_jobs, ls, get, map, select_rows, set, print_debug, authors, sync_create_cells, wait, wait_no_assert, raises_yt_error,
     wait_breakpoint, with_breakpoint, release_breakpoint,
-    run_test_vanilla, create_user, create, remove, read_table, write_table,
+    run_test_vanilla, create_user, create, remove, exists, read_table, write_table,
     get_driver, update_nodes_dynamic_config, get_allocation_id_from_job_id, sorted_dicts,
 )
 
@@ -25,12 +25,12 @@ import grpc
 import pytest
 
 import datetime
-from hashlib import sha1
+import gzip
 import os.path
 import re
 import shutil
-import time
-import gzip
+
+from hashlib import sha1
 
 import requests
 import httpx
@@ -176,7 +176,7 @@ class TestJobProxyBinary(JobProxyTestBase):
             with_breakpoint("echo $YT_JOB_PROXY_SOCKET_PATH >&2; BREAKPOINT"),
             task_patch=spec,
         )
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
         content = op.read_stderr(job_id).decode("ascii").strip()
 
         if expected_env_presence:
@@ -208,7 +208,7 @@ class TestJobProxyUserJobFlagRedirectStdoutToStderr(YTEnvSetup):
             task_patch=spec,
         )
 
-        job_ids = wait_breakpoint()
+        job_ids = wait_breakpoint(op)
         assert len(job_ids) == 1
         job_id = job_ids[0]
         content = op.read_stderr(job_id).decode("ascii").strip()
@@ -258,7 +258,7 @@ class TestJobProxyUserJobFlagRedirectStdoutToStderr(YTEnvSetup):
             "redirect_stdout_to_stderr": True
         })
 
-        job_ids = wait_breakpoint()
+        job_ids = wait_breakpoint(op)
 
         assert len(job_ids) == 1
         job_id = job_ids[0]
@@ -343,7 +343,7 @@ class TestRpcProxyInJobProxyBase(YTEnvSetup):
             with_breakpoint(f"echo ${env_variable} >&2; BREAKPOINT; sleep {time_limit}"),
             task_patch=task_patch
         )
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
         socket_file = op.read_stderr(job_id).decode("ascii").strip()
         release_breakpoint()
 
@@ -448,22 +448,22 @@ class TestRpcProxyInJobProxySingleClusterSeveralNodes(TestRpcProxyInJobProxyBase
 
         task_patch = {"enable_rpc_proxy_in_job_proxy": True, "monitoring": {"enable": True}}
 
-        run_test_vanilla(
+        op1 = run_test_vanilla(
             with_breakpoint("BREAKPOINT", breakpoint_name="op1"),
             job_count=5,
             task_patch=task_patch,
             authenticated_user="u1",
         )
-        job_ids1 = wait_breakpoint(breakpoint_name="op1", job_count=5)
+        job_ids1 = wait_breakpoint(op1, breakpoint_name="op1", job_count=5)
         assert len(job_ids1) == 5
 
-        run_test_vanilla(
+        op2 = run_test_vanilla(
             with_breakpoint("BREAKPOINT", breakpoint_name="op2"),
             job_count=3,
             task_patch=task_patch,
             authenticated_user="u2",
         )
-        job_ids2 = wait_breakpoint(breakpoint_name="op2", job_count=3)
+        job_ids2 = wait_breakpoint(op2, breakpoint_name="op2", job_count=3)
         assert len(job_ids2) == 3
 
         wait(lambda: rpc_proxy_in_job_proxy_gauges[0].get(tags={"user": "u1"}) is not None)
@@ -503,16 +503,14 @@ class TestRpcProxyInJobProxyMultiCluster(TestRpcProxyInJobProxyBase):
     @authors("ermolovd")
     def test_exe_node_multiproxy_mode(self):
         config = {
-            "%true": {
-                "exec_node":  {
-                    "job_controller": {
-                        "job_proxy": {
-                            "job_proxy_api_service": {
-                                "multiproxy": {
-                                    "presets": {
-                                        "default": {
-                                            "enabled_methods": "read",
-                                        }
+            "exec_node":  {
+                "job_controller": {
+                    "job_proxy": {
+                        "job_proxy_api_service": {
+                            "multiproxy": {
+                                "presets": {
+                                    "default": {
+                                        "enabled_methods": "read",
                                     }
                                 }
                             }
@@ -521,8 +519,7 @@ class TestRpcProxyInJobProxyMultiCluster(TestRpcProxyInJobProxyBase):
                 },
             },
         }
-        set("//sys/cluster_nodes/@config", config)
-        time.sleep(5)
+        update_nodes_dynamic_config(config)
 
         set("//tmp/name", "remote", driver=self.remote_driver)
         set("//tmp/name", "local")
@@ -603,16 +600,14 @@ class TestJobProxyProfiling(YTEnvSetup):
 
 
 class TestJobProxySignatures(YTEnvSetup):
+    NUM_MASTERS = 1
+    NUM_NODES = 1
+
     OWNERS_PATH = "//sys/public_keys/by_owner"
     DELTA_NODE_CONFIG = {
         "exec_node": {
             "signature_components": {
-                "validation": {
-                    "cypress_key_reader": dict(),
-                },
                 "generation": {
-                    "cypress_key_writer": dict(),
-                    "generator": dict(),
                     "key_rotator": {
                         "key_rotation_options": {
                             "period": "1s",
@@ -633,20 +628,44 @@ class TestJobProxySignatures(YTEnvSetup):
 
     @authors("pavook")
     def test_key_rotates(self):
-        wait(lambda: ls(self.OWNERS_PATH))
-        owner = ls(self.OWNERS_PATH)[0]
-        wait(lambda: len(ls(f"{self.OWNERS_PATH}/{owner}")) > 1)
+        owner = ls("//sys/cluster_nodes")[0]
+        owner_path = f"{self.OWNERS_PATH}/{owner}"
+        wait(lambda: exists(owner_path) and len(ls(owner_path)) > 1)
 
     @authors("pavook")
     def test_dynamic_config(self):
-        wait(lambda: ls(self.OWNERS_PATH))
+        owner = ls("//sys/cluster_nodes")[0]
+        owner_path = f"{self.OWNERS_PATH}/{owner}"
+        wait(lambda: exists(owner_path))
+
         new_path = "//tmp/dynamic_test_public_keys"
         create("map_node", new_path)
-        new_config = self.DELTA_NODE_CONFIG["exec_node"]["signature_components"]
-        new_config["generation"]["cypress_key_writer"]["path"] = new_path
-        new_config["validation"]["cypress_key_reader"]["path"] = new_path
-        update_nodes_dynamic_config(path="exec_node/signature_components", value=new_config)
-        wait(lambda: ls(new_path))
+        new_config = {
+            "validation": {
+                "cypress_key_reader": {
+                    "path": new_path,
+                },
+            },
+            "generation": {
+                "cypress_key_writer": {
+                    "path": new_path,
+                },
+                "key_rotator": {
+                    "key_rotation_options": {
+                        "period": "5s",
+                    },
+                },
+            },
+        }
+        update_nodes_dynamic_config(
+            path="exec_node/signature_components",
+            value=new_config,
+            replace=True)
+        wait(lambda: exists(f"{new_path}/{owner}"))
+
+        static_keys = frozenset(ls(owner_path))
+        update_nodes_dynamic_config({}, replace=True)
+        wait(lambda: frozenset(ls(owner_path)) != static_keys)
 
 
 @authors("khlebnikov")
@@ -695,7 +714,7 @@ class TestJobProxyJobApi(YTEnvSetup):
             with_breakpoint(f"echo ${env_variable} >&2; BREAKPOINT; sleep {time_limit}"),
             task_patch={},
         )
-        job_id = wait_breakpoint()[0]
+        job_id = wait_breakpoint(op)[0]
         socket_file = op.read_stderr(job_id).decode("ascii").strip()
         release_breakpoint()
 
@@ -720,19 +739,17 @@ class TestJobProxyJobApi(YTEnvSetup):
         orchid_path = f"//sys/scheduler/orchid/scheduler/allocations/{allocation_id}/preemptible_progress_start_time"
         return datetime.datetime.fromisoformat(get(orchid_path))
 
-    @authors("dann239")
-    def test_grpc_disabled_by_default(self):
-        socket_file, _ = self.run_job_proxy(
-            env_variable="YT_JOB_PROXY_GRPC_SOCKET_PATH",
+    def _validate_progress_saved_event(self, job_id, from_barrier):
+        controller_agent_address = ls("//sys/controller_agents/instances")[0]
+        to_barrier = write_log_barrier(controller_agent_address)
+        event = read_structured_log_single_entry(
+            self.path_to_run + "/logs/controller-agent-0.json.log",
+            row_filter=lambda event: event.get("event_type") == "progress_saved" and event.get("job_id") == job_id,
+            from_barrier=from_barrier,
+            to_barrier=to_barrier,
         )
-        assert not os.path.exists(socket_file)
-
-    @authors("dann239")
-    def test_http_disabled_by_default(self):
-        socket_file, _ = self.run_job_proxy(
-            env_variable="YT_JOB_PROXY_HTTP_SOCKET_PATH",
-        )
-        assert not os.path.exists(socket_file)
+        assert event["allocation_id"] == get_allocation_id_from_job_id(job_id)
+        assert datetime.datetime.fromisoformat(event["preemptible_progress_start_time"]) == self.try_get_last_save_time(job_id)
 
     @authors("dann239")
     def test_progress_saved_grpc(self):
@@ -757,6 +774,8 @@ class TestJobProxyJobApi(YTEnvSetup):
         assert self.try_get_last_save_time(job_id) is None
         assert t0 < self.get_preemptible_progress_time(job_id) < t1
 
+        from_barrier = write_log_barrier(ls("//sys/controller_agents/instances")[0])
+
         channel = grpc.insecure_channel(f"unix:{socket_file}")
         endpoint = channel.unary_unary(
             "/JobApiService/OnProgressSaved",
@@ -769,6 +788,7 @@ class TestJobProxyJobApi(YTEnvSetup):
 
         assert t1 < self.try_get_last_save_time(job_id) < t2
         wait(lambda: self.try_get_last_save_time(job_id) == self.get_preemptible_progress_time(job_id))
+        self._validate_progress_saved_event(job_id, from_barrier)
 
     @authors("dann239")
     def test_progress_saved_http(self):
@@ -795,6 +815,8 @@ class TestJobProxyJobApi(YTEnvSetup):
         assert self.try_get_last_save_time(job_id) is None
         assert t0 < self.get_preemptible_progress_time(job_id) < t1
 
+        from_barrier = write_log_barrier(ls("//sys/controller_agents/instances")[0])
+
         # Since we're using a UDS, hostname can be whatever
         hostname = "foo.bar"
 
@@ -807,10 +829,12 @@ class TestJobProxyJobApi(YTEnvSetup):
 
         assert t1 < self.try_get_last_save_time(job_id) < t2
         wait(lambda: self.try_get_last_save_time(job_id) == self.get_preemptible_progress_time(job_id))
+        self._validate_progress_saved_event(job_id, from_barrier)
 
 
 class TestJobProxyMemoryProfiling(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_NODES = 3
     NUM_SCHEDULERS = 1
     USE_DYNAMIC_TABLES = True

@@ -14,7 +14,7 @@
 #include <yt/yt/core/concurrency/periodic_executor.h>
 #include <yt/yt/core/concurrency/action_queue.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 #include <util/random/shuffle.h>
 
@@ -130,7 +130,7 @@ public:
 private:
     const std::optional<TRepairingErasureReaderTestingOptions> TestingOptions_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, PlacementExtLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, PlacementExtLock_);
     TFuture<TErasurePlacementExt> PlacementExtFuture_;
 
 
@@ -184,8 +184,8 @@ private:
             if (!PlacementExtFuture_) {
                 const auto& reader = readers[RandomNumber(readers.size())];
                 PlacementExtFuture_ = GetPlacementMeta(reader, options)
-                    .Apply(BIND([] (const TRefCountedChunkMetaPtr& meta) {
-                        return GetProtoExtension<NProto::TErasurePlacementExt>(meta->extensions());
+                    .Apply(BIND([chunkId = ChunkId_] (const TRefCountedChunkMetaPtr& meta) {
+                        return GetPlacementExtOrThrow(chunkId, meta);
                     }));
             }
 
@@ -276,7 +276,7 @@ private:
         const std::vector<int>& blockIndexes,
         const std::vector<IChunkReaderAllowingRepairPtr>& readers) override
     {
-        NErasure::TPartIndexList existingPartIndices(Codec_->GetDataPartCount());
+        NErasure::TPartIndexList existingPartIndices(Codec_->GetParams().DataPartCount);
         std::iota(existingPartIndices.begin(), existingPartIndices.end(), 0);
 
         auto session = New<TAdaptiveErasureRepairingSession>(
@@ -304,7 +304,7 @@ private:
                 const auto& reader = availableReaders[RandomNumber(availableReaders.size())];
                 return GetPlacementMeta(reader, options.ClientOptions)
                     .Apply(BIND([=, this, this_ = MakeStrong(this)] (const TRefCountedChunkMetaPtr& meta) {
-                        auto placementExt = GetProtoExtension<NProto::TErasurePlacementExt>(meta->extensions());
+                        auto placementExt = GetPlacementExtOrThrow(ChunkId_, meta);
                         return ExecuteErasureRepairingSession(
                             ChunkId_,
                             Codec_,

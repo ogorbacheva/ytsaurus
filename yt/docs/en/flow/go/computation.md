@@ -37,7 +37,7 @@ For a source, `TSwiftOrderedSourceCompanionComputation` is suitable only for det
 
 A computation is created by a constructor and registered in `flow.Pipeline` through `pipeline.Add`. Here is an example from [Shuffle](examples/shuffle.md), where the companion serves both ends of the pipeline — the source and the transform:
 
-{% code '/yt/yt/flow/examples/go/shuffle/main.go' lang='go' %}
+{% code '/yt/yt/flow/examples/go/shuffle/main.go' lang='go' lines='[BEGIN main]-[END main]' %}
 
 The constructors take two required parameters:
 
@@ -239,7 +239,7 @@ For complete examples, see [URL Downloader](examples/url_downloader.md) and [Wai
 
 `flow.BatchFunction` receives the whole batch of messages that arrived from the [worker](../../flow/concepts/glossary.md#worker) in a single call of the `OnMessages` method. Timers and visits are handled by the `flow.BatchTimerFunction` (`OnTimers`) and `flow.BatchVisitFunction` (`OnVisits`) interfaces.
 
-A batch corresponds to one worker request and may contain messages with different [keys](../../flow/concepts/glossary.md#key); per-key grouping, if needed, is done in the function code (see [Companion](../../flow/concepts/companion.md#schema)).
+A batch corresponds to one worker request and may contain messages with different [keys](../../flow/concepts/glossary.md#key); per-key grouping, if needed, is done in user code (see [Companion](../../flow/concepts/companion.md#schema)).
 
 #### Batch function example {#batch-example}
 
@@ -428,6 +428,7 @@ The second value returned by `rt.Watermark` tells whether the request reported t
 | Method | Description |
 | --- | --- |
 | `out.AddMessage(msg)` | Add an output message (a `flow.Message` value obtained from `builder.Finish()`) |
+| `out.AddMessage(msg, options)` | Add a message with `flow.AddMessageOptions` controlling distribution and the Swift message ID suffix |
 | `out.AddUndistributedMessage(msg)` | Add a source message with `distribute = false` |
 | `out.AddTimer(timer)` | Set a [timer](../../flow/concepts/glossary.md#timer) on the key being processed |
 | `out.WithParentIDs(parentIDs...)` | Return a collector that writes into a separate group with the given [lineage](../../flow/concepts/lineage.md) |
@@ -454,6 +455,33 @@ func (*myFunction) OnMessage(
     return nil
 }
 ```
+
+### Message ID suffixes in Swift {#message-id-suffixes}
+
+`out.AddMessage` accepts zero or one `flow.AddMessageOptions`. Its `Distribute` field controls publication: `flow.DistributeDefault` and `flow.DistributeMessage` publish the message, while `flow.DoNotDistributeMessage` has the same source-filtering semantics as `out.AddUndistributedMessage`. In a transform, the flag has no effect; omit the message to filter it.
+
+For a Swift computation, `MessageIDSuffix` selects the derived message ID suffix:
+
+```go
+out.AddMessage(hashedMessage, flow.AddMessageOptions{
+    MessageIDSuffix: flow.PayloadHashMessageIDSuffix(),
+})
+
+suffix, err := flow.UserDefinedMessageIDSuffix(semanticKey)
+if err != nil {
+    return err
+}
+out.AddMessage(keyedMessage, flow.AddMessageOptions{
+    Distribute:      flow.DoNotDistributeMessage,
+    MessageIDSuffix: suffix,
+})
+```
+
+- With zero-value options, or with `flow.SequenceNumberMessageIDSuffix()`, Flow uses the current message sequence number for the parent message ID and output stream pair.
+- `flow.PayloadHashMessageIDSuffix()` uses a 128-bit CityHash of the canonical payload wire representation. Equal payloads with the same parent and stream get the same message ID; a hash collision is theoretically possible.
+- `flow.UserDefinedMessageIDSuffix(value)` rejects an empty value. The caller is responsible for keeping the value stable and unique among distinct logical messages with the same parent and stream.
+
+Payload hashes and user-defined suffixes are supported only by Swift computations. They make message identity independent of emission order, but don’t remove the [Swift determinism requirement](../../flow/concepts/swift.md#determinism): the same message ID must still denote the same logical output.
 
 The `StreamID` field of `flow.TimerRequest` selects the timer stream; an empty value means the pipeline’s only timer stream.
 

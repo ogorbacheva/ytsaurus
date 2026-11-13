@@ -60,7 +60,7 @@ TQuery PartialRecordToQuery(const auto& partialRecord)
     query.AccessControlObjects = partialRecord.AccessControlObjects.value_or(TYsonString(TString("[]")));
     query.State = partialRecord.State;
     query.ResultCount = partialRecord.ResultCount.value_or(std::nullopt);
-    query.Progress = TYsonString(partialRecord.Progress ? Decompress(partialRecord.Progress.value()) : std::string("{}"));
+    query.Progress = partialRecord.Progress ? TYsonString(Decompress(*partialRecord.Progress)) : TYsonString();
     query.Error = partialRecord.Error.value_or(std::nullopt);
     query.Annotations = partialRecord.Annotations.value_or(TYsonString());
     query.Secrets = partialRecord.Secrets.value_or(TYsonString(TString("[]")));
@@ -112,6 +112,14 @@ THashSet<std::string> GetUserSubjects(const std::string& user, const IClientPtr&
     return ConvertTo<THashSet<std::string>>(userSubjectsOrError.Value());
 }
 
+bool HasQueryTrackerAdminAccess(
+    const THashSet<std::string>& userSubjects,
+    const std::optional<std::string>& adminsGroup)
+{
+    return userSubjects.contains(SuperusersGroupName) ||
+        adminsGroup && userSubjects.contains(*adminsGroup);
+}
+
 void ConvertAcoToOldFormat(TQuery& query)
 {
     auto accessControlObjectList = ConvertTo<std::optional<std::vector<std::string>>>(query.AccessControlObjects);
@@ -129,10 +137,11 @@ ESecurityAction CheckAccessControl(
     const std::string& user,
     const std::optional<TYsonString>& accessControlObjects,
     const IClientPtr& client,
-    EPermission permission)
+    EPermission permission,
+    const std::optional<std::string>& adminsGroup)
 {
     auto userSubjects = GetUserSubjects(user, client);
-    if (userSubjects.contains(SuperusersGroupName)) {
+    if (HasQueryTrackerAdminAccess(userSubjects, adminsGroup)) {
         return ESecurityAction::Allow;
     }
 
@@ -185,12 +194,12 @@ std::string DoCompress(const std::string& data, int quality = 9)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-const std::string DefaultCompressedValue = DoCompress("{}");
+const std::string CompressedEmptyMap = DoCompress("{}");
 
 std::string Compress(const std::string& data, std::optional<ui64> maxCompressedStringSize, int quality)
 {
     auto compressedValue = DoCompress(data, quality);
-    return maxCompressedStringSize.has_value() && compressedValue.size() > maxCompressedStringSize.value() ? DefaultCompressedValue : compressedValue;
+    return maxCompressedStringSize.has_value() && compressedValue.size() > maxCompressedStringSize.value() ? CompressedEmptyMap : compressedValue;
 }
 
 std::string Decompress(const std::string& data)

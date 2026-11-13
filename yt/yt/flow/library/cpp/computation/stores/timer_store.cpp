@@ -1,5 +1,9 @@
 #include "timer_store.h"
 
+#include "paged_timer_store.h"
+#include "timer_page_catalogue.h"
+#include "timer_store_conversion.h"
+
 #include <yt/yt/flow/library/cpp/common/flow_view.h>
 #include <yt/yt/flow/library/cpp/common/inflight_tracker.h>
 #include <yt/yt/flow/library/cpp/common/message.h>
@@ -9,7 +13,10 @@
 
 #include <yt/yt/flow/library/cpp/common/message_migration.h>
 
+#include <yt/yt/flow/library/cpp/tables/timer_pages.h>
 #include <yt/yt/flow/library/cpp/tables/timers.h>
+
+#include <yt/yt/core/concurrency/scheduler_api.h>
 
 #include <library/cpp/containers/absl/flat_hash_map.h>
 #include <library/cpp/containers/absl/flat_hash_set.h>
@@ -20,7 +27,38 @@
 #include <util/digest/multi.h>
 #include <util/generic/hash.h>
 
+#include <ranges>
+
 namespace NYT::NFlow {
+
+////////////////////////////////////////////////////////////////////////////////
+
+TFuture<void> ITimerStore::Preload()
+{
+    return OKFuture;
+}
+
+bool ITimerStore::IsEmpty() const
+{
+    return GetCount() == 0;
+}
+
+i64 ITimerStore::GetInMemoryByteSize() const
+{
+    return GetByteSize();
+}
+
+i64 ITimerStore::GetInMemoryCount() const
+{
+    return GetCount();
+}
+
+i64 ITimerStore::GetByteSize() const
+{
+    return GetInMemoryByteSize();
+}
+
+using namespace NConcurrency;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -49,12 +87,57 @@ struct TCompareTimerByTriggerTimestampAndMessageId
 
 ////////////////////////////////////////////////////////////////////////////////
 
+std::vector<std::vector<TStreamId>> BuildTimerStreamGroups(const TTimerTriggerConditions& conditions)
+{
+    THashMap<std::pair<ETimeType, TStreamId>, TStreamId> firstTimerByCondition;
+    THashMap<TStreamId, std::vector<TStreamId>> neighbours;
+    for (const auto& [timerId, condition] : conditions) {
+        neighbours[timerId];
+        auto addCondition = [&] (const TStreamId& inputId) {
+            auto [it, inserted] = firstTimerByCondition.emplace(std::pair(condition.TimeType, inputId), timerId);
+            if (!inserted && it->second != timerId) {
+                neighbours[timerId].push_back(it->second);
+                neighbours[it->second].push_back(timerId);
+            }
+        };
+        if (condition.TimeType == ETimeType::CurrentTime) {
+            addCondition(TStreamId());
+        } else {
+            for (const auto& [inputId, delay] : condition.StreamsWithDelays) {
+                addCondition(inputId);
+            }
+        }
+    }
+
+    std::vector<std::vector<TStreamId>> groups;
+    THashSet<TStreamId> visited;
+    for (const auto& [timerId, adjacent] : neighbours) {
+        if (!visited.insert(timerId).second) {
+            continue;
+        }
+        auto& group = groups.emplace_back();
+        group.push_back(timerId);
+        for (int index = 0; index < std::ssize(group); ++index) {
+            for (const auto& neighbour : GetOrCrash(neighbours, group[index])) {
+                if (visited.insert(neighbour).second) {
+                    group.push_back(neighbour);
+                }
+            }
+        }
+    }
+    return groups;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TTimerStore
     : public ITimerStore
 {
 public:
     explicit TTimerStore(TTimerStoreContextPtr context, TDynamicTimerStoreContextPtr dynamicContext)
         : Context_(std::move(context))
+        , TriggerConditions_(BuildTimerTriggerConditions(Context_->TimerSpecs, Context_->StreamsDependency))
+        , TimerStreamGroups_(BuildTimerStreamGroups(TriggerConditions_))
         , Table_(Context_->TimersTable)
         , Logger(Context_->Logger)
         , InflightStore_(New<TMultiInflightTracker>(
@@ -69,6 +152,7 @@ public:
 
     void Reconfigure(TDynamicTimerStoreContextPtr dynamicContext) override
     {
+        DynamicContext_ = dynamicContext;
         Draining_ = dynamicContext->Draining;
         Table_->Reconfigure(dynamicContext->DynamicTimerStoreSpec->TableRequest);
     }
@@ -82,18 +166,31 @@ public:
         using TPriority = std::pair<TSystemTimestamp, const TMessageId&>;
         std::vector<std::pair<TSortedByTriggerTimestampTimerSet*, std::function<TPriority()>>> triggeredTimers;
         triggeredTimers.reserve(TriggeredTimers_.size());
-        for (auto& [streamId, timers] : TriggeredTimers_) {
-            if (allowedStreams.contains(streamId)) {
-                triggeredTimers.emplace_back(&timers, [timersPtr = &timers] () -> TPriority {
-                    YT_ASSERT(!timersPtr->empty());
-                    const auto& t = *timersPtr->begin();
+        i64 reserveSize = 0;
+        for (const auto& group : TimerStreamGroups_) {
+            bool groupAllowed = std::all_of(group.begin(), group.end(), [&] (const TStreamId& streamId) {
+                return allowedStreams.contains(streamId);
+            });
+            if (!groupAllowed) {
+                continue;
+            }
+            for (const auto& streamId : group) {
+                auto it = TriggeredTimers_.find(streamId);
+                if (it == TriggeredTimers_.end()) {
+                    continue;
+                }
+                auto* timers = &it->second;
+                reserveSize += std::min<i64>(std::ssize(*timers), maxRows - reserveSize);
+                triggeredTimers.emplace_back(timers, [timers] () -> TPriority {
+                    YT_ASSERT(!timers->empty());
+                    const auto& t = *timers->begin();
                     return {t->TriggerTimestamp, t->MessageId};
                 });
             }
         }
 
         std::vector<TInputTimerConstPtr> timers;
-        timers.reserve(maxRows);
+        timers.reserve(reserveSize);
         TMessageBatchLimiter limiter(maxRows, maxByteSize);
         MergingExtractBatch(
             std::move(triggeredTimers),
@@ -119,7 +216,7 @@ public:
         TriggerTimers();
     }
 
-    void RegisterTimerKeyIndex(const TInputTimerConstPtr& timer)
+    void RegisterTimerKeyIndex(const TInputTimerConstPtr& timer, bool restored)
     {
         if (!GetOrCrash(Context_->TimerSpecs, timer->StreamId)->DeduplicateEqualTimestamps) {
             return;
@@ -128,6 +225,11 @@ public:
         auto [it, emplaced] = TimerDeduplicationState_.emplace(timer);
 
         if (emplaced) {
+            return;
+        }
+        // Both equal timers were persisted, since one was taken before the other was registered.
+        if (restored) {
+            RestoredEqualTimers_[*it].push_back(timer);
             return;
         }
 
@@ -148,10 +250,30 @@ public:
         // during extract in GetNextBatch), do nothing.
         // Do not check DeduplicateEqualTimestamps, because erasing from empty map is cheap and no-op.
         auto it = TimerDeduplicationState_.find(timer);
-        if (it == TimerDeduplicationState_.end() || (*it)->MessageId != timer->MessageId) {
+        if (it == TimerDeduplicationState_.end()) {
+            return;
+        }
+        auto restoredIt = RestoredEqualTimers_.find(timer);
+        if ((*it)->MessageId != timer->MessageId) {
+            if (restoredIt != RestoredEqualTimers_.end()) {
+                std::erase_if(restoredIt->second, [&] (const TInputTimerConstPtr& restoredTimer) {
+                    return restoredTimer->MessageId == timer->MessageId;
+                });
+                if (restoredIt->second.empty()) {
+                    RestoredEqualTimers_.erase(restoredIt);
+                }
+            }
             return;
         }
         TimerDeduplicationState_.erase(it);
+        if (restoredIt != RestoredEqualTimers_.end()) {
+            // A restored equal timer is still pending, so it deduplicates the timers registered from now on.
+            TimerDeduplicationState_.emplace(std::move(restoredIt->second.back()));
+            restoredIt->second.pop_back();
+            if (restoredIt->second.empty()) {
+                RestoredEqualTimers_.erase(restoredIt);
+            }
+        }
     }
 
     void Register(std::vector<TTimer>&& timers) override
@@ -167,13 +289,22 @@ public:
                     timer.StreamId);
             }
 
+            if (!restored) {
+                // Same as for a restored timer, since the timers table does not keep the alignment timestamp.
+                timer.AlignmentTimestamp = timer.SystemTimestamp;
+            }
             auto inputTimer = New<TInputTimer>(std::move(timer), Context_->KeySchema);
             if (restored) {
                 InflightStore_->Restore(inputTimer);
-            } else {
-                InflightStore_->Register(inputTimer);
+            } else if (!InflightStore_->TryRegister(inputTimer)) {
+                // A Swift computation adds the timer again when the upstream replays its committed input.
+                YT_TLOG_DEBUG("MessageLifeCycle.TimerStore: timer is already registered")
+                    .With("MessageId", inputTimer->MessageId)
+                    .With("StreamId", inputTimer->StreamId);
+                continue;
             }
 
+            Deduplicated_.erase(inputTimer);
             SortedTimers_[inputTimer->StreamId].insert(inputTimer);
 
             YT_TLOG_DEBUG("MessageLifeCycle.TimerStore: timer was registered")
@@ -181,7 +312,7 @@ public:
                 .With("StreamId", inputTimer->StreamId);
             ModificationQueue_.emplace_back(inputTimer, true);
 
-            RegisterTimerKeyIndex(inputTimer);
+            RegisterTimerKeyIndex(inputTimer, restored);
         }
         InflightStore_->SyncCounters();
     }
@@ -227,7 +358,51 @@ public:
         YT_TLOG_DEBUG("Timer store init completed");
     }
 
+    TFuture<void> Preload() override
+    {
+        return OKFuture;
+    }
+
     TFuture<void> Init() override
+    {
+        return BIND(&TTimerStore::ExportPages, MakeStrong(this))
+            .AsyncVia(GetCurrentInvoker())
+            .Run()
+            .Apply(BIND(&TTimerStore::Load, MakeStrong(this)));
+    }
+
+    //! Timers left in pages by a switch from the paged backend go back to the |timers| table.
+    void ExportPages()
+    {
+        if (Context_->TimerSpecs.empty() || !Context_->PageCatalogue || !Context_->TimerPagesTable) {
+            return;
+        }
+        if (!WaitFor(Context_->TimerPagesTable->TablesExist()).ValueOrThrow()) {
+            return;
+        }
+        // A direct probe rather than the worker catalogue: a pipeline that never used the paged
+        // backend does not depend on the catalogue then. Empty pages count as well: an export
+        // leaves none behind.
+        auto range = GetPartitionKeyRange(*Context_->Partition);
+        auto pages = WaitFor(Context_->TimerPagesTable->LoadMeta({.ComputationId = Context_->Partition->ComputationId}))
+            .ValueOrThrow();
+        bool hasPages = std::any_of(pages.begin(), pages.end(), [&] (const TTimerPageMeta& page) {
+            return Context_->TimerSpecs.contains(page.StreamId) && page.KeyRange.Lower < range.Upper && range.Lower < page.KeyRange.Upper;
+        });
+        if (!hasPages) {
+            return;
+        }
+        YT_TLOG_INFO("Exporting timer pages into the timers table");
+        // The export extracts the timers through #GetNextBatch(), which draining would block.
+        auto dynamicContext = New<TDynamicTimerStoreContext>();
+        dynamicContext->DynamicTimerStoreSpec = DynamicContext_->DynamicTimerStoreSpec;
+        dynamicContext->MaxRowsPerBatch = DynamicContext_->MaxRowsPerBatch;
+        auto pagedStore = CreatePagedTimerStore(Context_, dynamicContext);
+        pagedStore->InitSync();
+        ExportPagesIntoTimers(Context_, pagedStore);
+    }
+
+    TFuture<void> Load()
     {
         auto loadTimers = Table_->LoadAll({
             .ComputationId = Context_->Partition->ComputationId,
@@ -276,9 +451,9 @@ public:
         InflightStore_->Commit();
     }
 
-    i64 GetByteSize() const override
+    bool IsEmpty() const override
     {
-        return InflightStore_->GetTotalByteSize();
+        return InflightStore_->GetTotalCount() == 0;
     }
 
     i64 GetCount() const override
@@ -286,11 +461,22 @@ public:
         return InflightStore_->GetTotalCount();
     }
 
+    i64 GetInMemoryByteSize() const override
+    {
+        return InflightStore_->GetTotalByteSize();
+    }
+
+    i64 GetInMemoryCount() const override
+    {
+        return InflightStore_->GetTotalCount();
+    }
+
     THashMap<TStreamId, TInflightStreamTraverseDataPtr> BuildInflight() override
     {
         auto inflights = InflightStore_->BuildInflights();
-        for (auto& [_, inflight] : inflights) {
+        for (auto& [streamId, inflight] : inflights) {
             inflight->Suspended = Draining_;
+            inflight->MinTriggerTimestamp = GetMinTriggerTimestamp(streamId);
         }
         return inflights;
     }
@@ -300,43 +486,67 @@ private:
     using TTimerSet = absl::flat_hash_set<TInputTimerConstPtr, TMessageHashMapOpsByMessageId, TMessageHashMapOpsByMessageId>;
 
     const TTimerStoreContextPtr Context_;
+    const TTimerTriggerConditions TriggerConditions_;
+    const std::vector<std::vector<TStreamId>> TimerStreamGroups_;
     const NTables::ITimersPtr Table_;
     const NLogging::TLogger Logger;
     // Do not increase due to possible problems with transactions.
     const TMultiInflightTrackerPtr InflightStore_;
+    TDynamicTimerStoreContextPtr DynamicContext_;
     bool Draining_ = false;
 
     TWatermarkStatePtr WatermarkState_;
 
     // Used only if deduplication is enabled.
     absl::flat_hash_set<TInputTimerConstPtr, TMessageHashMapOpsByStreamAndKeyAndTriggerTs, TMessageHashMapOpsByStreamAndKeyAndTriggerTs> TimerDeduplicationState_;
+    //! Restored timers that are equal to a timer of #TimerDeduplicationState_ and are not taken yet.
+    absl::flat_hash_map<
+        TInputTimerConstPtr,
+        std::vector<TInputTimerConstPtr>,
+        TMessageHashMapOpsByStreamAndKeyAndTriggerTs,
+        TMessageHashMapOpsByStreamAndKeyAndTriggerTs>
+        RestoredEqualTimers_;
 
     THashMap<TStreamId, TSortedByTriggerTimestampTimerSet> SortedTimers_;
     THashMap<TStreamId, TSortedByTriggerTimestampTimerSet> TriggeredTimers_;
 
+    // The timers the deduplication unregistered in the epoch, by id: a caller may unregister such a timer through
+    // another object. A timer registered again loses the mark, so its own deduplication still unregisters it.
     TTimerSet Deduplicated_;
     std::deque<std::pair<TInputTimerConstPtr, bool>> ModificationQueue_;
 
 private:
+    // Taken timers are not tracked: callers unregister a taken batch before building inflights.
+    std::optional<TSystemTimestamp> GetMinTriggerTimestamp(const TStreamId& streamId) const
+    {
+        std::optional<TSystemTimestamp> result;
+        for (const auto* timerSets : {&SortedTimers_, &TriggeredTimers_}) {
+            auto it = timerSets->find(streamId);
+            if (it == timerSets->end() || it->second.empty()) {
+                continue;
+            }
+
+            auto triggerTimestamp = (*it->second.begin())->TriggerTimestamp;
+            result = result ? std::min(*result, triggerTimestamp) : triggerTimestamp;
+        }
+
+        return result;
+    }
+
     void TriggerTimers()
     {
         bool offered = false;
         for (auto& [timerStreamId, timers] : SortedTimers_) {
-            auto timerSpec = GetOrCrash(Context_->TimerSpecs, timerStreamId);
+            const auto& condition = GetOrCrash(TriggerConditions_, timerStreamId);
             TSystemTimestamp watermark = InfinitySystemTimestamp;
-            if (timerSpec->StreamsWithDelays) {
-                for (const auto& [streamId, delay] : *timerSpec->StreamsWithDelays) {
-                    auto streamWatermark = WatermarkState_->GetWatermark(streamId, timerSpec->TimeType);
+            if (condition.TimeType == ETimeType::CurrentTime) {
+                // Watched streams and their delays are stream-time coordinates and do not apply to current time.
+                watermark = WatermarkState_->GetCurrentTimestamp();
+            } else {
+                for (const auto& [streamId, delay] : condition.StreamsWithDelays) {
+                    auto streamWatermark = WatermarkState_->GetWatermark(streamId, condition.TimeType);
                     auto delayedWatermark = TSystemTimestamp(std::max(streamWatermark.Underlying(), delay.Seconds()) - delay.Seconds());
                     watermark = std::min(watermark, delayedWatermark);
-                }
-            } else if (timerSpec->Streams) {
-                for (const auto& streamId : *timerSpec->Streams) {
-                    watermark = std::min(watermark, WatermarkState_->GetWatermark(streamId, timerSpec->TimeType));
-                }
-            } else {
-                for (const auto& streamId : Context_->StreamsDependency.at(timerStreamId)) {
-                    watermark = std::min(watermark, WatermarkState_->GetWatermark(streamId, timerSpec->TimeType));
                 }
             }
 
@@ -357,23 +567,35 @@ private:
         }
     }
 
+    //! Folds the journal of the epoch to the last entry of every timer: the state its row must end up in.
     void DeduplicateModificationQueue()
     {
-        absl::flat_hash_map<TInputTimerConstPtr, bool, TMessageHashMapOpsByMessageId, TMessageHashMapOpsByMessageId> finalState;
-        for (const auto& [timer, state] : ModificationQueue_) {
-            if (!finalState.contains(timer)) {
-                finalState[timer] = state;
-            } else {
-                YT_VERIFY(finalState[timer] == true);
-                YT_VERIFY(state == false);
-                finalState.erase(timer);
+        struct TJournalState
+        {
+            bool FirstAdd;
+            bool LastAdd;
+        };
+
+        absl::flat_hash_map<TInputTimerConstPtr, TJournalState, TMessageHashMapOpsByMessageId, TMessageHashMapOpsByMessageId> states;
+        for (const auto& [timer, add] : ModificationQueue_) {
+            auto [it, inserted] = states.try_emplace(timer, TJournalState{.FirstAdd = add, .LastAdd = add});
+            if (!inserted) {
+                it->second.LastAdd = add;
             }
         }
+        // A timer added and erased in one epoch never reaches the table; a persisted timer erased and
+        // added again, e.g. by a replayed input, is rewritten.
         std::deque<std::pair<TInputTimerConstPtr, bool>> filteredModificationQueue;
-        for (const auto& [timer, state] : ModificationQueue_) {
-            if (auto iter = finalState.find(timer); iter != finalState.end() && iter->second == state) {
-                filteredModificationQueue.push_back({timer, state});
+        for (const auto& entry : std::ranges::reverse_view(ModificationQueue_)) {
+            auto stateIt = states.find(entry.first);
+            if (stateIt == states.end()) {
+                continue;
             }
+            const auto& state = stateIt->second;
+            if (!(state.FirstAdd && !state.LastAdd)) {
+                filteredModificationQueue.push_front(entry);
+            }
+            states.erase(stateIt);
         }
         ModificationQueue_ = std::move(filteredModificationQueue);
     }
@@ -383,7 +605,12 @@ private:
 
 ITimerStorePtr CreateTimerStore(TTimerStoreContextPtr context, TDynamicTimerStoreContextPtr dynamicContext)
 {
-    return New<TTimerStore>(std::move(context), std::move(dynamicContext));
+    switch (context->Backend) {
+        case ETimerStoreBackend::InMemory:
+            return New<TTimerStore>(std::move(context), std::move(dynamicContext));
+        case ETimerStoreBackend::Paged:
+            return CreatePagedTimerStore(std::move(context), std::move(dynamicContext));
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

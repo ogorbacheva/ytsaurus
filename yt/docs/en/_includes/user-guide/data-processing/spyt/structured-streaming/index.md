@@ -5,7 +5,7 @@ SPYT version 1.77.0 introduces support for [streaming processes](https://spark.a
 
 ## General scheme of Spark Structured Streaming in SPYT
 
-![](../../../../../../images/spyt-streaming-general-scheme.png){ .center }
+![](../../../../../../_images/spyt-streaming-general-scheme.png){ .center }
 
 ### Key concepts
 
@@ -132,14 +132,14 @@ with spark_session() as spark:
 
    For each partition:
    * If lowerIndex < upperIndex:
-     * Calls the [advanceConsumer](../../../../../user-guide/dynamic-tables/queues.md#rabota-s-konsyumerom) method to commit offsets for batch `#N‑1` in the consumer.
+     * Calls the [advanceConsumer](../../../../../user-guide/dynamic-tables/queues.md#work-consumer) method to commit offsets for batch `#N‑1` in the consumer.
      * Generates tasks for executors.
    * Otherwise: skips processing (empty batch).
 
 3. **Execution on executors**
 
    Each executor for its partition:
-   * Reads data using the [pullConsumer](../../../../../user-guide/dynamic-tables/queues.md#chtenie-dannyh) method.
+   * Reads data using the [pullConsumer](../../../../../user-guide/dynamic-tables/queues.md#reading-data) method.
    * Applies transformations (if any).
    * Writes data to the output table.
 
@@ -283,19 +283,19 @@ The Environment page is used to view all Spark session configuration parameters 
 On the Executors page, you can see the number of active, failed, and completed tasks and assess how optimally the executor cores are loaded. You can also view memory usage statistics. In case of a memory leak, it is sometimes useful to go to Thread Dump or Heap Histogram to find the cause.
 
 
-![](../../../../../../images/spyt-streaming-monitoring-executors.png){ .center }
+![](../../../../../../_images/spyt-streaming-monitoring-executors.png){ .center }
 
 
 For streaming processes, the webUI displays a Structured Streaming page by default. Here you can view statistics for active and completed streams. In particular, it is useful to check what error caused a Streaming Query to fail.
 
 
-![](../../../../../../images/spyt-streaming-monitoring-streaming.png){ .center }
+![](../../../../../../_images/spyt-streaming-monitoring-streaming.png){ .center }
 
 
 By clicking Run ID, you can view more detailed statistics for a specific Streaming Query.
 
 
-![](../../../../../../images/spyt-streaming-monitoring-streaming-query-stats.png){ .center }
+![](../../../../../../_images/spyt-streaming-monitoring-streaming-query-stats.png){ .center }
 
 
 ## Best practices { #best-practices }

@@ -6,6 +6,8 @@
 
 #include <yt/yt/ytlib/distributed_chunk_session_client/service_proxy.h>
 
+#include <yt/yt/ytlib/api/native/connection.h>
+
 #include <yt/yt/ytlib/chunk_client/session_id.h>
 
 #include <yt/yt/client/api/config.h>
@@ -43,6 +45,7 @@ public:
             invoker,
             TDistributedChunkSessionServiceProxy::GetDescriptor(),
             DistributedChunkSessionServiceLogger())
+        , NodeDirectory_(connection->GetNodeDirectory())
         , DistributedChunkSessionManager_(
             CreateDistributedChunkSessionManager(
                 std::move(invoker),
@@ -56,6 +59,7 @@ public:
     }
 
 private:
+    const TNodeDirectoryPtr NodeDirectory_;
     const IDistributedChunkSessionManagerPtr DistributedChunkSessionManager_;
 
     DECLARE_RPC_SERVICE_METHOD(NDistributedChunkSessionClient::NProto, StartSession)
@@ -68,11 +72,22 @@ private:
 
         auto sessionTimeout = FromProto<TDuration>(request->session_timeout());
 
-        context->SetRequestInfo(
-            "SessionId: %v, Targets: %v, SessionTimeout: %v",
-            sessionId,
-            targets,
-            sessionTimeout);
+        context->AnnotateRequest()
+            .With("SessionId", sessionId)
+            .With("Targets", targets)
+            .With("SessionTimeout", sessionTimeout);
+
+        NodeDirectory_->MergeFrom(request->node_directory());
+
+        // The targets are not confirmed on master until the journal writer opens.
+        for (auto target : targets) {
+            auto nodeId = target.GetNodeId();
+            THROW_ERROR_EXCEPTION_IF(
+                !NodeDirectory_->FindDescriptor(nodeId),
+                NNodeTrackerClient::EErrorCode::NoSuchNode,
+                "Missing descriptor for write target node %v",
+                nodeId);
+        }
 
         auto asyncResult = DistributedChunkSessionManager_->StartSession(
             sessionId,
@@ -88,9 +103,12 @@ private:
     {
         auto sessionId = FromProto<TSessionId>(request->session_id());
 
-        context->SetRequestInfo("SessionId: %v", sessionId);
+        context->AnnotateRequest()
+            .With("SessionId", sessionId);
 
-        DistributedChunkSessionManager_->RenewSessionLease(sessionId);
+        auto sequencer = DistributedChunkSessionManager_
+            ->RenewSessionLeaseAndGetSequencerOrThrow(sessionId);
+        ToProto(response->mutable_progress(), sequencer->GetProgress());
 
         context->Reply();
     }
@@ -104,26 +122,33 @@ private:
             "Invalid attachments size: expected 1, got %v",
             request->Attachments().size());
 
-        context->SetRequestInfo(
-            "SessionId: %v",
-            sessionId);
+        context->AnnotateRequest()
+            .With("SessionId", sessionId);
+
+        auto statistics = FromProto<TDistributedChunkSessionWriteStatistics>(request->statistics());
 
         auto sequencer = DistributedChunkSessionManager_->GetSequencerOrThrow(sessionId);
 
-        context->ReplyFrom(sequencer->WriteRecord(request->Attachments()[0]));
+        context->ReplyFrom(sequencer->WriteRecord(
+            request->Attachments()[0],
+            statistics));
     }
 
     DECLARE_RPC_SERVICE_METHOD(NDistributedChunkSessionClient::NProto, FinishSession)
     {
         auto sessionId = FromProto<TSessionId>(request->session_id());
 
-        context->SetRequestInfo(
-            "SessionId: %v",
-            sessionId);
+        context->AnnotateRequest()
+            .With("SessionId", sessionId);
 
         auto sequencer = DistributedChunkSessionManager_->GetSequencerOrThrow(sessionId);
 
-        context->ReplyFrom(sequencer->Close().ToUncancelable());
+        auto closeFuture = sequencer->Close()
+            .Apply(BIND_NO_PROPAGATE([response] (const TDistributedChunkSessionProgress& progress) {
+                ToProto(response->mutable_progress(), progress);
+            }))
+            .ToUncancelable();
+        context->ReplyFrom(std::move(closeFuture));
     }
 };
 

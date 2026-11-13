@@ -1,4 +1,6 @@
 #include "logical_type.h"
+
+#include "private.h"
 #include "schema.h"
 #include "helpers.h"
 
@@ -1635,17 +1637,7 @@ bool TAggregateStateLogicalType::IsNullable() const
     return GetElement()->IsNullable();
 }
 
-namespace {
-
 ////////////////////////////////////////////////////////////////////////////////
-
-struct TTypeV3Info
-{
-    ESimpleLogicalValueType V1Type;
-    EValueType WireType;
-    bool Required;
-    bool IsPureV1Type;
-};
 
 TTypeV3Info GetTypeV3Info(const TLogicalTypePtr& logicalType)
 {
@@ -1680,10 +1672,6 @@ TTypeV3Info GetTypeV3Info(const TLogicalTypePtr& logicalType)
     }
     YT_ABORT();
 }
-
-////////////////////////////////////////////////////////////////////////////////
-
-} // namespace
 
 std::pair<ESimpleLogicalValueType, bool> CastToV1Type(const TLogicalTypePtr& logicalType)
 {
@@ -2333,18 +2321,7 @@ bool IsComparable(const TLogicalTypePtr& type)
 
 bool IsTzType(const TLogicalTypePtr& logicalType)
 {
-    auto simpleType = CastToV1Type(logicalType).first;
-    switch (simpleType) {
-        case ESimpleLogicalValueType::TzDate:
-        case ESimpleLogicalValueType::TzDatetime:
-        case ESimpleLogicalValueType::TzTimestamp:
-        case ESimpleLogicalValueType::TzDate32:
-        case ESimpleLogicalValueType::TzDatetime64:
-        case ESimpleLogicalValueType::TzTimestamp64:
-            return true;
-        default:
-            return false;
-    }
+    return IsTzType(CastToV1Type(logicalType).first);
 }
 
 bool HasAggregateStateType(const TLogicalTypePtr& logicalType)

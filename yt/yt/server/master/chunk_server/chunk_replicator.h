@@ -1,7 +1,9 @@
 #pragma once
 
 #include "private.h"
+
 #include "chunk.h"
+#include "chunk_location.h"
 #include "job_controller.h"
 
 #include <yt/yt/server/master/cell_master/public.h>
@@ -13,8 +15,6 @@
 #include <yt/yt/server/master/node_tracker_server/data_center.h>
 
 #include <yt/yt/client/chunk_client/chunk_replica.h>
-
-#include <yt/yt/server/master/chunk_server/chunk_location.h>
 
 #include <yt/yt/ytlib/node_tracker_client/proto/node_tracker_service.pb.h>
 
@@ -266,9 +266,6 @@ private:
 
     void MaybeRememberPartMissingChunk(TChunk* chunk);
 
-    static constexpr int MinAvailableReplicaCount = 1;
-    static constexpr int MaxTemporarilyUnavailableReplicaCount = 1;
-
     // COMPAT(grphil)
     void DoRefreshLocationSequoiaUnsafe(TNodeId nodeId, NNodeTrackerClient::TChunkLocationIndex locationIndex);
 
@@ -288,10 +285,6 @@ private:
     void ConfirmChunkListRequisitionTraverseFinished(
         const NObjectServer::TEphemeralObjectPtr<TChunkList>& chunkList);
     void OnFinishedRequisitionTraverseFlush();
-
-    //! Follows upward parent links.
-    //! Stops when some owning nodes are discovered or parents become ambiguous.
-    TChunkList* FollowParentLinks(TChunkList* chunkList);
 
     void AddToChunkRepairQueue(TChunkPtrWithMediumIndex chunkWithIndexes, int priority);
     void TouchChunkInRepairQueues(TChunk* chunk);

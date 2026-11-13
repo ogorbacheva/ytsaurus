@@ -2,12 +2,16 @@
 
 #include "public.h"
 
+#include "key.h"
 #include "message.h"
 #include "timer.h"
 
 #include <yt/yt/core/concurrency/nonblocking_batcher.h>
 
+#include <library/cpp/containers/absl/flat_hash_set.h>
+
 #include <deque>
+#include <type_traits>
 
 namespace NYT::NFlow {
 
@@ -16,7 +20,10 @@ namespace NYT::NFlow {
 class TMessageBatchLimiter
 {
 public:
-    explicit TMessageBatchLimiter(i64 maxRowsPerBatch, i64 maxBytesPerBatch);
+    explicit TMessageBatchLimiter(
+        i64 maxRowsPerBatch,
+        i64 maxBytesPerBatch,
+        std::optional<i64> maxKeysPerBatch = std::nullopt);
 
     bool IsFull() const;
 
@@ -34,6 +41,8 @@ private:
     i64 CurrentByteSize_ = 0;
     i64 MaxRowsPerBatch_;
     i64 MaxBytesPerBatch_;
+    std::optional<i64> MaxKeysPerBatch_;
+    absl::flat_hash_set<TKey, ::THash<TKey>, ::TEqualTo<TKey>> Keys_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -50,13 +59,14 @@ DEFINE_REFCOUNTED_TYPE(TMessageBatcher);
 
 //////////////////////////////////////////////////////////////////////////////
 
+// Stops before the first priority rejected by |canExtract|.
 template <class TSet, class TPriority, class TMessageAccessor, class TOutputCallback>
 void MergingExtractBatch(
     std::vector<std::pair<TSet*, std::function<TPriority()>>> inputQueues,
     TMessageAccessor&& messageAccessor,
     TMessageBatchLimiter& batchLimiter, // Gets messageAccessor(queueElement).
-    TOutputCallback&& outputCallback    // Gets queueElement.
-);
+    TOutputCallback&& outputCallback,   // Gets queueElement.
+    const std::function<bool(const std::type_identity_t<TPriority>&)>& canExtract = {});
 
 ////////////////////////////////////////////////////////////////////////////////
 

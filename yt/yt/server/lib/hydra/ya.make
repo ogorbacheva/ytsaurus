@@ -5,6 +5,7 @@ INCLUDE(${ARCADIA_ROOT}/yt/ya_cpp.make.inc)
 PROTO_NAMESPACE(yt)
 
 SRCS(
+    causal_state_registry.cpp
     changelog.cpp
     changelog_acquisition.cpp
     changelog_discovery.cpp
@@ -14,6 +15,7 @@ SRCS(
     checkpointable_stream.cpp
     composite_automaton.cpp
     config.cpp
+    config_wrapper.cpp
     decorated_automaton.cpp
     distributed_hydra_manager.cpp
     dry_run_hydra_manager.cpp
@@ -72,4 +74,3 @@ RECURSE(
 RECURSE_FOR_TESTS(
     unittests
 )
-

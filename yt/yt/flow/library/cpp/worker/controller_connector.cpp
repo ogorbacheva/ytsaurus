@@ -13,6 +13,7 @@
 #include <yt/yt/core/actions/cancelable_context.h>
 
 #include <yt/yt/core/misc/configurable_singleton_def.h>
+#include <yt/yt/core/utilex/random.h>
 
 #include <yt/yt/core/ytree/convert.h>
 #include <yt/yt/core/ytree/fluent.h>
@@ -57,6 +58,8 @@ using NYT::ToProto;
 
 constinit const auto Logger = WorkerLogger;
 
+constexpr auto WorkerStatisticsReportJitter = TDuration::Seconds(30);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 class TControllerConnector
@@ -75,7 +78,8 @@ public:
         IJobTrackerPtr jobTracker,
         TStreamSpecStoragePtr streamSpecStorage,
         bool ignoreSingletonsDynamicConfig,
-        IStatusProfilerPtr rootStatusProfiler)
+        IStatusProfilerPtr rootStatusProfiler,
+        TDynamicControllerConnectorSpecPtr initialControllerConnector)
         : NodeInfo_(std::move(nodeInfo))
         , YTConnector_(std::move(ytConnector))
         , ControlInvoker_(std::move(controlInvoker))
@@ -95,6 +99,9 @@ public:
         , ProcessHeartbeatResponseTimer_(Profiler_.Timer("/heartbeat/process_response_time"))
     {
         YT_ASSERT_INVOKER_THREAD_AFFINITY(ControlInvoker_, ControlThread);
+        if (initialControllerConnector) {
+            ExecutionSpec_->DynamicPipelineSpec->GetValue()->ControllerConnector = std::move(initialControllerConnector);
+        }
     }
 
     void Initialize() override
@@ -178,7 +185,8 @@ public:
 
     void Reconfigure(
         const TExecutionSpecPtr& newExecutionSpec,
-        const THashMap<TJobId, TDynamicPartitionSpecPtr>& dynamicComputationPartitionSpecs)
+        const THashMap<TJobId, TDynamicPartitionSpecPtr>& dynamicComputationPartitionSpecs,
+        const THashMap<TResourceInstanceId, TResourceInstanceDynamicSpecPtr>& resourceDynamicSpecs)
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
@@ -220,7 +228,7 @@ public:
             JobDirectory_->Reconfigure(ExecutionSpec_->Layout, ExecutionSpec_->PipelineSpec->GetValue());
             MessageDistributor_->Reconfigure(ExecutionSpec_->PipelineSpec->GetValue(), dynamicSpec->MessageDistributor);
         }
-        JobTracker_->Reconfigure(ExecutionSpec_, dynamicComputationPartitionSpecs);
+        JobTracker_->Reconfigure(ExecutionSpec_, dynamicComputationPartitionSpecs, resourceDynamicSpecs);
     }
 
     DEFINE_SIGNAL_OVERRIDE(void(), ControllerConnecting);
@@ -253,6 +261,7 @@ private:
     TInstant ConnectionTime_ = TInstant::Zero();
     TIncarnationId ConnectionIncarnationId_;
     ui64 HeartbeatSeqNo_ = 0;
+    TInstant NextWorkerStatisticsReportAt_ = TInstant::Zero();
     IChannelPtr ControllerChannel_;
     //! Mirror of ControllerChannel_ for out-of-thread readers (e.g. job
     //! throttler clients). Must be updated whenever ControllerChannel_ changes.
@@ -407,6 +416,7 @@ private:
 
         Connected_ = true;
         ConnectionTime_ = TInstant::Now();
+        NextWorkerStatisticsReportAt_ = TInstant::Zero();
 
         YT_TLOG_INFO("Worker connected")
             .With("RpcAddress", NodeInfo_->RpcAddress)
@@ -510,13 +520,22 @@ private:
         }
 
         auto workerStatus = New<TWorkerStatus>();
+        workerStatus->WorkerIncarnationId = NodeInfo_->IncarnationId;
         if (auto error = GetPreviousCrashError(); TInstant::Now() < error.GetDatetime() + YoungWorkingJobThreshold) {
             workerStatus->PreviousCrashError = error;
         }
         workerStatus->MessageDistributorStatus = MessageDistributor_->GetStatus();
         workerStatus->Errors = std::move(RootStatusProfiler_->GetStatus().Errors);
-        workerStatus->ResourceStatuses = JobTracker_->GetResourceStatuses();
-        workerStatus->PreloadedResourceStates = JobTracker_->GetPreloadedStates();
+        JobTracker_->FillRuntimeStatus(workerStatus);
+        auto now = TInstant::Now();
+        if (NextWorkerStatisticsReportAt_ <= now) {
+            auto statistics = New<TWorkerStatistics>();
+            statistics->LineageRatios = JobTracker_->GetLineageRatios(now);
+            workerStatus->Statistics = std::move(statistics);
+
+            NextWorkerStatisticsReportAt_ =
+                now + GetControllerConnectorSpec()->WorkerStatisticsReportPeriod + RandomDuration(WorkerStatisticsReportJitter);
+        }
         request->set_worker_status(ToProto(ConvertToYsonString(workerStatus)));
 
         return request;
@@ -544,8 +563,7 @@ private:
         }
 
         if (response->execution_spec().length() != 0) {
-            auto executionSpecUpdate = ConvertTo<TExecutionSpecPtr>(
-                ConvertToNode(TYsonStringBuf(response->execution_spec())));
+            auto executionSpecUpdate = ConvertTo<TExecutionSpecPtr>(TYsonStringBuf(response->execution_spec()));
             std::vector<TPersistedStateStorageRow<std::string>> stateUpdate;
             stateUpdate.resize(response->state_update_size());
             for (int i = 0; i < response->state_update_size(); ++i) {
@@ -563,7 +581,13 @@ private:
             }
 
             auto newExecutionSpec = ApplyExecutionSpecUpdate(ExecutionSpec_, executionSpecUpdate, stateUpdate);
-            Reconfigure(newExecutionSpec, dynamicComputationPartitionSpecs);
+            THashMap<TResourceInstanceId, TResourceInstanceDynamicSpecPtr> resourceDynamicSpecs;
+            for (const auto& item : response->resources_dynamic_specs()) {
+                resourceDynamicSpecs.emplace(
+                    FromProto<TResourceInstanceId>(item.resource_instance_id()),
+                    ConvertTo<TResourceInstanceDynamicSpecPtr>(TYsonStringBuf(item.spec())));
+            }
+            Reconfigure(newExecutionSpec, dynamicComputationPartitionSpecs, resourceDynamicSpecs);
         }
 
         if (!response->message_transfering_info().empty()) {
@@ -635,7 +659,8 @@ IControllerConnectorPtr CreateControllerConnector(
     IJobTrackerPtr jobTracker,
     TStreamSpecStoragePtr streamSpecStorage,
     bool ignoreSingletonsDynamicConfig,
-    IStatusProfilerPtr rootStatusProfiler)
+    IStatusProfilerPtr rootStatusProfiler,
+    TDynamicControllerConnectorSpecPtr initialControllerConnector)
 {
     return New<TControllerConnector>(
         std::move(nodeInfo),
@@ -649,7 +674,8 @@ IControllerConnectorPtr CreateControllerConnector(
         std::move(jobTracker),
         std::move(streamSpecStorage),
         ignoreSingletonsDynamicConfig,
-        std::move(rootStatusProfiler));
+        std::move(rootStatusProfiler),
+        std::move(initialControllerConnector));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

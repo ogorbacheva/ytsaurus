@@ -1,5 +1,7 @@
 PY3TEST()
 
+SET(YT_SIZE_TESTS_BUNDLE yes)
+
 ENV(YT_TEST_FILTER=MEDIUM)
 
 SET(YT_SPLIT_FACTOR 125)
@@ -12,6 +14,8 @@ ELSE()
 ENDIF()
 
 INCLUDE(../YaMakeDependsBoilerplate.txt)
+
+YT_SPEC(yt/yt/tests/integration/spec_job_batching.yson)
 
 # Set REQUIREMENTS after INCLUDE for proper override
 IF (SANITIZER_TYPE == "thread")
@@ -26,8 +30,8 @@ ELSEIF (SANITIZER_TYPE)
     )
 ELSE()
     REQUIREMENTS(
-        cpu:22
-        ram:18
+        cpu:16
+        ram:14
     )
 ENDIF()
 

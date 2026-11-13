@@ -1,8 +1,12 @@
 #pragma once
 
+#include "file_provider.h"
 #include "public.h"
 #include "resource_controller.h"
 #include "spec_validation.h"
+
+#include <yt/yt/core/actions/cancelable_context.h>
+#include <yt/yt/core/actions/future.h>
 
 #include <yt/yt/core/logging/log.h>
 
@@ -15,12 +19,30 @@ namespace NYT::NFlow {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-//! A revision of a resource: what the worker-side instances of the resource should be serving.
+//! An immutable complete set of exact named file-provider revisions.
+struct TFileSnapshot
+    : public NYTree::TYsonStruct
+{
+    TFileSnapshotId Id;
+    THashMap<TFileProviderId, TFileProviderRevisionPtr> FileProviders;
+
+    REGISTER_YSON_STRUCT(TFileSnapshot);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TFileSnapshot);
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! A revision of the resource control target delivered to worker-side instances.
 struct TResourceRevision
     : public NYTree::TYsonStruct
 {
     i64 RevisionId{};
     NYTree::INodePtr Spec;
+    TFileSnapshotPtr ActiveFileSnapshot;
+    TFileSnapshotPtr PreparingFileSnapshot;
 
     REGISTER_YSON_STRUCT(TResourceRevision);
 
@@ -38,7 +60,15 @@ struct TResourceRevisionState
     std::optional<i64> AppliedRevisionId;
     //! Id of the delivered target revision the instance is switching to.
     std::optional<i64> TargetRevisionId;
-    std::optional<EFileResourceUpdateState> UpdateState;
+
+    //! Last fully active file snapshot on this instance.
+    std::optional<TFileSnapshotId> ActiveFileSnapshotId;
+    //! File snapshot currently being prepared or activated.
+    TFileSnapshotStatusPtr PreparingFileSnapshot;
+    //! Number of live accessor leases by file snapshot.
+    THashMap<TFileSnapshotId, i64> LiveAccessorCounts;
+    std::optional<TResourceInstanceId> ResourceInstanceId;
+    std::optional<ui64> ResourceIncarnationGeneration;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -110,6 +140,13 @@ struct IResource
     //! @see IResourceController.
     using TController = TNullResourceController;
 
+    //! Requests cancellation of background work when the owner retires this instance.
+    //! Idempotent; does not wait for destruction or invalidate published data.
+    virtual void Stop() = 0;
+
+    //! Completes after the derived resource has been destroyed.
+    virtual TFuture<void> GetDestroyedFuture() const = 0;
+
     //! Loads the resource with its dependencies.
     /*!
      *  This method is called to load the resource and prepare it for use.
@@ -162,6 +199,27 @@ struct IResource
 };
 
 DEFINE_REFCOUNTED_TYPE(IResource);
+
+////////////////////////////////////////////////////////////////////////////////
+
+class TResourceLifecycleBase
+    : public IResource
+{
+public:
+    TResourceLifecycleBase();
+    ~TResourceLifecycleBase() override;
+
+    void Stop() final;
+    TFuture<void> GetDestroyedFuture() const final;
+
+protected:
+    //! Cancellation scope for instance-owned background futures and invokers.
+    const TCancelableContextPtr& GetCancelableContext() const;
+
+private:
+    const TCancelableContextPtr CancelableContext_;
+    const TPromise<void> DestroyedPromise_;
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 

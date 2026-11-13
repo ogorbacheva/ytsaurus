@@ -67,11 +67,17 @@ IOutputCollectorPtr TGroupingOutputCollector::SetParents(
         std::move(parents.Keys));
 }
 
-void TGroupingOutputCollector::AddMessage(TMessage&& message, bool distribute)
+void TGroupingOutputCollector::DoAddMessage(TMessage&& message, TAddMessageOptions options)
 {
     auto& group = CurrentGroup();
     group.Messages.push_back(std::move(message));
-    group.Distribute.push_back(distribute);
+    group.Distribute.push_back(options.Distribute);
+    group.MessageIdSuffixes.push_back(std::move(options.MessageIdSuffix));
+}
+
+void TGroupingOutputCollector::DoAddFailedMessage(const TInputMessageConstPtr& /*message*/, const TError& /*reason*/)
+{
+    THROW_ERROR_EXCEPTION("Failed message capture is not supported by companion process functions");
 }
 
 void TGroupingOutputCollector::AddTimer(

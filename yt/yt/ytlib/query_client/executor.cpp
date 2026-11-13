@@ -25,10 +25,7 @@
 #include <yt/yt/library/query/engine_api/coordinator.h>
 #include <yt/yt/library/query/engine_api/evaluator.h>
 #include <yt/yt/library/query/engine_api/new_range_inferrer.h>
-
 #include <yt/yt/library/query/engine_api/query_engine_config.h>
-
-#include <yt/yt/core/misc/configurable_singleton_def.h>
 
 #include <yt/yt/client/query_client/query_statistics.h>
 
@@ -39,6 +36,7 @@
 
 #include <yt/yt/client/table_client/pipe.h>
 #include <yt/yt/client/table_client/row_batch.h>
+#include <yt/yt/client/table_client/unordered_schemaful_reader.h>
 #include <yt/yt/client/table_client/unversioned_reader.h>
 #include <yt/yt/client/table_client/versioned_io_options.h>
 #include <yt/yt/client/table_client/wire_protocol.h>
@@ -52,6 +50,7 @@
 #include <yt/yt/core/concurrency/scheduler.h>
 
 #include <yt/yt/core/misc/collection_helpers.h>
+#include <yt/yt/core/misc/configurable_singleton_def.h>
 #include <yt/yt/core/misc/mpsc_stack.h>
 #include <yt/yt/core/misc/protobuf_helpers.h>
 
@@ -333,9 +332,11 @@ public:
     TFuture<void> GetReadyEvent() const override
     {
         auto reader = RowsetReader_.Acquire();
+        // NB: The RPC is owned by the subplan holders, not the reader; this lets sibling
+        // servant errors be collected after the first subquery fails.
         return reader
             ? reader->GetReadyEvent()
-            : QueryResult_.As<void>();
+            : QueryResult_.As<void>().ToUncancelable();
     }
 
     TFuture<TQueryStatistics> GetQueryResult() const
@@ -491,6 +492,70 @@ public:
             return queryStatistics;
         }
 
+        if (planFragment.UnionAllQuery) {
+            const auto& unionAllQuery = planFragment.UnionAllQuery;
+
+            int subqueryCount = std::ssize(unionAllQuery->SubqueryFragments);
+
+            std::vector<ISchemafulPipePtr> pipes(subqueryCount);
+            for (int index = 0; index < subqueryCount; ++index) {
+                pipes[index] = CreateSchemafulPipe(MemoryChunkProvider_);
+            }
+
+            std::vector<TFuture<TQueryStatistics>> subqueryStatisticsFutures(subqueryCount);
+            for (int index = 0; index < subqueryCount; ++index) {
+                const auto& subFragment = *unionAllQuery->SubqueryFragments[index];
+                subqueryStatisticsFutures[index] = BIND(
+                    &IExecutor::Execute,
+                    MakeStrong(this),
+                    subFragment,
+                    externalCGInfo,
+                    pipes[index]->GetWriter(),
+                    options,
+                    requestFeatureFlags)
+                    .AsyncVia(GetCurrentInvoker())
+                    .Run()
+                    .AsUnique()
+                    .Apply(BIND([subqueryPipe = pipes[index]] (TErrorOr<TQueryStatistics>&& statisticsOrError) {
+                        if (!statisticsOrError.IsOK()) {
+                            subqueryPipe->Fail(statisticsOrError);
+                        }
+                        return statisticsOrError.ValueOrThrow();
+                    }));
+            }
+
+            auto getNextReader = [pipes = std::move(pipes), readerIndex = 0] () mutable {
+                if (readerIndex >= std::ssize(pipes)) {
+                    return ISchemafulUnversionedReaderPtr();
+                }
+                return pipes[readerIndex++]->GetReader();
+            };
+
+            auto unionReader = CreateUnorderedSchemafulReader(std::move(getNextReader), subqueryCount);
+
+            auto subqueryStatisticsFuture = AllSucceeded(std::move(subqueryStatisticsFutures));
+            auto cancelGuard = Finally([&] {
+                subqueryStatisticsFuture.Cancel(TError("Outer query finished"));
+            });
+
+            auto queryStatistics = Execute(
+                planFragment.Query,
+                externalCGInfo,
+                std::move(unionReader),
+                writer,
+                options,
+                requestFeatureFlags);
+
+            auto subqueryStatistics = WaitForFast(subqueryStatisticsFuture)
+                .ValueOrThrow();
+
+            for (auto& statistics : subqueryStatistics) {
+                queryStatistics.AddInnerStatistics(std::move(statistics));
+            }
+
+            return queryStatistics;
+        }
+
         YT_ABORT();
     }
 
@@ -578,7 +643,8 @@ private:
             VerifyIdsInKeys(dataSource.first.Keys);
         }
 
-        if (coordinatedQuery->GetScanOrder(options.AllowUnorderedGroupByWithLimit) == EScanOrder::Reversed) {
+        auto scanOrder = coordinatedQuery->ScanOrder;
+        if (scanOrder == EScanOrder::Reversed) {
             std::reverse(allSplits.begin(), allSplits.end());
             YT_TLOG_DEBUG("Reversed tablet order for DESC scan")
                 .With("SplitCount", allSplits.size());
@@ -586,7 +652,6 @@ private:
 
         std::vector<std::pair<std::vector<TDataSource>, std::string>> groupedDataSplits;
 
-        auto scanOrder = coordinatedQuery->GetScanOrder(options.AllowUnorderedGroupByWithLimit);
         if (scanOrder == EScanOrder::Ordered || scanOrder == EScanOrder::Reversed) {
             // Splits are ordered by tablet bounds (or reversed for DESC scans).
             YT_TLOG_DEBUG("Got ordered splits")
@@ -885,7 +950,7 @@ private:
         try {
             TQueryStatistics statistics;
 
-            auto scanOrder = query->GetScanOrder(options.AllowUnorderedGroupByWithLimit);
+            auto scanOrder = query->ScanOrder;
             if (options.EnableParallelizeUnorderedGroupBy &&
                 scanOrder == EScanOrder::Unordered &&
                 query->GroupClause &&
@@ -943,10 +1008,10 @@ private:
             } else {
                 statistics = CoordinateAndExecute(
                     scanOrder,
-                    query->IsPrefetching(),
+                    query->Prefetching,
                     splitCount,
                     query->Offset,
-                    query->Limit,
+                    query->Limit.value_or(std::numeric_limits<i64>::max()),
                     options.AdaptiveOrderedSchemafulReader,
                     std::move(evaluateBottom),
                     getEvaluateTop(frontQuery),
@@ -1248,7 +1313,10 @@ private:
             auto foreignQuery = joinClause->GetJoinSubquery();
             foreignQuery->InferRanges = false;
             if (joinClause->ForeignKeyPrefix > 0) {
-                foreignQuery->Limit = OrderedReadWithPrefetchHint;
+                foreignQuery->Prefetching = true;
+                foreignQuery->ScanOrder = EScanOrder::Ordered;
+            } else {
+                foreignQuery->ScanOrder = EScanOrder::Unordered;
             }
 
             // TODO(sabdenovch): Use SplitPredicateByColumnSubset to filter rows from joined table even further.
@@ -1337,18 +1405,16 @@ private:
         middleQuery->Schema = frontQuery->Schema;
         middleQuery->OrderClause = frontQuery->OrderClause;
         middleQuery->Offset = 0;
-        if (frontQuery->Limit == UnorderedReadHint ||
-            frontQuery->Limit == OrderedReadWithPrefetchHint)
-        {
-            middleQuery->Limit = frontQuery->Limit;
-        } else {
+        if (frontQuery->Limit) {
             THROW_ERROR_EXCEPTION_IF(
-                frontQuery->Offset > std::numeric_limits<i64>::max() - frontQuery->Limit,
+                frontQuery->Offset > std::numeric_limits<i64>::max() - *frontQuery->Limit,
                 "Sum of offset %v and limit %v overflows i64",
                 frontQuery->Offset,
-                frontQuery->Limit);
-            middleQuery->Limit = frontQuery->Offset + frontQuery->Limit;
+                *frontQuery->Limit);
+            middleQuery->Limit = frontQuery->Offset + *frontQuery->Limit;
         }
+        middleQuery->ScanOrder = frontQuery->ScanOrder;
+        middleQuery->Prefetching = frontQuery->Prefetching;
         middleQuery->IsFinal = false;
         middleQuery->HasExclusiveGroupKeyView = true;
         // Why does this field even exist for front query. This code makes no gosh darn sense.

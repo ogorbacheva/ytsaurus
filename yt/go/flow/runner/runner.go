@@ -2,6 +2,7 @@
 package runner
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,11 @@ import (
 // CompanionFileName is the pipeline binary name in the job sandbox.
 const CompanionFileName = "go_companion"
 
+// FlowBinEnvVar names flow_server when --flow-bin is not given.
+const FlowBinEnvVar = "YT_FLOW_BIN"
+
+const shippedExecutable = "./" + CompanionFileName
+
 const (
 	companionManagerClass    = "NYT::NFlow::NCompanion::TCompanionManager"
 	companionWorkerPortCount = 3
@@ -24,8 +30,9 @@ var (
 	// ErrMissingConfig reports a launch that did not name a pipeline config.
 	ErrMissingConfig = xerrors.NewSentinel("--config <pipeline.yson> is required")
 
-	// ErrMissingFlowBin reports a launch that did not name a flow_server binary.
-	ErrMissingFlowBin = xerrors.NewSentinel("--flow-bin <path to flow_server> is required")
+	// ErrMissingFlowBin reports a launch that named no flow_server binary.
+	ErrMissingFlowBin = xerrors.NewSentinel(
+		"flow_server is not given: pass --flow-bin <path to flow_server> or set " + FlowBinEnvVar)
 
 	// ErrMalformedConfig reports a pipeline config that is not a YSON map.
 	ErrMalformedConfig = xerrors.NewSentinel("malformed pipeline config")
@@ -37,7 +44,8 @@ var (
 // Args is a launcher command line.
 type Args struct {
 	ConfigPath string
-	FlowBin    string
+	// FlowBin is empty when --flow-bin is not given; Launch then resolves it by ResolveFlowBin.
+	FlowBin string
 }
 
 // ParseArgs reads launcher flags from argv.
@@ -75,14 +83,33 @@ func ParseArgs(argv []string) (Args, error) {
 	if args.ConfigPath == "" {
 		return Args{}, xerrors.Errorf("flow/runner: %w", ErrMissingConfig)
 	}
-	if args.FlowBin == "" {
-		return Args{}, xerrors.Errorf("flow/runner: %w", ErrMissingFlowBin)
-	}
 	return args, nil
+}
+
+// ResolveFlowBin returns the absolute path of flow_server: flowBin if not empty, else
+// $YT_FLOW_BIN.
+func ResolveFlowBin(flowBin string) (string, error) {
+	if flowBin == "" {
+		flowBin = os.Getenv(FlowBinEnvVar)
+	}
+	if flowBin == "" {
+		return "", xerrors.Errorf("flow/runner: %w", ErrMissingFlowBin)
+	}
+
+	abs, err := filepath.Abs(flowBin)
+	if err != nil {
+		return "", xerrors.Errorf("flow/runner: resolve %q: %w", flowBin, err)
+	}
+	return abs, nil
 }
 
 // Launch enriches the config and replaces the process with flow_server.
 func Launch(args Args, streamSchemas map[string]schema.Schema) error {
+	flowBin, err := ResolveFlowBin(args.FlowBin)
+	if err != nil {
+		return err
+	}
+
 	pipelineConfig, err := os.ReadFile(args.ConfigPath)
 	if err != nil {
 		return xerrors.Errorf("flow/runner: read pipeline config: %w", err)
@@ -104,18 +131,15 @@ func Launch(args Args, streamSchemas map[string]schema.Schema) error {
 		return err
 	}
 
-	flowBin, err := filepath.Abs(args.FlowBin)
-	if err != nil {
-		return xerrors.Errorf("flow/runner: resolve %q: %w", args.FlowBin, err)
-	}
-
 	if err := syscall.Exec(flowBin, []string{flowBin, "--config", extendedPath}, os.Environ()); err != nil {
 		return xerrors.Errorf("flow/runner: exec %s: %w", flowBin, err)
 	}
 	return nil
 }
 
-// Enrich configures vanilla workers to run companionPath.
+// Enrich configures vanilla workers to run companionPath. A companion resource that declares its
+// entrypoint keeps it, and when every one does, companionPath is not shipped: the job environment,
+// e.g. the docker image, provides the companion.
 func Enrich(pipelineConfig []byte, companionPath string, streamSchemas map[string]schema.Schema) ([]byte, error) {
 	var config any
 	if err := yson.Unmarshal(pipelineConfig, &config); err != nil {
@@ -132,8 +156,14 @@ func Enrich(pipelineConfig []byte, companionPath string, streamSchemas map[strin
 		return nil, err
 	}
 	if vanilla, ok := asMap(root["vanilla"]); ok && enabled(vanilla) {
-		patchCompanionResources(spec)
-		addLocalFile(vanilla, CompanionFileName, companionPath)
+		// One shipment serves every resource without an entrypoint; a resource that declares one
+		// keeps it, so a mixed spec still ships.
+		if patchCompanionResources(spec) {
+			addLocalFile(vanilla, CompanionFileName, companionPath)
+		} else {
+			log.Print("flow/runner: every companion resource declares its entrypoint: shipping no companion binary, the job environment provides it")
+		}
+		// The worker talks to the companion over a port either way.
 		ensureCompanionPortCount(vanilla)
 	}
 
@@ -178,13 +208,16 @@ func patchStreamSchemas(spec map[string]any, schemas map[string]schema.Schema) e
 	return nil
 }
 
-func patchCompanionResources(spec map[string]any) {
+// patchCompanionResources points every companion resource without a declared entrypoint at the
+// shipped binary and reports whether some resource needs it.
+func patchCompanionResources(spec map[string]any) bool {
 	resources, ok := asMap(spec["resources"])
 	if !ok {
-		return
+		return false
 	}
 
-	for _, definition := range resources {
+	needsShippedBinary := false
+	for id, definition := range resources {
 		resource, ok := asMap(definition)
 		if !ok {
 			continue
@@ -198,9 +231,31 @@ func patchCompanionResources(spec map[string]any) {
 			parameters = map[string]any{}
 			resource["parameters"] = parameters
 		}
-		parameters["entrypoint"] = map[string]any{"executable": "./" + CompanionFileName}
 		parameters["run_process"] = true
+		if executable := declaredExecutable(parameters); executable != "" {
+			log.Printf("flow/runner: companion resource %s: entrypoint %s from the job environment, as declared", id, executable)
+			continue
+		}
+		parameters["entrypoint"] = map[string]any{"executable": shippedExecutable}
+		needsShippedBinary = true
+		log.Printf("flow/runner: companion resource %s: entrypoint %s of the shipped binary", id, shippedExecutable)
 	}
+	return needsShippedBinary
+}
+
+// declaredExecutable returns the declared entrypoint executable, or "" when the spec leaves it out
+// or blank. The runner's own ./go_companion names the shipped binary, so it counts as not declared.
+func declaredExecutable(parameters map[string]any) string {
+	entrypoint, ok := asMap(parameters["entrypoint"])
+	if !ok {
+		return ""
+	}
+	executable, _ := yson.ValueOf(entrypoint["executable"]).(string)
+	executable = strings.TrimSpace(executable)
+	if executable == shippedExecutable {
+		return ""
+	}
+	return executable
 }
 
 func addLocalFile(vanilla map[string]any, name, path string) {
@@ -221,7 +276,8 @@ func addLocalFile(vanilla map[string]any, name, path string) {
 func ensureCompanionPortCount(vanilla map[string]any) {
 	worker, ok := asMap(vanilla["worker"])
 	if !ok {
-		return
+		worker = map[string]any{}
+		vanilla["worker"] = worker
 	}
 
 	switch portCount := yson.ValueOf(worker["port_count"]).(type) {

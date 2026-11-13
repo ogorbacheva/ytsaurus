@@ -2,13 +2,13 @@
 
 #include "public.h"
 
-#include <yt/yt/flow/library/cpp/companion/companion_model.h>
+#include <yt/yt/flow/library/cpp/companion/client/companion_model.h>
 
 #include <yt/yt/core/actions/future.h>
 
 #include <yt/yt/core/yson/string.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 namespace NYT::NFlow::NCompanionServer {
 
@@ -40,6 +40,8 @@ public:
     TResourceStore(
         THashSet<std::string> resourceClassNames,
         IInvokerPtr invoker);
+
+    ~TResourceStore() override;
 
     //! Dispatches one ResourceExecute command. The returned future carries
     //! user-code failures in-band and only fails on companion bugs.
@@ -90,7 +92,7 @@ private:
         //! callback at the suspension point.
         IInvokerPtr LifecycleInvoker;
 
-        YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock);
+        YT_DECLARE_SPIN_LOCK(TSpinLock, Lock);
         //! Published under |Lock| for cross-thread readers; mutated only from
         //! |LifecycleInvoker|.
         EState State = EState::Registered;
@@ -133,7 +135,7 @@ private:
     const THashSet<std::string> ResourceClassNames_;
     const IInvokerPtr Invoker_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     THashMap<TResourceId, TEntryPtr> Entries_;
 
     TEntryPtr FindEntry(const TResourceId& resourceId) const;

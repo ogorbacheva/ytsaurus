@@ -15,6 +15,12 @@ namespace NYT::NPython {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+bool IsSupportedWireType(NSkiff::EWireType wireType);
+NSkiff::EWireType GetSupportedWireTypeOrThrow(const NSkiff::TSkiffSchemaPtr& skiffSchema);
+NSkiffExt::TStripOptionalResult StripSupportedOptionalOrThrow(const NSkiff::TSkiffSchemaPtr& skiffSchema);
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TSkiffSchema
     : public TRefCounted
 {

@@ -7,11 +7,13 @@ SRCS(
     compact_output_messages.cpp
     compact_partition_output_messages.cpp
     context.cpp
+    failed_messages.cpp
     input_messages.cpp
     key_states.cpp
     key_visitor_states.cpp
     partition_states.cpp
     state.cpp
+    timer_pages.cpp
     timers.cpp
     transaction_manager.cpp
 )

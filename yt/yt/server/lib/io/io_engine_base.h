@@ -100,11 +100,16 @@ struct TIOEngineSensors final
 
     struct TRequestSensors
     {
-        // Single request time.
-        NProfiling::TEventTimer Timer;
+        // Time spent waiting for request execution.
+        // Registered for read/write sensors only.
+        NProfiling::TEventTimer WaitTimer;
 
-        // Single request time using huge pages.
-        NProfiling::TEventTimer HugePageTimer;
+        // Single I/O operation execution time.
+        NProfiling::TEventTimer ExecTimer;
+
+        // Single request wait plus execution time.
+        // Registered for read/write sensors only.
+        NProfiling::TEventTimer TotalTimer;
 
         // Cumulative execution time of all requests.
         NProfiling::TTimeCounter TotalTimeCounter;
@@ -114,9 +119,6 @@ struct TIOEngineSensors final
 
         // Currently executing requests count.
         TInflightCounter InflightCounter;
-
-        // Currently executing requests count with huge pages.
-        TInflightCounter HugePageInflightCounter;
     };
 
     TEnumIndexedArray<EWorkloadCategory, NProfiling::TCounter> WrittenBytesCounter;
@@ -150,7 +152,6 @@ class TRequestStatsGuard
 {
 public:
     explicit TRequestStatsGuard(TIOEngineSensors::TRequestSensors sensors);
-    TRequestStatsGuard(TIOEngineSensors::TRequestSensors sensors, bool usingHugePages);
     TRequestStatsGuard(TRequestStatsGuard&& other) = default;
 
     ~TRequestStatsGuard();
@@ -160,7 +161,6 @@ public:
 private:
     TIOEngineSensors::TRequestSensors Sensors_;
     NProfiling::TWallTimer Timer_;
-    bool UsingHugePages_ = false;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -236,8 +236,8 @@ protected:
     static int GetLockOp(ELockFileMode mode);
     void DoLock(const TLockRequest& request);
     void DoResize(const TResizeRequest& request);
-    void AddWriteWaitTimeSample(TDuration duration);
-    void AddReadWaitTimeSample(TDuration duration);
+    void AddWriteWaitTimeSample(TDuration duration, EWorkloadCategory category);
+    void AddReadWaitTimeSample(TDuration duration, EWorkloadCategory category);
 
     //! Rounds \p size up to a multiple of \p directIoBlockSize.
     TSharedMutableRef AllocateWriteBlob(
@@ -249,6 +249,12 @@ protected:
     //! a multiple of \p directIoBlockSize.
     std::vector<TSharedRef> PrepareDirectIOWriteBuffers(
         const std::vector<TSharedRef>& buffers,
+        i64 directIoBlockSize);
+
+    //! Returns an available suitable huge-page blob for synchronous write
+    //! staging, or an aligned blob large enough to hold the entire write.
+    TSharedMutableRef AllocateWriteStagingBlob(
+        i64 size,
         i64 directIoBlockSize);
 
     TSharedMutableRef AllocateHugeBlob();
@@ -265,10 +271,10 @@ private:
     const IPrioritizedInvokerPtr AuxInvoker_;
     const IPrioritizedInvokerPtr FsyncInvoker_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ReadWaitLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ReadWaitLock_);
     std::optional<TInstant> SickReadWaitStart_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, WriteWaitLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, WriteWaitLock_);
     std::optional<TInstant> SickWriteWaitStart_;
 
     std::atomic<bool> Sick_ = false;

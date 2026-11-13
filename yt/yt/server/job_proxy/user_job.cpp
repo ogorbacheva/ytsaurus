@@ -170,6 +170,24 @@ static TNullOutput NullOutput;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+static std::optional<int> GetUserJobUserId(
+    const TJobProxyInternalConfigPtr& config,
+    const TUserJobSpec& userJobSpec,
+    EJobEnvironmentType jobEnvironmentType)
+{
+    if (config->DoNotSetUserId || jobEnvironmentType != EJobEnvironmentType::Porto) {
+        return std::nullopt;
+    }
+
+    auto userId = userJobSpec.enable_fixed_user_id()
+        ? config->JobEnvironment->StartUid
+        : config->JobEnvironment->StartUid + config->SlotIndex;
+    YT_VERIFY(userId > 0);
+    return userId;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 static std::string CreateNamedPipePath()
 {
     std::string name = CreateGuidAsString();
@@ -203,17 +221,19 @@ public:
         , UserJobSpec_(userJobSpec)
         , Config_(Host_->GetConfig())
         , JobIOConfig_(Host_->GetJobSpecHelper()->GetJobIOConfig())
+        , JobEnvironmentType_(Config_->JobEnvironment.GetType())
+        , UserId_(GetUserJobUserId(Config_, UserJobSpec_, JobEnvironmentType_))
         , UserJobEnvironment_(Host_->CreateUserJobEnvironment(
             TJobSpecEnvironmentOptions{
                 .EnablePortoMemoryTracking = UserJobSpec_.use_porto_memory_tracking(),
                 .EnableCoreDumps = UserJobSpec_.has_core_table_spec(),
                 .EnableGpuCoreDumps = UserJobSpec_.enable_cuda_gpu_core_dump(),
                 .EnablePorto = TranslateEnablePorto(FromProto<NScheduler::EEnablePorto>(UserJobSpec_.enable_porto())),
+                .TargetUserId = UserId_,
                 .ThreadLimit = UserJobSpec_.thread_limit()
             }))
         , Ports_(ports)
         , JobErrorPromise_(NewPromise<void>())
-        , JobEnvironmentType_(Config_->JobEnvironment.GetType())
         , PipeIOPool_(CreateThreadPool(JobIOConfig_->PipeIOPoolSize, "PipeIO"))
         , AuxQueue_(New<TActionQueue>("JobAux"))
         , ReadStderrInvoker_(CreateSerializedInvoker(PipeIOPool_->GetInvoker(), "user_job"))
@@ -247,17 +267,6 @@ public:
             AuxQueue_->GetInvoker(),
             BIND(&TUserJob::CheckThrashing, MakeWeak(this)),
             Config_->JobEnvironment->JobThrashingDetector->CheckPeriod);
-
-        // User job usually runs by per-slot users: yt_slot_{N}.
-        // Which is not available for single-user, non-privileged or testing setup.
-        if (!Config_->DoNotSetUserId && JobEnvironmentType_ == EJobEnvironmentType::Porto) {
-            if (UserJobSpec_.enable_fixed_user_id()) {
-                // TODO(ignat): use root or introduce special uid for this case.
-                UserId_ = Config_->JobEnvironment->StartUid;
-            } else {
-                UserId_ = Config_->JobEnvironment->StartUid + Config_->SlotIndex;
-            }
-        }
 
         if (!Config_->BusServer->UnixDomainSocketPath) {
             THROW_ERROR_EXCEPTION("Unix domain socket path is not configured");
@@ -611,21 +620,19 @@ private:
 
     const TJobProxyInternalConfigPtr Config_;
     const NScheduler::TJobIOConfigPtr JobIOConfig_;
+    const EJobEnvironmentType JobEnvironmentType_;
+    const std::optional<int> UserId_;
     const IUserJobEnvironmentPtr UserJobEnvironment_;
 
     std::vector<int> Ports_;
 
     TPromise<void> JobErrorPromise_;
 
-    const EJobEnvironmentType JobEnvironmentType_;
-
     const IThreadPoolPtr PipeIOPool_;
     const TActionQueuePtr AuxQueue_;
     const IInvokerPtr ReadStderrInvoker_;
 
     std::string InputPipePath_;
-
-    std::optional<int> UserId_;
 
     std::atomic<bool> Prepared_ = false;
     std::atomic<bool> Woodpecker_ = false;
@@ -693,7 +700,7 @@ private:
 
     TPromise<TExecutorInfo> ExecutorPreparedPromise_ = NewPromise<TExecutorInfo>();
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, StatisticsLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, StatisticsLock_);
     NYT::TStatistics CustomStatistics_;
 
     std::atomic<int> JobProfilerFailureCount_ = 0;
@@ -716,10 +723,17 @@ private:
         WaitFor(Host_->GetUserJobContainerCreationThrottler()->Throttle(1))
             .ThrowOnError();
 
-        return UserJobEnvironment_->SpawnUserProcess(
+        auto processFinished = UserJobEnvironment_->SpawnUserProcess(
             ExecProgramName,
             {"--config", Host_->AdjustPath(GetExecutorConfigPath())},
             CombinePaths(Host_->GetSlotPath(), GetSandboxRelPath(ESandboxKind::User)));
+
+        // Cleanup requested before this point could have missed the process.
+        if (JobErrorPromise_.IsSet()) {
+            CleanupUserProcesses();
+        }
+
+        return processFinished;
     }
 
     void InitShellManager()
@@ -1059,7 +1073,7 @@ private:
     void GracefulAbort(TError error) override
     {
         YT_TLOG_DEBUG("User job gracefully aborted")
-            .With("Error", error);
+            .With(error);
         YT_VERIFY(error.GetCode() == NExecNode::EErrorCode::AbortByControllerAgent);
         JobErrorPromise_.TrySet(std::move(error));
         CleanupUserProcesses();
@@ -1180,6 +1194,12 @@ private:
 
         int jobDescriptor = 0;
         InputPipePath_= CreateNamedPipePath();
+
+#ifndef _linux_
+        if (JobIOConfig_->UseDeliveryFencedPipeWriter) {
+            THROW_ERROR_EXCEPTION("Delivery-fenced pipe writes are not supported on this platform");
+        }
+#endif
 
         EDeliveryFencedMode deliveryFencedMode = EDeliveryFencedMode::None;
         if (JobIOConfig_->UseDeliveryFencedPipeWriter) {
@@ -1400,11 +1420,6 @@ private:
             "SandboxPath",
             CombinePaths(Host_->GetSlotPath(), GetSandboxRelPath(ESandboxKind::User)));
 
-        if (Config_->TestRootFS && Config_->RootPath) {
-            formatter.SetProperty("RootFS", *Config_->RootPath);
-            SetEnvironmentVariable("YT_ROOT_FS", *Config_->RootPath);
-        }
-
         if (Config_->ForwardAllEnvironmentVariables) {
             for (const auto& pair : GetEnvironNameValuePairs()) {
                 SetEnvironmentVariable(pair);
@@ -1431,6 +1446,12 @@ private:
 
         SetEnvironmentVariable("YT_JOB_PROXY_GRPC_SOCKET_PATH", ToString(Host_->GetJobProxyGrpcUnixDomainSocketPath()));
         SetEnvironmentVariable("YT_JOB_PROXY_HTTP_SOCKET_PATH", ToString(Host_->GetJobProxyHttpUnixDomainSocketPath()));
+
+        // Image environment values are applied verbatim, without $(...)-pattern
+        // substitution, so that values like "$(...)" survive as literals.
+        for (const auto& pair : UserJobSpec_.docker_image_environment()) {
+            SetEnvironmentVariable(pair);
+        }
 
         for (const auto& pair : UserJobSpec_.environment()) {
             SetEnvironmentVariable(formatter.Format(pair));
@@ -2148,7 +2169,7 @@ private:
                     OomScoreAdjs_.erase(newIt);
                 }
             } else {
-                bool success = Host_->UpdateOomScoreAdj(pid, nullptr, score);
+                bool success = Host_->UpdateOomScoreAdj(pid, /*mutableExpectedScoreAdj*/ nullptr, score);
                 if (success) {
                     OomScoreAdjs_.emplace(pid, score);
                 }

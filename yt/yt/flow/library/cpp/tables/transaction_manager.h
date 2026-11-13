@@ -4,6 +4,7 @@
 
 #include "context.h"
 
+#include <yt/yt/flow/library/cpp/common/dyntable_lease.h>
 #include <yt/yt/flow/library/cpp/common/public.h>
 #include <yt/yt/flow/library/cpp/misc/public.h>
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
@@ -24,9 +25,16 @@ namespace NYT::NFlow::NTables {
 struct TTransactionManagerContext
     : public TContext
 {
+    //! The prerequisite of every commit: a master transaction of the leader under the Cypress
+    //! backend, a chaos lease under the Chaos one.
     NTransactionClient::TTransactionId LeaseId;
     TPartitionId PartitionId;
     IStatusProfilerPtr StatusProfiler;
+
+    //! When set, commits are fenced by the pipeline's leases dynamic table (validate + touch the
+    //! partition lease rows inside every transaction) instead of the LeaseId prerequisite.
+    bool DyntableLease = false;
+    TJobId JobId;
 };
 
 DEFINE_REFCOUNTED_TYPE(TTransactionManagerContext);
@@ -67,11 +75,16 @@ private:
     const TTransactionManagerContextPtr Context_;
     TAtomicIntrusivePtr<TDynamicRetryableRequestSpec> Spec_;
     const NYPath::TRichYPath PartitionTransactionsPath_;
+    const TDyntableLeases DyntableLeases_;
     const NLogging::TLogger Logger;
     const NProfiling::TProfiler Profiler_;
 
     std::atomic<TInstant> SkipEmptyTransactionsDeadline_;
     std::atomic<bool> InitialEmptyTransactionCompleted_;
+
+    //! The pipeline-wide lease deadline this job last read, kept so that the commits in between
+    //! do not read the row it lives in (see TDyntableLeases::ValidateAndTouchPartitionLease).
+    std::atomic<TInstant> DyntableLeaseDeadline_ = TInstant::Zero();
 
     IStatusErrorStatePtr CommitTransactionErrorState_;
 

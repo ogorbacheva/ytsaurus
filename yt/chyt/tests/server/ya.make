@@ -4,6 +4,8 @@ SET(YT_SPLIT_FACTOR 30)
 
 INCLUDE(${ARCADIA_ROOT}/yt/yt/tests/integration/YaMakeBoilerplateForTests.txt)
 
+YT_SPEC(yt/yt/tests/integration/spec_job_batching.yson)
+
 IF (SANITIZER_TYPE)
     REQUIREMENTS(
         cpu:36
@@ -48,12 +50,19 @@ DEPENDS(
 ENV(YT_ENABLE_TRACE_LOG=1)
 ENV(YT_ENABLE_TRACE_LOGGING=1)
 
-TEST_SRCS(
-    conftest.py
+PY_SRCS(
     base.py
     helpers.py
+)
+
+NO_CHECK_IMPORTS(base)
+
+TEST_SRCS(
+    conftest.py
     test_atomicity.py
+    test_chunk_spec_cache.py
     test_clickhouse_schema.py
+    test_cluster_connection.py
     test_columnar_read.py
     test_common.py
     test_composite.py

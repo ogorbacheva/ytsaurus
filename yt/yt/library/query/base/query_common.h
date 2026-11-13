@@ -126,6 +126,10 @@ bool IsStringBinaryOp(EBinaryOp opcode);
 //! Cast values.
 TOwningValue CastValueWithCheck(TValue value, EValueType targetType);
 
+//! Throws if non-null operands have different or non-integral types.
+//! Returns a value with default Id and Flags, independent of operand metadata.
+TValue EvaluateModulo(TValue lhs, TValue rhs);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 // TODO(lukyan): Use opaque data descriptor instead of ObjectId, CellId and MountRevision.
@@ -204,6 +208,7 @@ struct TQueryOptions
     i64 RowsetProcessingBatchSize = DefaultRowsetProcessingBatchSize;
     i64 WriteRowsetSize = DefaultWriteRowsetSize;
     i64 MaxJoinBatchSize = DefaultMaxJoinBatchSize;
+    std::optional<int> MaxJitStackFrameSize;
 
     EStatisticsAggregation StatisticsAggregation = EStatisticsAggregation::DepthOmitNode;
 
@@ -236,7 +241,9 @@ struct TJoinSubqueryOptionsPatch
     std::optional<int> MaxSubqueries;
 };
 
-TQueryOptions ApplyPatch(const TQueryOptions& base, const TJoinSubqueryOptionsPatch& patch);
+TQueryOptions ApplyJoinSubqueryOptionsPatch(
+    const TQueryOptions& base,
+    const TJoinSubqueryOptionsPatch& patch);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -273,6 +280,7 @@ struct TPlanFragment final
     TQueryPtr Query;
     TDataSource DataSource;
     TPlanFragmentPtr SubqueryFragment;
+    TUnionAllQueryPtr UnionAllQuery;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -286,6 +294,11 @@ struct TPreparePlanFragmentOptions
     int HyperLogLogPrecision = 14;
     bool AllowJoinWithAsyncLastCommittedTimestampIfRequireSyncReplicaIsFalse = false; // COMPAT(dtorilov): Remove after 26.1.
     bool AllowReverseScanForOrderBy = false;
+    std::optional<int> MaxProjectionCount;
+    bool EnableScalarSubqueryOrderByAndLimit = false; // COMPAT(dtorilov): Remove after 26.2.
+    // COMPAT(sabdenovch)
+    bool AllowUnorderedGroupByWithLimit = true;
+    bool MergeVersionedRows = true;
 };
 
 struct TPreparePlanFragmentContext

@@ -28,11 +28,11 @@ You must specify at least one key column in the table schema. If this is not don
 
 ### Changing a table schema and type
 
-You can change the schema of an existing dynamic table using the `alter-table` command. For the command to be successful, the table must be [unmounted](../../../user-guide/dynamic-tables/overview.md#mount_table), and the new schema must be compatible with the old one. There are no changes to the data written to the disk, because the old data is suitable for the new schema.
+You can change the schema of an existing dynamic table using the `alter-table` command. For the command to be successful, the table must be [unmounted](../../../user-guide/dynamic-tables/operations.md#mount_table), and the new schema must be compatible with the old one. There are no changes to the data written to the disk, because the old data is suitable for the new schema.
 
 Use `alter-table` to convert a static table into a dynamic table. For more information, see [MapReduce for dynamic tables](../../../user-guide/dynamic-tables/mapreduce.md#convert_table).
 
-### Reading rows
+### Reading rows {#reading-rows}
 
 The client can read rows by a given key using the `lookup` method. To do this, you need to specify the table name, a timestamp defining the slice of data to be read (`<= t`), and the names of the columns that interest you. This is a point query: it requires all key components to be specified. There is a type of API call that allows multiple rows to be read in a single query by different keys.
 
@@ -47,7 +47,7 @@ The `sync_last_committed` and `async_last_committed` labels do not guarantee a c
 
 For a table with non-atomic changes, `sync_last_committed` and `async_last_committed` modes are equivalent, since no two-phase commit occurs.
 
-### Running a script
+### Running a script {#running-a-script}
 
 The system understands an [SQL-like dialect](../../../user-guide/dynamic-tables/dyn-query-language.md), which can be used to select and aggregate volumes of data in millions of rows in real time. As with the row read operation by key, a timestamp can be specified in the query, relative to which the query must be executed.
 
@@ -55,16 +55,32 @@ Since the data in the system is actually sorted by a set of key columns, the sys
 
 When building the query, remember that if the system fails to infer non-trivial `key ranges`, `full scan` of the data will occur. `Full scan` occurs, for example, if you specify `key1, key2` as key columns and set filtering only by `key2`.
 
-### Writing rows { #insert_rows }
+### Limiting the read time range { #retention-timestamp }
 
-The client can write using the `insert_rows` method within the active transaction. To do this, the rows to be written must be reported. All key fields must be present in each such row. Some of the data fields from those specified in the schema may be missing.
+When reading a sorted dynamic table, you can specify the `retention_timestamp` option — the inclusive lower bound of the time range. If the `timestamp` option is also specified, the result is built from value versions in the range `[retention_timestamp; timestamp]`. The `retention_timestamp` value can’t be greater than `timestamp`. You can’t combine the `retention_timestamp` option with versioned lookup.
 
-Semantically, if a row with the specified key is not in the table, it appears. If there is already a row with this key, some of the columns are overwritten.
+The bound is applied to each column separately. If one column was written before `retention_timestamp` and another after, the first will contain `null` and the second will contain the written value. If no values remain in a row after applying the bound, the row is considered absent. By default, `lookup_rows` doesn’t return such a row; with the `keep_missing_rows` option, `null` is returned instead.
 
-There are 2 modes when some of the fields are specified:
+`retention_timestamp` affects only the read result and doesn’t delete old versions. Physical data deletion is controlled by [TTL settings](#remove_old_data).
 
-- `overwrite` (default): All unspecified fields update their values to `null`.
-- `update`: Enabled by the `update == true` option. The previous value will then be retained. In this mode, all columns marked with the `required` attribute must be transmitted.
+{% note warning "Warning" %}
+
+For aggregating columns, the semantics of `retention_timestamp` are **undefined**. Values before the bound don’t participate in aggregation, and compaction may pre-merge versions on different sides of the bound. As a result, the read result for an aggregating column before and after compaction may differ. **Don’t use this option to read the tail of changes for an aggregating column.**
+
+{% endnote %}
+
+### Inserting a row {#insert_rows}
+
+You can insert data using the `insert_rows` method within an active transaction. To do this, you must provide the rows to write. Each such row must include all key fields. Some data fields specified in the schema may be missing.
+
+Semantically, if a row with the specified key doesn’t exist in the table, it’s created. If a row with that key already exists, some columns are overwritten.
+
+When specifying only some fields, there are two modes:
+
+- `overwrite` (default) — all unspecified fields are updated to `null`.
+- `update` — enabled with the `update == true` option. In this case, the previous value is preserved. In this mode, you must provide all columns marked with the `required` attribute.
+
+
 
 {% note info "Note" %}
 
@@ -72,7 +88,7 @@ When reading and executing an SQL query, the data is visible only when the trans
 
 {% endnote %}
 
-### Deleting rows
+### Deleting rows {#deleting-rows}
 
 Within the transaction, the client can delete a row or a set of rows by reporting the appropriate keys.
 
@@ -80,7 +96,7 @@ Semantically, if a row with the specified key was in the table, it will be delet
 
 As with most MVCC systems, deletion in {{product-name}} comes down to writing a row without data, but with a special `tombstone` marker that signals deletion. This means that freeing up disk space from deleted rows does not happen immediately, but in a delayed manner. Deleting rows also does not instantly increase reading speed. On the contrary, it causes a slowdown, because during read operations data is merged.
 
-### Locking rows
+### Locking rows {#locking-rows}
 
 The client can lock rows within a transaction. Locking guarantees that the row will not be changed in other transactions during the current transaction. A single row can be locked from multiple transactions. You can specify individual `lock` column groups to be locked and a `weak` or `strong` lock mode.
 
@@ -192,7 +208,7 @@ To enable deletion using a watermark, follow the steps below:
 - Set the `@custom_runtime_data` attribute for the table.
 
 The `custom_runtime_data` attribute must be as follows:
-```
+```yson
 {
     "watermark" = {
         "column_name" = "<column name>";

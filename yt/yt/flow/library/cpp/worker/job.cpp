@@ -1,5 +1,7 @@
 #include "job.h"
 
+#include "lineage_tracker.h"
+
 #include "buffer_state_manager.h"
 #include "input_buffer.h"
 #include "job_spec.h"
@@ -21,11 +23,10 @@
 #include <yt/yt/flow/library/cpp/common/message_migration.h>
 #include <yt/yt/flow/library/cpp/common/stream_spec_storage.h>
 
-#include <yt/yt/flow/library/cpp/computation/message_filter.h>
-
 #include <yt/yt/flow/library/cpp/distributed_throttler/client.h>
 #include <yt/yt/flow/library/cpp/distributed_throttler/config.h>
 
+#include <yt/yt/flow/library/cpp/misc/counter.h>
 #include <yt/yt/flow/library/cpp/misc/remedian_splitter.h>
 #include <yt/yt/flow/library/cpp/misc/status_profiler.h>
 
@@ -46,6 +47,8 @@
 #include <yt/yt/core/concurrency/thread_affinity.h>
 
 #include <yt/yt/core/misc/error.h>
+
+#include <yt/yt/core/utilex/random.h>
 
 #include <yt/yt/library/heavy_hitters/misra_gries.h>
 
@@ -72,9 +75,11 @@ class TComputationRunContext;
 
 void TJobOrchidState::Register(TRegistrar registrar)
 {
-    registrar.Parameter("status", &TThis::Status)
+    registrar.Parameter("committed_epoch_count", &TThis::CommittedEpochCount)
         .Default();
-    registrar.Parameter("computation", &TThis::Computation)
+    registrar.Parameter("input_streams", &TThis::InputStreams)
+        .Default();
+    registrar.Parameter("output_streams", &TThis::OutputStreams)
         .Default();
 }
 
@@ -99,6 +104,7 @@ public:
 
     TFuture<std::vector<TInputMessageConstPtr>> GetNextBatch(const THashSet<TStreamId>& allowedStreams) override;
     TFuture<THashMap<TStreamId, TInflightMetricsPtr>> GetInputInflightMetrics() override;
+    void RegisterSourceMessages(i64 count) override;
     void MarkPersisted(std::span<const TMessageId> messageIds) override;
     void MarkDeduplicated(std::span<const TMessageId> messageIds) override;
     void RegisterOutputMessages(
@@ -157,8 +163,6 @@ public:
         , ControlSerializedInvoker_(JobContext_->ControlSerializedInvoker)
         , JobSerializedInvoker_(JobContext_->SerializedInvoker)
         , EvaluatorCache_(JobContext_->EvaluatorCache)
-        , MessageFilter_(CreateMessageFilter(DynamicJobSpec_->DynamicComputationSpec->SkipIfExpression))
-        , SkippedByExpressionCounter_(Profiler.WithPrefix("/input_streams").Counter("/skipped_by_expression_count"))
         , MetricsInvoker_(NConcurrency::CreateSerializedInvoker(JobContext_->PoolInvoker))
         , GlobalHeavyHittersCounter_(CreateGlobalHeavyHitterCounter(JobSpec_->ComputationSpec))
         , StreamHeavyHittersCounters_(CreateStreamHeavyHitterCounters(JobSpec_->ComputationSpec))
@@ -257,8 +261,6 @@ public:
         Computation_->Reconfigure(dynamicComputationContext);
 
         InputBuffer_->Reconfigure(DynamicJobSpec_->DynamicComputationSpec);
-
-        MessageFilter_->Reconfigure(DynamicJobSpec_->DynamicComputationSpec->SkipIfExpression);
 
         YT_TLOG_DEBUG("Job reconfiguration completed")
             .With("Draining", DynamicJobSpec_->DynamicComputationSpec->Draining);
@@ -371,6 +373,13 @@ public:
         return InputBuffer_;
     }
 
+    TJobRuntimeCountersPtr GetRuntimeCounters() override
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        return RuntimeCounters_;
+    }
+
     TSystemTimestamp GetInputStabilizedEventTimestamp()
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
@@ -402,9 +411,11 @@ public:
 
         status->Epoch = SpecGeneration_;
 
-        if (IsRunning_.load() && InitializePromise_.IsSet()) {
+        if (InitializePromise_.IsSet()) {
             try {
                 auto computationStatus = Computation_->GetStatus();
+                status->ObservedKeys = std::move(computationStatus->ObservedKeys);
+                RuntimeCounters_->NonEmptyIterationCount.store(computationStatus->NonEmptyIterationCount);
                 if (computationStatus->NodeTraverse) {
                     auto traverseData = New<TFromPartitionTraverseData>();
                     traverseData->Node = std::move(computationStatus->NodeTraverse);
@@ -424,6 +435,7 @@ public:
                         status->InputMetrics = JobInputMetrics_;
                     }
                 }
+                status->ProcessingObservation = std::move(computationStatus->ProcessingObservation);
                 status->PartitionStatus = computationStatus->PartitionStatus;
                 status->EpochPartTimes = computationStatus->EpochPartTimes;
                 // Get internal computation limits. Will be enriched later.
@@ -432,7 +444,7 @@ public:
 
                 status->RetryableErrors = std::move(JobRootStatusProfiler_->GetStatus().Errors);
 
-                // Limit/Used/Pending are all reported in inflated bytes (raw payload plus the
+                // Limit/Used/Pending/Demand are all reported in inflated bytes (raw payload plus the
                 // per-message technical cost), so back-pressure and status read in the same units.
                 auto fillBufferLimits = [] (const auto& name, const NFlow::TStreamLimitUsageStateMap& states, auto& allLimits) {
                     if (states.empty()) {
@@ -445,6 +457,7 @@ public:
                         entityLimitStatus.Limit = state->GetLimitBytes();
                         entityLimitStatus.Used = usage.GetInflatedInflightBytes(state->GetInflationPerMessage());
                         entityLimitStatus.Pending = usage.PendingInflatedBytes;
+                        entityLimitStatus.Demand = state->GetDemandBytes();
                     }
                 };
 
@@ -459,24 +472,27 @@ public:
         return status;
     }
 
-    TFuture<TJobOrchidStatePtr> GetOrchidState() override
+    TJobOrchidStatePtr GetOrchidState() override
     {
-        return BIND_NO_PROPAGATE(&TJob::GetOrchidStateSync, MakeStrong(this))
-            .AsyncVia(ControlSerializedInvoker_)
-            .Run()
-            .ToUncancelable();
+        auto readStreamUsages = [] (const TStreamLimitUsageStateMap& streams) {
+            THashMap<TStreamId, TStreamUsage> usages;
+            usages.reserve(streams.size());
+            for (const auto& [streamId, state] : streams) {
+                usages.emplace(streamId, state->Read());
+            }
+            return usages;
+        };
+
+        auto state = New<TJobOrchidState>();
+        state->CommittedEpochCount = CommittedEpochCount_.load(std::memory_order::relaxed);
+        state->InputStreams = readStreamUsages(StreamLimitUsageStates_.Input);
+        state->OutputStreams = readStreamUsages(StreamLimitUsageStates_.Output);
+        return state;
     }
 
-    TJobOrchidStatePtr GetOrchidStateSync()
+    void RegisterSourceMessages(i64 count)
     {
-        YT_ASSERT_SERIALIZED_INVOKER_AFFINITY(ControlSerializedInvoker_);
-
-        auto orchidState = New<TJobOrchidState>();
-        orchidState->Status = GetStatusSync();
-        if (IsRunning_.load() && InitializePromise_.IsSet()) {
-            orchidState->Computation = Computation_->GetOrchidState();
-        }
-        return orchidState;
+        RuntimeCounters_->InputMessageCount.fetch_add(count);
     }
 
     TFuture<std::vector<TInputMessageConstPtr>> GetNextBatch(const THashSet<TStreamId>& allowedStreams)
@@ -492,9 +508,6 @@ public:
             .Apply(BIND([weakThis = MakeWeak(this)] (TErrorOr<std::vector<TInputMessageConstPtr>>&& errorOrMessages) -> std::vector<TInputMessageConstPtr> {
                 if (auto this_ = weakThis.Lock()) {
                     auto inputMessages = std::move(errorOrMessages).ValueOrThrow();
-                    if (this_->MessageFilter_->IsEnabled()) {
-                        inputMessages = this_->DropSkippedMessages(std::move(inputMessages));
-                    }
                     // Input metrics only drive repartition, so compute them off the fetch critical
                     // path: the executor fiber must not block on the per-key sketch work.
                     // TODO(pechatnov): hand the batch over as a shared range instead of copying the
@@ -599,6 +612,7 @@ public:
 
     void Commit()
     {
+        CommittedEpochCount_.fetch_add(1, std::memory_order::relaxed);
         std::deque<TDistributorOutputMessage> toDistribute;
         {
             auto guard = Guard(DistributingLock_);
@@ -624,6 +638,7 @@ private:
     TPromise<void> InitializePromise_ = NewPromise<void>();
     IComputationPtr Computation_ = nullptr; // Can be used after InitializePromise_ is set.
     TFuture<void> ReconfigureFuture_ = InitializePromise_.ToFuture();
+    std::atomic<i64> CommittedEpochCount_ = 0;
 
     const NLogging::TLogger Logger;
     const NProfiling::TProfiler Profiler;
@@ -635,9 +650,6 @@ private:
     const IInvokerPtr ControlSerializedInvoker_;
     const IInvokerPtr JobSerializedInvoker_;
     const NQueryClient::IColumnEvaluatorCachePtr EvaluatorCache_;
-
-    const IMessageFilterPtr MessageFilter_;
-    const NProfiling::TCounter SkippedByExpressionCounter_;
 
     std::atomic<bool> IsRunning_ = false;
 
@@ -656,11 +668,12 @@ private:
     const IInvokerPtr MetricsInvoker_;
     TKeyHeavyHittersCounterPtr GlobalHeavyHittersCounter_;
     THashMap<TStreamId, TKeyHeavyHittersCounterPtr> StreamHeavyHittersCounters_;
-    TEmaCounter<double, 1> GlobalInputBytesCounter_;
-    THashMap<TStreamId, TEmaCounter<double, 1>> StreamInputBytesCounters_;
+    TSimpleEmaCounter GlobalInputBytesCounter_;
+    THashMap<TStreamId, TSimpleEmaCounter> StreamInputBytesCounters_;
     std::optional<TRemedianSplitter<TKey>> RemedianSplitter_;
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     TNodeInputMetricsPtr JobInputMetrics_;
+    const TJobRuntimeCountersPtr RuntimeCounters_ = New<TJobRuntimeCounters>();
 
     struct TDeliveryLogEntry
     {
@@ -671,10 +684,10 @@ private:
 
     DECLARE_THREAD_AFFINITY_SLOT(ControlThread);
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, DistributingLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, DistributingLock_);
     std::deque<TDistributorOutputMessage> DistributingQueue_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, MarkPersistedQueueLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, MarkPersistedQueueLock_);
     std::deque<TMessageId> MarkPersistedQueue_;
     std::deque<TMessageId> DuplicateAcknowledgementQueue_;
 
@@ -705,31 +718,12 @@ private:
         YT_TLOG_INFO("Computation::Run completed");
     }
 
-    std::vector<TInputMessageConstPtr> DropSkippedMessages(std::vector<TInputMessageConstPtr> messages)
-    {
-        auto [kept, skipped] = MessageFilter_->Partition(std::move(messages));
-
-        if (!skipped.empty()) {
-            std::vector<TMessageId> skippedMessageIds;
-            skippedMessageIds.reserve(skipped.size());
-            for (const auto& message : skipped) {
-                skippedMessageIds.push_back(message->MessageId);
-            }
-            SkippedByExpressionCounter_.Increment(skippedMessageIds.size());
-            YT_TLOG_INFO("Skipped input messages by expression")
-                .With("Skipped", skippedMessageIds.size())
-                .With("Kept", kept.size());
-            MarkPersisted(skippedMessageIds);
-        }
-
-        return std::move(kept);
-    }
-
     void RegisterInputBatch(const std::vector<TInputMessageConstPtr>& messages)
     {
         if (messages.empty()) {
             return;
         }
+        RuntimeCounters_->InputMessageCount.fetch_add(std::ssize(messages));
 
         auto now = TInstant::Now();
 
@@ -749,9 +743,9 @@ private:
         i64 totalBytes = 0;
         for (const auto& [streamId, streamState] : streamStates) {
             totalBytes += streamState.Bytes;
-            GetOrCrash(StreamInputBytesCounters_, streamId).Update(streamState.Bytes, now);
+            GetOrCrash(StreamInputBytesCounters_, streamId).Inc(streamState.Bytes, now);
         }
-        GlobalInputBytesCounter_.Update(totalBytes, now);
+        GlobalInputBytesCounter_.Inc(totalBytes, now);
 
         std::vector<TKey> allKeys;
         for (const auto& [streamId, streamState] : streamStates) {
@@ -765,7 +759,7 @@ private:
         auto inputMetrics = New<TNodeInputMetrics>();
         auto globalStats = GlobalHeavyHittersCounter_->GetStatistics(now);
         inputMetrics->Global.MessagesPerSecond = globalStats.Total;
-        inputMetrics->Global.BytesPerSecond = GlobalInputBytesCounter_.GetRate(0).value_or(0);
+        inputMetrics->Global.BytesPerSecond = GlobalInputBytesCounter_.GetDecayedRate().value_or(0);
         for (const auto& [key, fraction] : globalStats.Fractions) {
             inputMetrics->Global.HeavyHitters.emplace_back(fraction, key);
         }
@@ -788,7 +782,7 @@ private:
             }
         }
         for (const auto& [streamId, counter] : StreamInputBytesCounters_) {
-            inputMetrics->Streams[streamId].BytesPerSecond = counter.GetRate(0).value_or(0);
+            inputMetrics->Streams[streamId].BytesPerSecond = counter.GetDecayedRate().value_or(0);
         }
 
         {
@@ -812,6 +806,8 @@ private:
     {
         auto computationContext = New<TComputationContext>();
         computationContext->ComputationSpec = jobSpec->ComputationSpec;
+        computationContext->FailureHandlerEnabled = jobSpec->FailureHandlerEnabled;
+        computationContext->FlowCoreTarget = jobContext->FlowCoreTarget;
         computationContext->ClientsCache = jobContext->ClientsCache;
         computationContext->PipelinePath = jobContext->PipelinePath;
         computationContext->Partition = jobSpec->Partition;
@@ -825,6 +821,7 @@ private:
         computationContext->EvaluatorCache = jobContext->EvaluatorCache;
         computationContext->ConverterCache = jobContext->ConverterCache;
         computationContext->LoadThroughputThrottler = jobContext->LoadThroughputThrottler;
+        computationContext->TimerPageCatalogue = jobContext->TimerPageCatalogue;
         computationContext->PartitionBufferState = jobContext->PartitionBufferState;
         computationContext->StreamSpecStorage = jobContext->StreamSpecStorage;
         computationContext->JobStateCache = jobContext->JobStateCache;
@@ -832,27 +829,34 @@ private:
         computationContext->HttpClient = jobContext->HttpClient;
         computationContext->HttpsClient = jobContext->HttpsClient;
         computationContext->Poller = jobContext->Poller;
+        computationContext->JobLineageTracker = CreateJobLineageTracker(
+            jobContext->LineageTracker,
+            jobSpec->Partition->ComputationId,
+            jobSpec->ComputationSpec);
         auto dynamicComputationContext = New<TDynamicComputationContext>();
         dynamicComputationContext->SpecGeneration = specGeneration;
         dynamicComputationContext->DynamicComputationSpec = dynamicJobSpec->DynamicComputationSpec;
         dynamicComputationContext->DynamicPartitionSpec = dynamicJobSpec->DynamicComputationPartitionSpec;
         dynamicComputationContext->Throttlers = dynamicJobSpec->Throttlers;
 
-        THashSet<TResourceId> requiredResourceIds;
+        THashSet<TResourceInstanceId> requiredResourceIds;
         for (const auto& [resourceId, resourceDescription] : jobSpec->ComputationSpec->RequiredResourceIds) {
             if (!resourceDescription->Worker) {
                 continue;
             }
 
-            requiredResourceIds.insert(resourceId);
+            const auto binding = jobContext->ResourceInstanceIds.find(resourceId);
+            THROW_ERROR_EXCEPTION_UNLESS(binding != jobContext->ResourceInstanceIds.end(),
+                "Job %v has no instance binding for resource %v",
+                jobSpec->Job->JobId,
+                resourceId);
+            const auto instanceId = binding->second;
+            requiredResourceIds.insert(instanceId);
             auto aliasResourceId = resourceDescription->Alias ? *resourceDescription->Alias : resourceId;
-            EmplaceOrCrash(computationContext->StaticResources, aliasResourceId, jobContext->ResourceManager->Get(resourceId));
+            EmplaceOrCrash(computationContext->StaticResources, aliasResourceId, jobContext->ResourceManager->Get(instanceId));
         }
 
-        // LoadRequiredResources also awaits the always-on resources (loaded eagerly, outside
-        // RequiredResourceIds), so it is called even when requiredResourceIds is empty. This is a
-        // context-switch-allowed point, unlike the resource-manager construction in the heartbeat path.
-        WaitFor(jobContext->ResourceManager->LoadRequiredResources(requiredResourceIds))
+        WaitFor(jobContext->ResourceManager->Load(requiredResourceIds))
             .ThrowOnError();
 
         computationContext->DistributedThrottlerControllerChannelProvider =
@@ -883,18 +887,18 @@ private:
         return counters;
     }
 
-    static TEmaCounter<double, 1> CreateGlobalInputBytesCounter(const TComputationSpecPtr& spec)
+    static TSimpleEmaCounter CreateGlobalInputBytesCounter(const TComputationSpecPtr& spec)
     {
         // Use the same window as for messages counter (embedded in heavy hitters counter).
-        return TEmaCounter<double, 1>({spec->HeavyHitters.Window});
+        return TSimpleEmaCounter(spec->HeavyHitters.Window);
     }
 
-    static THashMap<TStreamId, TEmaCounter<double, 1>> CreateStreamInputBytesCounters(const TComputationSpecPtr& spec)
+    static THashMap<TStreamId, TSimpleEmaCounter> CreateStreamInputBytesCounters(const TComputationSpecPtr& spec)
     {
-        THashMap<TStreamId, TEmaCounter<double, 1>> counters;
+        THashMap<TStreamId, TSimpleEmaCounter> counters;
         for (const auto& streamId : spec->InputStreamIds) {
             // Use the same window as for messages counter (embedded in heavy hitters counter).
-            counters.emplace(streamId, TEmaCounter<double, 1>({spec->HeavyHitters.Window}));
+            counters.emplace(streamId, TSimpleEmaCounter(spec->HeavyHitters.Window));
         }
         return counters;
     }
@@ -912,6 +916,13 @@ TFuture<std::vector<TInputMessageConstPtr>> TComputationRunContext::GetNextBatch
         return job->GetNextBatch(allowedStreams);
     }
     return MakeFuture<std::vector<TInputMessageConstPtr>>(MakeExecutionInterruptedError());
+}
+
+void TComputationRunContext::RegisterSourceMessages(i64 count)
+{
+    if (auto job = Job_.Lock()) {
+        job->RegisterSourceMessages(count);
+    }
 }
 
 TFuture<THashMap<TStreamId, TInflightMetricsPtr>> TComputationRunContext::GetInputInflightMetrics()

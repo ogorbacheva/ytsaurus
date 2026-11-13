@@ -143,10 +143,10 @@ public:
 
     NLogging::TLogger GetLogger() const;
 
-    PHOENIX_DECLARE_TYPE(TInputCluster, 0xe1f2a3b4);
-
 private:
     NLogging::TSerializableLogger Logger;
+
+    PHOENIX_DECLARE_TYPE(TInputCluster, 0xe1f2a3b4);
 };
 
 DEFINE_REFCOUNTED_TYPE(TInputCluster)
@@ -181,9 +181,15 @@ public:
 
     bool CanInterruptJobs() const;
     bool HasRowLevelAcl() const;
+    bool HasSkippedInputChunks() const;
 
     void RegisterInputStripe(const NChunkPools::TChunkStripePtr& stripe, const TTaskPtr& task);
-    NChunkClient::TInputChunkPtr GetInputChunk(NChunkClient::TChunkId chunkId, int chunkIndex) const;
+    NChunkClient::TInputChunkPtr GetInputChunk(
+        NChunkClient::TChunkId chunkId,
+        std::optional<int> chunkIndex = {}) const;
+    NChunkClient::TInputChunkPtr FindInputChunk(
+        NChunkClient::TChunkId chunkId,
+        std::optional<int> chunkIndex = {}) const;
 
     void RegisterUnavailableInputChunks(bool reportIfFound = false);
     void BuildUnavailableInputChunksYson(NYTree::TFluentAny fluent) const;
@@ -226,8 +232,6 @@ public:
         const std::optional<std::vector<std::string>>& attributeKeys) const;
 
 private:
-    PHOENIX_DECLARE_FRIEND();
-
     // NB: InputManager does not outlive its host.
     IInputManagerHost* Host_;
     NLogging::TSerializableLogger Logger;
@@ -266,6 +270,8 @@ private:
     bool InputHasOrderedDynamicStores_ = false;
     bool InputHasStaticTableWithHunks_ = false;
 
+    bool HasSkippedInputChunks_ = false;
+
     void FetchInputTablesAttributes();
 
     void InitInputChunkScrapers();
@@ -282,6 +288,7 @@ private:
         NChunkClient::TChunkId chunkId,
         const NChunkClient::TChunkReplicaList& replicas,
         TInputChunkDescriptor* descriptor);
+    void MarkInputChunkWaiting(TInputChunkDescriptor* descriptor);
 
     void RegisterUnavailableInputChunk(NChunkClient::TChunkId chunkId);
     void UnregisterUnavailableInputChunk(NChunkClient::TChunkId chunkId);

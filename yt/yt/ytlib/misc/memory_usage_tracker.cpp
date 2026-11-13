@@ -198,7 +198,7 @@ private:
     struct TReferenceAddressMapShard
     {
         THashMap<TReferenceKey, TState> Map;
-        YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock);
+        YT_DECLARE_SPIN_LOCK(TSpinLock, SpinLock);
     };
 
     std::vector<TReferenceAddressMapShard> ReferenceAddressToState_;
@@ -968,6 +968,8 @@ void TNodeMemoryTracker::Start()
 
 void TNodeMemoryTracker::UpdateSystemCategories()
 {
+    YT_TLOG_DEBUG("Updating system categories memory usage");
+
     i64 bytesUsed = tcmalloc::MallocExtension::GetNumericProperty("generic.current_allocated_bytes").value_or(0);
     i64 bytesCommitted = tcmalloc::MallocExtension::GetNumericProperty("generic.heap_size").value_or(0);
     auto newFragmentation = std::max<i64>(0, bytesCommitted - bytesUsed);
@@ -1531,7 +1533,7 @@ private:
     const IMemoryUsageTrackerPtr Underlying_;
     const TCounter MemoryUsageCounter_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, SpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, SpinLock_);
 
     // Amount we allocated from Underlying_.
     i64 UnderlyingAllocatedSize_ = 0;

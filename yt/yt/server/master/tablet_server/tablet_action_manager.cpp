@@ -8,14 +8,20 @@
 #include "table_settings.h"
 #include "tablet_action.h"
 #include "tablet_action_type_handler.h"
+#include "tablet.h"
+#include "tablet_base.h"
 #include "tablet_cell.h"
+#include "tablet_cell_bundle.h"
 #include "tablet_manager.h"
 
+#include <yt/yt/server/master/cell_master/automaton.h>
 #include <yt/yt/server/master/cell_master/bootstrap.h>
 #include <yt/yt/server/master/cell_master/config.h>
 #include <yt/yt/server/master/cell_master/hydra_facade.h>
 
 #include <yt/yt/server/master/object_server/object_manager.h>
+
+#include <yt/yt/server/master/table_server/table_node.h>
 
 #include <yt/yt/server/master/tablet_server/tablet_cell.h>
 
@@ -218,7 +224,7 @@ public:
             freeze = state == ETabletState::Frozen;
         }
 
-        const auto& bundle = table->TabletCellBundle();
+        auto bundle = table->GetTabletCellBundle();
 
         for (auto cell : cells) {
             if (!IsCellActive(cell)) {
@@ -697,7 +703,7 @@ private:
         for (auto actionId : orphanedActionIds) {
             auto* action = FindTabletAction(actionId);
             if (IsObjectAlive(action) && action->GetState() == ETabletActionState::Orphaned) {
-                const auto& bundle = action->Tablets().front()->GetOwner()->TabletCellBundle();
+                auto bundle = action->Tablets().front()->GetOwner()->GetTabletCellBundle();
                 if (healthyBundles.contains(bundle.Get())) {
                     ChangeTabletActionState(action, ETabletActionState::Unmounted);
                 }
@@ -786,7 +792,7 @@ private:
         }
 
         auto* table = tablets.front()->GetOwner();
-        const auto& bundle = table->TabletCellBundle();
+        auto bundle = table->GetTabletCellBundle();
 
         action->SetKind(kind);
         action->SetState(state);
@@ -812,8 +818,8 @@ private:
         bundle->TabletActions().insert(action);
         bundle->IncreaseActiveTabletActionCount();
 
-        YT_LOG_DEBUG("Tablet action created (%v)",
-            *action);
+        YT_TLOG_DEBUG("Tablet action created")
+            .With("TabletAction", *action);
 
         return action;
     }
@@ -1092,7 +1098,7 @@ private:
 
                 std::vector<std::pair<TTabletBase*, TTabletCell*>> assignment;
                 if (action->TabletCells().empty()) {
-                    if (!CheckHasHealthyCells(table->TabletCellBundle().Get())) {
+                    if (!CheckHasHealthyCells(table->GetTabletCellBundle())) {
                         ChangeTabletActionState(action, ETabletActionState::Orphaned, false);
                         break;
                     }

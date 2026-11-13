@@ -456,18 +456,18 @@ class TGroupCoordinatorManager
     : public IGroupCoordinatorManager
 {
 public:
-    explicit TGroupCoordinatorManager()
+    TGroupCoordinatorManager()
         : DynamicConfigStore_(New<TDynamicConfigStore>())
     { }
 
-    std::optional<IGroupCoordinatorPtr> GetGroupCoordinator(const NKafka::TGroupId& groupId) override
+    IGroupCoordinatorPtr FindGroupCoordinator(const NKafka::TGroupId& groupId) override
     {
         auto guard = ReaderGuard(GroupCoordinatorMapLock_);
         auto groupCoordinatorIt = GroupCoordinators_.find(groupId);
         if (groupCoordinatorIt != GroupCoordinators_.end()) {
             return groupCoordinatorIt->second;
         }
-        return std::nullopt;
+        return nullptr;
     }
 
     IGroupCoordinatorPtr GetOrCreateGroupCoordinator(const NKafka::TGroupId& groupId) override
@@ -491,7 +491,7 @@ public:
 private:
     TDynamicConfigStorePtr DynamicConfigStore_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, GroupCoordinatorMapLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, GroupCoordinatorMapLock_);
     THashMap<TGroupId, IGroupCoordinatorPtr> GroupCoordinators_;
 };
 

@@ -32,7 +32,7 @@
 #include <util/stream/file.h>
 #include <util/stream/str.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 namespace NYT::NYqlPlugin {
 
@@ -46,12 +46,21 @@ class TTaskEventCallback
     : public NYql::NWorkerApi::ITaskResultCallback
 {
 public:
+    struct TSnapshot
+    {
+        NYql::NProto::TTaskResult TaskResult;
+        THashMap<EProgressPart, ui32> LatestPartRevisions;
+        THashMap<TString, std::pair<ui32, TString>> LatestProgressPartRevisions;
+        std::optional<ui32> ProgressTruncatedRevision;
+    };
+
     ::NThreading::TFuture<void> Notify(const NYql::NProto::TTaskResult& result, ui64 /*sentTime*/) override
     {
         TGuard guard(Lock_);
-        UpdateTaskResultData(TaskResult_, result);
+        UpdateTaskResultData(TaskResult_, result, &LatestPartRevisions_);
         if (result.HasProgress()) {
-            ProgressMerger_.MergeWith(result.GetProgress());
+            ++ProgressRevision_;
+            ProgressMerger_.MergeWith(result.GetProgress(), ProgressRevision_);
         }
 
         if (IsTaskTerminal(result.GetStatus()) && !IsFinished_) {
@@ -67,21 +76,28 @@ public:
         return DonePromise_.ToFuture();
     }
 
-    NYql::NProto::TTaskResult GetTaskResult() const
+    TSnapshot GetSnapshot(std::optional<ui32> progressRevision = std::nullopt)
+    {
+        TGuard guard(Lock_);
+        return {
+            .TaskResult = TaskResult_,
+            .LatestPartRevisions = LatestPartRevisions_,
+            .LatestProgressPartRevisions = ProgressMerger_.GetLatestProgressPartRevisions(progressRevision),
+            .ProgressTruncatedRevision = ProgressMerger_.GetTruncationRevision(),
+        };
+    }
+
+    NYql::NProto::TTaskResult GetTaskResult()
     {
         TGuard guard(Lock_);
         return TaskResult_;
     }
 
-    TString GetProgress()
-    {
-        TGuard guard(Lock_);
-        return ProgressMerger_.ToYsonString();
-    }
-
 private:
     mutable TMutex Lock_;
+    ui32 ProgressRevision_ = 0;
     NYql::NProto::TTaskResult TaskResult_;
+    THashMap<EProgressPart, ui32> LatestPartRevisions_;
     NYT::NYqlPlugin::TProgressMerger ProgressMerger_;
     NYT::TPromise<void> DonePromise_ = NewPromise<void>();
     bool IsFinished_ = false;
@@ -89,8 +105,32 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TActiveQueryConfig
+    : public TRefCounted
+{
+    TActiveQueryConfig(
+        TString flavor,
+        std::optional<NYql::TGatewaysConfig> gatewaysConfig,
+        std::optional<TString> defaultCluster)
+        : Flavor(std::move(flavor))
+        , GatewaysConfig(std::move(gatewaysConfig))
+        , DefaultCluster(std::move(defaultCluster))
+    { }
+
+    TString Flavor;
+    std::optional<NYql::TGatewaysConfig> GatewaysConfig;
+    std::optional<TString> DefaultCluster;
+};
+DECLARE_REFCOUNTED_TYPE(TActiveQueryConfig)
+using TConstActiveQueryConfigPtr = TIntrusivePtr<const TActiveQueryConfig>;
+DEFINE_REFCOUNTED_TYPE(TActiveQueryConfig)
+
 struct TActiveQuery
 {
+    using TConfig = TActiveQueryConfig;
+
+    TConstActiveQueryConfigPtr Config;
+
     std::shared_ptr<NYql::NWorkerApi::ITaskHandle> TaskHandle;
     std::shared_ptr<TTaskEventCallback> Callback;
 };
@@ -139,7 +179,7 @@ public:
         initialDynamicConfig->Load(NYTree::ConvertToNode(options.InitialDynamicConfig));
         YT_VERIFY(initialDynamicConfig->MaxSupportedYqlVersion);
 
-        {
+        if (options.EnableGetUsedClusters) {
             if (StaticGatewaysSnapshot_) {
                 options.GatewayConfig = SerializeProtoToYson(StaticGatewaysSnapshot_->GetYt());
                 options.DqGatewayConfig = SerializeProtoToYson(StaticGatewaysSnapshot_->GetDq());
@@ -168,10 +208,18 @@ public:
     {
         NYql::NWorkerApi::TMsgBusWorkerApiConfig busConfig;
         busConfig.Port = QtWorkerInspectorPort_;
+        busConfig.BindLoopbackOnly = false;
 
         WorkerApi_ = NYql::NWorkerApi::MakeMsgBusWorkerApi(std::move(busConfig));
 
-        YqlPluginForGetUsedClusters_->Start();
+        if (YqlPluginForGetUsedClusters_) {
+            YqlPluginForGetUsedClusters_->Start();
+        }
+    }
+
+    bool IsReady() const override
+    {
+        return WorkerApi_ && WorkerApi_->IsHealthy();
     }
 
     TClustersResult GetUsedClusters(
@@ -180,12 +228,43 @@ public:
         TYsonString settings,
         std::vector<TQueryFile> files) override
     {
+        YT_VERIFY(YqlPluginForGetUsedClusters_);
         return YqlPluginForGetUsedClusters_->GetUsedClusters(queryId, queryText, settings, files);
+    }
+
+    TClustersResult GetClustersInfo(TQueryId queryId) override
+    {
+        const auto queryConfig = GetQueryConfig(queryId);
+
+        TClustersResult result{
+            .DefaultCluster = queryConfig->DefaultCluster,
+        };
+
+        YT_VERIFY(queryConfig->GatewaysConfig);
+        const auto& gatewaysConfig = *queryConfig->GatewaysConfig;
+
+        const auto& ytConfig = gatewaysConfig.GetYt();
+        for (const auto& mapping : ytConfig.GetClusterMapping()) {
+            result.Clusters.emplace_back(mapping.name(), mapping.cluster());
+        }
+
+        const auto& pqConfig = gatewaysConfig.GetPq();
+        for (const auto& mapping : pqConfig.GetClusterMapping()) {
+            result.Clusters.emplace_back(mapping.name(), mapping.endpoint());
+        }
+
+        const auto& solomonConfig = gatewaysConfig.GetSolomon();
+        for (const auto& mapping : solomonConfig.GetClusterMapping()) {
+            result.Clusters.emplace_back(mapping.name(), mapping.cluster());
+        }
+
+        return result;
     }
 
     TQueryResult Run(
         TQueryId queryId,
         TString user,
+        TString queryIdentityToken,
         TYsonString credentials,
         TString queryText,
         TYsonString settings,
@@ -193,20 +272,24 @@ public:
         int executeMode,
         NYqlClient::EQueryType queryType) override
     {
-        if (!WorkerApi_ || !WorkerApi_->IsHealthy()) {
-            return TQueryResult{
-                .YsonError = MessageToYtErrorYson("No healthy workers"),
-            };
-        }
-
         try {
             auto action = ExecuteModeToProto(executeMode);
-            auto data = BuildTaskData(queryId, user, queryText, settings, credentials, files, queryType);
+            auto data = BuildTaskData(queryId, user, queryIdentityToken, queryText, settings, credentials, files, queryType);
             auto callback = RunTaskToCompletion(queryId, action, std::move(data), /*persist*/ true);
 
-            const auto snapshot = callback->GetTaskResult();
-            auto progressYson = callback->GetProgress();
-            return TaskResultToYqlResult(snapshot, std::move(progressYson));
+            auto snapshot = callback->GetSnapshot();
+            return TaskResultToYqlResult(
+                snapshot.TaskResult,
+                snapshot.LatestPartRevisions,
+                snapshot.LatestProgressPartRevisions,
+                snapshot.ProgressTruncatedRevision);
+        } catch (const NYql::NWorkerApi::TRunTaskError& ex) {
+            if (ex.GetReason() == NYql::NWorkerApi::TRunTaskError::EReason::REJECTED) {
+                THROW_ERROR_EXCEPTION(NYqlClient::EErrorCode::YqlAgentNotReady, "%v", ex.GetMessage());
+            }
+            return TQueryResult{
+                .YsonError = MessageToYtErrorYson(ex.GetMessage()),
+            };
         } catch (const std::exception& ex) {
             return TQueryResult{
                 .YsonError = MessageToYtErrorYson(TString{ex.what()})
@@ -214,10 +297,9 @@ public:
         }
     }
 
-    TQueryResult GetProgress(TQueryId queryId) override
+    TQueryResult GetProgress(TQueryId queryId, TProgressOptions progressOptions) override
     {
-        NYql::NProto::TTaskResult taskResult;
-        TString progress;
+        std::shared_ptr<TTaskEventCallback> callback;
 
         {
             TGuard guard(ActiveQueriesLock_);
@@ -227,11 +309,17 @@ public:
                     .YsonError = MessageToYtErrorYson(Format("No progress for query: %v", queryId)),
                 };
             }
-            taskResult = it->second.Callback->GetTaskResult();
-            progress = it->second.Callback->GetProgress();
+            callback = it->second.Callback;
         }
 
-        return TaskResultToYqlResult(taskResult, progress);
+        auto snapshot = callback->GetSnapshot(progressOptions.ProgressRevision);
+        return TaskResultToYqlResult(
+            snapshot.TaskResult,
+            snapshot.LatestPartRevisions,
+            snapshot.LatestProgressPartRevisions,
+            snapshot.ProgressTruncatedRevision,
+            progressOptions.MainRevision,
+            progressOptions.ProgressRevision);
     }
 
     TAbortResult Abort(TQueryId queryId) override
@@ -277,7 +365,7 @@ public:
             TStringInput input(protoConfig);
             ParseFromTextFormat(input, protoGatewaysConfig, EParseFromTextFormatOption::AllowUnknownField);
 
-            if (flavor == "default") {
+            if (YqlPluginForGetUsedClusters_ && flavor == "default") {
                 auto defaultConfig = CloneYsonStruct(config);
                 defaultConfig->GatewaysConfig = SerializeProtoToYson(protoGatewaysConfig);
                 YqlPluginForGetUsedClusters_->OnDynamicConfigChanged(std::move(defaultConfig));
@@ -339,42 +427,81 @@ public:
     TGetDeclaredParametersInfoResult GetDeclaredParametersInfo(
         TQueryId queryId,
         TString user,
+        TString queryIdentityToken,
         TString queryText,
         TYsonString settings,
         TYsonString credentials) override
     {
-        if (!WorkerApi_ || !WorkerApi_->IsHealthy()) {
-            ythrow yexception() << "No healthy workers";
-        }
-
-        auto data = BuildTaskData(queryId, user, queryText, settings, credentials, /*files*/ {});
+        auto data = BuildTaskData(queryId, user, queryIdentityToken, queryText, settings, credentials, /*files*/ {});
         auto callback = RunTaskToCompletion(
             queryId,
             NYql::NProto::ETaskAction::EXTRACT_PARAMS_META,
             std::move(data),
             /*persist*/ false);
 
-        const auto snapshot = callback->GetTaskResult();
-        if (snapshot.GetStatus() == NYql::NProto::ETaskStatus::ERROR) {
-            if (snapshot.IssuesSize() > 0) {
+        auto taskResult = callback->GetTaskResult();
+        if (taskResult.GetStatus() == NYql::NProto::ETaskStatus::ERROR) {
+            if (taskResult.IssuesSize() > 0) {
                 NYql::TIssues issues;
-                IssuesFromMessage(snapshot.GetIssues(), issues);
+                IssuesFromMessage(taskResult.GetIssues(), issues);
                 ythrow yexception() << IssuesToYtErrorYson(issues);
             }
             ythrow yexception() << "Failed to extract query parameters metadata on worker";
         }
 
         return TGetDeclaredParametersInfoResult{
-            .YsonParameters = snapshot.ResultsSize() > 0
-                ? std::make_optional(snapshot.GetResults(0))
+            .YsonParameters = taskResult.ResultsSize() > 0
+                ? std::make_optional(taskResult.GetResults(0))
                 : std::nullopt,
         };
     }
 
-    void RegisterQuery(TQueryId /*queryId*/) override
-    { }
-    void UnregisterQuery(TQueryId /*queryId*/) override
-    { }
+    void RegisterQuery(TQueryId queryId, TYsonString settings) override
+    {
+        auto flavor = DetectFlavorFromSettings(settings);
+        auto gatewaysConfig = GetCurrentGatewaysConfig(flavor);
+        auto defaultCluster = gatewaysConfig
+            ? ExtractDefaultCluster(*gatewaysConfig)
+            : std::nullopt;
+        auto settingsMap = NYTree::ConvertTo<NYTree::IMapNodePtr>(settings);
+        if (auto cluster = settingsMap->FindChildValue<TString>("cluster")) {
+            defaultCluster = *cluster;
+        }
+
+        {
+            TGuard guard(ActiveQueriesLock_);
+            auto [_, inserted] = ActiveQueries_.emplace(queryId, TActiveQuery{
+                .Config = New<TActiveQuery::TConfig>(
+                    std::move(flavor),
+                    std::move(gatewaysConfig),
+                    std::move(defaultCluster)),
+            });
+            YT_VERIFY(inserted);
+        }
+
+        if (YqlPluginForGetUsedClusters_) {
+            try {
+                YqlPluginForGetUsedClusters_->RegisterQuery(queryId, settings);
+            } catch (...) {
+                TGuard guard(ActiveQueriesLock_);
+                ActiveQueries_.erase(queryId);
+                throw;
+            }
+        }
+    }
+
+    void UnregisterQuery(TQueryId queryId) override
+    {
+        {
+            TGuard guard(ActiveQueriesLock_);
+            auto erased = ActiveQueries_.erase(queryId);
+            YT_VERIFY(erased == 1);
+        }
+
+        if (YqlPluginForGetUsedClusters_) {
+            YqlPluginForGetUsedClusters_->UnregisterQuery(queryId);
+        }
+    }
 
 private:
     const int QtWorkerInspectorPort_;
@@ -395,30 +522,39 @@ private:
     TMutex FlavorConfigsLock_;
     THashMap<TString, NYql::TGatewaysConfig> GatewaysConfigSnapshotByFlavor_;
 
-    NThreading::TAtomicObject<TString> FunctionRegistryData_;
+    TAtomicObject<TString> FunctionRegistryData_;
+
+    std::optional<NYql::TGatewaysConfig> GetCurrentGatewaysConfig(const TString& flavor)
+    {
+        TGuard guard(FlavorConfigsLock_);
+        if (auto snapshot = GatewaysConfigSnapshotByFlavor_.find(flavor);
+            snapshot != GatewaysConfigSnapshotByFlavor_.end())
+        {
+            return snapshot->second;
+        }
+        return StaticGatewaysSnapshot_;
+    }
+
+    TConstActiveQueryConfigPtr GetQueryConfig(TQueryId queryId)
+    {
+        TGuard guard(ActiveQueriesLock_);
+        auto it = ActiveQueries_.find(queryId);
+        YT_VERIFY(it != ActiveQueries_.end());
+        return it->second.Config;
+    }
 
     NYql::NProto::TTaskData BuildTaskData(
         TQueryId queryId,
         const TString& user,
+        const TString& queryIdentityToken,
         const TString& queryText,
         const TYsonString& settings,
         const TYsonString& credentials,
         const std::vector<TQueryFile>& files,
         NYqlClient::EQueryType queryType = NYqlClient::EQueryType::Regular)
     {
-        auto flavor = DetectFlavorFromSettings(settings);
-        auto builder = CreateTaskDataBuilder(flavor);
-
-        std::optional<NYql::TGatewaysConfig> gatewaysConfig;
-        {
-            TGuard guard(FlavorConfigsLock_);
-            if (auto snapshot = GatewaysConfigSnapshotByFlavor_.find(flavor); snapshot != GatewaysConfigSnapshotByFlavor_.end()) {
-                gatewaysConfig = snapshot->second;
-            }
-        }
-        if (!gatewaysConfig && StaticGatewaysSnapshot_) {
-            gatewaysConfig = *StaticGatewaysSnapshot_;
-        }
+        const auto queryConfig = GetQueryConfig(queryId);
+        auto builder = CreateTaskDataBuilder(queryConfig->Flavor);
 
         auto functionRegistryData = FunctionRegistryData_.Load();
 
@@ -430,10 +566,12 @@ private:
             .Credentials = credentials,
             .Files = files,
             .FunctionRegistryData = functionRegistryData,
-            .GatewaysConfig = gatewaysConfig,
+            .GatewaysConfig = queryConfig->GatewaysConfig,
+            .DefaultCluster = queryConfig->DefaultCluster,
             .MaxYqlLangVersion = NYql::FormatLangVersion(MaxYqlLangVersion_.load()),
             .DefaultYqlLangVersion = NYql::FormatLangVersion(DefaultYqlApiLangVersion_),
             .QueryType = queryType,
+            .QueryIdentityToken = queryIdentityToken,
         });
     }
 
@@ -447,7 +585,7 @@ private:
 
         auto runTaskResult = WorkerApi_->RunTask(action, std::move(data), callback);
         if (!runTaskResult) {
-            ythrow yexception() << runTaskResult.error().GetMessage();
+            throw runTaskResult.error();
         }
 
         if (!persist) {
@@ -458,22 +596,15 @@ private:
 
         {
             TGuard guard(ActiveQueriesLock_);
-            auto& activeQuery = ActiveQueries_[queryId];
+            auto it = ActiveQueries_.find(queryId);
+            YT_VERIFY(it != ActiveQueries_.end());
+            auto& activeQuery = it->second;
             activeQuery.Callback = callback;
             activeQuery.TaskHandle = *runTaskResult;
         }
 
-        try {
-            NYT::NConcurrency::WaitFor(callback->GetDoneFuture())
-                .ThrowOnError();
-        } catch (...) {
-            TGuard guard(ActiveQueriesLock_);
-            ActiveQueries_.erase(queryId);
-            throw;
-        }
-
-        TGuard guard(ActiveQueriesLock_);
-        ActiveQueries_.erase(queryId);
+        NYT::NConcurrency::WaitFor(callback->GetDoneFuture())
+            .ThrowOnError();
         return callback;
     }
 };

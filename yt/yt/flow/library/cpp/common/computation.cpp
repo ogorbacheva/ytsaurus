@@ -1,5 +1,7 @@
 #include "computation.h"
 
+#include "computation_statistics.h"
+
 #include "flow_view.h"
 #include "message.h"
 #include "spec.h"
@@ -67,22 +69,32 @@ void IComputationRunContext::MarkDeduplicated(TMessageId messageId)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TComputationOrchidState::Register(TRegistrar /*registrar*/)
-{ }
-
-////////////////////////////////////////////////////////////////////////////////
-
 void TComputationStatus::Register(TRegistrar registrar)
 {
+    registrar.Parameter("observed_keys", &TThis::ObservedKeys)
+        .Default();
     registrar.Parameter("node_traverse", &TThis::NodeTraverse)
         .Default();
+    registrar.Parameter("processing_observation", &TThis::ProcessingObservation)
+        .DontSerializeDefault()
+        .Default();
     registrar.Parameter("partition_status", &TThis::PartitionStatus)
+        .Default();
+    registrar.Parameter("non_empty_iteration_count", &TThis::NonEmptyIterationCount)
         .Default();
     registrar.Parameter("epoch_part_times", &TThis::EpochPartTimes)
         .Default();
     registrar.Parameter("input_limits", &TThis::InputLimits)
         .Default();
     registrar.Parameter("output_limits", &TThis::OutputLimits)
+        .Default();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TComputationPartitionStatus::Register(TRegistrar registrar)
+{
+    registrar.Parameter("active_source_status", &TThis::ActiveSourceStatus)
         .Default();
 }
 
@@ -98,8 +110,15 @@ void IComputation::TDynamicParametersBase::Register(TRegistrar /*registrar*/)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void IComputation::TDynamicPartitionSpecBase::Register(TRegistrar /*registrar*/)
-{ }
+void IComputation::TDynamicPartitionSpecBase::Register(TRegistrar registrar)
+{
+    registrar.Parameter("active_source", &TThis::ActiveSource)
+        .Default();
+    registrar.Parameter("blocked_output_streams", &TThis::BlockedOutputStreams)
+        .Default();
+    registrar.Parameter("availability_group_unavailable", &TThis::AvailabilityGroupUnavailable)
+        .Default(false);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 

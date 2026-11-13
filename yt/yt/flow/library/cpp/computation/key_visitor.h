@@ -105,7 +105,7 @@ public:
 
     //! Single-entry inflight map; Empty becomes true once the Final pass is
     //! fully committed and the buffer is drained.
-    THashMap<TStreamId, TInflightStreamTraverseDataPtr> BuildInflight() const;
+    THashMap<TStreamId, TInflightStreamTraverseDataPtr> BuildInflight(TSystemTimestamp now) const;
 
     //! Persists the coverage diff produced since the last Sync.
     void Sync(NApi::IDynamicTableTransactionPtr transaction);
@@ -163,12 +163,11 @@ private:
     //! Sum of Visits.size() across all Buffer_ entries — kept here so
     //! BufferRowLimit checks stay O(1).
     i64 BufferRowCount_ = 0;
-    //! Rate counters surfaced through BuildInflight as
-    //! InflightMetrics->{NewCountPerSec, ProcessedCountPerSec} so that
-    //! standard Solomon dashboards see visit-stream throughput like for
-    //! source/timer streams. Emitted = visits pushed into Buffer_;
-    //! Processed = visits included in a committed coverage transaction.
-    TSimpleEmaCounter EmittedRate_;
+    // Paired observations of distinct keys and hash coverage, retained across passes.
+    TSimpleEmaCounter ScannedKeyRate_;
+    TSimpleEmaCounter ScannedHashRate_;
+
+    // Visits whose coverage transaction has committed, not merely prefetched or consumed.
     TSimpleEmaCounter ProcessedRate_;
     i64 PendingProcessedCount_ = 0;
 

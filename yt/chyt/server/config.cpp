@@ -28,6 +28,9 @@ void TCompositeSettings::Register(TRegistrar registrar)
     registrar.Parameter("convert_unsupported_types_to_string", &TThis::ConvertUnsupportedTypesToString)
         .Default(false);
 
+    registrar.Parameter("annotate_result_schema_with_native_types", &TThis::AnnotateResultSchemaWithNativeTypes)
+        .Default(false);
+
     registrar.Parameter("enable_complex_null_conversion", &TThis::EnableComplexNullConverison)
         .Default(true);
 }
@@ -104,6 +107,10 @@ void TTestingSettings::Register(TRegistrar registrar)
         .Default(false);
     registrar.Parameter("throw_exception_after_refresh_query", &TThis::ThrowExceptionAfterRefreshQuery)
         .Default(false);
+    registrar.Parameter("throw_exception_after_refresh_commit", &TThis::ThrowExceptionAfterRefreshCommit)
+        .Default(false);
+    registrar.Parameter("fail_materialized_view_refresh_query_response_for_partition", &TThis::FailMaterializedViewRefreshQueryResponseForPartition)
+        .Default();
     registrar.Parameter("subquery_allocation_size", &TThis::SubqueryAllocationSize)
         .Default(0);
 
@@ -124,6 +131,8 @@ void TTestingSettings::Register(TRegistrar registrar)
     registrar.Parameter("source_generate_call_breakpoint", &TThis::SourceGenerateCallBreakpoint)
         .Default();
     registrar.Parameter("drop_table_breakpoint", &TThis::DropTableBreakpoint)
+        .Default();
+    registrar.Parameter("materialized_view_consumer_commit_breakpoint", &TThis::MaterializedViewConsumerCommitBreakpoint)
         .Default();
 }
 
@@ -333,6 +342,9 @@ void TQuerySettings::Register(TRegistrar registrar)
     registrar.Parameter("omit_inaccessible_rows", &TThis::OmitInaccessibleRows)
         .Default(false);
 
+    registrar.Parameter("materialized_view_populate", &TThis::MaterializedViewPopulate)
+        .Default(false);
+
     registrar.Preprocessor([] (TThis* config) {
         config->TableReader->GroupSize = 20_MB;
         config->TableReader->WindowSize = 70_MB;
@@ -404,6 +416,15 @@ void TSubqueryConfig::Register(TRegistrar registrar)
         .Default(true);
     registrar.Parameter("min_slice_data_weight", &TThis::MinSliceDataWeight)
         .Default(1_MB);
+
+    registrar.Parameter("chunk_spec_cache", &TThis::ChunkSpecCache)
+        .Default();
+
+    registrar.Postprocessor([] (TThis* config) {
+        if (config->ChunkSpecCache && !config->ChunkSpecCache->Capacity) {
+            config->ChunkSpecCache->Capacity = 1_GB;
+        }
+    });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -513,7 +534,7 @@ void TUserDefinedSqlObjectsStorageConfig::Register(TRegistrar registrar)
     registrar.Parameter("path", &TThis::Path)
         .Default();
     registrar.Parameter("update_period", &TThis::UpdatePeriod)
-        .Default(TDuration::Seconds(5));
+        .Default(TDuration::Seconds(30));
     registrar.Parameter("expire_after_successful_sync_time", &TThis::ExpireAfterSuccessfulSyncTime)
         .Default(TDuration::Seconds(60));
 
@@ -543,8 +564,13 @@ void TMaterializedViewsConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_rows_per_refresh", &TThis::MaxRowsPerRefresh)
         .GreaterThanOrEqual(0)
         .Default(0);
+    registrar.Parameter("max_partitions_per_refresh", &TThis::MaxPartitionsPerRefresh)
+        .GreaterThanOrEqual(0)
+        .Default(10);
     registrar.Parameter("query_timeout", &TThis::QueryTimeout)
         .Default(TDuration::Minutes(20));
+    registrar.Parameter("table_mount_timeout", &TThis::TableMountTimeout)
+        .Default(TDuration::Seconds(30));
     registrar.Parameter("transaction_timeout", &TThis::TransactionTimeout)
         .Default(TDuration::Minutes(30));
 }
@@ -626,6 +652,14 @@ void TExecutionProfilingConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TYtDynamicConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("query_settings", &TThis::QuerySettings)
+        .DefaultNew();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TYtConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("clique_id", &TThis::CliqueId)
@@ -636,6 +670,8 @@ void TYtConfig::Register(TRegistrar registrar)
         .Default();
     registrar.Parameter("clique_incarnation", &TThis::CliqueIncarnation)
         .Default(-1);
+    registrar.Parameter("orchid_root", &TThis::OrchidRoot)
+        .Default();
     registrar.Parameter("address", &TThis::Address)
         .Default();
     registrar.Parameter("clique_instance_count", &TThis::CliqueInstanceCount)
@@ -652,6 +688,10 @@ void TYtConfig::Register(TRegistrar registrar)
     registrar.Parameter("enable_http_header_log", &TThis::EnableHttpHeaderLog)
         .Default(false);
     registrar.Parameter("http_header_blacklist", &TThis::HttpHeaderBlacklist)
+        .Default();
+    registrar.Parameter("enable_http_tvm_authentication", &TThis::EnableHttpTvmAuthentication)
+        .Default(false);
+    registrar.Parameter("http_allowed_service_tvm_ids", &TThis::HttpAllowedServiceTvmIds)
         .Default();
     registrar.Parameter("user_name_blacklist", &TThis::UserNameBlacklist)
         .Default();
@@ -827,6 +867,11 @@ void TClickHouseServerBootstrapConfig::Register(TRegistrar registrar)
     registrar.Parameter("yt", &TThis::Yt)
         .DefaultNew();
 
+    registrar.Parameter("dynamic_config_path", &TThis::DynamicConfigPath)
+        .Default();
+    registrar.Parameter("dynamic_config_manager", &TThis::DynamicConfigManager)
+        .DefaultNew();
+
     registrar.Parameter("graceful_interruption_delay", &TThis::GracefulInterruptionDelay)
         .Default(TDuration::Seconds(2))
         // COMPAT(dakovalkov)
@@ -850,13 +895,6 @@ void TClickHouseServerBootstrapConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("rpc_query_service_thread_count", &TThis::RpcQueryServiceThreadCount)
         .Default(100);
-
-    registrar.Preprocessor([] (TThis* config) {
-        auto jaegerConfig = config->GetSingletonConfig<NTracing::TJaegerTracerConfig>();
-        jaegerConfig->ServiceName = "clickhouse_server";
-        jaegerConfig->CollectorChannelConfig = New<NRpc::NGrpc::TChannelConfig>();
-        jaegerConfig->CollectorChannelConfig->Address = "yt.c.jaeger.yandex-team.ru:14250";
-    });
 
     registrar.Postprocessor([] (TThis* config) {
         config->SolomonExporter->SplitRateHistogramIntoGauges = true;
@@ -924,6 +962,14 @@ TPorts TClickHouseServerBootstrapConfig::GetPorts() const
         .Http = ClickHouse->HttpPort,
         .Tcp = ClickHouse->TcpPort
     };
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+void TClickHouseServerDynamicConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("yt", &TThis::Yt)
+        .DefaultNew();
 }
 
 ////////////////////////////////////////////////////////////////////////////////

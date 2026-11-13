@@ -14,11 +14,23 @@ on:
         default: false
         required: false
         type: boolean
+      build-gpuagent:
+        default: true
+        required: false
+        type: boolean
       build-ytsaurus-tests:
         default: false
         required: false
         type: boolean
       build-chyt:
+        default: false
+        required: false
+        type: boolean
+      build-flow:
+        default: false
+        required: false
+        type: boolean
+      build-flow-tests:
         default: false
         required: false
         type: boolean
@@ -59,9 +71,9 @@ on:
 
     secrets:
       BUILD_CACHE_BAZEL_USERNAME:
-        required: true
+        required: false
       BUILD_CACHE_BAZEL_PASSWORD:
-        required: true
+        required: false
 
 jobs:
   venv:
@@ -76,7 +88,7 @@ jobs:
   gpuagent:
     needs: venv
     runs-on: ${{ inputs.runs-on-value }}
-    if: ${{ inputs.build-ytsaurus }}
+    if: ${{ inputs.build-ytsaurus && inputs.build-gpuagent }}
     timeout-minutes: 480
     steps:
       - name: Build GPU Agent
@@ -165,15 +177,17 @@ jobs:
             if [ "${{ matrix.build-type }}" = "release" ]; then
               CMAKE_BUILD_TYPE="Release"
             fi
-            READ_ONLY=""
-            if [ "${{ inputs.update-remote-cache }}" == "false" ]; then
-              READ_ONLY="--read-only-cache"
+            CACHE_CREDENTIALS=""
+            READ_ONLY="--read-only-cache"
+            if [ "${{ inputs.update-remote-cache }}" == "true" ]; then
+              CACHE_CREDENTIALS="${BUILD_CACHE_BAZEL_USERNAME}:${BUILD_CACHE_BAZEL_PASSWORD}@"
+              READ_ONLY=""
             fi
             ./ytsaurus/yt/yt/scripts/build_cmake.sh configure \
               --source-path ../ytsaurus/ytsaurus \
               --build-path ../build_${{ inputs.cpp-build-system }}_${{ matrix.build-type }} \
               --build-type "${CMAKE_BUILD_TYPE}" \
-              --ccache-remote-storage "http://${BUILD_CACHE_BAZEL_USERNAME}:${BUILD_CACHE_BAZEL_PASSWORD}@${BUILD_CACHE_BAZEL_HOST}|layout=bazel" \
+              --ccache-remote-storage "http://${CACHE_CREDENTIALS}${BUILD_CACHE_BAZEL_HOST}|layout=bazel" \
               ${READ_ONLY}
           '
 
@@ -202,6 +216,15 @@ jobs:
               --targets "${TARGETS}"
           '
 
+      - name: Build flow (cmake, ${{ matrix.build-type }})
+        if: ${{ inputs.build-flow }}
+        run: |
+          docker exec "${BUILD_ENV_CONTAINER_NAME}" bash --noprofile --norc -e -o pipefail -c '
+            ./ytsaurus/yt/yt/scripts/build_cmake.sh build \
+              --build-path ../build_${{ inputs.cpp-build-system }}_${{ matrix.build-type }} \
+              --targets "flow_server"
+          '
+
       - name: Build YQL agent (cmake, ${{ matrix.build-type }})
         if: ${{ inputs.build-query-tracker }}
         run: |
@@ -218,7 +241,6 @@ jobs:
             ninja libhyperscan_udf.so
             ninja libip_udf.so
             ninja libjson2_udf.so
-            ninja libjson_udf.so
             ninja libmath_udf.so
             ninja libpire_udf.so
             ninja libprotobuf_udf.so
@@ -359,13 +381,24 @@ jobs:
 
           ../ytsaurus/ytsaurus/ya make ${BUILD_FLAGS} --output=. -A --test-prepare ${FOLDERS_WITH_UNITTESTS}
 
-          INTEGRATION_TEST_TARGETS="\
-            ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_s \
-            ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_m \
-            ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_l \
-            ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_xl"
+          INTEGRATION_TEST_TARGETS=(
+            ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_s
+            ../ytsaurus/ytsaurus/yt/yt/tests/integration/scheduler_simulator/bin
+            # ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_m
+            # ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_l
+            # ../ytsaurus/ytsaurus/yt/yt/tests/integration/size_xl
+          )
 
-          ../ytsaurus/ytsaurus/ya make ${BUILD_FLAGS} --output=. ${INTEGRATION_TEST_TARGETS} -A --test-prepare
+          ../ytsaurus/ytsaurus/ya make ${BUILD_FLAGS} --output=. "${INTEGRATION_TEST_TARGETS[@]}" -A --test-prepare
+
+      - name: Build flow tests dependencies (ya-make, ${{ matrix.build-type }})
+        if: ${{ inputs.build-flow-tests && (matrix.build-type == 'relwithdebinfo') }}
+        run: |
+          cd ../build_${{ inputs.cpp-build-system}}_${{ matrix.build-type }}
+
+          BUILD_FLAGS="${{ steps.vars.outputs.BUILD_FLAGS }} -DSTRIP=${{ steps.vars.outputs.STRIP_VALUE }}"
+
+          BUILD_FLAGS=$(echo ${BUILD_FLAGS} | sed 's/--thinlto//')
 
           # Programs and C++ unit tests required by the exported Flow examples.
           FLOW_PROGRAM_TARGETS="../ytsaurus/ytsaurus/yt/yt/flow/bin/flow_server"
@@ -387,6 +420,21 @@ jobs:
 
           ../ytsaurus/ytsaurus/ya make ${BUILD_FLAGS} --output=. ${FLOW_PROGRAM_TARGETS}
           ../ytsaurus/ytsaurus/ya make ${BUILD_FLAGS} --output=. -A --test-prepare ${FLOW_CPP_UNITTEST_TARGETS}
+
+      - name: Build flow (ya-make, ${{ matrix.build-type }})
+        if: ${{ inputs.build-flow }}
+        run: |
+          cd ../build_${{ inputs.cpp-build-system}}_${{ matrix.build-type }}
+
+          BUILD_FLAGS="${{ steps.vars.outputs.BUILD_FLAGS }} -DSTRIP=${{ steps.vars.outputs.STRIP_VALUE }}"
+
+          FLOW_TARGETS="../ytsaurus/ytsaurus/yt/yt/flow/bin/flow_server"
+
+          if [ "${{ inputs.update-remote-cache }}" == "true" ]; then
+            ../ytsaurus/ytsaurus/ya make ${BUILD_FLAGS} --bazel-remote-put --output=. ${FLOW_TARGETS}
+          fi
+
+          ../ytsaurus/ytsaurus/ya make ${BUILD_FLAGS} --output=. ${FLOW_TARGETS}
 
       - name: Build YQL agent (ya-make, ${{ matrix.build-type }})
         if: ${{ inputs.build-query-tracker }}

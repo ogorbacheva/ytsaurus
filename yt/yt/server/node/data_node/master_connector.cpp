@@ -73,6 +73,7 @@ using namespace NDataNodeTrackerClient::NProto;
 using namespace NNodeTrackerClient::NProto;
 using namespace NNodeTrackerServer;
 using namespace NJobTrackerClient;
+using namespace NHydra;
 using namespace NObjectClient;
 using namespace NNodeTrackerClient;
 using namespace NProfiling;
@@ -169,7 +170,8 @@ public:
     TDataNodeTrackerServiceProxy::TReqFullHeartbeatPtr BuildFullHeartbeatRequest(
         TDataNodeTrackerServiceProxy proxy,
         TNodeId nodeId,
-        TCellTag cellTag)
+        TCellTag cellTag,
+        TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -225,6 +227,10 @@ public:
 
         ToProto(req->mutable_location_directory(), locationDirectory);
 
+        if (registrationRevision != NullRevision) {
+            req->set_registration_revision(ToProto(registrationRevision));
+        }
+
         return req;
     }
 
@@ -233,7 +239,8 @@ public:
         const TStoreLocationPtr& location,
         const std::vector<IChunkPtr>& chunks,
         TNodeId nodeId,
-        TCellTag cellTag)
+        TCellTag cellTag,
+        TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -256,12 +263,17 @@ public:
             }
         }
 
+        if (registrationRevision != NullRevision) {
+            req->set_registration_revision(ToProto(registrationRevision));
+        }
+
         return req;
     }
 
     TDataNodeTrackerServiceProxy::TReqFinalizeFullHeartbeatSessionPtr BuildFinalizeFullHeartbeatSessionRequest(
         TDataNodeTrackerServiceProxy proxy,
-        TNodeId nodeId)
+        TNodeId nodeId,
+        TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
@@ -270,13 +282,18 @@ public:
 
         ComputeDataNodeStatistics(req->mutable_statistics());
 
+        if (registrationRevision != NullRevision) {
+            req->set_registration_revision(ToProto(registrationRevision));
+        }
+
         return req;
     }
 
     TDataNodeTrackerServiceProxy::TReqIncrementalHeartbeatPtr BuildIncrementalHeartbeatRequest(
         TDataNodeTrackerServiceProxy proxy,
         TNodeId nodeId,
-        TCellTag cellTag)
+        TCellTag cellTag,
+        TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
@@ -324,8 +341,8 @@ public:
         for (const auto& [chunk, oldMediumIndex] : delta->ChangedMediumSinceLastSuccess) {
             if (chunkEventCount >= MaxChunkEventsPerIncrementalHeartbeat_) {
                 auto mediumChangedBacklogCount = delta->ChangedMediumSinceLastSuccess.size() - delta->ReportedChangedMedium.size();
-                YT_LOG_INFO("Chunk event limit per heartbeat is reached, will report %v chunks with medium changed in next heartbeats",
-                    mediumChangedBacklogCount);
+                YT_TLOG_INFO("Chunk event limit per heartbeat is reached, will report the rest in next heartbeats")
+                    .With("MediumChangedBacklogCount", mediumChangedBacklogCount);
                 break;
             }
 
@@ -348,6 +365,10 @@ public:
             auto* protoRequest = req->add_confirmed_replica_announcement_requests();
             ToProto(protoRequest->mutable_chunk_id(), chunkId);
             protoRequest->set_revision(ToProto(revision));
+        }
+
+        if (registrationRevision != NullRevision) {
+            req->set_registration_revision(ToProto(registrationRevision));
         }
 
         if (EnableIncrementalHeartbeatProfiling_) {
@@ -413,7 +434,7 @@ public:
             YT_VERIFY(response.has_revision());
             allyReplicaManager->ScheduleAnnouncements(
                 TRange(response.replica_announcement_requests()),
-                FromProto<NHydra::TRevision>(response.revision()),
+                FromProto<TRevision>(response.revision()),
                 /*onFullHeartbeat*/ true);
         }
 
@@ -551,7 +572,7 @@ public:
             YT_VERIFY(response.has_revision());
             allyReplicaManager->ScheduleAnnouncements(
                 TRange(response.replica_announcement_requests()),
-                FromProto<NHydra::TRevision>(response.revision()),
+                FromProto<TRevision>(response.revision()),
                 /*onFullHeartbeat*/ false);
         }
         if (response.has_enable_lazy_replica_announcements()) {
@@ -642,8 +663,8 @@ public:
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
         PerLocationFullHeartbeatsEnabled_ = value;
-        YT_LOG_INFO("Per-location full data node heartbeats are %v",
-            value ? "enabled" : "disabled");
+        YT_TLOG_INFO("Per-location full data node heartbeats toggled")
+            .With("Enabled", value);
     }
 
     void SetLocationIndexesInHeartbeatsEnabled(bool value) override
@@ -651,8 +672,8 @@ public:
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
         LocationIndexesInHeartbeatsEnabled_ = value;
-        YT_LOG_INFO("Location indexes in data node heartbeats are %v",
-            value ? "enabled" : "disabled");
+        YT_TLOG_INFO("Location indexes in data node heartbeats toggled")
+            .With("Enabled", value);
     }
 
 protected:
@@ -679,16 +700,25 @@ protected:
         auto state = GetMasterConnectorState(cellTag);
         EmplaceOrCrash(CellTagToMasterConnectorState_, cellTag, state);
 
+        auto registrationRevision = Bootstrap_
+            ->GetClusterNodeBootstrap()
+            ->GetMasterConnector()
+            ->GetRegistrationRevision();
+
+        if (GetNodeDynamicConfig()->TestingOptions->OmitHeartbeatRegistrationRevision) {
+            registrationRevision = NullRevision;
+        }
+
         switch (state) {
             case EMasterConnectorState::Registered: {
                 TFuture<void> voidFuture;
                 // COMPAT(danilalexeev): YT-23781.
                 if (PerLocationFullHeartbeatsEnabled_) {
-                    auto future = ScheduleFullHeartbeatSession(cellTag);
+                    auto future = ScheduleFullHeartbeatSession(cellTag, registrationRevision);
                     variantResult = future;
                     voidFuture = future.AsVoid();
                 } else {
-                    auto future = InvokeFullHeartbeatRequest(cellTag);
+                    auto future = InvokeFullHeartbeatRequest(cellTag, registrationRevision);
                     variantResult = future;
                     voidFuture = future.AsVoid();
                 }
@@ -697,14 +727,17 @@ protected:
             }
 
             case EMasterConnectorState::Online: {
-                auto future = InvokeIncrementalHeartbeatRequest(cellTag, /*chunkMapGuard*/ std::nullopt);
+                auto future = InvokeIncrementalHeartbeatRequest(
+                    cellTag,
+                    /*chunkMapGuard*/ std::nullopt,
+                    registrationRevision);
                 variantResult = future;
                 EmplaceOrCrash(CellTagToVariantHeartbeatRspFuture_, cellTag, std::move(variantResult));
                 return future.AsVoid();
             }
 
             case EMasterConnectorState::Validation: {
-                auto future = ScheduleValidationFullHeartbeatSession(cellTag);
+                auto future = ScheduleValidationFullHeartbeatSession(cellTag, registrationRevision);
                 variantResult = future;
                 EmplaceOrCrash(CellTagToVariantHeartbeatRspFuture_, cellTag, std::move(variantResult));
                 return future.AsVoid();
@@ -896,14 +929,14 @@ private:
         //! Prevents concurrent job heartbeats.
         TAsyncReaderWriterLock JobHeartbeatLock;
     };
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, PerJobTrackerDataLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, PerJobTrackerDataLock_);
     THashMap<std::string, std::unique_ptr<TPerJobTrackerData>> PerJobTrackerData_;
 
     IBootstrap* const Bootstrap_;
 
     const TMasterConnectorConfigPtr Config_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, JobTrackerAddressesLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, JobTrackerAddressesLock_);
     std::vector<std::string> JobTrackerAddresses_;
     int JobHeartbeatJobTrackerIndex_ = 0;
 
@@ -970,7 +1003,7 @@ private:
             const auto& nonSequoiaAnnouncements = replicaAnnouncements.non_sequoia_announcements();
             allyReplicaManager->ScheduleAnnouncements(
                 TRange(nonSequoiaAnnouncements.replica_announcement_requests()),
-                FromProto<NHydra::TRevision>(nonSequoiaAnnouncements.revision()),
+                FromProto<TRevision>(nonSequoiaAnnouncements.revision()),
                 onFullHeartbeat);
         }
 
@@ -978,7 +1011,7 @@ private:
             const auto& sequoiaAnnouncements = replicaAnnouncements.sequoia_announcements();
             allyReplicaManager->ScheduleAnnouncements(
                 TRange(sequoiaAnnouncements.replica_announcement_requests()),
-                FromProto<NHydra::TRevision>(sequoiaAnnouncements.revision()),
+                FromProto<TRevision>(sequoiaAnnouncements.revision()),
                 onFullHeartbeat);
         }
 
@@ -1106,7 +1139,7 @@ private:
         }
 
         {
-            auto guard = NThreading::WriterGuard(JobTrackerAddressesLock_);
+            auto guard = WriterGuard(JobTrackerAddressesLock_);
             ShuffleRange(JobTrackerAddresses_);
         }
     }
@@ -1261,7 +1294,7 @@ private:
     }
 
     // COMPAT(danilalexeev): YT-23781.
-    TFuture<TDataNodeRspFullHeartbeat> InvokeFullHeartbeatRequest(TCellTag cellTag)
+    TFuture<TDataNodeRspFullHeartbeat> InvokeFullHeartbeatRequest(TCellTag cellTag, TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
@@ -1278,14 +1311,14 @@ private:
         auto nodeId = Bootstrap_->GetNodeId();
         // Full heartbeat construction can take a while; offload it RPC Heavy thread pool.
         auto req = WaitFor(
-            BIND(&TMasterConnector::BuildFullHeartbeatRequest, MakeStrong(this), std::move(proxy), nodeId, cellTag)
+            BIND(&TMasterConnector::BuildFullHeartbeatRequest, MakeStrong(this), std::move(proxy), nodeId, cellTag, registrationRevision)
                 .AsyncVia(NRpc::TDispatcher::Get()->GetHeavyInvoker())
                 .Run())
             .ValueOrThrow();
 
-        YT_LOG_INFO("Sending full data node heartbeat to master (CellTag: %v, %v)",
-            cellTag,
-            req->statistics());
+        YT_TLOG_INFO("Sending full data node heartbeat to master")
+            .With("CellTag", cellTag)
+            .With("Statistics", req->statistics());
 
         BeforeFullHeartbeatInvoke();
 
@@ -1313,6 +1346,7 @@ private:
         TNodeId nodeId,
         TCellTag cellTag,
         bool validation,
+        TRevision registrationRevision,
         const TChunkStore::TPerLocationChunkMap& locationChunks)
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
@@ -1327,14 +1361,20 @@ private:
                 continue;
             }
 
-            auto request = BuildLocationFullHeartbeatRequest(proxy, location, chunks, nodeId, cellTag);
+            auto request = BuildLocationFullHeartbeatRequest(
+                proxy,
+                location,
+                chunks,
+                nodeId,
+                cellTag,
+                registrationRevision);
             request->set_is_validation(validation);
             requests.push_back(std::move(request));
         }
         return requests;
     }
 
-    TFuture<TFullHeartbeatSessionResult> ScheduleFullHeartbeatSession(TCellTag cellTag)
+    TFuture<TFullHeartbeatSessionResult> ScheduleFullHeartbeatSession(TCellTag cellTag, TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
@@ -1354,6 +1394,7 @@ private:
                     nodeId,
                     cellTag,
                     /*validation*/ false,
+                    registrationRevision,
                     Bootstrap_->GetChunkStore()->GetPerLocationChunks());
             })
                 .AsyncVia(NRpc::TDispatcher::Get()->GetHeavyInvoker())
@@ -1361,7 +1402,7 @@ private:
             .ValueOrThrow();
 
         // On the other hand, finalize request construction is lightweight.
-        auto finalizeRequest = BuildFinalizeFullHeartbeatSessionRequest(std::move(proxy), nodeId);
+        auto finalizeRequest = BuildFinalizeFullHeartbeatSessionRequest(std::move(proxy), nodeId, registrationRevision);
 
         BeforeFullHeartbeatInvoke();
 
@@ -1369,10 +1410,10 @@ private:
         futures.reserve(heartbeatRequests.size());
         for (const auto& request : heartbeatRequests) {
             auto locationUuid = FromProto<TChunkLocationUuid>(request->location_uuid());
-            YT_LOG_INFO("Sending location full heartbeat to master (CellTag: %v, LocationUuid: %v, %v)",
-                cellTag,
-                locationUuid,
-                request->statistics());
+            YT_TLOG_INFO("Sending location full heartbeat to master")
+                .With("CellTag", cellTag)
+                .With("LocationUuid", locationUuid)
+                .With("Statistics", request->statistics());
 
             // For testing purposes.
             if (auto duration = GetNodeDynamicConfig()->TestingOptions->FullHeartbeatSessionSleepDuration) {
@@ -1402,7 +1443,7 @@ private:
             }).AsyncVia(Bootstrap_->GetControlInvoker()));
     }
 
-    TFuture<void> ScheduleValidationFullHeartbeatSession(TCellTag cellTag)
+    TFuture<void> ScheduleValidationFullHeartbeatSession(TCellTag cellTag, TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
@@ -1427,9 +1468,10 @@ private:
             nodeId,
             cellTag,
             /*validation*/ true,
-           locationChunks);
+            registrationRevision,
+            locationChunks);
 
-        return InvokeIncrementalHeartbeatRequest(cellTag, std::move(guard))
+        return InvokeIncrementalHeartbeatRequest(cellTag, std::move(guard), registrationRevision)
             .AsUnique()
             .Apply(BIND([=, heartbeatRequests = std::move(heartbeatRequests), this, this_ = MakeStrong(this)] (
                 TErrorOr<TDataNodeRspIncrementalHeartbeat>&& result)
@@ -1462,7 +1504,8 @@ private:
 
     TFuture<TDataNodeRspIncrementalHeartbeat> InvokeIncrementalHeartbeatRequest(
         TCellTag cellTag,
-        std::optional<NThreading::TReaderGuard<NThreading::TReaderWriterSpinLock>> chunkMapGuard)
+        std::optional<TReaderGuard<TReaderWriterSpinLock>> chunkMapGuard,
+        TRevision registrationRevision)
     {
         YT_ASSERT_THREAD_AFFINITY(ControlThread);
 
@@ -1472,16 +1515,20 @@ private:
 
         auto nodeId = Bootstrap_->GetNodeId();
 
-        auto req = BuildIncrementalHeartbeatRequest(std::move(proxy), nodeId, cellTag);
+        auto req = BuildIncrementalHeartbeatRequest(
+            std::move(proxy),
+            nodeId,
+            cellTag,
+            registrationRevision);
 
         // For validation heartbeats chunk modifications can be enabled after request is built.
         if (chunkMapGuard) {
             chunkMapGuard.reset();
         }
 
-        YT_LOG_INFO("Sending incremental data node heartbeat to master (CellTag: %v, %v)",
-            cellTag,
-            req->statistics());
+        YT_TLOG_INFO("Sending incremental data node heartbeat to master")
+            .With("CellTag", cellTag)
+            .With("Statistics", req->statistics());
 
         return req->Invoke();
     }

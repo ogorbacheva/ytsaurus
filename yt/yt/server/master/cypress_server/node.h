@@ -1,6 +1,6 @@
 #pragma once
 
-#include "public.h"
+#include "private.h"
 #include "lock.h"
 
 #include <yt/yt/server/master/cell_master/public.h>
@@ -9,13 +9,14 @@
 
 #include <yt/yt/server/master/security_server/acl.h>
 #include <yt/yt/server/master/security_server/cluster_resources.h>
-#include <yt/yt/server/master/security_server/detailed_master_memory.h>
 
 #include <yt/yt/server/master/tablet_server/public.h>
 
 #include <yt/yt/server/master/transaction_server/public.h>
 
 #include <yt/yt/server/lib/misc/assert_sizeof.h>
+
+#include <yt/yt/server/lib/security_server/detailed_master_memory.h>
 
 #include <yt/yt/ytlib/cypress_client/public.h>
 
@@ -363,9 +364,8 @@ public:
     using TObject::TObject;
     explicit TCypressNode(TVersionedNodeId id);
 
-    // COMPAT(shakurov): delete the #branchIsOk parameters.
-    TInstant GetTouchTime(bool branchIsOk = false) const;
-    void SetTouchTime(TInstant touchTime, bool branchIsOk = false);
+    TInstant GetTouchTime() const;
+    void SetTouchTime(TInstant touchTime);
 
     void SetModified(NObjectServer::EModificationType modificationType) override;
 

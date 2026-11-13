@@ -3,7 +3,15 @@
 #include "private.h"
 #include "shuffle_manager.h"
 
+#include <yt/yt/ytlib/api/native/client.h>
+#include <yt/yt/ytlib/api/native/connection.h>
+
+#include <yt/yt/ytlib/node_tracker_client/node_directory_builder.h>
+
+#include <yt/yt/ytlib/shuffle_client/config.h>
 #include <yt/yt/ytlib/shuffle_client/shuffle_service_proxy.h>
+
+#include <yt/yt/ytlib/distributed_chunk_session_client/config.h>
 
 #include <yt/yt/ytlib/push_based_shuffle_client/config.h>
 
@@ -11,26 +19,36 @@
 #include <yt/yt/ytlib/chunk_client/input_chunk_slice.h>
 #include <yt/yt/ytlib/chunk_client/session_id.h>
 
+#include <yt/yt/client/api/config.h>
 #include <yt/yt/client/api/shuffle_client.h>
+
+#include <yt/yt/client/chunk_client/helpers.h>
 
 #include <yt/yt/client/node_tracker_client/node_directory.h>
 
+#include <yt/yt/client/table_client/config.h>
 #include <yt/yt/client/table_client/schema.h>
 
 #include <yt/yt/core/rpc/service_detail.h>
 
 #include <yt/yt/core/yson/protobuf_helpers.h>
 
+#include <yt/yt/core/ytree/ephemeral_node_factory.h>
+#include <yt/yt/core/ytree/node.h>
+#include <yt/yt/core/ytree/ypath_client.h>
+
+#include <util/generic/size_literals.h>
+
 namespace NYT::NShuffleServer {
 
 using namespace NApi;
 using namespace NChunkClient;
+using namespace NCompression;
 using namespace NConcurrency;
 using namespace NDistributedChunkSessionClient;
 using namespace NLogging;
 using namespace NNodeTrackerClient;
 using namespace NObjectClient;
-using namespace NPushBasedShuffleClient;
 using namespace NRpc;
 using namespace NShuffleClient;
 using namespace NTableClient;
@@ -41,6 +59,115 @@ using NApi::NNative::IClientPtr;
 
 ////////////////////////////////////////////////////////////////////////////////
 
+namespace {
+
+//! The config travels in the signed handle, which is re-serialized into every coordinator call
+//! and into every read and write request, so a large config is paid for on each of them.
+constexpr i64 MaxShuffleConfigSize = 64_KBs;
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! A workload setting the shuffle service owns rather than the caller: where it lives in the
+//! config node, the value the service stamps there, and whether the caller already deviated
+//! from it. The value is read through a typed field, so a renamed section cannot silently skip
+//! the check.
+struct TOwnedWorkloadSetting
+{
+    TYPath Path;
+    INodePtr ServiceValue;
+    bool DiffersFromService = false;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+std::vector<TOwnedWorkloadSetting> GetOwnedWorkloadSettings(
+    const TShuffleConfigPtr& config,
+    bool usePushBasedShuffle)
+{
+    TWorkloadDescriptor serviceDescriptor(EWorkloadCategory::UserBatch);
+
+    std::vector<TOwnedWorkloadSetting> settings;
+
+    auto addDescriptor = [&] (TYPathBuf sectionPath, const auto& workloadConfig) {
+        settings.push_back({
+            .Path = TYPath(sectionPath) + "/workload_descriptor",
+            .ServiceValue = ConvertToNode(serviceDescriptor),
+            .DiffersFromService = workloadConfig->WorkloadDescriptor != serviceDescriptor,
+        });
+    };
+
+    auto addFifoScheduling = [&] (TYPathBuf sectionPath, const auto& readerConfig) {
+        settings.push_back({
+            .Path = TYPath(sectionPath) + "/enable_workload_fifo_scheduling",
+            .ServiceValue = ConvertToNode(true),
+            .DiffersFromService = !readerConfig->EnableWorkloadFifoScheduling,
+        });
+    };
+
+    if (usePushBasedShuffle) {
+        const auto& chunkSessionReaderConfig = config->Push->Reader->ChunkSessionReaderConfig;
+        addDescriptor("/push/reader/chunk_session_reader_config", chunkSessionReaderConfig);
+        addDescriptor("/push/journal_writer", config->Push->JournalWriter);
+        addFifoScheduling(
+            "/push/reader/chunk_session_reader_config/underlying_reader_config",
+            chunkSessionReaderConfig->UnderlyingReaderConfig);
+    } else {
+        addDescriptor("/pull/reader", config->Pull->Reader);
+        addDescriptor("/pull/writer", config->Pull->Writer);
+        addFifoScheduling("/pull/reader", config->Pull->Reader);
+    }
+
+    return settings;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Validates #configNode and stamps onto it the workload the service picks. Stamping the node
+//! keeps the signed handle to what the caller actually set; serializing the parsed config would
+//! bake every default into it.
+TShuffleConfigPtr BuildShuffleConfig(
+    const TLogger& Logger,
+    const INodePtr& configNode,
+    bool usePushBasedShuffle)
+{
+    auto config = New<TShuffleConfig>();
+    // NB: A caller newer than this coordinator must keep working.
+    config->SetUnrecognizedStrategy(EUnrecognizedStrategy::KeepRecursive);
+    config->Load(configNode);
+
+    auto unrecognized = config->GetRecursiveUnrecognized();
+    if (unrecognized->GetChildCount() > 0) {
+        YT_TLOG_WARNING("Shuffle config contains unrecognized options; they will be ignored")
+            .With("Unrecognized", ConvertToYsonString(unrecognized, EYsonFormat::Text));
+    }
+
+    THROW_ERROR_EXCEPTION_IF(
+        usePushBasedShuffle && config->Pull,
+        "Push-based shuffle does not accept a pull config section");
+    THROW_ERROR_EXCEPTION_IF(
+        !usePushBasedShuffle && config->Push,
+        "Pull-based shuffle does not accept a push config section");
+
+    EnsureModeSection(config, usePushBasedShuffle);
+
+    // Shuffle traffic is ordinary user work: it must neither sit in the idle queue nor outrank
+    // other users from a system queue. Without FIFO scheduling the descriptor keeps a zero
+    // instant, which puts it ahead of every other band-0 user_batch request on the node.
+    for (const auto& setting : GetOwnedWorkloadSettings(config, usePushBasedShuffle)) {
+        THROW_ERROR_EXCEPTION_IF(
+            setting.DiffersFromService,
+            "Shuffle config must not override %v; the shuffle service chooses the workload itself",
+            setting.Path);
+        SetNodeByYPath(configNode, setting.Path, setting.ServiceValue, /*force*/ true);
+    }
+
+    return config;
+}
+
+} // namespace
+
+////////////////////////////////////////////////////////////////////////////////
+
 class TShuffleService
     : public TServiceBase
 {
@@ -48,12 +175,17 @@ public:
     TShuffleService(
         IInvokerPtr invoker,
         IClientPtr client,
-        std::string localServerAddress)
+        std::string localServerAddress,
+        IAuthenticatorPtr authenticator)
         : TServiceBase(
             invoker,
             TShuffleServiceProxy::GetDescriptor(),
-            ShuffleServiceLogger())
+            ShuffleServiceLogger(),
+            TServiceOptions{
+                .Authenticator = std::move(authenticator),
+            })
         , LocalServerAddress_(std::move(localServerAddress))
+        , NodeDirectory_(client->GetNativeConnection()->GetNodeDirectory())
         , ShuffleManager_(CreateShuffleManager(std::move(client), std::move(invoker)))
     {
         RegisterMethod(RPC_SERVICE_METHOD_DESC(StartShuffle));
@@ -84,18 +216,25 @@ public:
             FromProto(&schema, request->schema());
         }
 
-        context->SetRequestInfo(
-            "ParentTransaction: %v, Account: %v, PartitionCount: %v, Medium: %v, ReplicationFactor: %v, UsePushBasedShuffle: %v",
-            parentTransactionId,
-            account,
-            partitionCount,
-            medium,
-            replicationFactor,
-            usePushBasedShuffle);
+        auto codec = FromProto<ECodec>(request->codec());
+
+        context->AnnotateRequest()
+            .With("ParentTransaction", parentTransactionId)
+            .With("Account", account)
+            .With("PartitionCount", partitionCount)
+            .With("Medium", medium)
+            .With("ReplicationFactor", replicationFactor)
+            .With("UsePushBasedShuffle", usePushBasedShuffle)
+            .With("Codec", codec);
 
         THROW_ERROR_EXCEPTION_IF(
             parentTransactionId.IsEmpty(),
             "Parent transaction id is null");
+
+        THROW_ERROR_EXCEPTION_IF(
+            partitionCount <= 0,
+            "Partition count %v must be positive",
+            partitionCount);
 
         THROW_ERROR_EXCEPTION_IF(
             usePushBasedShuffle && !schema,
@@ -107,10 +246,19 @@ public:
             usePushBasedShuffle && !schema->IsStrict(),
             "Push-based shuffle requires a strict schema");
 
-        TPushShuffleConfigPtr pushConfig;
-        if (request->has_push_config()) {
-            pushConfig = ConvertTo<TPushShuffleConfigPtr>(TYsonString(request->push_config()));
-        }
+        THROW_ERROR_EXCEPTION_IF(
+            std::ssize(request->config()) > MaxShuffleConfigSize,
+            "Shuffle config size %v exceeds the limit %v",
+            std::ssize(request->config()),
+            MaxShuffleConfigSize);
+
+        auto configNode = request->has_config()
+            ? ConvertToNode(TYsonString(request->config()))
+            : GetEphemeralNodeFactory()->CreateMap();
+        auto config = BuildShuffleConfig(
+            ShuffleServiceLogger().WithTag("RequestId", context->GetRequestId()),
+            configNode,
+            usePushBasedShuffle);
 
         auto transactionId = WaitFor(
             ShuffleManager_->StartShuffle(
@@ -120,7 +268,7 @@ public:
                 account,
                 medium,
                 replicationFactor,
-                std::move(pushConfig)))
+                config->Push))
             .ValueOrThrow();
 
         auto shuffleHandle = New<TShuffleHandle>();
@@ -132,13 +280,13 @@ public:
         shuffleHandle->Medium = std::move(medium);
         shuffleHandle->UsePushBasedShuffle = usePushBasedShuffle;
         shuffleHandle->Schema = std::move(schema);
-        if (request->has_push_config()) {
-            shuffleHandle->PushConfig = TYsonString(request->push_config());
-        }
+        shuffleHandle->Codec = codec;
+        shuffleHandle->Config = ConvertToYsonString(configNode);
 
         response->set_shuffle_handle(ToProto(ConvertToYsonString(shuffleHandle)));
 
-        context->SetResponseInfo("TransactionId: %v", shuffleHandle->TransactionId);
+        context->AnnotateResponse()
+            .With("TransactionId", shuffleHandle->TransactionId);
 
         context->Reply();
     }
@@ -157,12 +305,11 @@ public:
                 "Logical writer index must be set when overwrite existing writer data option is enabled");
         }
 
-        context->SetRequestInfo(
-            "ShuffleHandle: %v, ChunkCount: %v, LogicalWriterIndex: %v, OverwriteExistingWriterData: %v",
-            shuffleHandle,
-            request->chunk_specs_size(),
-            logicalWriterIndex,
-            overwriteExistingWriterData);
+        context->AnnotateRequest()
+            .With("ShuffleHandle", shuffleHandle)
+            .With("ChunkCount", request->chunk_specs_size())
+            .With("LogicalWriterIndex", logicalWriterIndex)
+            .With("OverwriteExistingWriterData", overwriteExistingWriterData);
 
         auto controller = WaitFor(ShuffleManager_->GetController(shuffleHandle->TransactionId))
             .ValueOrThrow();
@@ -208,11 +355,10 @@ public:
             logicalWriterIndexRange = std::pair(begin, end);
         }
 
-        context->SetRequestInfo(
-            "ShuffleHandle: %v, PartitionIndex: %v, LogicalWriterIndexRange: %v",
-            shuffleHandle,
-            request->partition_index(),
-            logicalWriterIndexRange);
+        context->AnnotateRequest()
+            .With("ShuffleHandle", shuffleHandle)
+            .With("PartitionIndex", request->partition_index())
+            .With("LogicalWriterIndexRange", logicalWriterIndexRange);
 
         auto controller = WaitFor(ShuffleManager_->GetController(shuffleHandle->TransactionId))
             .ValueOrThrow();
@@ -239,7 +385,13 @@ public:
             }
         }
 
-        context->SetResponseInfo("ChunkCount: %v", response->chunk_specs_size());
+        TNodeDirectoryBuilder nodeDirectoryBuilder(NodeDirectory_, response->mutable_node_directory());
+        for (const auto& chunkSpec : response->chunk_specs()) {
+            nodeDirectoryBuilder.Add(GetReplicasFromChunkSpec(chunkSpec));
+        }
+
+        context->AnnotateResponse()
+            .With("ChunkCount", response->chunk_specs_size());
 
         context->Reply();
     }
@@ -268,11 +420,10 @@ public:
             excludedSessionId = FromProto<NChunkClient::TSessionId>(request->excluded_session_id());
         }
 
-        context->SetRequestInfo(
-            "ShuffleHandle: %v, PartitionIndex: %v, ExcludedSessionId: %v",
-            shuffleHandle,
-            partitionIndex,
-            excludedSessionId);
+        context->AnnotateRequest()
+            .With("ShuffleHandle", shuffleHandle)
+            .With("PartitionIndex", partitionIndex)
+            .With("ExcludedSessionId", excludedSessionId);
 
         auto controller = WaitFor(ShuffleManager_->GetController(shuffleHandle->TransactionId))
             .ValueOrThrow();
@@ -285,12 +436,14 @@ public:
         ToProto(session->mutable_session_id(), sessionDescriptor.SessionId);
         ToProto(session->mutable_sequencer_node(), sessionDescriptor.SequencerNode);
 
-        context->SetResponseInfo("SessionId: %v", sessionDescriptor.SessionId);
+        context->AnnotateResponse()
+            .With("SessionId", sessionDescriptor.SessionId);
         context->Reply();
     }
 
 private:
     const std::string LocalServerAddress_;
+    const TNodeDirectoryPtr NodeDirectory_;
     const IShuffleManagerPtr ShuffleManager_;
 
     void DoRegisterWriter(
@@ -305,11 +458,10 @@ private:
             : std::nullopt;
         bool overwriteExistingWriterData = request->overwrite_existing_writer_data();
 
-        context->SetRequestInfo(
-            "ShuffleHandle: %v, LogicalWriterIndex: %v, OverwriteExistingWriterData: %v",
-            shuffleHandle,
-            logicalWriterIndex,
-            overwriteExistingWriterData);
+        context->AnnotateRequest()
+            .With("ShuffleHandle", shuffleHandle)
+            .With("LogicalWriterIndex", logicalWriterIndex)
+            .With("OverwriteExistingWriterData", overwriteExistingWriterData);
 
         auto controller = WaitFor(ShuffleManager_->GetController(shuffleHandle->TransactionId))
             .ValueOrThrow();
@@ -327,10 +479,9 @@ private:
             ToProto(session->mutable_sequencer_node(), readySession.Descriptor.SequencerNode);
         }
 
-        context->SetResponseInfo(
-            "WriterId: %v, ReadySessionCount: %v",
-            registration.WriterId,
-            registration.ReadySessions.size());
+        context->AnnotateResponse()
+            .With("WriterId", registration.WriterId)
+            .With("ReadySessionCount", registration.ReadySessions.size());
         context->Reply();
     }
 
@@ -354,12 +505,14 @@ private:
 IServicePtr CreateShuffleService(
     IInvokerPtr invoker,
     IClientPtr client,
-    std::string localServerAddress)
+    std::string localServerAddress,
+    IAuthenticatorPtr authenticator)
 {
     return New<TShuffleService>(
         std::move(invoker),
         std::move(client),
-        std::move(localServerAddress));
+        std::move(localServerAddress),
+        std::move(authenticator));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

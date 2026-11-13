@@ -13,6 +13,8 @@ def run_yt_sync(
     output_queue_schema=None,
     output_queue_tablet_count=1,
     output_queues=None,
+    producer_names=None,
+    extra_consumers=None,
 ):
     """Run yt_sync that bootstraps Cypress nodes for a flow integration test.
 
@@ -25,6 +27,8 @@ def run_yt_sync(
     queue named ``output_queue`` via ``add_output_queue``, or as arbitrarily
     named ones via ``output_queues``: a list of dicts, each ``{"name": str,
     "schema": list, "tablet_count": int}`` (``tablet_count`` defaults to 1).
+    Queue producers are requested by name via ``producer_names``. Extra consumers are requested via
+    ``extra_consumers``: a dict from a consumer name to the names of the queues it is attached to.
     """
     pipelines = {
         "pipeline": {
@@ -60,6 +64,7 @@ def run_yt_sync(
 
     tables = {}
     consumers = {}
+    producers = {name: {"default": {"$merge_presets": ["builtin:producer_preset"]}} for name in producer_names or []}
     if add_input_queue_and_consumer:
         if input_queue_schema is None:
             raise ValueError("input_queue_schema is required when add_input_queue_and_consumer is True")
@@ -71,6 +76,13 @@ def run_yt_sync(
             "default": {
                 "$merge_presets": ["builtin:consumer_preset"],
                 "in_stage_queues": {"input_queue": {"vital": True}},
+            },
+        }
+    for name, queue_names in (extra_consumers or {}).items():
+        consumers[name] = {
+            "default": {
+                "$merge_presets": ["builtin:consumer_preset"],
+                "in_stage_queues": {queue_name: {"vital": True} for queue_name in queue_names},
             },
         }
 
@@ -93,6 +105,7 @@ def run_yt_sync(
         pipelines=pipelines,
         tables=tables,
         consumers=consumers,
+        producers=producers,
     )
 
     run_yt_sync_easy_mode(

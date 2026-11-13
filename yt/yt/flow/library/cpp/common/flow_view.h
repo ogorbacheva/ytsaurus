@@ -6,9 +6,11 @@
 #include "persisted_state_control.h"
 #include "spec.h"
 #include "stream_spec_storage_state.h"
+#include "stream_statistics.h"
 #include "timestamp_statistics.h"
 #include "traverse.h"
 
+#include <yt/yt/flow/library/cpp/file_storage/public.h>
 #include <yt/yt/flow/library/cpp/misc/indexed_yson_string.h>
 
 #include <yt/yt/client/ypath/rich.h>
@@ -114,10 +116,22 @@ struct TJob
     : public NYTree::TYsonStruct
 {
     TJobId JobId;
+    //! Monotonically increasing fencing token; every subsequently created job for the same partition has a greater value.
+    TUniqueSeqNo Generation;
     std::string WorkerAddress;
     TIncarnationId WorkerIncarnationId;
     TPartitionId PartitionId;
+    //! The prerequisite the worker attaches to the commits of this job's epochs: a master
+    //! transaction of the leader under the Cypress backend, a chaos lease under the Chaos one.
     TLeaseId LeaseId;
+    //! When set, the job is fenced by rows of the pipeline's leases dynamic table instead of a
+    //! prerequisite (LeaseId stays null).
+    //!
+    //! The counterpart of #LeaseId for the dyntable backend: both are filled once the fence of
+    //! this job exists — the rows are committed by their own transaction before the layout that
+    //! carries this flag — and the controller tells jobs that still need a fence from those that
+    //! already have one by exactly these two fields.
+    bool DyntableLease = false;
 
     REGISTER_YSON_STRUCT(TJob);
 
@@ -128,6 +142,39 @@ DEFINE_REFCOUNTED_TYPE(TJob);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TResourceInstance
+    : public NYTree::TYsonStruct
+{
+    TResourceInstanceId ResourceInstanceId;
+    TResourceId ResourceId;
+    std::string WorkerAddress;
+    TIncarnationId WorkerIncarnationId;
+
+    REGISTER_YSON_STRUCT(TResourceInstance);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TResourceInstance);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TResourceInstanceDynamicSpec
+    : public NYTree::TYsonStruct
+{
+    TDynamicResourceSpecPtr DynamicResourceSpec;
+    TResourceRevisionPtr TargetRevision;
+    bool Preload = false;
+
+    REGISTER_YSON_STRUCT(TResourceInstanceDynamicSpec);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TResourceInstanceDynamicSpec);
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TNodePerformanceMetrics
     : public NYTree::TYsonStruct
 {
@@ -135,9 +182,22 @@ struct TNodePerformanceMetrics
     std::optional<double> CpuUsage30s;
     std::optional<double> CpuUsage10m;
 
-    i64 MemoryUsageCurrent{};
-    i64 MemoryUsage30s{};
-    i64 MemoryUsage10m{};
+    std::optional<i64> MemoryUsageCurrent;
+    std::optional<i64> MemoryUsage30s;
+    std::optional<i64> MemoryUsage10m;
+
+    std::optional<double> MessagesPerSecond30s;
+    std::optional<double> MessagesPerSecond10m;
+
+    //! When the job's rate counters were (re)started; the windowed rates above are measured from here.
+    std::optional<TInstant> MetricsStartTime;
+    //! True while the counters still cover the job's first iteration and will be marked steady once
+    //! it ends; such rates describe initialization, not steady-state work.
+    std::optional<bool> MetricsSteadyPending;
+
+    //! Versions of the worker binary and the pipeline spec the job was running with.
+    std::optional<std::string> FlowCoreVersion;
+    std::optional<TVersion> PipelineSpecVersion;
 
     REGISTER_YSON_STRUCT(TNodePerformanceMetrics);
 
@@ -244,8 +304,6 @@ THashMap<TComputationId, TAggregatedNodeInputMetricsPtr> AggregateInputMetricsBy
 //! Keys of the per-limit maps in #TJobStatus::InputLimits and OutputLimits.
 inline constexpr TStringBuf InputBufferBytesLimitType = "input_buffer_bytes";
 inline constexpr TStringBuf OutputBufferBytesLimitType = "output_buffer_bytes";
-inline constexpr TStringBuf OutputStoreBytesLimitType = "output_store_bytes";
-inline constexpr TStringBuf OutputStoreCountLimitType = "output_store_count";
 //! Not a buffer: the controller withholding a stream. Carries a blocked-time
 //! share and nothing else.
 inline constexpr TStringBuf ControllerLimitType = "controller";
@@ -258,6 +316,10 @@ struct TJobEntityLimitStatus
     i64 Limit{};
     i64 Used{};
     std::optional<i64> Pending;
+    //! Demand-backed buffer reservation before pool scaling, in the units of #Used.
+    //! Excludes speculative output probes. Absent for an override, in v1 mode and before the
+    //! first manage tick of a job.
+    std::optional<i64> Demand;
     //! Share of the time the job spent with this buffer blocking the epoch loop,
     //! averaged over the window from the spec. Normalized by the job lifetime, so
     //! a job blocked since its start reports ~1 however young it is.
@@ -287,6 +349,8 @@ struct TJobStatus
     i64 Epoch{};
 
     TFromPartitionTraverseDataPtr FromPartitionTraverseData;
+    TProcessingObservationPtr ProcessingObservation;
+    std::optional<THashMap<TKey, TInstant>> ObservedKeys;
 
     TNodePerformanceMetricsPtr PerformanceMetrics;
     TNodeInputMetricsPtr InputMetrics;
@@ -296,7 +360,7 @@ struct TJobStatus
     THashMap<std::string, double> EpochPartTimes;
     // Limits of input buffer. Source buffers may be added.
     THashMap<std::string, THashMap<TStreamId, TJobEntityLimitStatus>> InputLimits;
-    // Limits of output buffer and output store. Sink buffers may be added.
+    // Output buffer limits and controller blocking. Sink buffers may be added.
     THashMap<std::string, THashMap<TStreamId, TJobEntityLimitStatus>> OutputLimits;
 
     REGISTER_YSON_STRUCT(TJobStatus);
@@ -322,9 +386,31 @@ DEFINE_REFCOUNTED_TYPE(TMessageDistributorStatus);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TFileSnapshotStatus
+    : public NYTree::TYsonStruct
+{
+    TFileSnapshotId SnapshotId;
+    EFileSnapshotState State = EFileSnapshotState::Preparing;
+    std::optional<EFileSnapshotPreparationStage> PreparationStage;
+    TError Error;
+    std::optional<TInstant> NextRetryAt;
+
+    REGISTER_YSON_STRUCT(TFileSnapshotStatus);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TFileSnapshotStatus);
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TWorkerResourceStatus
     : public NYTree::TYsonStruct
 {
+    TResourceId ResourceId;
+    EResourceLoadState LoadState = EResourceLoadState::NotLoaded;
+    TError LoadError;
+
     std::optional<double> QueueSize30s;
     std::optional<double> QueueSize10m;
     std::optional<double> QueueGrowthRate30s;
@@ -339,7 +425,15 @@ struct TWorkerResourceStatus
     std::optional<i64> AppliedRevisionId;
     //! Id of the delivered target revision the resource is switching to.
     std::optional<i64> TargetRevisionId;
-    std::optional<EFileResourceUpdateState> UpdateState;
+
+    std::optional<TResourceInstanceId> ResourceInstanceId;
+    std::optional<ui64> ResourceIncarnationGeneration;
+    //! Last fully active file snapshot on this instance.
+    std::optional<TFileSnapshotId> ActiveFileSnapshotId;
+    //! File snapshot currently being prepared or activated.
+    TFileSnapshotStatusPtr PreparingFileSnapshot;
+    //! Number of live accessor leases by file snapshot.
+    THashMap<TFileSnapshotId, i64> LiveAccessorCounts;
 
     REGISTER_YSON_STRUCT(TWorkerResourceStatus);
 
@@ -350,14 +444,31 @@ DEFINE_REFCOUNTED_TYPE(TWorkerResourceStatus);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct TWorkerStatistics
+    : public NYTree::TYsonStruct
+{
+    TLineageRatios LineageRatios;
+
+    REGISTER_YSON_STRUCT(TWorkerStatistics);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TWorkerStatistics);
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct TWorkerStatus
     : public NYTree::TYsonStruct
 {
+    std::optional<TIncarnationId> WorkerIncarnationId;
     TError PreviousCrashError;
     THashMap<std::string, TError> Errors;
     TMessageDistributorStatusPtr MessageDistributorStatus;
     THashMap<TResourceId, TWorkerResourceStatusPtr> ResourceStatuses;
     THashMap<TResourceId, EPreloadedResourceState> PreloadedResourceStates;
+    TWorkerStatisticsPtr Statistics;
+    THashMap<TResourceInstanceId, TWorkerResourceStatusPtr> ResourceInstanceStatuses;
 
     REGISTER_YSON_STRUCT(TWorkerStatus);
 
@@ -388,6 +499,11 @@ struct TWorkerSpec
     : public NYTree::TYsonStruct
 {
     THashSet<TResourceId> PreloadResources;
+    //! When each of |PreloadResources| was requested.
+    THashMap<TResourceId, TInstant> PreloadRequestTimes;
+    //! Incarnation of the worker that received these preloads. A new incarnation of the same
+    //! address has no preloaded resources, so the spec does not apply to it.
+    std::optional<TIncarnationId> WorkerIncarnationId;
 
     REGISTER_YSON_STRUCT(TWorkerSpec);
 
@@ -404,6 +520,7 @@ struct TFlowLayout
 public:
     //! General content access.
     TTransactionalPersistedState<TJobId, TJobPtr> Jobs;
+    TTransactionalPersistedState<TResourceInstanceId, TResourceInstancePtr> ResourceInstances;
     TTransactionalPersistedState<TPartitionId, TPartitionPtr> Partitions;
 
     //! Per-worker specs (keyed by worker RPC address). Filled by the controller.
@@ -415,12 +532,14 @@ private:
     TPersistedStateControlPtr<std::string> PersistedStateControl_;
     TPersistedStatePtr<TPartitionId, TPartitionPtr> CommittedPartitions_;
     TPersistedStatePtr<TJobId, TJobPtr> CommittedJobs_;
+    TPersistedStatePtr<TResourceInstanceId, TResourceInstancePtr> CommittedResourceInstances_;
     TPersistedStatePtr<std::string, TWorkerSpecPtr> CommittedWorkerSpecs_;
     TPersistedStateTransactionPtr Txn_;
     //! Transient: a clone captures the source layout's live write transaction here so that
     //! CreateSnapshot(/*committed*/ false) can seed the snapshot with its uncommitted writes.
     TPersistedStateTransactionPtr SourceWriteTransaction_;
     TFlowStateMutationNotifierPtr MutationNotifier_ = nullptr;
+    std::optional<TSequenceId> SnapshotSequenceId_;
 
 public:
     TVersion GetVersion() const;
@@ -580,6 +699,7 @@ struct TExecutionSpecVersions
     TVersion DynamicPipelineSpecVersion;
 
     TVersion LayoutVersion;
+    TVersion FlowCoreTargetVersion;
 
     TVersion StreamSpecStorageStateVersion;
 
@@ -599,6 +719,80 @@ TExecutionSpecVersionsPtr BuildExecutionSpecVersions(const TExecutionSpecPtr& ex
 std::pair<TExecutionSpecPtr, std::vector<TPersistedStateStorageRow<std::string>>> PrepareExecutionSpecUpdate(const TExecutionSpecPtr& current, const TExecutionSpecVersionsPtr& versions);
 
 TExecutionSpecPtr ApplyExecutionSpecUpdate(const TExecutionSpecPtr& current, const TExecutionSpecPtr& update, const std::vector<TPersistedStateStorageRow<std::string>>& stateUpdate);
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Aggregated observations of how much CPU per message a partition burned on two workers,
+//! see #NBalancer::TWorkerCoefEstimator. One per observed pair, |From| < |To|.
+struct TWorkerCoefEdge
+    : public NYTree::TYsonStructLite
+{
+    std::string From;
+    std::string To;
+    //! Weighted mean of the observed log(coef(To) / coef(From)).
+    double Obs{};
+    double Weight{};
+    TInstant UpdatedAt;
+
+    REGISTER_YSON_STRUCT_LITE(TWorkerCoefEdge);
+
+    static void Register(TRegistrar registrar);
+};
+
+//! Steady-state metrics last measured for a partition, kept across its jobs so that a freshly
+//! started job does not make the partition look weightless to the balancer.
+struct TPartitionMetricsHistory
+    : public NYTree::TYsonStruct
+{
+    //! Worker the metrics were measured on.
+    std::string WorkerAddress;
+    double CpuUsage{};
+    std::optional<double> MessagesPerSecond;
+    //! Implementation the metrics were measured with, see #TNodePerformanceMetrics.
+    std::optional<std::string> FlowCoreVersion;
+    std::optional<TVersion> PipelineSpecVersion;
+
+    REGISTER_YSON_STRUCT(TPartitionMetricsHistory);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TPartitionMetricsHistory);
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Persisted state of the CpuAware balancer of one worker group.
+struct TBalancerGroupState
+    : public NYTree::TYsonStruct
+{
+    //! Keyed by the pair: From, then To, with From < To.
+    THashMap<std::string, THashMap<std::string, TWorkerCoefEdge>> WorkerCoefEdges;
+    //! The last solution, log(coef) per worker.
+    THashMap<std::string, double> WorkerLogCoefs;
+    //! When each worker was last present in the group; absent workers are forgotten eventually.
+    THashMap<std::string, TInstant> WorkerLastSeen;
+
+    REGISTER_YSON_STRUCT(TBalancerGroupState);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TBalancerGroupState);
+
+struct TBalancerState
+    : public NYTree::TYsonStruct
+{
+    THashMap<TWorkerGroupId, TBalancerGroupStatePtr> Groups;
+    //! Kept out of the layout: workers have no use for it, and a layout row would make every one
+    //! of them rebuild its routing. An entry lives until the partition's next job matures.
+    THashMap<TPartitionId, TPartitionMetricsHistoryPtr> PartitionHistories;
+
+    REGISTER_YSON_STRUCT(TBalancerState);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TBalancerState);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -732,19 +926,6 @@ DEFINE_REFCOUNTED_TYPE(TStreamTraverseDataMetrics);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct TStreamSpeedStatistics
-    : public NYTree::TYsonStructLite
-{
-    double ProcessedMessagesPerSecond{};
-    double ProcessedBytesPerSecond{};
-
-    REGISTER_YSON_STRUCT_LITE(TStreamSpeedStatistics);
-
-    static void Register(TRegistrar registrar);
-};
-
-////////////////////////////////////////////////////////////////////////////////
-
 struct TPipelineSpeedStatistics
     : public NYTree::TYsonStructLite
 {
@@ -780,10 +961,16 @@ struct TFlowEphemeralState
     THashMap<TPartitionId, TPartitionEphemeralStatePtr> Partitions;
     THashMap<TComputationId, THashMap<TStreamId, TStreamTraverseDataMetricsPtr>> StreamTraverseDataMetrics;
     THashMap<TWorkerGroupId, TSequenceId> MaxAppliedBalancerSequenceIds;
+    //! #TFlowLayout::Jobs grouped by worker incarnation, maintained by the layout mutation notifier.
+    //! Never trimmed by the registered workers: a worker that registers late still owns its jobs.
     THashMap<TIncarnationId, THashSet<TJobId>> WorkerIncarnationsJobs;
     TMessageTransferingInfoPtr MessageTransferingInfo;
     NYPath::TRichYPath PipelinePath;
     THashSet<TComputationId> TraverseUncoveredComputations;
+    THashSet<TComputationId> KeyCountPartitioningBlockedComputations;
+    THashMap<TComputationId, NYTree::IMapNodePtr> KeyCountPartitioning;
+
+    TLineageRatios LineageRatios;
 
     THashMap<TResourceId, NYTree::IMapNodePtr> ResourceControllerViews;
 
@@ -825,8 +1012,13 @@ struct TFlowState
 
     TJobManagerStatePtr JobManagerState;
 
+    TBalancerStatePtr BalancerState;
+
     // Used to warm up buffer demand on pipeline restart. Stored here to survive controller restarts.
     TPipelineSpeedStatistics SpeedStatistics;
+
+    // Used to resolve when timers became due. Stored here to survive controller restarts.
+    TPipelineWatermarkHistoryPtr WatermarkHistory;
 
     void AttachToControl(TPersistedStateControlPtr<std::string> control);
     void SetAsSlave();
@@ -891,12 +1083,22 @@ DEFINE_REFCOUNTED_TYPE(TFlowView);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+NYson::TYsonString SerializeFlowViewByPath(
+    const TFlowViewPtr& flowView,
+    const NYPath::TYPath& path);
+
+////////////////////////////////////////////////////////////////////////////////
+
 //! A pre-compressed full flow view plus the codec used, so callers can decompress.
 struct TCompressedFlowView
 {
     TSharedRef Data;
     NCompression::ECodec Codec{};
 };
+
+TCompressedFlowView CompressFlowViewYson(
+    const NYson::TYsonString& ysonString,
+    NCompression::ECodec codec);
 
 class TFlowViewKeeper
     : public TRefCounted
@@ -918,6 +1120,7 @@ public:
         std::optional<TVersionedDynamicPipelineSpecPtr> dynamicSpec);
     void SetFlowCoreTarget(TVersionedFlowCoreTargetPtr flowCoreTarget);
 
+    TFlowViewPtr TryGetFlowView() const;
     TFlowViewPtr GetFlowView() const;
     NYson::TYsonString GetYsonString(bool cache) const;
     //! Returns the subtree of the flow view at |path| (served from the by-path index for the cached view).
@@ -930,14 +1133,14 @@ public:
     void RebuildNodeCache(const IInvokerPtr& invoker);
 
 private:
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, Lock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, Lock_);
     TFlowViewPtr FlowView_ = nullptr;
     NYson::TYsonString CachedYsonString_;
     TIndexedYsonStringPtr CachedYsonIndex_;
     TSharedRef CachedCompressedFlowView_;
     NCompression::ECodec CachedCompressionCodec_{};
 
-    void EnsureInit(TGuard<NThreading::TSpinLock>& guard) const;
+    void EnsureInit(TGuard<TSpinLock>& guard) const;
 };
 
 DEFINE_REFCOUNTED_TYPE(TFlowViewKeeper);

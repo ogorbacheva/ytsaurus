@@ -193,6 +193,8 @@ namespace {
        : public NActors::TActorCoroImpl
        , public NActors::TInterconnectLoggingBase
     {
+        struct TExPoison {};
+
         NActors::TInterconnectProxyCommon::TPtr Common;
         const TActorId SelfVirtualId;
         const TActorId PeerVirtualId;
@@ -270,9 +272,18 @@ namespace {
             YDB_LOG_DEBUG_CTX(this->GetActorContext(), "Starting rdma sync actor",
                 {"marker", "ICRDMA"});
 
+            try {
+                RunImpl();
+            } catch (const TExPoison&) {
+                PollerToken.Reset();
+            }
+        }
+
+    private:
+        void RunImpl() {
             Send(GetActorSystem()->InterconnectProxy(PeerNodeId),
                 new TSessionCreatorDelegate(SelfActorId, Qp, Cq, PeerNodeId));
-            auto ev = TActorCoroImpl::WaitForEvent();
+            auto ev = WaitForEvent();
             auto* result = static_cast<TSessionCreatorDelegate*>(ev->GetBase());
             if (const TString* error = result->GetError()) {
                 YDB_LOG_ERROR_CTX(this->GetActorContext(), "Unable to create rdma sync",
@@ -362,11 +373,20 @@ namespace {
                 return;
             }
 
+            PollerToken.Reset(); // unregister the socket before the handshake actor registers it again
             Send(Creator, new TEvRdmaSyncResult(std::move(session)));
         }
 
-    private:
+        THolder<IEventHandle> WaitForEvent() {
+            auto ev = TActorCoroImpl::WaitForEvent();
+            if (ev && ev->GetTypeRewrite() == TEvents::TSystem::Poison) {
+                throw TExPoison();
+            }
+            return ev;
+        }
+
         void Finish(TString error) {
+            PollerToken.Reset();
             Send(Creator, new TEvRdmaSyncResult(std::move(error)));
         }
 
@@ -380,7 +400,7 @@ namespace {
                 return false;
             }
 
-            auto ev = TActorCoroImpl::WaitForEvent();
+            auto ev = WaitForEvent();
             if (!ev || ev->GetTypeRewrite() != TEvPollerRegisterResult::EventType) {
                 error = Sprintf("unexpected event while waiting for TEvPollerRegisterResult: 0x%08" PRIx32,
                     ev ? ev->GetTypeRewrite() : 0);
@@ -396,12 +416,28 @@ namespace {
             return true;
         }
 
-        bool WaitPoller(bool read, bool write, const char* state, TString& error) {
+        bool Y_NO_INLINE WaitPoller(bool read, bool write, const char* state, TString& error) {
             if (!PollerToken->RequestNotificationAfterWouldBlock(read, write)) {
-                auto ev = TActorCoroImpl::WaitForEvent();
-                if (!ev || ev->GetTypeRewrite() != TEvPollerReady::EventType) {
+                for (;;) {
+                    auto ev = WaitForEvent();
+                    if (!ev) {
+                        error = Sprintf("unable to wait for TEvPollerReady in %s", state);
+                        return false;
+                    }
+                    if (ev->GetTypeRewrite() == TEvPollerReady::EventType) {
+                        break;
+                    }
+                    if (ev->GetTypeRewrite() == TEvRdmaIoReceiveDone::EventType) {
+                        if (!HandleRdmaReceiveEvent(
+                                THolder<TEvRdmaIoReceiveDone::THandle>(
+                                    static_cast<TEvRdmaIoReceiveDone::THandle*>(ev.Release())),
+                                error)) {
+                            return false;
+                        }
+                        continue;
+                    }
                     error = Sprintf("unexpected event while waiting for TEvPollerReady in %s: 0x%08" PRIx32,
-                        state, ev ? ev->GetTypeRewrite() : 0);
+                        state, ev->GetTypeRewrite());
                     return false;
                 }
             }
@@ -629,7 +665,7 @@ namespace {
                     return true;
                 }
 
-                if (!HandleEvent(TActorCoroImpl::WaitForEvent(), error)) {
+                if (!HandleEvent(WaitForEvent(), error)) {
                     return false;
                 }
             }
@@ -797,7 +833,7 @@ namespace {
             return false;
         }
 
-        bool HandleRdmaReceiveEvent(THolder<TEvRdmaIoReceiveDone::THandle> ev, TString& error) {
+        bool Y_NO_INLINE HandleRdmaReceiveEvent(THolder<TEvRdmaIoReceiveDone::THandle> ev, TString& error) {
             if (!ev->Get()->IsSuccess()) {
                 error = TStringBuilder()
                     << "RDMA sync RECEIVE failed, err source: " << ev->Get()->GetErrSource()
@@ -930,7 +966,10 @@ namespace {
             };
 
             auto builder = CreateIbVerbsBuilder(1);
-            builder->AddSendVerb(*sendBuf, std::move(cb));
+            if (!builder->AddSendVerb(*sendBuf, std::move(cb))) {
+                error = TString("unable to build send WR");
+                return ReportRdmaSendError(error);
+            }
 
             if (Cq->DoWrBatchAsync(Qp, std::move(builder))) {
                 error = Sprintf("unable to post RDMA %s SEND work request", what);
@@ -1078,7 +1117,7 @@ namespace {
             Send(GetActorSystem()->InterconnectProxy(PeerNodeId), new TSwitchToTransitionModeDelegate(session));
 
             for (;;) {
-                auto ev = TActorCoroImpl::WaitForEvent();
+                auto ev = WaitForEvent();
                 if (!ev) {
                     error = "unable to wait switch to transition mode result";
                     return false;

@@ -78,6 +78,8 @@
 #include <yt/yt/ytlib/api/native/client_impl.h>
 #include <yt/yt/ytlib/api/native/sync_replica_cache.h>
 
+#include <yt/yt/client/chaos_client/chaos_lease_cache.h>
+
 #include <yt/yt/client/tablet_client/table_mount_cache.h>
 
 #include <yt/yt/client/hive/transaction_participant.h>
@@ -127,7 +129,7 @@
 #include <yt/yt/core/misc/lazy_ptr.h>
 #include <yt/yt/core/misc/memory_usage_tracker.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <library/cpp/testing/gtest_extensions/gtest_extensions.h>
 
@@ -163,6 +165,7 @@ public:
     MOCK_METHOD(const NChunkClient::IBlockCachePtr&, GetBlockCache, (), (override));
     MOCK_METHOD(const NChunkClient::IClientChunkMetaCachePtr&, GetChunkMetaCache, (), (override));
     MOCK_METHOD(const NCellMasterClient::ICellDirectoryPtr&, GetMasterCellDirectory, (), (override));
+    MOCK_METHOD(NRpc::IChannelPtr, WrapAsCypressChannelOrThrow, (const NRpc::IChannelPtr&, NApi::EMasterChannelKind, NObjectClient::TCellTag), (override));
     MOCK_METHOD(const NCellMasterClient::ICellDirectorySynchronizerPtr&, GetMasterCellDirectorySynchronizer, (), (override));
     MOCK_METHOD(const NHiveClient::ICellDirectorySynchronizerPtr&, GetCellDirectorySynchronizer, (), (override));
     MOCK_METHOD(const NChaosClient::IChaosCellDirectorySynchronizerPtr&, GetChaosCellDirectorySynchronizer, (), (override));
@@ -180,6 +183,7 @@ public:
     MOCK_METHOD((std::pair<NRpc::IRoamingChannelProviderPtr, NYqlClient::TYqlAgentChannelConfigPtr>), GetYqlAgentChannelProviderOrThrow, (TStringBuf), (const, override));
     MOCK_METHOD(const NTabletClient::ITableMountCachePtr&, GetTableMountCache, (), (override));
     MOCK_METHOD(const NChaosClient::IReplicationCardCachePtr&, GetReplicationCardCache, (), (override));
+    MOCK_METHOD(const NChaosClient::IChaosLeaseCachePtr&, GetChaosLeaseCache, (), (override));
     MOCK_METHOD(const NChaosClient::IChaosResidencyCachePtr&, GetChaosResidencyCache, (), (override));
     MOCK_METHOD(const NTransactionClient::ITimestampProviderPtr&, GetTimestampProvider, (), (override));
     MOCK_METHOD(const NJobProberClient::TJobShellDescriptorCachePtr&, GetJobShellDescriptorCache, (), (override));

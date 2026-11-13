@@ -3,6 +3,7 @@
 #include "alien_cluster_client_cache.h"
 #include "backing_store_cleaner.h"
 #include "chunk_replica_cache_pinger.h"
+#include "compaction_hint_fetching.h"
 #include "compression_dictionary_builder.h"
 #include "compression_dictionary_manager.h"
 #include "distributed_throttler_manager.h"
@@ -164,15 +165,17 @@ public:
 
         TableDynamicConfigManager_ = New<TTableDynamicConfigManager>(this);
 
+        QueryPoolWeightProvider_ = CreateCachingCypressPoolWeightProvider(
+            GetConfig()->QueryAgent->PoolWeightCache,
+            GetClient(),
+            GetControlInvoker(),
+            Logger());
+
         QueryThreadPool_ = CreateTwoLevelFairShareThreadPool(
             GetConfig()->QueryAgent->QueryThreadPoolSize,
             QueryThreadPoolName,
             {
-                .PoolWeightProvider=CreateCachingCypressPoolWeightProvider(
-                    GetConfig()->QueryAgent->PoolWeightCache,
-                    GetClient(),
-                    GetControlInvoker(),
-                    Logger())
+                .PoolWeightProvider=QueryPoolWeightProvider_
             });
 
         PullRowsThreadPool_ = CreateFairShareThreadPool(
@@ -256,6 +259,9 @@ public:
                 Throttlers_[kind] = throttler;
             }
         }
+
+        CompactionHintFetchThrottlers_ = New<TCompactionHintFetchThrottlers>(
+            GetTabletNodeDynamicConfig()->StoreCompactor->CompactionHintFetchers);
 
         auto selfAddress = NNet::BuildServiceAddress(GetLocalHostName(), GetConfig()->RpcPort);
         DistributedThrottlerManager_ = CreateDistributedThrottlerManager(
@@ -553,6 +559,11 @@ public:
             : Throttlers_[it->second];
     }
 
+    const TCompactionHintFetchThrottlersPtr& GetCompactionHintFetchThrottlers() const override
+    {
+        return CompactionHintFetchThrottlers_;
+    }
+
     const IDistributedThrottlerManagerPtr& GetDistributedThrottlerManager() const override
     {
         return DistributedThrottlerManager_;
@@ -650,11 +661,13 @@ private:
 
     TActionQueuePtr TabletStatisticsActionQueue_;
 
+    NApi::NNative::ICypressPoolWeightProviderPtr QueryPoolWeightProvider_;
     ITwoLevelFairShareThreadPoolPtr QueryThreadPool_;
     IFairShareThreadPoolPtr PullRowsThreadPool_;
 
     TEnumIndexedArray<ETabletNodeThrottlerKind, IReconfigurableThroughputThrottlerPtr> LegacyRawThrottlers_;
     TEnumIndexedArray<ETabletNodeThrottlerKind, IThroughputThrottlerPtr> Throttlers_;
+    TCompactionHintFetchThrottlersPtr CompactionHintFetchThrottlers_;
     IDistributedThrottlerManagerPtr DistributedThrottlerManager_;
     IMediumThrottlerManagerFactoryPtr MediumThrottlerManagerFactory_;
 
@@ -701,6 +714,9 @@ private:
             }
         }
 
+        CompactionHintFetchThrottlers_->Reconfigure(
+            tabletNodeConfig->StoreCompactor->CompactionHintFetchers);
+
         TableReplicatorThreadPool_->SetThreadCount(
             tabletNodeConfig->TabletManager->ReplicatorThreadPoolSize.value_or(
                 GetConfig()->TabletNode->TabletManager->ReplicatorThreadPoolSize));
@@ -729,6 +745,16 @@ private:
         ClientCache_->Reconfigure(newConfig->TabletNode->ClientCache);
 
         NTesting::SetCurrentReignOverride(newConfig->TabletNode->Testing.ReignOverride);
+
+        NBus::NTcp::TDispatcher::Get()->GetXferPoller()->SetWorkerPool(
+            tabletNodeConfig->UseQueryPoolForBusXfer
+                ? QueryThreadPool_
+                : nullptr);
+
+        NRpc::TDispatcher::Get()->SetWorkerPool(
+            tabletNodeConfig->UseQueryPoolForRpc
+                ? QueryThreadPool_
+                : nullptr);
 
         TabletNodeConfigChanged_.Fire(
             oldConfig->TabletNode,
@@ -771,6 +797,10 @@ private:
                 GetConfig()->QueryAgent->PullRowsThreadPoolSize);
             PullRowsThreadPool_->SetThreadCount(
                 bundleConfig->CpuLimits->PullRowsThreadPoolSize.value_or(fallbackPullRowsThreadCount));
+        }
+
+        {
+            QueryPoolWeightProvider_->SetOverrides(bundleConfig->FairSharePoolWeights);
         }
     }
 

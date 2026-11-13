@@ -116,16 +116,31 @@ void RecalculatePrepareTimestamp(TLockDescriptor* lock)
         ? nullptr
         : lock->SharedWriteTransactions.front().Transaction;
 
+    auto sharedWritePrepareTimestamp = sharedWritePrepareTransaction
+        ? sharedWritePrepareTransaction->GetPrepareTimestamp()
+        : NotPreparedTimestamp;
+
+    // COMPAT(savrus): An active transaction has NullTimestamp while its lock entry has NotPreparedTimestamp.
+    if (!HasMutationContext() ||
+        GetCurrentMutationEffectiveReign() >= ETabletReign::FixSharedWriteLockPrepareTimestamp ||
+        (GetCurrentMutationEffectiveReign() >= ETabletReign::FixSharedWriteLockPrepareTimestamp_26_1 &&
+         GetCurrentMutationEffectiveReign() < ETabletReign::Start_26_2))
+    {
+        sharedWritePrepareTimestamp = lock->SharedWriteTransactions.empty()
+            ? NotPreparedTimestamp
+            : lock->SharedWriteTransactions.front().PrepareTimestamp;
+    }
+
     YT_ASSERT(writePrepareTimestamp <= NotPreparedTimestamp);
-    YT_ASSERT(sharedWritePrepareTransaction == nullptr || sharedWritePrepareTransaction->GetPrepareTimestamp() <= NotPreparedTimestamp);
+    YT_ASSERT(sharedWritePrepareTimestamp <= NotPreparedTimestamp);
     YT_ASSERT(writePrepareTimestamp == NotPreparedTimestamp || sharedWritePrepareTransaction == nullptr);
 
-    if (sharedWritePrepareTransaction == nullptr || writePrepareTimestamp <= sharedWritePrepareTransaction->GetPrepareTimestamp()) {
+    if (writePrepareTimestamp <= sharedWritePrepareTimestamp) {
         lock->PreparedTransaction = lock->WriteTransaction;
         lock->PrepareTimestamp.store(writePrepareTimestamp);
     } else {
         lock->PreparedTransaction = sharedWritePrepareTransaction;
-        lock->PrepareTimestamp.store(sharedWritePrepareTransaction->GetPrepareTimestamp());
+        lock->PrepareTimestamp.store(sharedWritePrepareTimestamp);
     }
 }
 
@@ -247,6 +262,7 @@ public:
         , TabletSnapshot_(std::move(tabletSnapshot))
         , Timestamp_(timestamp)
         , ProduceAllVersions_(produceAllVersions)
+        , CheckAllLocks_(columnFilter.IsUniversal() || produceAllVersions)
         , Revision_(revision)
         , KeyColumnCount_(Store_->KeyColumnCount_)
         , SchemaColumnCount_(Store_->SchemaColumnCount_)
@@ -262,8 +278,6 @@ public:
             std::iota(FilteredKeyColumns_.begin(), FilteredKeyColumns_.end(), 0);
             FilteredValueColumns_.resize(SchemaColumnCount_ - KeyColumnCount_);
             std::iota(FilteredValueColumns_.begin(), FilteredValueColumns_.end(), KeyColumnCount_);
-
-            LockMask_.Enrich(ColumnLockCount_);
         } else {
             for (int columnIndex : columnFilter.GetIndexes()) {
                 if (columnIndex < Store_->KeyColumnCount_) {
@@ -277,6 +291,10 @@ public:
                 }
             }
         }
+
+        if (CheckAllLocks_) {
+            LockMask_.Enrich(ColumnLockCount_);
+        }
     }
 
 protected:
@@ -284,6 +302,7 @@ protected:
     const TTabletSnapshotPtr TabletSnapshot_;
     const TTimestamp Timestamp_;
     const bool ProduceAllVersions_;
+    const bool CheckAllLocks_;
     const TSortedDynamicStoreRevision Revision_;
 
     TColumnFilter::TIndexes FilteredKeyColumns_;
@@ -355,12 +374,25 @@ protected:
 
     TVersionedRow ProduceSingleRowVersion(TSortedDynamicRow dynamicRow)
     {
-        WaitOnBlockedRowTimer_.Record(Store_->WaitOnBlockedRow(dynamicRow, LockMask_, Timestamp_));
+        auto blockedRowWaitTime = Store_->WaitOnBlockedRow(dynamicRow, LockMask_, Timestamp_);
 
         // Prepare timestamps.
         std::array<TTimestamp, MaxColumnLockCount> latestWriteTimestampPerLock;
         auto latestWriteTimestamp = FillLatestWriteTimestamps(dynamicRow, latestWriteTimestampPerLock.data());
         auto latestDeleteTimestamp = GetLatestDeleteTimestamp(dynamicRow);
+
+        if (!CheckAllLocks_ && latestWriteTimestamp <= latestDeleteTimestamp) {
+            // An unrequested lock group can insert or resurrect the row. Only skip it
+            // when a committed write already establishes row existence at Timestamp_.
+            // Recheck after waiting on the projection, since that wait may commit a delete.
+            auto lockMask = LockMask_;
+            lockMask.Enrich(ColumnLockCount_);
+            blockedRowWaitTime += Store_->WaitOnBlockedRow(dynamicRow, lockMask, Timestamp_);
+            latestWriteTimestamp = FillLatestWriteTimestamps(dynamicRow, latestWriteTimestampPerLock.data());
+            latestDeleteTimestamp = GetLatestDeleteTimestamp(dynamicRow);
+        }
+
+        WaitOnBlockedRowTimer_.Record(blockedRowWaitTime);
 
         if (latestWriteTimestamp == NullTimestamp && latestDeleteTimestamp == NullTimestamp) {
             return TVersionedRow();
@@ -1888,8 +1920,6 @@ int TSortedDynamicStore::GetBlockingLockIndex(
     YT_ASSERT_THREAD_AFFINITY_ANY();
     YT_ASSERT(Atomicity_ == EAtomicity::Full);
 
-    lockMask.Enrich(ColumnLockCount_);
-
     const auto* lock = row.BeginLocks(KeyColumnCount_);
     for (int index = 0;
          index < ColumnLockCount_;
@@ -1922,6 +1952,8 @@ bool TSortedDynamicStore::CheckRowBlocking(
     TLockMask lockMask,
     TWriteContext* context)
 {
+    // Write conflict checks must compare Primary against every column group and vice versa.
+    lockMask.Enrich(ColumnLockCount_);
     auto timestamp = context->Transaction->GetStartTimestamp();
     int lockIndex = GetBlockingLockIndex(row, lockMask, timestamp);
     if (lockIndex < 0) {

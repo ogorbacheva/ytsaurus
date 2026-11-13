@@ -12,6 +12,7 @@ using namespace NProfiling;
 
 TNetworkStatistics::TNetworkStatistics(TDataNodeConfigPtr config)
     : Config_(std::move(config))
+    , ThrottlingDuration_(2 * DurationToCpuDuration(Config_->NetOutThrottlingDuration))
 { }
 
 TNetworkCounters* TNetworkStatistics::GetOrCreateCounters(const std::string& name)
@@ -41,14 +42,22 @@ void TNetworkStatistics::IncrementWriteThrottlingCounter(const std::string& name
     counters->ThrottledWritesCounter.Increment();
 }
 
+void TNetworkStatistics::Reconfigure(const TDataNodeDynamicConfigPtr& config)
+{
+    auto throttlingDuration = config->NetOutThrottlingDuration.value_or(Config_->NetOutThrottlingDuration);
+    ThrottlingDuration_.store(2 * DurationToCpuDuration(throttlingDuration));
+}
+
 void TNetworkStatistics::UpdateStatistics(NNodeTrackerClient::NProto::TClusterNodeStatistics* statistics)
 {
+    Counters_.Flush();
+
     Counters_.IterateReadOnly([&] (const auto& name, const auto& counters) {
         auto* network = statistics->add_network();
         network->set_network(name);
 
         auto now = GetCpuInstant();
-        auto throttlingDuration = 2 * DurationToCpuDuration(Config_->NetOutThrottlingDuration);
+        auto throttlingDuration = ThrottlingDuration_.load();
         auto readUpdateTime = counters->ReadUpdateTime.load();
         auto writeUpdateTime = counters->WriteUpdateTime.load();
         network->set_throttling_reads(readUpdateTime != 0 && now < readUpdateTime + throttlingDuration);

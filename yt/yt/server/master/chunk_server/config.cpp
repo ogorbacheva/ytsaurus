@@ -48,7 +48,9 @@ void TChunkManagerConfig::Register(TRegistrar registrar)
 
     registrar.Postprocessor([] (TThis* config) {
         if (config->MaxReplicationFactor < MinVitalReplicationFactor) {
-            THROW_ERROR_EXCEPTION("\"max_replication_factor\" should be greater than MinVitalReplicationFactor")
+            THROW_ERROR_EXCEPTION(
+                "\"max_replication_factor\" must be at least %v",
+                MinVitalReplicationFactor)
                 .With("max_replication_factor", config->MaxReplicationFactor)
                 .With("min_vital_replication_factor", MinVitalReplicationFactor);
         }
@@ -77,12 +79,20 @@ void TDomesticMediumConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_erasure_journal_replicas_per_rack", &TThis::MaxErasureJournalReplicasPerRack)
         .GreaterThanOrEqual(0)
         .Default(std::numeric_limits<int>::max());
+    registrar.Parameter("storage_data_centers", &TThis::StorageDataCenters)
+        .Default()
+        .DontSerializeDefault();
+    registrar.Parameter("banned_storage_data_centers", &TThis::BannedStorageDataCenters)
+        .Default()
+        .DontSerializeDefault();
     registrar.Parameter("prefer_local_host_for_dynamic_tables", &TThis::PreferLocalHostForDynamicTables)
         .Default(true);
 
     registrar.Postprocessor([] (TThis* config) {
         if (config->MaxReplicationFactor < MinVitalReplicationFactor) {
-            THROW_ERROR_EXCEPTION("\"max_replication_factor\" should be greater than MinVitalReplicationFactor")
+            THROW_ERROR_EXCEPTION(
+                "\"max_replication_factor\" must be at least %v",
+                MinVitalReplicationFactor)
                 .With("max_replication_factor", config->MaxReplicationFactor)
                 .With("min_vital_replication_factor", MinVitalReplicationFactor);
         }
@@ -315,6 +325,8 @@ void TDynamicDataNodeTrackerTestingConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("full_heartbeat_delay", &TThis::FullHeartbeatDelay)
         .Optional();
+    registrar.Parameter("suppress_registration_revision_validation", &TThis::SuppressRegistrationRevisionValidation)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -373,6 +385,8 @@ void TDynamicDataNodeTrackerConfig::Register(TRegistrar registrar)
     registrar.Parameter("reject_simultaneous_incremental_heartbeats", &TThis::RejectSimultaneousIncrementalHeartbeats)
         .Default(true)
         .DontSerializeDefault();
+    registrar.Parameter("enable_registration_revision_validation", &TThis::EnableRegistrationRevisionValidation)
+        .Default(false);
 
     registrar.Parameter("expected_data_node_heartbeat_duration", &TThis::ExpectedDataNodeHeartbeatDuration)
         .Default(TDuration::Seconds(5));
@@ -625,6 +639,10 @@ void TDynamicSequoiaChunkReplicasConfig::Register(TRegistrar registrar)
         .Default(std::nullopt)
         .DontSerializeDefault();
 
+    registrar.Parameter("always_show_master_last_seen_replicas", &TThis::AlwaysShowMasterLastSeenReplicas)
+        .Default(false)
+        .DontSerializeDefault();
+
     registrar.Postprocessor([] (TThis* config) {
         // COMPAT(grphil).
         if (!config->BlobReplicasStoreConfig) {
@@ -764,6 +782,24 @@ void TDynamicConsistentReplicaPlacementConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TDynamicChunkProlongatorConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("enable", &TThis::Enable)
+        .Default(false);
+
+    registrar.Parameter("max_queue_size", &TThis::MaxQueueSize)
+        .Default(100'000)
+        .GreaterThanOrEqual(0);
+
+    registrar.Parameter("queue_ttl", &TThis::QueueTtl)
+        .Default(TDuration::Minutes(30));
+
+    registrar.Parameter("queue_trim_period", &TThis::QueueTrimPeriod)
+        .Default(TDuration::Minutes(1));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 void TDynamicChunkManagerConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("enable_chunk_replicator", &TThis::EnableChunkReplicator)
@@ -861,9 +897,15 @@ void TDynamicChunkManagerConfig::Register(TRegistrar registrar)
         .Default(TDuration::Seconds(15));
     registrar.Parameter("quorum_session_delay", &TThis::QuorumSessionDelay)
         .Default(TDuration::Seconds(5));
+    registrar.Parameter("max_chunks_per_seal_queue_scan", &TThis::MaxChunksPerSealQueueScan)
+        .GreaterThan(0)
+        .Default(10000);
     registrar.Parameter("max_chunks_per_seal", &TThis::MaxChunksPerSeal)
         .GreaterThan(0)
         .Default(10000);
+    registrar.Parameter("max_chunks_per_global_seal_scan", &TThis::MaxChunksPerGlobalSealScan)
+        .GreaterThan(0)
+        .Default(100000);
     registrar.Parameter("max_concurrent_chunk_seals", &TThis::MaxConcurrentChunkSeals)
         .GreaterThan(0)
         .Default(10);
@@ -997,6 +1039,13 @@ void TDynamicChunkManagerConfig::Register(TRegistrar registrar)
     registrar.Parameter("banned_storage_data_centers", &TThis::BannedStorageDataCenters)
         .Default();
 
+    registrar.Parameter("temporarily_unavailable_storage_data_centers", &TThis::TemporarilyUnavailableStorageDataCenters)
+        .Default();
+
+    registrar.Parameter("temporarily_unavailable_extra_failure_domain_tolerance", &TThis::TemporarilyUnavailableExtraFailureDomainTolerance)
+        .GreaterThanOrEqual(0)
+        .Default(1);
+
     registrar.Parameter("profiling_period", &TThis::ProfilingPeriod)
         .Default(DefaultProfilingPeriod);
 
@@ -1044,6 +1093,11 @@ void TDynamicChunkManagerConfig::Register(TRegistrar registrar)
         .Default(100)
         .DontSerializeDefault();
 
+    registrar.Parameter("max_lost_chunks_to_report_in_detailed_replication_statistics", &TThis::MaxLostChunksToReportInDetailedReplicationStatistics)
+        .Default(500)
+        .GreaterThan(0)
+        .DontSerializeDefault();
+
     registrar.Parameter("always_fetch_non_online_replicas", &TThis::AlwaysFetchNonOnlineReplicas)
         .Default(true)
         .DontSerializeDefault();
@@ -1073,7 +1127,25 @@ void TDynamicChunkManagerConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_verbose_logging_enabled_duration", &TThis::MaxVerboseLoggingEnabledDuration)
         .Default(TDuration::Days(1));
 
+    registrar.Parameter("set_empty_requisition_index_on_import", &TThis::SetEmptyRequisitionIndexOnImport)
+        .Default(true);
+
+    registrar.Parameter("recompute_historically_non_vital_on_requisition_update", &TThis::RecomputeHistoricallyNonVitalOnRequisitionUpdate)
+        .Default(false)
+        .DontSerializeDefault();
+
+    registrar.Parameter("chunk_prolongator", &TThis::ChunkProlongator)
+        .DefaultNew();
+
     registrar.Postprocessor([] (TThis* config) {
+        for (const auto& dataCenter : config->BannedStorageDataCenters) {
+            if (config->TemporarilyUnavailableStorageDataCenters.contains(dataCenter)) {
+                THROW_ERROR_EXCEPTION(
+                    "Storage data center %Qv cannot be both banned and temporarily unavailable",
+                    dataCenter);
+            }
+        }
+
         auto& jobTypeToThrottler = config->JobTypeToThrottler;
         for (auto jobType : TEnumTraits<EJobType>::GetDomainValues()) {
             if (IsMasterJobType(jobType) && !jobTypeToThrottler.contains(jobType)) {
@@ -1126,6 +1198,13 @@ void TDynamicChunkServiceConfig::Register(TRegistrar registrar)
     registrar.Parameter("default_per_user_request_bytes_throttler", &TThis::DefaultPerUserRequestBytesThrottler)
         .Alias("default_per_user_request_bytes_throttler_config")
         .DefaultNew();
+
+    registrar.Parameter("use_lazy_transaction_externalization", &TThis::UseLazyTransactionExternalization)
+        .Default(false)
+        .DontSerializeDefault();
+
+    registrar.Parameter("alert_on_chunk_service_execute_batch", &TThis::AlertOnChunkServiceExecuteBatch)
+        .Default(false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

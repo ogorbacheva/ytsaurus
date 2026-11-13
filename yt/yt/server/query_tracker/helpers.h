@@ -28,6 +28,15 @@ inline const std::string AdminAccessControlObjectName = "admin";
 
 ////////////////////////////////////////////////////////////////////////////////
 
+std::string Compress(const std::string& data, std::optional<ui64> maxCompressedStringSize = std::nullopt, int quality = 9);
+std::string Decompress(const std::string& data);
+
+////////////////////////////////////////////////////////////////////////////////
+
+extern const std::string CompressedEmptyMap;
+
+////////////////////////////////////////////////////////////////////////////////
+
 std::string BuildFilterFactors(const std::string& query, const NYson::TYsonString& annotations, const NYson::TYsonString& accessControlObjects);
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -36,18 +45,18 @@ template <typename TPartial>
 NApi::TQuery PartialRecordToQuery(const TPartial& partialRecord);
 
 THashSet<std::string> GetUserSubjects(const std::string& user, const NApi::IClientPtr& client);
+bool HasQueryTrackerAdminAccess(
+    const THashSet<std::string>& userSubjects,
+    const std::optional<std::string>& adminsGroup);
+
 void ConvertAcoToOldFormat(NApi::TQuery& query);
 
 NSecurityClient::ESecurityAction CheckAccessControl(
     const std::string& user,
     const std::optional<NYson::TYsonString>& accessControlObjects,
     const NApi::IClientPtr& client,
-    NYTree::EPermission permission);
-
-////////////////////////////////////////////////////////////////////////////////
-
-std::string Compress(const std::string& data, std::optional<ui64> maxCompressedStringSize = std::nullopt, int quality = 9);
-std::string Decompress(const std::string& data);
+    NYTree::EPermission permission,
+    const std::optional<std::string>& adminsGroup);
 
 ////////////////////////////////////////////////////////////////////////////////
 

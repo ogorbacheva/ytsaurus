@@ -1,6 +1,12 @@
 # Что такое {{product-name}} Flow?
 
-{{product-name}} Flow &mdash; это фреймворк для потоковой кросс-ДЦ обработки событий с гарантиями exactly-once в рамках экосистемы {{product-name}} с API для [C++](../../flow/cpp/getting-started.md), [Java и Kotlin](../../flow/java/getting-started.md), [Python](../../flow/python/getting-started.md), [Go](../../flow/go/getting-started.md), а также поддержкой декларативного описания пайплайнов на [YQL](../../flow/yql/getting-started.md).{% if audience == "internal" %} Система является логическим развитием фреймворка [BigRT](https://docs.yandex-team.ru/big_rt/).{% endif %}
+{% if audience == "public" %}
+{% include notitle [Flow logo](logo.md) %}
+{% else %}
+![{{product-name}} Flow](../../flow/_images/flow-logo.png)
+{% endif %}
+
+{{product-name}} Flow &mdash; это фреймворк для потоковой кросс-ДЦ обработки событий с гарантиями exactly-once в рамках экосистемы {{product-name}} с API для [C++](../../flow/cpp/getting-started.md), [Java](../../flow/java/getting-started.md), [Kotlin](../../flow/kotlin/getting-started.md), [Python](../../flow/python/getting-started.md), [Go](../../flow/go/getting-started.md), а также поддержкой декларативного описания пайплайнов на [YQL](../../flow/yql/getting-started.md).{% if audience == "internal" %} Система является логическим развитием фреймворка [BigRT](https://docs.yandex-team.ru/big_rt/).{% endif %}
 
 Ближайшими внешними аналогами являются [Google Cloud Dataflow](https://cloud.google.com/products/dataflow?skip_cache=true%22%22) и [Apache Flink](https://flink.apache.org/).{% if audience == "internal" %} В отдельной статье можно ознакомиться с [подробным сравнением с альтернативными технологиями](../../flow/other/comparison.md).{% endif %}
 
@@ -15,6 +21,8 @@
 По всем вопросам обращайтесь в чат в Yandex Messenger [YT Flow Public](https://nda.ya.ru/t/MBW0Jgy-7bH78f)
 
 В случае вопроса со сложным контекстом или найденного бага создавайте тикет в очереди [YTFLOWSUPPORT](https://nda.ya.ru/t/X7imi95a7gKE5Y).
+{% else %}
+При любых сложностях с {{product-name}} Flow создавайте [GitHub Issues](https://github.com/ytsaurus/ytsaurus/issues).
 {% endif %}
 
 ## Свойства системы {#properties}
@@ -27,7 +35,7 @@
 - Характерная задержка обработки событий при стабильной работе: 1с &mdash; 10с.
 - Автоматическая балансировка [партиций](../../flow/concepts/glossary.md#partition) по машинам.
 - Отказоустойчивость: пайплайн переживает выпадение отдельных машин и датацентров.
-- Возможность реализации бизнес-логики на [C++](../../flow/cpp/getting-started.md), [Java и Kotlin](../../flow/java/getting-started.md), [Python](../../flow/python/getting-started.md), [Go](../../flow/go/getting-started.md) и [YQL](../../flow/yql/getting-started.md).
+- Возможность реализации бизнес-логики на [C++](../../flow/cpp/getting-started.md), [Java](../../flow/java/getting-started.md), [Kotlin](../../flow/kotlin/getting-started.md), [Python](../../flow/python/getting-started.md), [Go](../../flow/go/getting-started.md) и [YQL](../../flow/yql/getting-started.md).
 - Поддержка [stateful-обработки](../../flow/concepts/stateful.md) с персистентным состоянием в динамических таблицах {{product-name}}.
 - Поддержка запуска и в {{product-name}}{% if audience == "internal"%}, и в [Deploy](https://docs.yandex-team.ru/deploy){% endif %}.
 
@@ -45,4 +53,5 @@
 - [Быстрый старт](../../flow/quickstart.md)
 - [Основные понятия](../../flow/concepts/glossary.md)
 - [Примеры задач](../../flow/tasks.md)
+{% if audience == "public" %}- [Релизы Flow](https://github.com/ytsaurus/ytsaurus/releases?q=tag%3Aflow%2F0&expanded=true){% endif %}
 {% if audience == "internal" %}- [Кто использует {{product-name}} Flow](../../flow/other/framework_users.md){% endif %}

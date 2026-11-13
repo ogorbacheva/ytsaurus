@@ -5,12 +5,14 @@
 
 #|
 || **Параметр** | **Описание** ||
-|| `weight_multiplier` | **Тип**: `double`
-**Значение по умолчанию**: `1.0`
- ||
-|| `interrupting_weight_multiplier` | **Тип**: `double`
-**Значение по умолчанию**: `0.1`
- ||
+|| `key_count_partitioning` | **Тип**: `NYT::TIntrusivePtr<`[NYT::NFlow::TDynamicKeyCountPartitioningSpec](./all_yson_structs#NYT_NFlow_TDynamicKeyCountPartitioningSpec)`>`
+**Значение по умолчанию**: `{}`
+Настройки разбиения по числу ключей в партиции. ||
+|| `throughput_warmup_period` | **Тип**: `std::optional<`[TDuration](./all_yson_structs#TDuration)`>`
+Окно измерений Throughput для этого Computation. Если не задано, используется глобальный warmup_period. Увеличьте для длинных батчей или волнообразного потока. ||
+|| `throughput_max_exploration_factor` | **Тип**: `double`
+**Значение по умолчанию**: `8.0`
+Коэффициент предела роста Throughput без подтверждённого увеличения Processed. Предел равен коэффициенту, умноженному на исходное число партиций и отношение лучшей подтверждённой скорости к исходной. Увеличьте для вычислений, которым нужно больше партиций до первого полезного разделения нагрузки. Не отменяет max_partition_count и независимые предложения прежних критериев. ||
 || `desired_partition_count` | **Тип**: `std::optional<int>`
  ||
 || `min_partition_count` | **Тип**: `std::optional<int>`
@@ -32,8 +34,14 @@
 || `allowed_partition_count_deviation` | **Тип**: `std::optional<double>`
  ||
 || `partition_count_double_delay` | **Тип**: `std::optional<`[TDuration](./all_yson_structs#TDuration)`>`
- ||
+Опорная задержка удвоения числа партиций. Перенарезка по весам может менять границы без изменения числа партиций. Её задержка делится на min(1 + CV, 10). CV — отношение стандартного отклонения текущих весов партиций к их среднему. Чем сильнее перекос, тем меньше ожидание. Перемещение границ не перезапускает задержку изменения числа партиций. ||
 || `partition_count_half_delay` | **Тип**: `std::optional<`[TDuration](./all_yson_structs#TDuration)`>`
+ ||
+|| `weight_multiplier` | **Тип**: `double`
+**Значение по умолчанию**: `1.0`
+ ||
+|| `interrupting_weight_multiplier` | **Тип**: `double`
+**Значение по умолчанию**: `0.1`
  ||
 |#
 

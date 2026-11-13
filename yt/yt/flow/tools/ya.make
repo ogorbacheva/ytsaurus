@@ -1,12 +1,13 @@
 RECURSE(
     download_jfr
     flamegraph
+    generate_internal_state_golden
     job_investigation
     pipeline_chaos_monkey
     python_companion_package
     reanimate_vanilla_operation
     reshard_flow_tables
-    yt_sync_mini
+    ui_test_controller
 )
 
 IF (NOT OPENSOURCE)

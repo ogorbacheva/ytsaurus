@@ -1,17 +1,18 @@
 #include "chunk_block_device.h"
 
 #include "chunk_handler.h"
-#include "config.h"
 #include "page_cache.h"
 
 #include <yt/yt/server/lib/nbd/block_device_detail.h>
 #include <yt/yt/server/lib/nbd/profiler.h>
 
+#include <yt/yt/library/nbd/chunk/config.h>
+
 #include <yt/yt/core/concurrency/async_rw_lock.h>
 #include <yt/yt/core/concurrency/throughput_throttler.h>
 #include <yt/yt/core/profiling/timing.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 namespace NYT::NNbd::NChunk {
 

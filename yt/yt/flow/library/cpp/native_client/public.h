@@ -29,6 +29,7 @@ inline std::string BuildVanillaOperationAlias(const NYPath::TRichYPath& pipeline
 
 ////////////////////////////////////////////////////////////////////////////////
 
+inline constexpr TStringBuf FailedMessagesTableName = "failed_messages";
 inline constexpr TStringBuf InputMessagesTableName = "input_messages";
 inline constexpr TStringBuf CompactInputMessagesTableName = "compact_input_messages";
 inline constexpr TStringBuf CompactPartitionOutputMessagesTableName = "compact_partition_output_messages";
@@ -37,26 +38,24 @@ inline constexpr TStringBuf StatesTableName = "states";
 inline constexpr TStringBuf PartitionStatesTableName = "partition_states";
 inline constexpr TStringBuf KeyVisitorStatesTableName = "key_visitor_states";
 inline constexpr TStringBuf TimersTableName = "timers";
+//! Paged timer store (see library/cpp/computation/stores): timer rows in pages of a family,
+//! page and family metadata, and the commit-ordered journal of metadata changes.
+inline constexpr TStringBuf TimerPagesTableName = "timer_pages";
+inline constexpr TStringBuf TimerPageMetaTableName = "timer_page_meta";
+inline constexpr TStringBuf TimerPageJournalTableName = "timer_page_journal";
 inline constexpr TStringBuf ControllerLogsTableName = "controller_logs";
+inline constexpr TStringBuf LogsDirectoryName = "logs";
+inline constexpr TStringBuf LogsTableName = "logs";
+inline constexpr TStringBuf LogsMetaTableName = "logs_meta";
+inline constexpr TStringBuf SourcesMetaTableName = "sources_meta";
 inline constexpr TStringBuf FlowStateTableName = "flow_state";
 inline constexpr TStringBuf FlowStateObsoleteTableName = "flow_state_obsolete";
 inline constexpr TStringBuf FlowControlTableName = "flow_control";
 inline constexpr TStringBuf PartitionTransactionsTableName = "partition_transactions";
-
-inline const std::vector InternalFlowTables{
-    InputMessagesTableName,
-    CompactInputMessagesTableName,
-    CompactPartitionOutputMessagesTableName,
-    CompactOutputMessagesTableName,
-    StatesTableName,
-    PartitionStatesTableName,
-    KeyVisitorStatesTableName,
-    TimersTableName,
-    ControllerLogsTableName,
-    FlowStateTableName,
-    FlowStateObsoleteTableName,
-    FlowControlTableName,
-    PartitionTransactionsTableName};
+inline constexpr TStringBuf LeasesTableName = "leases";
+//! Holds one row per election group for the chaos election backend (see NChaosElection). Empty
+//! under the Cypress backend, which locks a Cypress node instead.
+inline constexpr TStringBuf LeaderElectionLockTableName = "leader_election_lock";
 
 ////////////////////////////////////////////////////////////////////////////////
 

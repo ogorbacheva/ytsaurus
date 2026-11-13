@@ -31,19 +31,23 @@ struct TJobContext
     IPartitionBufferStatePtr PartitionBufferState;
 
     std::string WorkerAddress;
+    TFlowCoreTarget FlowCoreTarget;
     NClient::NCache::IClientsCachePtr ClientsCache;
     NYPath::TRichYPath PipelinePath;
     NQueryClient::IColumnEvaluatorCachePtr EvaluatorCache;
     IPayloadConverterCachePtr ConverterCache;
     IMessageDistributorPtr MessageDistributor;
     IResourceManagerPtr ResourceManager;
+    THashMap<TResourceId, TResourceInstanceId> ResourceInstanceIds;
     IInvokerPtr ControlSerializedInvoker;
     IInvokerPtr SerializedInvoker;
     IInvokerPtr PoolInvoker;
     NObjectClient::TCellTag ClockClusterTag;
     TLoadThroughputThrottlerPtr LoadThroughputThrottler;
+    ITimerPageCataloguePtr TimerPageCatalogue;
     TComputationStreamSpecStoragePtr StreamSpecStorage;
     TJobStateCachePtr JobStateCache;
+    TLineageTrackerPtr LineageTracker;
     IExternalPerformanceMetricsReporterPtr ExternalMetricsReporter;
     NYT::NHttp::IClientPtr HttpClient;
     NYT::NHttp::IClientPtr HttpsClient;
@@ -59,10 +63,11 @@ DEFINE_REFCOUNTED_TYPE(TJobContext);
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TJobOrchidState
-    : public virtual NYTree::TYsonStruct
+    : public NYTree::TYsonStruct
 {
-    TJobStatusPtr Status;
-    TComputationOrchidStatePtr Computation;
+    i64 CommittedEpochCount = 0;
+    THashMap<TStreamId, TStreamUsage> InputStreams;
+    THashMap<TStreamId, TStreamUsage> OutputStreams;
 
     REGISTER_YSON_STRUCT(TJobOrchidState);
 
@@ -70,6 +75,19 @@ struct TJobOrchidState
 };
 
 DEFINE_REFCOUNTED_TYPE(TJobOrchidState);
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Counters a job maintains for the tracker's performance accounting; read from the Control thread.
+struct TJobRuntimeCounters
+    : public TRefCounted
+{
+    std::atomic<i64> InputMessageCount = 0;
+    //! Completed run iterations that had input, see #TComputationStatus::NonEmptyIterationCount.
+    std::atomic<i64> NonEmptyIterationCount = 0;
+};
+
+DEFINE_REFCOUNTED_TYPE(TJobRuntimeCounters);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -89,8 +107,9 @@ struct IJob
     virtual TComputationId GetComputationId() = 0;
     virtual TFuture<TJobStatusPtr> GetStatus() = 0;
     virtual IInputBufferPtr GetInputBuffer() = 0;
+    virtual TJobRuntimeCountersPtr GetRuntimeCounters() = 0;
 
-    virtual TFuture<TJobOrchidStatePtr> GetOrchidState() = 0;
+    virtual TJobOrchidStatePtr GetOrchidState() = 0;
 };
 
 DEFINE_REFCOUNTED_TYPE(IJob);

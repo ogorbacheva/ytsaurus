@@ -31,12 +31,40 @@ Period of `cpu_aware` balancing. It is not recommended to set a value lower than
 || `rebalance_count_exceeded_allowed` | **Type**: `double`
 **Default value**: `1.2`
  ||
-|| `rebalance_min_cpu_spread` | **Type**: `double`
-**Default value**: `1.0`
- ||
-|| `rebalance_min_cpu_ratio` | **Type**: `double`
-**Default value**: `1.2`
- ||
+|| `rebalance_even_load_thresholds` | **Type**: `THashMap<`[NYT::NFlow::EBalanceResource](./all_yson_structs#NYT_NFlow_EBalanceResource)`, NYT::TIntrusivePtr<`[NYT::NFlow::TEvenLoadThresholds](./all_yson_structs#NYT_NFlow_TEvenLoadThresholds)`>>`
+**Default value**: `{}`
+Per-resource thresholds of the "load is even" gate, for example `{cpu = {spread = 2.0; ratio = 1.5}}`. Only resources with a non-zero weight are consulted. Unset fields fall back to the defaults: a spread of `1.0` core for CPU and `1 GB` for memory, a ratio of `1.2`. ||
+|| `rebalance_min_cpu_spread` | **Type**: `std::optional<double>`
+Deprecated: the same as `spread` of the `cpu` entry of `rebalance_even_load_thresholds`. A value set explicitly in `rebalance_even_load_thresholds` takes precedence. ||
+|| `rebalance_min_cpu_ratio` | **Type**: `std::optional<double>`
+Deprecated: the same as `ratio` of the `cpu` entry of `rebalance_even_load_thresholds`. A value set explicitly in `rebalance_even_load_thresholds` takes precedence. ||
+|| `balance_weights` | **Type**: `THashMap<`[NYT::NFlow::EBalanceResource](./all_yson_structs#NYT_NFlow_EBalanceResource)`, double>`
+**Default value**: `{'cpu': 1.0, 'memory': 0.0}`
+Relative importance of the resources for `cpu_aware` balancing, for example `{cpu = 80; memory = 20}`. The given keys are merged into the default `{cpu = 1; memory = 0}`; the weights are normalized, so only the proportions matter. A resource with a zero weight does not take part in balancing, so by default only CPU is balanced. The `rebalance_target_deviation` threshold applies to the normalized weighted sum: adding a second resource proportionally shrinks the contribution of the first one. With a non-zero `memory` weight, partition memory includes the measured job memory and the input buffer bytes of its streams. Each input stream is charged the larger of its `demand`, as requested before the buffer pool scales it down, and its resident bytes. A stream without `demand`, for example one with an explicit limit override or on a worker without buffer manager v2, is charged its resident bytes. ||
+|| `balancer_metrics_source` | **Type**: [NYT::NFlow::EBalancerMetricsSource](./all_yson_structs#NYT_NFlow_EBalancerMetricsSource)
+**Default value**: `job`
+Where the `cpu_aware` balancer takes a partition's CPU usage from. `partition`: the 10-minute rate of the running job, and until it exists the partition's persisted history (measured by the previous job, survives moves and restarts); 30-second and immediate rates are never used. `job`: the previous behaviour, only the running job's metrics with a fallback to the 30-second and immediate rates. Off by default while the change is rolled out pipeline by pipeline; temporary switch. ||
+|| `balance_warmup_protection` | **Type**: `bool`
+**Default value**: `false`
+Never move a running job whose metrics are not mature yet: the 10-minute rate exists and one more 10-minute window has passed since it appeared. Such a job is still paying for its previous move and its weight is unknown. The protection applies to every balancing resource: a memory-only configuration waits for the CPU rate to mature as well. A worker over the count limit whose kick candidate is immature is skipped for the round. Jobs younger than two minutes stay movable: they have invested nothing yet, and on a pipeline restart the workers do not register all at once. Partitions without a job are placed as usual. Off by default while the change is rolled out pipeline by pipeline; temporary switch. ||
+|| `balance_warmup_idle_worker_share` | **Type**: `double`
+**Default value**: `0.2`
+Share of the group's workers without a job of the group at which warm-up protection is lifted: filling idle workers matters more than the metrics of the jobs that would move, e.g. when workers register minutes apart after a pipeline restart. Temporary switch for rollback. ||
+|| `worker_coef_mode` | **Type**: [NYT::NFlow::EWorkerCoefMode](./all_yson_structs#NYT_NFlow_EWorkerCoefMode)
+**Default value**: `legacy`
+How the `cpu_aware` balancer estimates the relative speed of workers. `probing`: from partitions that moved between workers, comparing CPU per message before and after the move; observations per worker pair accumulate in `balancer_state` and are solved together; without moves all coefficients are 1. `legacy`: the previous estimate from the current usage of each worker's partitions against the computation averages. Off by default while the change is rolled out pipeline by pipeline; temporary switch. ||
+|| `worker_coef_half_life` | **Type**: [TDuration](./all_yson_structs#TDuration)
+**Default value**: `1d`
+Half-life of an accumulated worker-pair observation: when a new observation merges in, the old one loses weight in proportion to the time passed. Without new observations the estimate does not change. ||
+|| `worker_coef_retention` | **Type**: [TDuration](./all_yson_structs#TDuration)
+**Default value**: `7d`
+How long the observations of a worker absent from the group are kept; a worker returning earlier gets its coefficient back. ||
+|| `worker_coef_prior_weight` | **Type**: `double`
+**Default value**: `0.05`
+Weight of the prior "the worker's coefficient is 1" in observation weight units (a move of one partition weighs `1 / N`, `N` being the number of partitions on the receiving worker). Pins the group's mean coefficient to 1 and damps single observations. ||
+|| `worker_coef_max_ratio` | **Type**: `double`
+**Default value**: `4.0`
+Safety limit: worker coefficients are clamped to `[1 / max_ratio, max_ratio]`. ||
 || `disable_even_load_gate` | **Type**: `std::optional<bool>`
  ||
 || `async_balancing` | **Type**: `bool`
@@ -51,6 +79,9 @@ Period of `cpu_aware` balancing. It is not recommended to set a value lower than
 || `planning_horizon` | **Type**: [TDuration](./all_yson_structs#TDuration)
 **Default value**: `10m`
  ||
+|| `preloading_timeout` | **Type**: [TDuration](./all_yson_structs#TDuration)
+**Default value**: `30m`
+How long the `resource_queue` balancer keeps a model preload that is still loading, counted from the request. Until then the preload is not released and the worker counts as a worker of the computations that need the model; after it the usual rules apply. ||
 || `minimum_worker_count` | **Type**: `unsigned long`
 **Default value**: `1`
 Minimum number of workers to distribute the load across.
@@ -65,8 +96,17 @@ Window within which the exponentially decaying counter of connection losses betw
 || `faulty_address_attempts` | **Type**: `unsigned long`
 **Default value**: `5`
 See the description of the `faulty_address_window` parameter. ||
-|| `worker_group_override` | **Type**: `THashMap<NYT::TStrongTypedef<std::string, NYT::NFlow::TWorkerGroupIdTag, NYT::TStrongTypedefOptions{true}>, NYT::TIntrusivePtr<`[NYT::NFlow::TDynamicJobManagerGroupSpec](./all_yson_structs#NYT_NFlow_TDynamicJobManagerGroupSpec)`>>`
+|| `partitioning` | **Type**: `NYT::TIntrusivePtr<`[NYT::NFlow::TDynamicPartitioningCoordinatorSpec](./all_yson_structs#NYT_NFlow_TDynamicPartitioningCoordinatorSpec)`>`
+**Default value**: `{}`
+Pipeline partitioning settings. ||
+|| `worker_group_override` | **Type**: `THashMap<`[NYT::NFlow::TWorkerGroupId](./all_yson_structs#NYT_NFlow_TWorkerGroupId)`, NYT::TIntrusivePtr<`[NYT::NFlow::TDynamicJobManagerGroupSpec](./all_yson_structs#NYT_NFlow_TDynamicJobManagerGroupSpec)`>>`
 **Default value**: `{}`
  ||
+|| `partition_history_limit` | **Type**: `long`
+**Default value**: `4096`
+Most partition histories the balancer keeps across job restarts, see `balancer_metrics_source`. The histories live in one persisted document with a size limit, so when the limit is reached the lightest history gives way to a heavier one and lighter ones are not saved. A pipeline stop saves no histories at all. ||
+|| `watermark_history_thinning_factor` | **Type**: `int`
+**Default value**: `4`
+Thinning factor K of the watermark histories the controller keeps to compute `ready_time_lag` for event-time and system-time timers. A history element spans at most 1/K of its age, so the lag may be over-reported by at most 1/K of its value and is never under-reported; a larger K keeps more elements. A change applies to new samples only: existing elements are never split. ||
 |#
 

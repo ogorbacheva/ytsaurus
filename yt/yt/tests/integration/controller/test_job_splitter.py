@@ -43,6 +43,7 @@ class TestJobSplitter(YTEnvSetup):
                 },
                 "job_splitter": {
                     "min_job_time": 5000,
+                    "exec_to_prepare_time_ratio": 0,
                     "min_total_data_weight": 1024,
                     "update_period": 100,
                     "candidate_percentile": 0.8,
@@ -131,7 +132,7 @@ done
             },
         )
 
-        wait_breakpoint(job_count=1)
+        wait_breakpoint(op, job_count=1)
         wait(lambda: op.get_job_count("completed") >= 4)
         release_breakpoint()
         op.track()

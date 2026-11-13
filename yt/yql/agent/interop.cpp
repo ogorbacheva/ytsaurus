@@ -1,4 +1,5 @@
 #include "interop.h"
+#include "token_manager.h"
 #include "type_builder.h"
 #include "data_builder.h"
 
@@ -23,6 +24,8 @@
 #include <yt/yt/core/logging/log.h>
 
 #include <yt/yt/core/yson/string.h>
+#include <yt/yt/core/yson/protobuf_interop.h>
+#include <yt/yt/core/yson/writer.h>
 
 #include <yt/yt/core/concurrency/scheduler.h>
 
@@ -35,6 +38,10 @@
 #include <library/cpp/yt/memory/ref.h>
 
 #include <yql/essentials/public/result_format/yql_result_format_response.h>
+
+#include <yql/tools/yqlworker/interface/proto/task.pb.h>
+
+#include <util/stream/str.h>
 
 namespace NYT::NYqlAgent {
 
@@ -53,6 +60,40 @@ using namespace NChunkClient;
 ////////////////////////////////////////////////////////////////////////////////
 
 constinit const auto Logger = YqlAgentLogger;
+
+////////////////////////////////////////////////////////////////////////////////
+
+std::optional<TYsonString> SanitizeQuerySettingsForLogging(const TYsonString& settings)
+{
+    try {
+        auto settingsMap = ConvertTo<IMapNodePtr>(settings);
+        settingsMap->RemoveChild("tokens");
+
+        if (auto taskDataNode = settingsMap->FindChild("yql_task_data")) {
+            NYql::NProto::TTaskData taskData;
+            if (!taskData.ParseFromString(taskDataNode->GetValue<TString>())) {
+                return std::nullopt;
+            }
+
+            taskData.ClearAuthData();
+            taskData.ClearUserAuthData();
+            taskData.ClearGatewaysConfig();
+            taskData.ClearGatewaysConfigPatch();
+
+            TStringStream taskDataYson;
+            TYsonWriter writer(&taskDataYson);
+            WriteProtobufMessage(&writer, taskData);
+
+            settingsMap->RemoveChild("yql_task_data");
+            settingsMap->AddChild("yql_task_data", ConvertToNode(TYsonString(taskDataYson.Str())));
+        }
+
+        return ConvertToYsonString(settingsMap);
+    } catch (const std::exception&) {
+        // Do not include input or parser errors: both may contain credentials.
+        return std::nullopt;
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -112,8 +153,10 @@ void TYqlRef::Register(TRegistrar registrar)
 }
 
 TYqlRowset BuildRowsetByRef(
+    const ITokenManagerPtr& tokenManager,
     const std::vector<std::pair<TString, TString>>& clusters,
-    const TClientOptions& clientOptions,
+    const TString& user,
+    TExecutionId tokenExecutionId,
     TYqlRefPtr references,
     int resultIndex,
     i64 rowCountLimit)
@@ -129,16 +172,22 @@ TYqlRowset BuildRowsetByRef(
     }
 
     std::optional<TString> clusterAddress;
-    for (const auto& clusterMapping : clusters) {
-        if (clusterMapping.first == cluster) {
-            clusterAddress = clusterMapping.second;
+    for (const auto& [name, address] : clusters) {
+        if (name == cluster) {
+            clusterAddress = address;
+            break;
         }
     }
     if (!clusterAddress) {
         THROW_ERROR_EXCEPTION("Cluster %Qv address is not specified", cluster);
     }
-    auto config = NRpcProxy::TConnectionConfig::CreateFromClusterUrl(*clusterAddress);
-    auto connection = NRpcProxy::CreateConnection(config);
+
+    auto clientOptions = TClientOptions::FromUserAndToken(
+        user,
+        WaitFor(tokenManager->GetOrIssueToken(tokenExecutionId, cluster))
+            .ValueOrThrow());
+    auto connectionConfig = NRpcProxy::TConnectionConfig::CreateFromClusterUrl(*clusterAddress);
+    auto connection = NRpcProxy::CreateConnection(connectionConfig);
     auto client = connection->CreateClient(clientOptions);
 
     TTableSchemaPtr targetSchema;
@@ -148,7 +197,7 @@ TYqlRowset BuildRowsetByRef(
     auto rowBuffer = New<TRowBuffer>();
 
     NApi::TGetNodeOptions options;
-    options.Timeout = config->RpcTimeout;
+    options.Timeout = connectionConfig->RpcTimeout;
     auto isDynamicTable = ConvertTo<bool>(
         WaitFor(client->GetNode(table + "/@dynamic", options))
             .ValueOrThrow());
@@ -283,8 +332,10 @@ TYqlRowset BuildRowset(
 }
 
 TYqlRowset BuildRowsetFromYson(
+    const ITokenManagerPtr& tokenManager,
     const std::vector<std::pair<TString, TString>>& clusters,
-    const TClientOptions& clientOptions,
+    const TString& user,
+    TExecutionId tokenExecutionId,
     const NYql::NResult::TWrite& write,
     int resultIndex,
     i64 rowCountLimit)
@@ -299,7 +350,14 @@ TYqlRowset BuildRowsetFromYson(
             ref->Columns.emplace(columns->size());
             std::copy(columns->cbegin(), columns->cend(), ref->Columns->begin());
         }
-        return BuildRowsetByRef(clusters, clientOptions, std::move(ref), resultIndex, rowCountLimit);
+        return BuildRowsetByRef(
+            tokenManager,
+            clusters,
+            user,
+            tokenExecutionId,
+            std::move(ref),
+            resultIndex,
+            rowCountLimit);
     }
 
     TTypeBuilder typeBuilder;
@@ -328,8 +386,10 @@ TWireYqlRowset MakeWireYqlRowset(const TYqlRowset& rowset)
 }
 
 std::vector<TWireYqlRowset> BuildRowsets(
+    const ITokenManagerPtr& tokenManager,
     const std::vector<std::pair<TString, TString>>& clusters,
-    const TClientOptions& clientOptions,
+    const TString& user,
+    TExecutionId tokenExecutionId,
     const TString& yqlYsonResults,
     i64 rowCountLimit)
 {
@@ -341,7 +401,14 @@ std::vector<TWireYqlRowset> BuildRowsets(
         for (size_t index = 0U; index < response.size(); ++index) {
             YT_TLOG_DEBUG("Building rowset for query result")
                 .With("ResultIndex", index);
-            auto rowset = MakeWireYqlRowset(BuildRowsetFromYson(clusters, clientOptions, response[index].Writes.front(), index, rowCountLimit));
+            auto rowset = MakeWireYqlRowset(BuildRowsetFromYson(
+                tokenManager,
+                clusters,
+                user,
+                tokenExecutionId,
+                response[index].Writes.front(),
+                index,
+                rowCountLimit));
             YT_TLOG_DEBUG("Rowset built")
                 .With("ResultBytes", rowset.WireRowset.size());
             rowsets.push_back(std::move(rowset));

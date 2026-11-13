@@ -7,6 +7,7 @@ import (
 	"go.ytsaurus.tech/yt/go/flow"
 )
 
+// [BEGIN main]
 func main() {
 	pipeline := flow.NewPipeline()
 	pipeline.AddStreams(
@@ -26,3 +27,5 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// [END main]

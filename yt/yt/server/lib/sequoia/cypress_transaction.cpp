@@ -969,7 +969,11 @@ protected:
         YT_ASSERT_INVOKER_AFFINITY(Invoker_);
 
         SequoiaTransaction_->AddBarrierTags({NNative::SequoiaCypressOrderingTag});
-        SequoiaTransaction_->AddStrongOrderingTags({NNative::SequoiaCypressOrderingTag});
+
+        const auto& options = SequoiaTransaction_->GetOptions();
+        if (options.Features.UseCoarseGrainedOrderingTags.value_or(true)) {
+            SequoiaTransaction_->AddStrongOrderingTags({NNative::SequoiaCypressOrderingTag});
+        }
 
         // NB: |CoordinatorCellId_| may be null here but it's OK.
         return SequoiaTransaction_->Commit({
@@ -1061,8 +1065,8 @@ private:
             // NB: Consider disabling Cypress tx mirroring by setting
             // //sys/@config/sequoia_manager/enable_cypress_transactions_in_sequoia to false.
             // Ensure that you actually know what are you doing.
-            YT_TLOG_ALERT("Failed to finish Cypress transaction in Sequoia")
-                .With("Description", Description_)
+            YT_TLOG_ALERT("Failed to apply Cypress transaction action in Sequoia")
+                .With("Action", Description_)
                 .With(*error);
         }
 
@@ -1962,6 +1966,26 @@ private:
 
         ValidateTransactionAncestors(*target);
 
+        /* Parent transaction tag is needed to avoid the following scenario:
+         *  |------------------------------+-------------------------------+-------------------------------------|
+         *  |          Coordinator         |           Participant         |           Dynamic table             |
+         *  |------------------------------+-------------------------------+-------------------------------------|
+         *  |       Send Abort Child       |                               | Child is present; Parent is present |
+         *  |                              |      Prepare Abort Child      | Child is present; Parent is present |
+         *  |      Commit Abort Child      |                               | Child is present; Parent is present |
+         *  |                              |                               |          Parent is present          |
+         *  |      Send Abort Parent       |                               |          Parent is present          |
+         *  |                              |      Prepare Abort Parent     |          Parent is present          |
+         *  |     Commit Abort Parent      |                               |          Parent is present          |
+         *  |                              |      Commit Abort Parent      |                                     |
+         *  |                              |      Commit Abort Child       |                                     |
+         *  |------------------------------+-------------------------------+-------------------------------------|
+         */
+        if (!target->AncestorIds.empty()) {
+            auto parentId = target->AncestorIds.back();
+            SequoiaTransaction_->AddStrongOrderingTags({ToString(parentId)});
+        }
+
         return CollectDependentAndNestedTransactionsAndFinishThem(std::move(*target));
     }
 
@@ -2475,7 +2499,7 @@ TFuture<TSharedRefArray> FinishNonAliveCypressTransaction(
 
 ////////////////////////////////////////////////////////////////////////////////
 
-TFuture<void> ReplicateCypressTransactionsToCell(
+std::pair<TFuture<void>, TCellId> ReplicateCypressTransactionsToCell(
     ISequoiaClientPtr sequoiaClient,
     std::vector<TTransactionId> transactionIds,
     TCellId destinationCellId,
@@ -2488,26 +2512,29 @@ TFuture<void> ReplicateCypressTransactionsToCell(
 {
     // Fast path.
     if (transactionIds.empty() && !boomerang) {
-        return OKFuture;
+        return {OKFuture, TCellId()};
     }
 
     auto sequoiaTransactionCoordinatorCellId = destinationCellId;
-    if (features.CoordinateCypressTransactionReplicationOnCypressTransactionCoordinator &&
+    if (features.CoordinateCypressTransactionReplicationOnCypressTransactionCoordinator.value_or(false) &&
         cypressTransactionCoordinatorCellId)
     {
         sequoiaTransactionCoordinatorCellId = cypressTransactionCoordinatorCellId;
     }
 
-    return New<TReplicateCypressTransactions>(
-        std::move(sequoiaClient),
+    return {
+        New<TReplicateCypressTransactions>(
+            std::move(sequoiaClient),
+            sequoiaTransactionCoordinatorCellId,
+            TCellTagList{CellTagFromId(destinationCellId)},
+            std::move(transactionIds),
+            std::move(boomerang),
+            sequoiaNodeIdToLock,
+            std::move(invoker),
+            std::move(logger))
+            ->Apply(std::move(features)),
         sequoiaTransactionCoordinatorCellId,
-        TCellTagList{CellTagFromId(destinationCellId)},
-        std::move(transactionIds),
-        std::move(boomerang),
-        sequoiaNodeIdToLock,
-        std::move(invoker),
-        std::move(logger))
-        ->Apply(std::move(features));
+    };
 }
 
 TFuture<void> ReplicateCypressTransactionToCells(

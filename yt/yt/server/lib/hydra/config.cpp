@@ -30,14 +30,6 @@ void TFileChangelogConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void TFileChangelogDispatcherConfig::Register(TRegistrar registrar)
-{
-    registrar.Parameter("flush_quantum", &TThis::FlushQuantum)
-        .Default(TDuration::MilliSeconds(10));
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 void TFileChangelogStoreConfig::Register(TRegistrar registrar)
 {
     registrar.Parameter("path", &TThis::Path);
@@ -308,6 +300,16 @@ void TDynamicDistributedHydraManagerConfig::Register(TRegistrar registrar)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+void TCausalStateRegistryConfig::Register(TRegistrar registrar)
+{
+    registrar.Parameter("eviction_period", &TThis::EvictionPeriod)
+        .Default(TDuration::Seconds(5));
+    registrar.Parameter("expiration_timeout", &TThis::ExpirationTimeout)
+        .Default(TDuration::Minutes(1));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 TDistributedHydraManagerConfigPtr TDistributedHydraManagerConfig::ApplyDynamic(
     const TDynamicDistributedHydraManagerConfigPtr& dynamicConfig) const
 {
@@ -375,6 +377,9 @@ void TDistributedHydraManagerConfig::ApplyDynamicInplace(const TDynamicDistribut
 
 void TDistributedHydraManagerConfig::Register(TRegistrar registrar)
 {
+    registrar.Parameter("causal_state_registry", &TThis::CausalStateRegistry)
+        .DefaultNew();
+
     registrar.Parameter("control_rpc_timeout", &TThis::ControlRpcTimeout)
         .Default(TDuration::Seconds(5));
 
@@ -559,6 +564,10 @@ void TDistributedHydraManagerConfig::Register(TRegistrar registrar)
 
     registrar.Parameter("mutation_handler_failure_log_level_overrides", &TThis::MutationHandlerFailureLogLevelOverrides)
         .Default();
+
+    registrar.Parameter("unknown_automaton_parts_log_level", &TThis::UnknownAutomatonPartsLogLevel)
+        .GreaterThanOrEqual(ELogLevel::Info)
+        .Default(ELogLevel::Fatal);
 
     registrar.Postprocessor([] (TThis* config) {
         if (!config->DisableLeaderLeaseGraceDelay && config->LeaderLeaseGraceDelay <= config->LeaderLeaseTimeout) {

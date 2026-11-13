@@ -6,7 +6,7 @@
 #include <yt/yt/flow/library/cpp/common/timer.h>
 #include <yt/yt/flow/library/cpp/common/visit.h>
 
-#include <yt/yt/flow/library/cpp/companion/companion_model.h>
+#include <yt/yt/flow/library/cpp/companion/client/companion_model.h>
 
 #include <yt/yt/flow/library/cpp/companion/proto/companion_service.pb.h>
 
@@ -42,6 +42,8 @@ struct TOutputGroup
     std::vector<TMessage> Messages;
     //! Aligned with |Messages|.
     std::vector<bool> Distribute;
+    //! Aligned with |Messages|. Empty means sequence numbers.
+    std::vector<TOutputMessageIdSuffix> MessageIdSuffixes;
     std::vector<NCompanion::TNewTimer> Timers;
     std::vector<TMessageId> ParentIds;
 };

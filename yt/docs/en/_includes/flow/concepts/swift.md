@@ -19,18 +19,20 @@ Swift removes this limitation: if the function is deterministic, you don’t nee
 
 ## How exactly-once guarantees are maintained {#exactly-once}
 
-Even though output data isn’t written to {{product-name}}, the [exactly-once](../../../flow/concepts/glossary.md#exactly-once) guarantees are preserved thanks to determinism:
+Even though output data isn’t written to {{product-name}}, [exactly-once](../../../flow/concepts/glossary.md#exactly-once) delivery to another Flow computation is preserved thanks to determinism:
 
 - If a job fails before delivering the result, Flow restarts it and gets **the same output** from the same input data.
 - The [Message Distributor](../../../flow/concepts/glossary.md#message-distributor) keeps delivering the message until it receives an acknowledgment (`MarkPersisted`) from the receiver, which prevents data loss.
 
-So, exactly-once is ensured not by storing the output but by the **idempotency** of the computation.
+So, exactly-once is ensured not by storing the output but by the **idempotency** of the computation and deduplication at the recipient.
+
+`TSwiftMapComputation` does not support [Sink](../../../flow/concepts/glossary.md#sink). `TSwiftOrderedSourceComputation` supports direct delivery to an external sink. Deferred publications provide output-epoch finalization but do not by themselves upgrade at-least-once input to exactly-once.
 
 ## Determinism requirement {#determinism}
 
 The transformation function in a Swift computation must be **deterministic**: for the same input data, it must return the same output, including the order of messages.
 
-The requirement also covers the binding of output messages to their parents (`set_parent_ids`): on recomputation, each output group must get the same parents in the same order. A typical mistake is iterating over an unordered structure (such as a hash table or a set) when grouping the batch by keys: the order of groups changes from run to run, and the recomputation produces a different output. Note that by default every output message of a Swift computation must have exactly one parent; multiple parents are allowed only with [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees) — see [When to set lineage explicitly](../../../flow/concepts/lineage.md#explicit-lineage) for details.
+The requirement also covers [lineage](../../../flow/concepts/lineage.md) — the binding of output messages to their parents: on recomputation, each output must get the same parents in the same order. A typical mistake is iterating over an unordered structure (such as a hash table or a set) when splitting the batch into groups: the order of groups changes from run to run, and the recomputation produces a different output. By default every output message of a Swift computation has exactly one parent; multiple parents are allowed only with [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees).
 
 {% note warning %}
 
@@ -39,6 +41,8 @@ Breaking determinism when updating a pipeline without a [drain](../../../flow/co
 {% endnote %}
 
 There can be exceptions to this rule, driven by the pipeline’s business logic specifics. But the developer of the business logic must clearly understand why they’re implementing them and what mechanisms ensure the pipeline’s overall result stays correct.
+
+By default, Flow appends the derived message’s sequence number to its message ID. If two replays of a Swift computation emit different messages at the same position, those messages get the same message ID. This can cause data loss or duplicates; if the messages have different keys, it can also violate Flow’s internal invariants. In C++, Java, Python, and Go, output options can remove emission order from message identity by selecting a payload hash or user-defined suffix (see the [C++ API description](../../../flow/cpp/process-functions.md#message-id-suffixes)). This prevents that particular ID collision only when the semantic suffix is stable; it doesn’t make a nondeterministic computation deterministic.
 
 ## Swift computation classes {#classes}
 
@@ -49,7 +53,7 @@ Flow implements two base Swift classes:
 A deterministic Map without materializing results in {{product-name}}.
 
 - **Load on {{product-name}}:** ~0 writes per epoch (only system background processes).
-- **Doesn’t support:** [Source](../../../flow/concepts/glossary.md#source), [Sink](../../../flow/concepts/glossary.md#sink).
+- **Doesn’t support:** [Source](../../../flow/concepts/glossary.md#source) or [Sink](../../../flow/concepts/glossary.md#sink).
 - **Supports:** [timers](../../../flow/concepts/glossary.md#timer) and [key-visitor streams](../../../flow/concepts/key_visitor.md) — only for working with [state](../../../flow/concepts/glossary.md#state), for example, for background cleanup (GC). Emitting output messages from timer or visit processing is **prohibited**: the output stream can’t depend on a timer or visit stream in `streams_dependency`. Since timer streams are added by default to the dependencies of each output, a spec with timers and outputs must explicitly define `streams_dependency`.
 - **Requires:** strict determinism and that each resulting message has exactly one parent — the input message.
 
@@ -64,7 +68,7 @@ A [Passthrough computation](../../../flow/concepts/glossary.md#passthrough) that
 The main class for reading ordered data from external sources.
 
 - **Load on {{product-name}}:** ~1–2 writes per epoch (metadata for recovery; the messages themselves aren’t stored).
-- **Supports:** `WatermarkStrategy` for evaluating [watermarks](../../../flow/concepts/glossary.md#timestamps-and-watermarks).
+- **Supports:** [Sink](../../../flow/concepts/glossary.md#sink) and `WatermarkStrategy` for evaluating [watermarks](../../../flow/concepts/glossary.md#timestamps-and-watermarks). Direct delivery to an external sink without deduplication is at-least-once.
 - **Requires:** exactly one [Source](../../../flow/concepts/glossary.md#source) that implements `IOrderedSource`.
 
 For more details, see the [Computation (C++)](../../../flow/cpp/computation.md#tswiftorderedsourcecomputation) section.

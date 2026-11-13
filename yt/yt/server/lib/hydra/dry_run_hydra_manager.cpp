@@ -4,6 +4,7 @@
 #include "private.h"
 #include "changelog.h"
 #include "config.h"
+#include "config_wrapper.h"
 #include "private.h"
 #include "snapshot.h"
 #include "state_hash_checker.h"
@@ -145,6 +146,7 @@ public:
                 meta.state_hash(),
                 FromProto<TInstant>(meta.timestamp()),
                 TLogicalTime(meta.logical_time()),
+                TCausalTime(meta.has_causal_time() ? meta.causal_time() : meta.sequence_number()),
                 std::move(reader),
                 prepareState);
         WaitFor(loadSnapshotFuture)
@@ -309,11 +311,8 @@ public:
         YT_UNIMPLEMENTED();
     }
 
-    TFuture<void> Reconfigure(TDynamicDistributedHydraManagerConfigPtr /*config*/) override
-    {
-        // Just do nothing.
-        return OKFuture;
-    }
+    void Reconfigure(TDynamicDistributedHydraManagerConfigPtr /*config*/) override
+    { }
 
     ELogLevel GetMutationHandlerFailureLogLevel(TStringBuf mutationType) const override
     {
@@ -323,6 +322,13 @@ public:
             config->MutationHandlerFailureLogLevelOverrides,
             mutationType,
             config->MutationHandlerFailureLogLevel);
+    }
+
+    ELogLevel GetUnknownAutomatonPartsLogLevel() const override
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        return Config_->Get()->UnknownAutomatonPartsLogLevel;
     }
 
     DEFINE_SIGNAL_OVERRIDE(void(), StartLeading);
@@ -413,6 +419,11 @@ public:
     bool GetReadOnly() const override
     {
         YT_UNIMPLEMENTED();
+    }
+
+    TCausalState GetCausalStateOrThrow(std::optional<TCausalTime> causalTime) const override
+    {
+        return DecoratedAutomaton_->GetCausalStateOrThrow(causalTime);
     }
 
     TLogicalTime GetLogicalTime() const override

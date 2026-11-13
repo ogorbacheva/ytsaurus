@@ -1,6 +1,6 @@
 #include "swift_ordered_source_companion_computation.h"
 
-#include "companion_model.h"
+#include <yt/yt/flow/library/cpp/companion/client/companion_model.h>
 
 namespace NYT::NFlow::NCompanion {
 
@@ -60,7 +60,12 @@ void TSwiftOrderedSourceCompanionComputation::DoProcess(IInputContextPtr input, 
         for (int i = 0; i < std::ssize(group.Messages); ++i) {
             // Empty Distribute means "distribute all".
             bool distribute = group.Distribute.empty() ? true : group.Distribute[i];
-            groupOutput->AddMessage(std::move(group.Messages[i]), distribute);
+            groupOutput->AddMessage(
+                std::move(group.Messages[i]),
+                TAddMessageOptions{
+                    .Distribute = distribute,
+                    .MessageIdSuffix = std::move(group.MessageIdSuffixes[i]),
+                });
         }
     }
 

@@ -24,6 +24,8 @@
 #include <yt/yt/ytlib/query_tracker_client/records/query.record.h>
 #include <yt/yt/ytlib/query_tracker_client/helpers.h>
 
+#include <yt/yt/client/query_client/query_builder.h>
+
 #include <yt/yt/client/table_client/record_helpers.h>
 
 #include <yt/yt/client/api/client.h>
@@ -81,7 +83,8 @@ public:
         NApi::NNative::IClientPtr stateClient,
         IComponentStateCheckerPtr ComponentStateChecker,
         TYPath stateRoot,
-        int minRequiredStateVersion)
+        int minRequiredStateVersion,
+        std::optional<std::string> adminsGroup)
         : SelfAddress_(std::move(selfAddress))
         , ControlInvoker_(std::move(controlInvoker))
         , AlertCollector_(std::move(alertCollector))
@@ -96,11 +99,15 @@ public:
             ControlInvoker_,
             BIND(&TQueryTracker::OnHealthCheck, MakeWeak(this)),
             config->HealthCheckPeriod))
-        , TimeBasedIndex_(CreateTimeBasedIndex(StateClient_, StateRoot_))
+        , TimeBasedIndex_(CreateTimeBasedIndex(StateClient_, StateRoot_, adminsGroup))
     {
         Engines_[EQueryEngine::Mock] = CreateMockEngine(StateClient_, StateRoot_);
         Engines_[EQueryEngine::Ql] = CreateQLEngine(StateClient_, StateRoot_);
-        Engines_[EQueryEngine::Yql] = CreateYqlEngine(StateClient_, StateRoot_);
+        Engines_[EQueryEngine::Yql] = CreateYqlEngine(
+            StateClient_,
+            StateRoot_,
+            std::move(adminsGroup));
+
         Engines_[EQueryEngine::Chyt] = CreateChytEngine(StateClient_, StateRoot_);
         Engines_[EQueryEngine::Spyt] = CreateSpytEngine(StateClient_, StateRoot_);
         // This is a correct call, despite being virtual call in constructor.
@@ -222,16 +229,6 @@ private:
         auto traceContext = TTraceContext::NewRoot("QuerySelect");
         auto guard = TCurrentTraceContextGuard(traceContext);
 
-        if (!LeaseTransaction_) {
-            YT_TLOG_DEBUG("Skip active queries acquisition, since lease transaction is not started");
-            return;
-        }
-
-        if (ComponentStateChecker_->IsComponentBanned()) {
-            YT_TLOG_DEBUG("Skip active queries acquisition, since query tracker instance is banned");
-            return;
-        }
-
         YT_TLOG_DEBUG("Selecting active queries for potential acquisition");
 
         std::vector<TActiveQuery> queryRecords;
@@ -254,21 +251,6 @@ private:
         YT_TLOG_DEBUG("Active queries selected")
             .With("ActiveQueryCount", queryRecords.size());
 
-        THashSet<TTransactionId> leaseTransactionIds;
-        for (const auto& record : queryRecords) {
-            leaseTransactionIds.insert(record.LeaseTransactionId);
-        }
-
-        THashSet<TTransactionId> activeLeaseTransactionIds;
-        try {
-            activeLeaseTransactionIds = WaitFor(GetAliveTransactions(leaseTransactionIds))
-                .ValueOrThrow();
-        } catch (const std::exception& ex) {
-            YT_TLOG_ERROR("Error while getting alive lease transactions for active queries")
-                .With(ex);
-            return;
-        }
-
         // Save profile counters.
         THashMap<TProfilingTags, int> activeQueryCounts;
 
@@ -284,6 +266,31 @@ private:
                 QueryTrackerProfilerGlobal,
                 tags)->ActiveQueries;
             activeQueriesCounter.Update(count);
+        }
+
+        if (ComponentStateChecker_->IsComponentBanned()) {
+            YT_TLOG_DEBUG("Skip active queries acquisition, since query tracker instance is banned");
+            return;
+        }
+
+        if (!LeaseTransaction_) {
+            YT_TLOG_DEBUG("Skip active queries acquisition, since lease transaction is not started");
+            return;
+        }
+
+        THashSet<TTransactionId> leaseTransactionIds;
+        for (const auto& record : queryRecords) {
+            leaseTransactionIds.insert(record.LeaseTransactionId);
+        }
+
+        THashSet<TTransactionId> activeLeaseTransactionIds;
+        try {
+            activeLeaseTransactionIds = WaitFor(GetAliveTransactions(leaseTransactionIds))
+                .ValueOrThrow();
+        } catch (const std::exception& ex) {
+            YT_TLOG_ERROR("Error while getting alive lease transactions for active queries")
+                .With(ex);
+            return;
         }
 
         std::vector<TActiveQuery> orphanedQueries;
@@ -384,7 +391,36 @@ private:
         // If current query state is "running", switch it to "pending". Otherwise, keep the existing state of a query;
         // in particular, it may be "failing" or "completing" if the previous incarnation succeeded in reaching pre-terminating state.
         auto newState = optionalRecord->State == EQueryState::Running ? EQueryState::Pending : optionalRecord->State;
+        std::optional<TError> acquisitionError;
+        const auto& engine = GetOrCrash(Engines_, queryRecord.Engine);
 
+        bool hasPreviousNonFinishingRun =
+            queryRecord.LeaseTransactionId != NullTransactionId &&
+            !IsFinishingState(newState);
+
+        if (hasPreviousNonFinishingRun && !engine->IsSafeToRestartQuery()) {
+            newState = EQueryState::Failing;
+
+            auto error = TError("Query lease was lost; restarting query execution is unsafe")
+                .With("previous_incarnation", queryRecord.Incarnation)
+                .With("previous_lease_transaction_id", queryRecord.LeaseTransactionId);
+
+            if (queryRecord.AssignedTracker) {
+                error = std::move(error)
+                    .With("previous_assigned_tracker", *queryRecord.AssignedTracker);
+            }
+
+            acquisitionError = std::move(error);
+        }
+
+        if (hasPreviousNonFinishingRun) {
+            // Ensure that we don't track this query, so query acquisition
+            // using same query tracker instance which dropped lease is safe.
+            DetachQuery(queryId);
+        }
+
+        // Only YTQL queries can be restarted, and they do not have progress,
+        // so there is no need to clear progress when acquiring a query.
         auto rowBuffer = New<TRowBuffer>();
         TActiveQueryPartial newRecord{
             .Key = queryRecord.Key,
@@ -393,6 +429,12 @@ private:
             .LeaseTransactionId = leaseTransactionId,
             .AssignedTracker = SelfAddress_,
         };
+
+        if (acquisitionError) {
+            newRecord.Error = acquisitionError;
+            newRecord.FinishTime = TInstant::Now();
+        }
+
         std::vector newRows{
             newRecord.ToUnversionedRow(rowBuffer, TActiveQueryDescriptor::Get()->GetPartialIdMapping()),
         };
@@ -425,10 +467,9 @@ private:
             .With("LeaseTransactionId", leaseTransactionId);
 
         IQueryHandlerPtr handler;
-        if (!IsFinishingState(optionalRecord->State)) {
+        if (!IsFinishingState(newState)) {
             try {
-                auto engine = queryRecord.Engine;
-                handler = Engines_[engine]->StartOrAttachQuery(queryRecord);
+                handler = engine->StartOrAttachQuery(queryRecord);
                 handler->Start();
             } catch (const std::exception& ex) {
                 YT_TLOG_INFO("Unrecoverable error on query start, finishing query")
@@ -515,13 +556,13 @@ private:
                             AcquiredQueries_[queryId].Handler->Abort();
                         }
                         YT_TLOG_INFO("Query abort was requested")
-                            .With("Error", error);
+                            .With(error);
                         break;
                     case EQueryState::Failing:
                         error = *activeQueryRecord->Error;
                         finalState = EQueryState::Failed;
                         YT_TLOG_INFO("Query failed")
-                            .With("Error", error);
+                            .With(error);
                         break;
                     case EQueryState::Completing:
                         finalState = EQueryState::Completed;
@@ -630,6 +671,11 @@ private:
 
             auto rowBuffer = New<TRowBuffer>();
 
+            std::optional<TDuration> notIndexedQueryTtl;
+            if (!activeQueryRecord->IsIndexed) {
+                notIndexedQueryTtl = GetConfigByEngine(Config_, activeQueryRecord->Engine)->NotIndexedQueriesTtl;
+            }
+
             {
                 std::vector keysToDelete = {
                     TActiveQueryKey{.QueryId = queryId}.ToKey(rowBuffer),
@@ -669,11 +715,11 @@ private:
                     .IsIndexed = activeQueryRecord->IsIndexed,
                     .IsTutorial = activeQueryRecord->IsTutorial,
                 };
-                if (!activeQueryRecord->IsIndexed) {
-                    if (auto ttl = GetConfigByEngine(Config_, activeQueryRecord->Engine)->NotIndexedQueriesTtl) {
-                        newRecord.Ttl = ttl->MilliSeconds();
-                    }
+
+                if (notIndexedQueryTtl) {
+                    newRecord.Ttl = notIndexedQueryTtl->MilliSeconds();
                 }
+
                 std::vector newRows = {
                     newRecord.ToUnversionedRow(rowBuffer, TFinishedQueryDescriptor::Get()->GetPartialIdMapping()),
                 };
@@ -685,6 +731,10 @@ private:
                 if (activeQueryRecord->IsIndexed) {
                     TimeBasedIndex_->AddQuery(PartialRecordToQuery(newRecord), transaction);
                 }
+            }
+
+            if (activeQueryRecord->Engine == EQueryEngine::Yql) {
+                FinishQueryProgress(queryId, notIndexedQueryTtl, transaction, rowBuffer);
             }
 
             auto commitResultOrError = WaitFor(transaction->Commit());
@@ -711,6 +761,72 @@ private:
                 .With(ex);
             return true;
         }
+    }
+
+    void FinishQueryProgress(
+        TQueryId queryId,
+        std::optional<TDuration> ttl,
+        const ITransactionPtr& transaction,
+        const TRowBufferPtr& rowBuffer)
+    {
+        YT_ASSERT_INVOKER_AFFINITY(ControlInvoker_);
+
+        NQueryClient::TQueryBuilder builder;
+        builder.SetSource(StateRoot_ + "/active_query_progresses");
+        builder.AddSelectExpression("[part_name]");
+        builder.AddSelectExpression("[subpart_name]");
+        builder.AddSelectExpression("[revision]");
+        builder.AddSelectExpression("[part_value]");
+        builder.AddWhereConjunct("[query_id] = {QueryId}");
+
+        TSelectRowsOptions options;
+        options.Timestamp = transaction->GetStartTimestamp();
+        options.PlaceholderValues = BuildYsonStringFluently()
+            .BeginMap()
+                .Item("QueryId").Value(queryId)
+            .EndMap();
+
+        auto selectResult = WaitFor(StateClient_->SelectRows(builder.Build(), options))
+            .ValueOrThrow();
+        auto parts = ToRecords<TQueryProgressPartial>(selectResult.Rowset);
+        if (parts.empty()) {
+            return;
+        }
+
+        std::vector<TUnversionedRow> newRows;
+        newRows.reserve(parts.size());
+        std::vector<TUnversionedRow> keysToDelete;
+        keysToDelete.reserve(parts.size());
+        for (const auto& part : parts) {
+            TQueryProgressPartial newRecord{
+                .Key = {
+                    .QueryId = queryId,
+                    .PartName = part.Key.PartName,
+                    .SubPartName = part.Key.SubPartName,
+                },
+                .Revision = part.Revision,
+                .PartValue = part.PartValue,
+            };
+            if (ttl) {
+                newRecord.Ttl = ttl->MilliSeconds();
+            }
+            newRows.push_back(newRecord.ToUnversionedRow(rowBuffer, TQueryProgressDescriptor::Get()->GetPartialIdMapping()));
+            TQueryProgressKey key{
+                .QueryId = queryId,
+                .PartName = part.Key.PartName,
+                .SubPartName = part.Key.SubPartName,
+            };
+            keysToDelete.push_back(key.ToKey(rowBuffer));
+        }
+
+        transaction->WriteRows(
+            StateRoot_ + "/finished_query_progresses",
+            TQueryProgressDescriptor::Get()->GetNameTable(),
+            MakeSharedRange(std::move(newRows), rowBuffer));
+        transaction->DeleteRows(
+            StateRoot_ + "/active_query_progresses",
+            TQueryProgressDescriptor::Get()->GetNameTable(),
+            MakeSharedRange(std::move(keysToDelete), rowBuffer));
     }
 
     static void ValidateIncarnation(i64 expectedIncarnation, const TActiveQuery& record)
@@ -771,7 +887,9 @@ private:
                     .With("ExpectedLeaseTransactionId", transactionId);
             }
 
-            DetachQuery(queryId);
+            if (query.Handler) {
+                query.Handler->Detach();
+            }
         }
     }
 
@@ -826,7 +944,8 @@ IQueryTrackerPtr CreateQueryTracker(
     NApi::NNative::IClientPtr stateClient,
     IComponentStateCheckerPtr ComponentStateChecker,
     TYPath stateRoot,
-    int minRequiredStateVersion)
+    int minRequiredStateVersion,
+    std::optional<std::string> adminsGroup)
 {
     return New<TQueryTracker>(
         std::move(config),
@@ -836,7 +955,8 @@ IQueryTrackerPtr CreateQueryTracker(
         std::move(stateClient),
         std::move(ComponentStateChecker),
         std::move(stateRoot),
-        minRequiredStateVersion);
+        minRequiredStateVersion,
+        std::move(adminsGroup));
 }
 
 ////////////////////////////////////////////////////////////////////////////////

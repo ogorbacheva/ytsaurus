@@ -2,6 +2,10 @@
 
 #include "public.h"
 
+#include <yt/yt/client/job_tracker_client/public.h>
+
+#include <yt/yt/library/erasure/public.h>
+
 #include <yt/yt/core/http/config.h>
 
 #include <yt/yt/core/misc/error.h>
@@ -77,6 +81,14 @@ struct TDomesticMediumConfig
 
     //! Same as #MaxReplicasPerRack but only applies to erasure journal chunks.
     int MaxErasureJournalReplicasPerRack;
+
+    //! Storage data centers for this medium. An empty set uses the common chunk manager config.
+    //! New media copy the common set at creation time.
+    THashSet<std::string> StorageDataCenters;
+
+    //! Additional storage data centers on which replica placement is forbidden for this medium.
+    //! New media copy the common set at creation time. Global bans still apply.
+    THashSet<std::string> BannedStorageDataCenters;
 
     //! Default behavior for dynamic tables, living on this medium.
     bool PreferLocalHostForDynamicTables;
@@ -302,6 +314,8 @@ struct TDynamicDataNodeTrackerTestingConfig
     : public NYTree::TYsonStruct
 {
     std::optional<TDuration> FullHeartbeatDelay;
+    // COMPAT(evanevannnn)
+    bool SuppressRegistrationRevisionValidation;
 
     REGISTER_YSON_STRUCT(TDynamicDataNodeTrackerTestingConfig);
 
@@ -358,6 +372,10 @@ struct TDynamicDataNodeTrackerConfig
     // COMPAT(aleksandra-zh): these are just in case.
     bool RejectSimultaneousFullHeartbeats;
     bool RejectSimultaneousIncrementalHeartbeats;
+
+    // When disabled, registration revision mismatches are alerted but heartbeats are not rejected.
+    // Enable only after upgrading nodes to send revisions; missing revisions are rejected too.
+    bool EnableRegistrationRevisionValidation;
 
     TDuration ExpectedDataNodeHeartbeatDuration;
 
@@ -616,6 +634,8 @@ struct TDynamicSequoiaChunkReplicasConfig
     int MaxConcurrentSequoiaReplicaModifications;
     int MaxConcurrentReplicasInSequoiaReplicaModifications;
 
+    bool AlwaysShowMasterLastSeenReplicas;
+
     std::optional<TDuration> SleepDurationBeforeSequoiaReplicaModifications;
 
     REGISTER_YSON_STRUCT(TDynamicSequoiaChunkReplicasConfig);
@@ -685,6 +705,23 @@ struct TDynamicConsistentReplicaPlacementConfig
 };
 
 DEFINE_REFCOUNTED_TYPE(TDynamicConsistentReplicaPlacementConfig)
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TDynamicChunkProlongatorConfig
+    : public NYTree::TYsonStruct
+{
+    bool Enable;
+    i64 MaxQueueSize;
+    TDuration QueueTtl;
+    TDuration QueueTrimPeriod;
+
+    REGISTER_YSON_STRUCT(TDynamicChunkProlongatorConfig);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TDynamicChunkProlongatorConfig)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -783,6 +820,10 @@ struct TDynamicChunkManagerConfig
     //! in order to receive responses from all the replicas and then run fast path
     //! during chunk seal.
     TDuration QuorumSessionDelay;
+    //! Maximum number of chunks to process during a global seal scan.
+    int MaxChunksPerGlobalSealScan;
+    //! Maximum number of chunks to examine during a seal queue scan.
+    int MaxChunksPerSealQueueScan;
     //! Maximum number of chunks to process during a seal scan.
     int MaxChunksPerSeal;
     //! Maximum number of chunks that can be sealed concurrently.
@@ -814,7 +855,7 @@ struct TDynamicChunkManagerConfig
     NConcurrency::TThroughputThrottlerConfigPtr JobThrottler;
 
     //! Throttles chunk jobs per type.
-    THashMap<EJobType, NConcurrency::TThroughputThrottlerConfigPtr> JobTypeToThrottler;
+    THashMap<NJobTrackerClient::EJobType, NConcurrency::TThroughputThrottlerConfigPtr> JobTypeToThrottler;
 
     //! Maximum number of heavy columns in chunk approximate statistics.
     int MaxHeavyColumns;
@@ -872,6 +913,13 @@ struct TDynamicChunkManagerConfig
     //! Set of storage data centers on which replica placement is forbidden.
     THashSet<std::string> BannedStorageDataCenters;
 
+    //! Set of storage data centers that are temporarily unavailable due to planned maintenance.
+    //! Must be disjoint from |BannedStorageDataCenters|.
+    THashSet<std::string> TemporarilyUnavailableStorageDataCenters;
+
+    //! Number of additional rack failures a chunk must tolerate while some replicas are temporarily unavailable.
+    int TemporarilyUnavailableExtraFailureDomainTolerance;
+
     TDynamicDataCenterFailureDetectorConfigPtr DataCenterFailureDetector;
 
     TDuration ProfilingPeriod;
@@ -908,6 +956,8 @@ struct TDynamicChunkManagerConfig
 
     int MaxLostVitalChunksToLog;
 
+    int MaxLostChunksToReportInDetailedReplicationStatistics;
+
     bool AlwaysFetchNonOnlineReplicas;
 
     // COMPAT(grphil)
@@ -924,6 +974,15 @@ struct TDynamicChunkManagerConfig
 
     int MaxVerboselyLoggedChunks;
     TDuration MaxVerboseLoggingEnabledDuration;
+
+    // COMPAT(theevilbird): Get rid of it. Remove requisitions for chunk_wise_accounting_migration
+    // account and set |AggregatedRequisitionIndex_| to |EmptyChunkRequisitionIndex| in TChunk constructor.
+    bool SetEmptyRequisitionIndexOnImport;
+
+    // Reset HNV on requisition update once the chunk requires durability again.
+    bool RecomputeHistoricallyNonVitalOnRequisitionUpdate;
+
+    TDynamicChunkProlongatorConfigPtr ChunkProlongator;
 
     REGISTER_YSON_STRUCT(TDynamicChunkManagerConfig);
 
@@ -944,6 +1003,12 @@ struct TDynamicChunkServiceConfig
 
     NConcurrency::TThroughputThrottlerConfigPtr DefaultPerUserRequestWeightThrottler;
     NConcurrency::TThroughputThrottlerConfigPtr DefaultPerUserRequestBytesThrottler;
+
+    // COMPAT(kvk1920)
+    bool UseLazyTransactionExternalization;
+
+    // COMPAT(aleksandra-zh)
+    bool AlertOnChunkServiceExecuteBatch;
 
     REGISTER_YSON_STRUCT(TDynamicChunkServiceConfig);
 

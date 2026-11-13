@@ -269,7 +269,7 @@ struct TExecutionContext
     // Limit from LIMIT clause.
     i64 Limit = std::numeric_limits<i64>::max();
 
-    EScanOrder ScanOrder = EScanOrder::Unordered;
+    EScanOrder ScanOrder = EScanOrder::Ordered;
     bool IsMerge = false;
 
     IMemoryChunkProviderPtr MemoryChunkProvider;
@@ -280,6 +280,30 @@ struct TExecutionContext
 };
 
 using TNestedGroupByClosure = TLookupRows;
+
+class TNestedOrderByClosure
+{
+public:
+    TNestedOrderByClosure(
+        TExpressionContext* context,
+        NWebAssembly::TCompartmentFunction<TComparerFunction> comparer,
+        i64 limit,
+        int rowSize);
+
+    void AddRow(const TPIValue* row);
+    TRange<TPIValue*> GetRows();
+
+private:
+    TExpressionContext* const Context_;
+    const NWebAssembly::TCompartmentFunction<TComparerFunction> Comparer_;
+    const i64 Limit_;
+    const int RowSize_;
+
+    std::vector<TPIValue*> Rows_;
+    i64 RowCount_ = 0;
+
+    void Trim();
+};
 
 struct TNestedExecutionContext
 {

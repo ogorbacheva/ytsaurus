@@ -15,6 +15,34 @@ import (
 	"go.uber.org/atomic"
 )
 
+func TestRegistry_GaugeWithInitialValue(t *testing.T) {
+	for _, initialValue := range []float64{0, 17.5, -17.5} {
+		t.Run(fmt.Sprint(initialValue), func(t *testing.T) {
+			r := NewRegistry(NewRegistryOpts().SetUseNameTag(true))
+			scope := r.WithPrefix("worker").WithTags(map[string]string{"job_index": "1"}).(*Registry)
+			gauge := scope.GaugeWithInitialValue("lag", initialValue).(*Gauge)
+			snapshot, err := r.Gather()
+			require.NoError(t, err)
+			require.Len(t, snapshot.List(), 1)
+			sample := snapshot.List()[0]
+			require.Equal(t, "worker.lag", sample.Name())
+			require.Equal(t, map[string]string{"job_index": "1"}, sample.Labels())
+			require.Equal(t, "name", sample.getNameTag())
+			require.Equal(t, initialValue, sample.Value())
+
+			gauge.Add(1)
+			existing := scope.GaugeWithInitialValue("lag", initialValue+100).(*Gauge)
+			require.Same(t, gauge, existing)
+			require.Equal(t, initialValue+1, existing.Value())
+			existing.Set(42)
+			require.Equal(t, float64(42), gauge.Value())
+			require.Same(t, gauge, scope.Gauge("lag"))
+			require.Equal(t, float64(42), gauge.Value())
+			require.Equal(t, float64(0), r.Gauge("default").(*Gauge).Value())
+		})
+	}
+}
+
 func TestRegistry_Gather(t *testing.T) {
 	counter := NewCounter("myprefix.mycounter", 42, WithTags(map[string]string{"ololo": "trololo"}))
 	gauge := NewGauge("myprefix.mygauge", 14.89, WithTags(map[string]string{"shimba": "boomba"}))
@@ -46,7 +74,7 @@ func TestRegistry_Gather(t *testing.T) {
 	s, err := r.Gather()
 	assert.NoError(t, err)
 
-	expected := &Metrics{}
+	expected := &Metrics{commonStartTime: r.startTime}
 	r.metrics.Range(func(_, s any) bool {
 		expected.metrics = append(expected.metrics, s.(Metric))
 		return true
@@ -89,6 +117,65 @@ func TestRegistry_Gather(t *testing.T) {
 			t.Fatalf("unexpected metric type: %T", sen)
 		}
 	}
+}
+
+func TestRegistryStartTimes(t *testing.T) {
+	root := NewRegistry(NewRegistryOpts().SetTrackRateStartTime(true))
+	root.startTime = 42
+	r := root.Rated(true).(*Registry)
+
+	before := uint32(time.Now().Unix())
+	r.Counter("counter")
+	histogram := NewHistogram("histogram", nil, nil, 0, WithRated(true))
+	r.AddMetric(&histogram)
+	gauge := NewGauge("gauge", 0)
+	r.AddMetric(&gauge)
+	explicit := NewCounter("explicit", 0, WithRated(true), WithStartTime(7))
+	r.AddMetric(&explicit)
+	after := uint32(time.Now().Unix())
+
+	got, err := r.Gather()
+	require.NoError(t, err)
+	require.Equal(t, uint32(42), got.commonStartTime)
+
+	for _, metric := range got.List() {
+		startTime := metric.getStartTime()
+		switch metric.Name() {
+		case "counter", "histogram":
+			require.GreaterOrEqual(t, startTime, before)
+			require.LessOrEqual(t, startTime, after)
+		case "explicit":
+			require.Equal(t, uint32(7), startTime)
+		case "gauge":
+			require.Zero(t, startTime)
+		}
+	}
+}
+
+func TestRegistryTrackRateStartTime(t *testing.T) {
+	before := uint32(time.Now().Unix())
+	r := NewRegistry(NewRegistryOpts().SetTrackRateStartTime(true))
+	counter := r.Rated(false).Counter("counter").(Metric)
+	funcCounter := r.FuncCounter("func_counter", func() int64 { return 0 }).(Metric)
+	histogram := NewHistogram("histogram", nil, nil, 0)
+	r.AddMetric(&histogram)
+	gauge := r.Gauge("gauge").(Metric)
+	after := uint32(time.Now().Unix())
+
+	for _, metric := range []Metric{counter, funcCounter, &histogram} {
+		startTime := metric.getStartTime()
+		require.GreaterOrEqual(t, startTime, before)
+		require.LessOrEqual(t, startTime, after)
+	}
+	require.Zero(t, gauge.getStartTime())
+
+	startTime := counter.getStartTime()
+	Rated(counter)
+	require.Equal(t, typeRated, counter.getType())
+	require.Equal(t, startTime, counter.getStartTime())
+
+	plain := NewRegistry(NewRegistryOpts()).Counter("plain").(Metric)
+	require.Zero(t, plain.getStartTime())
 }
 
 func TestDoubleRegistration(t *testing.T) {

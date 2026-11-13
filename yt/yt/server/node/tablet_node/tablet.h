@@ -2,6 +2,7 @@
 
 #include "lock_manager.h"
 #include "chaos_agent.h"
+#include "chunk_prolongator.h"
 #include "object_detail.h"
 #include "partition.h"
 #include "puller_replica_cache.h"
@@ -55,7 +56,7 @@
 
 #include <library/cpp/yt/misc/property.h>
 
-#include <library/cpp/yt/threading/atomic_object.h>
+#include <library/cpp/yt/system/atomic_object.h>
 
 #include <atomic>
 
@@ -80,7 +81,7 @@ struct TRuntimeTableReplicaData
     std::atomic<i64> PreparedReplicationRowIndex = -1;
     std::atomic<bool> PreserveTimestamps = true;
     std::atomic<NTransactionClient::EAtomicity> Atomicity = NTransactionClient::EAtomicity::Full;
-    NThreading::TAtomicObject<TError> Error;
+    TAtomicObject<TError> Error;
     std::atomic<NTabletClient::ETableReplicaStatus> Status = NTabletClient::ETableReplicaStatus::Unknown;
 
     void Populate(NTabletClient::NProto::TTableReplicaStatistics* statistics) const;
@@ -107,9 +108,9 @@ struct TChaosTabletData
     : public TRefCounted
 {
     std::atomic<ui64> ReplicationRound = 0;
-    NThreading::TAtomicObject<THashMap<TTabletId, i64>> CurrentReplicationRowIndexes;
-    NThreading::TAtomicObject<TTransactionId> PreparedWritePulledRowsTransactionId;
-    NThreading::TAtomicObject<TTransactionId> PreparedAdvanceReplicationProgressTransactionId;
+    TAtomicObject<THashMap<TTabletId, i64>> CurrentReplicationRowIndexes;
+    TAtomicObject<TTransactionId> PreparedWritePulledRowsTransactionId;
+    TAtomicObject<TTransactionId> PreparedAdvanceReplicationProgressTransactionId;
     std::atomic<bool> IsTrimInProgress = false;
     TAtomicIntrusivePtr<IPullerReplicaCache> PullerReplicaCache{GetDisabledPullerReplicaCache()};
 };
@@ -148,8 +149,8 @@ struct TLookupHeavyHitters {
 
 struct TTabletErrors
 {
-    TEnumIndexedArray<NTabletClient::ETabletBackgroundActivity, NThreading::TAtomicObject<TError>> BackgroundErrors;
-    NThreading::TAtomicObject<TError> ConfigError;
+    TEnumIndexedArray<NTabletClient::ETabletBackgroundActivity, TAtomicObject<TError>> BackgroundErrors;
+    TAtomicObject<TError> ConfigError;
 
     template <class TCallback>
     void ForEachError(TCallback&& callback) const;
@@ -161,7 +162,7 @@ struct TRuntimeSmoothMovementData
 {
     std::atomic<ESmoothMovementRole> Role;
     std::atomic<bool> IsActiveServant = true;
-    NThreading::TAtomicObject<TCellId> SiblingServantCellId;
+    TAtomicObject<TCellId> SiblingServantCellId;
     std::atomic<NHydra::TRevision> SiblingServantMountRevision;
 
     // Will be set when the target servant becomes active.
@@ -329,6 +330,8 @@ struct TTabletSnapshot
 
     std::atomic<bool> Unregistered = false;
 
+    std::unique_ptr<TChunkProlongationGuard> ChunkProlongationGuard;
+
     //! Returns a range of partitions intersecting with the range |[lowerBound, upperBound)|.
     std::pair<TPartitionListIterator, TPartitionListIterator> GetIntersectingPartitions(
         const TLegacyKey& lowerBound,
@@ -382,7 +385,7 @@ struct ITabletContext
     virtual int GetAutomatonTerm() const = 0;
     virtual IInvokerPtr GetControlInvoker() const = 0;
     virtual IInvokerPtr GetAutomatonInvoker() const = 0;
-    virtual IInvokerPtr GetStorageHeavyInvoker() const = 0;
+    virtual IPrioritizedInvokerPtr GetStorageHeavyInvoker() const = 0;
     virtual NQueryClient::IColumnEvaluatorCachePtr GetColumnEvaluatorCache() const = 0;
     virtual NQueryClient::IRowComparerProviderPtr GetRowComparerProvider() const = 0;
     virtual NApi::NNative::IClientPtr GetClient() const = 0;
@@ -739,6 +742,8 @@ public:
 
     DEFINE_BYVAL_RW_PROPERTY(std::optional<TDuration>, SnapshotEvictionTimeout);
 
+    DEFINE_BYREF_RW_PROPERTY(IChunkProlongatorPtr, ChunkProlongator, CreateChunkProlongator());
+
 public:
     TTablet(
         TTabletId tabletId,
@@ -990,7 +995,7 @@ public:
 
     NHydra::EPeerState GetAutomatonState() const;
 
-    IInvokerPtr GetStorageHeavyInvoker() const;
+    IPrioritizedInvokerPtr GetStorageHeavyInvoker() const;
 
     NApi::NNative::IClientPtr GetClient() const;
 
@@ -1085,7 +1090,7 @@ private:
     void ReconfigureDistributedThrottlers(const ITabletSlotPtr& slot);
     void ReconfigureChunkFragmentReader(const ITabletSlotPtr& slot);
     void ReconfigureStructuredLogger();
-    void ReconfigureProfiling();
+    void ReconfigureProfiling(EProfilingTagExportMode profilingTagExportMode);
     void ReconfigureRowCache(const ITabletSlotPtr& slot);
     void InvalidateChunkReaders();
     void ReconfigureHedgingManagerRegistry();

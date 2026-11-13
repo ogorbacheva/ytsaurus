@@ -3,8 +3,14 @@ name: Release python
 on:
   push:
     tags:
-      - 'python-test/ytsaurus-*/[0-9]+.[0-9]+.*'
-      - 'python/ytsaurus-*/[0-9]+.[0-9]+.*'
+      - 'python-test/ytsaurus-client/[0-9]+.[0-9]+.*'
+      - 'python-test/ytsaurus-local/[0-9]+.[0-9]+.*'
+      - 'python-test/ytsaurus-mcp/[0-9]+.[0-9]+.*'
+      - 'python-test/ytsaurus-yson/[0-9]+.[0-9]+.*'
+      - 'python/ytsaurus-client/[0-9]+.[0-9]+.*'
+      - 'python/ytsaurus-local/[0-9]+.[0-9]+.*'
+      - 'python/ytsaurus-mcp/[0-9]+.[0-9]+.*'
+      - 'python/ytsaurus-yson/[0-9]+.[0-9]+.*'
 
 env:
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
@@ -81,7 +87,7 @@ jobs:
           rm -rf *
 
       - name: Build bindings libraries
-        if: ${{ (steps.tag.outputs.PACKAGE_NAME == 'ytsaurus-yson') || (steps.tag.outputs.PACKAGE_NAME == 'ytsaurus-rpc-driver') }}
+        if: ${{ steps.tag.outputs.PACKAGE_NAME == 'ytsaurus-yson' }}
         run: |
           export SOURCE_ROOT="$(pwd)/ytsaurus"
           export BUILD_PATH=$(realpath $(pwd)/../build)
@@ -228,20 +234,11 @@ jobs:
     name: Send notifications
     needs:
       - stop-vm
-    runs-on: ubuntu-latest
     if: ${{ failure() }}
-    steps:
-      - name: Send telegram message
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_TOKEN }}
-          disable_web_page_preview: true
-          format: markdown
-          message: |
-            Workflow *${{github.workflow}}* failed: ${{github.server_url}}/${{github.repository}}/actions/runs/${{github.run_id}}.
-            Git ${{github.ref_type}}: *${{github.ref_name}}*.
-            Commit:
-            ```
-            ${{github.event.head_commit.message}}
-            ```
+    uses: ./.github/workflows/send_telegram_notification.yaml
+    with:
+      notification_type: workflow_failure
+      runner: ubuntu-latest
+    secrets:
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}

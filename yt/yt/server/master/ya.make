@@ -1,3 +1,5 @@
+INCLUDE(${ARCADIA_ROOT}/yt/ya_features.make.inc)
+
 LIBRARY()
 
 INCLUDE(${ARCADIA_ROOT}/yt/ya_cpp.make.inc)
@@ -12,10 +14,15 @@ SRCS(
     cell_master/cell_statistics.cpp
     cell_master/config_manager.cpp
     cell_master/config.cpp
+    cell_master/cypress_integration.cpp
     cell_master/disk_space_sensor_producer.cpp
     cell_master/epoch_history_manager.cpp
     cell_master/hydra_facade.cpp
     cell_master/hive_profiling_manager.cpp
+    cell_master/master_cell_group.cpp
+    cell_master/master_cell_group_manager.cpp
+    cell_master/master_cell_group_proxy.cpp
+    cell_master/master_cell_group_type_handler.cpp
     cell_master/master_hydra_service.cpp
     cell_master/multi_phase_cell_sync_session.cpp
     cell_master/multicell_manager.cpp
@@ -69,6 +76,7 @@ SRCS(
     chaos_server/chaos_cell_proxy.cpp
     chaos_server/chaos_cell_type_handler.cpp
     chaos_server/chaos_cell.cpp
+    chaos_server/chaos_manager_cell_directory_synchronizer.cpp
     chaos_server/chaos_manager.cpp
     chaos_server/chaos_replicated_table_node_proxy.cpp
     chaos_server/chaos_replicated_table_node_type_handler.cpp
@@ -96,6 +104,7 @@ SRCS(
     chunk_server/chunk_owner_node_proxy.cpp
     chunk_server/chunk_owner_type_handler.cpp
     chunk_server/chunk_placement.cpp
+    chunk_server/chunk_prolongator.cpp
     chunk_server/chunk_proxy.cpp
     chunk_server/chunk_reincarnator.cpp
     chunk_server/chunk_replacer.cpp
@@ -148,7 +157,6 @@ SRCS(
     chunk_server/proto/data_node_tracker.proto
     chunk_server/proto/chunks_samples.proto
     chunk_server/proto/master_cell_chunk_statistics_collector.proto
-    chunk_server/public.cpp
     chunk_server/incumbency_epoch.cpp
     chunk_server/s3_medium_proxy.cpp
     chunk_server/s3_medium_type_handler.cpp
@@ -316,7 +324,6 @@ SRCS(
     security_server/cluster_resources.cpp
     security_server/config.cpp
     security_server/cypress_integration.cpp
-    security_server/detailed_master_memory.cpp
     security_server/group_proxy.cpp
     security_server/group.cpp
     security_server/helpers.cpp
@@ -395,6 +402,7 @@ SRCS(
     tablet_server/public.cpp
     tablet_server/replicated_table_tracker.cpp
     tablet_server/replicated_table_tracker_service.cpp
+    tablet_server/stores_update_throttler.cpp
     tablet_server/table_replica_proxy.cpp
     tablet_server/table_replica_type_handler.cpp
     tablet_server/table_replica.cpp

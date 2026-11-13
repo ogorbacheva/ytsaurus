@@ -4,7 +4,7 @@
 
 Many stream processing tasks require waiting. For example, you might need to treat a conversion as failed if no click arrives within 30 minutes after an impression. The standard message exchange between computations isn’t suitable for this: a message is either present or not, and you can’t wait for an event’s “absence”.
 
-Timers solve this problem. A `TransformComputation` can create a timer — tell the system, “Wake me up when time X arrives.” When the moment comes, the computation receives a call to `on_timer` / `onTimer` / `DoProcessTimer` and can make a decision based on the accumulated [state](../../../flow/concepts/glossary.md#state).
+Timers solve this problem. A process function in transform mode can create a timer — tell the system, “Wake me up when time X arrives.” When the moment comes, the function receives a `ProcessTimer` / `on_timer` / `onTimer` call and can make a decision based on the accumulated [state](../../../flow/concepts/glossary.md#state).
 
 Typical use cases:
 - **Join with wait**: correlate an ad impression with a click that might arrive with a delay.
@@ -31,12 +31,12 @@ The timer is also bound to the **[grouping key](../../../flow/concepts/glossary.
 
 ## Which computations support timers {#supported-computations}
 
-| Computation | Timer support |
+| Process-function adapter | Timer support |
 |---|---|
-| `TTransformComputation` | ✓ |
-| `TSwiftMapComputation` | ✗ |
-| `TSwiftOrderedSourceComputation` | ✗ |
-| `TTransformOrderedSourceComputation` | ✗ |
+| `TProcessFunctionComputation` | ✓ |
+| `TProcessFunctionSwiftMapComputation` | ✗ |
+| `TProcessFunctionSourceComputation` | ✗ |
+| `TProcessFunctionTransformOrderedSourceComputation` | ✗ |
 
 ## Configuration {#configuration}
 
@@ -46,14 +46,69 @@ To enable timers in a computation, you must fill the `timers` field in its spec.
 
 Explanations:
 
-- **`time_type`** defines the scale that the system uses to compare `TriggerTimestamp` with the current watermark:
+- `time_type` defines the scale that the system uses to compare `TriggerTimestamp` with the current watermark:
   - `event_time` (default) — compared with `EventWatermark` across all `input` streams (or the streams listed in `streams`).
   - `system_time` — compared with `SystemWatermark`.
   - `real_time` — compared with real astronomical time.
 
-- `streams` / `streams_with_delays` — let you limit which input streams contribute to the watermark calculation for this timer. `streams_with_delays` also lets you set an individual delay for each stream.
+- `streams` / `streams_with_delays` — let you limit which input streams contribute to the watermark calculation for this timer. `streams_with_delays` also lets you set an individual delay for each stream. These parameters apply only to `event_time` and `system_time` timers. A `current_time` timer triggers when the current time reaches `TriggerTimestamp`; `streams` and `streams_with_delays` are ignored for it.
 
-- `deduplicate_equal_timestamps` — when you create multiple timers with the same key and `TriggerTimestamp`, only one is kept (the one with the smallest `EventTimestamp`). This is enabled by default.
+- `deduplicate_equal_timestamps` — merges timers in the same stream with the same key and `TriggerTimestamp`, keeping the smallest `EventTimestamp`. Deduplication is not guaranteed: duplicates are possible. Enabled by default.
+
+### Timer store {#timer-store-backend}
+
+The static `timer_store_backend` parameter in each computation's spec selects the timer store:
+
+- `in_memory` (default) — all active timers of a partition are held in the job's memory and persisted in the `timers` table.
+- `paged` — timers are stored in {{product-name}} tables in pages of about `timer_page_size` timers. Only timers closest to firing and page metadata are loaded into memory. Timers with the same trigger timestamp are kept in one page and loaded together.
+
+The dynamic `timer_store_count_limit` and `timer_store_byte_size_limit` parameters limit the number and size of timers in memory for both stores. The `paged` store does not support a `watermark_percentile` below 100 for computations with timer streams.
+
+For `paged`, the dynamic `timer_store.timer_write_multiplier` parameter limits timer row writes per iteration. The allowance is a multiple of the mandatory writes of new and replacement timers. Its default is 2. The value must be finite and at least 1. The remaining allowance is used to move timers after repartitioning. Deletions and metadata writes do not count toward the allowance.
+
+To change `timer_store_backend`, stop the pipeline and update its spec. At the next start, jobs move their timers to the selected store before processing begins. An interrupted move resumes at the next start. A change to `deduplicate_equal_timestamps` also takes effect when jobs start. A new `timer_page_size` is applied gradually during processing.
+
+Timers of computations and timer streams removed from the spec are not deleted automatically.
+
+#### Rolling back to a version without paged support {#timer-store-rollback}
+
+A rollback is allowed only when all computations use `timer_store_backend: in_memory` and the transfer of timers out of pages has completed.
+
+If the pipeline has used `paged`, stop it and switch the affected computations to `in_memory`. Start the pipeline on a version that supports `paged`. Wait until all jobs finish initialization and begin processing. Only then proceed with the rollback. Changing the spec alone is not enough: the older version cannot read timers left in pages.
+
+## Processing order {#timer-ordering}
+
+Within one timer stream, timers for the same key are processed in `TriggerTimestamp` order.
+
+Processing order across timer streams is not guaranteed. For `event_time` and `system_time` timers, to make timer A fire after timer B, add stream B to the `streams` field in timer A's spec. Timer A will then wait for stream B's watermark to advance.
+
+## Blocking related timer streams {#timer-stream-blocking}
+
+When output limits block a timer stream, delivery of ready timers pauses for its entire group, even if the blocked stream has no registered timers. Other groups can continue processing.
+
+Timer streams belong to the same group if they use the same `time_type` (`event_time` or `system_time`) and their watermark input sets overlap. Grouping is transitive: streams that wait for `{a, b}`, `{b, c}`, and `{c, d}` form one group. Differences in `streams_with_delays` values do not split a group. All `real_time` timer streams form a separate group, regardless of their configured inputs and delays.
+
+Groups include all timer streams configured for the computation, not just those with registered timers. Grouping does not add ordering guarantees across streams.
+
+## Monitoring timer lag {#monitoring}
+
+For every stream, including timer streams and united streams (`__united__`, `__united_timer__`, and others), the controller publishes `yt.flow.controller.streams.*` metrics with the `stream_id` tag:
+
+- `time_lag`, `count_lag`, `byte_size_lag` — include all registered timers. A timer's lag starts at its creation, so timers scheduled far in the future produce a constant lag "shelf" even when processing keeps up.
+- `ready_time_lag` — the longest time an unprocessed timer has been due: time since the earliest due moment among timers that are not processed yet. For timers with `time_type` `current_time`, the due moment is `TriggerTimestamp` itself. For `event_time` and `system_time`, the controller finds the moment when the watermarks of the streams the timer waits for first reached `TriggerTimestamp` plus their delays, using a persisted history of these watermarks. The history is thinned over time, so for timers that became due long ago the lag can be over-reported by up to `1 / watermark_history_thinning_factor` (25% by default), but it is never under-reported.
+- `ready_count_lag`, `ready_byte_size_lag` — the number and size of timers that have triggered but are not processed yet. Timers that have not triggered are excluded.
+
+For streams without timers, `ready_*` equal `time_lag`, `count_lag`, and `byte_size_lag`. The `ready_*` metrics never exceed the corresponding regular lags.
+
+{% note warning %}
+
+- If the watermark that timers wait for does not advance, the timers never become due and `ready_time_lag` stays near zero. Use `time_lag` and the lags of input streams as a backstop for alerts.
+- A timer registered with a `TriggerTimestamp` in the past can briefly (usually for 1–2 job reports, until it is processed) raise `ready_time_lag` up to `time_lag`.
+- If an `event_time` or `system_time` timer became due before the watermark history starts, `ready_time_lag` is not published for its stream and the united streams that include it until that timer is processed. This happens right after the first rollout or a controller rollback, and for timers with a `TriggerTimestamp` far in the past. `ready_count_lag` and `ready_byte_size_lag` are still published. Configure alerts on `ready_time_lag` to treat missing data as OK, and use `time_lag` as a backstop.
+
+{% endnote %}
+
+The `ready_count_lag` metric is not the same as the `ready_count` lifecycle metric. For timer streams their values match. For other streams, `ready_count_lag` equals `count_lag`, while `ready_count` counts only messages that are ready to be delivered but not yet handed over for processing.
 
 ## Timer structure {#timer-structure}
 
@@ -64,19 +119,29 @@ Explanations:
 ### C++ {#api-cpp}
 
 ```cpp
-// Create a timer in DoProcessMessage:
-output->AddTimer(TSystemTimestamp(message.EventTimestamp.Underlying() + TDuration::Minutes(30).Seconds()));
+void ProcessMessage(
+    const TInputMessageConstPtr& message,
+    const IOutputCollectorPtr& output,
+    const IRuntimeContextPtr& /*context*/) override
+{
+    output->AddTimer(
+        TSystemTimestamp(message->EventTimestamp.Underlying() + TDuration::Minutes(30).Seconds()),
+        message->EventTimestamp);
+}
 
-// Process the triggered timer:
-void DoProcessTimer(const TTimer& timer, IOutputCollectorPtr output) override {
-    // timer.Key, timer.EventTimestamp, timer.TriggerTimestamp
-    auto builder = MakeMessageBuilder();
+void ProcessTimer(
+    const TInputTimerConstPtr& timer,
+    const IOutputCollectorPtr& output,
+    const IRuntimeContextPtr& context) override
+{
+    // timer->Key, timer->EventTimestamp, timer->TriggerTimestamp
+    auto builder = context->MakeOutputMessageBuilder();
     // ...
     output->AddMessage(builder.Finish());
 }
 ```
 
-For more details, see the [Computation (C++)](../../../flow/cpp/computation.md) section.
+For more details, see [Process functions (C++)](../../../flow/cpp/process-functions.md).
 
 ### Java {#api-java}
 
@@ -154,11 +219,11 @@ Example implementation of a join with wait (impression + click, 30-minute timeou
 
 {% note warning %}
 
-**Process memory**. In the current implementation, all active timers are additionally stored in the process memory, on top of {{product-name}}. With a large number of timers, this can lead to Out of Memory errors when jobs start.
+**Process memory**. In the `in_memory` store, all active timers are additionally stored in the process memory, on top of {{product-name}}. With a large number of timers, this can lead to Out of Memory errors when jobs start; the `paged` store exists for such computations (see [Timer store](#timer-store-backend)).
 
 {% endnote %}
 
-- **`TSwiftMapComputation` doesn’t support timers**. If you need timer functionality, use `TTransformComputation`.
+- Swift-map mode doesn’t support timers. If you need timer functionality, run the process function under `TProcessFunctionComputation`.
 - Timestamps are transmitted in nanoseconds (uint64).
 
 ## See also

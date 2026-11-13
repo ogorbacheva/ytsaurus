@@ -40,6 +40,7 @@ struct TDQYTBackend
     std::vector<TVanillaJobFilePtr> VanillaJobFiles;
     TString Prefix;
     ui32 UploadReplicationFactor;
+    TString Token;
     TString TokenFile;
     TString User;
     TString Pool;
@@ -50,11 +51,15 @@ struct TDQYTBackend
     i64 MemoryLimit;
     i64 CacheSize;
     bool UseTmpFs;
+    std::optional<ui32> MinNodeId;
+    std::optional<ui32> MaxNodeId;
     TString NetworkProject;
     bool CanUseComputeActor;
     bool EnforceJobUtc;
     bool UseLocalLDLibraryPath;
     TBooleanFormula SchedulingTagFilter;
+    ui32 DqLiteralReservePercent;
+    ui64 DqLiteralReserveMinSlots;
 
     REGISTER_YSON_STRUCT(TDQYTBackend);
 
@@ -71,6 +76,7 @@ struct TDQYTCoordinator
     TString ClusterName;
     TString ProxyAddress;
     TString Prefix;
+    TString Token;
     TString TokenFile;
     TString User;
     TString DebugLogFile;
@@ -91,11 +97,15 @@ struct TDQManagerConfig
     ui16 GrpcPort;
     ui32 ActorThreads;
     bool UseIPv4;
+    bool EnableCliqueWarmup;
     std::vector<TDQYTBackendPtr> YTBackends;
     TDQYTCoordinatorPtr YTCoordinator;
 
     //! Address resolver used in DQ operation. Is taken from singletons config if not set.
     NNet::TAddressResolverConfigPtr AddressResolver;
+
+    //! DQ scheduler settings. Fields from NYql::NProto::TDqConfig::TScheduler with snake case keys.
+    NYTree::INodePtr Scheduler;
 
     //! DQ Interconnect Settings. Fields from NYql::NProto::TDqConfig::TICSettings with snake case keys.
     NYTree::INodePtr ICSettings;

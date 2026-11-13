@@ -11,6 +11,7 @@
 #include "operation_controller.h"
 #include "operation_controller_host.h"
 #include "private.h"
+#include "push_based_shuffle_registry.h"
 #include "scheduling_context.h"
 #include "universal_monitoring_descriptor_manager.h"
 
@@ -36,6 +37,9 @@
 
 #include <yt/yt/ytlib/chunk_client/medium_directory_synchronizer.h>
 #include <yt/yt/ytlib/chunk_client/throttler_manager.h>
+
+#include <yt/yt/ytlib/distributed_chunk_session_client/seal_monitor.h>
+#include <yt/yt/ytlib/distributed_chunk_session_client/seal_summary_fetcher.h>
 
 #include <yt/yt/ytlib/event_log/config.h>
 #include <yt/yt/ytlib/event_log/event_log.h>
@@ -69,7 +73,7 @@
 
 #include <yt/yt/build/build.h>
 
-#include <library/cpp/yt/threading/spin_lock.h>
+#include <library/cpp/yt/system/spin_lock.h>
 
 #include <util/generic/cast.h>
 
@@ -81,6 +85,7 @@ using namespace NScheduler;
 using namespace NConcurrency;
 using namespace NYTree;
 using namespace NChunkClient;
+using namespace NDistributedChunkSessionClient;
 using namespace NJobTrackerClient;
 using namespace NNodeTrackerClient;
 using namespace NEventLog;
@@ -211,6 +216,7 @@ public:
         , ChunkScraperHeavyThreadPool_(CreateThreadPool(Config_->ChunkScraperHeavyThreadCount, "ChunkScraperHeavy"))
         , JobSpecBuildPool_(CreateThreadPool(Config_->JobSpecBuildThreadCount, "JobSpec"))
         , StatisticsOffloadPool_(CreateThreadPool(Config_->StatisticsOffloadThreadCount, "StatsOffload"))
+        , PushBasedShuffleThreadPool_(CreateThreadPool(Config_->PushBasedShuffle->ThreadCount, "PushShuffle"))
         , ExecNodesUpdateQueue_(New<TActionQueue>("ExecNodes"))
         , SnapshotIOQueue_(New<TActionQueue>("SnapshotIO"))
         , ChunkLocationThrottlerManager_(New<TThrottlerManager>(
@@ -239,6 +245,23 @@ public:
             std::move(configNode),
             Bootstrap_))
         , JobTracker_(New<TJobTracker>(Bootstrap_, JobReporter_))
+        , PushBasedShuffleRegistry_(New<TPushBasedShuffleRegistry>())
+        , PushBasedShuffleSealMonitor_(CreateDistributedChunkSessionSealMonitor(
+            Config_->PushBasedShuffle->SealMonitor,
+            BIND_NO_PROPAGATE([
+                client = Bootstrap_->GetClient(),
+                invoker = PushBasedShuffleThreadPool_->GetInvoker(),
+                throttlerManager = ChunkLocationThrottlerManager_
+            ] (std::vector<TChunkId> chunkIds) {
+                return FetchDistributedChunkSessionSealSummaries(
+                    client,
+                    invoker,
+                    throttlerManager,
+                    std::move(chunkIds),
+                    ControllerAgentLogger());
+            }),
+            PushBasedShuffleThreadPool_->GetInvoker(),
+            ControllerAgentLogger()))
         , JobEventsInvoker_(CreateSerializedInvoker(NRpc::TDispatcher::Get()->GetHeavyInvoker(), "controller_agent"))
         , ExecNodeDescriptorsByTagsCache_(New<TExecNodeDescriptorsByTagsCache>(
             Config_->SchedulingTagFilterExpireTimeout,
@@ -395,6 +418,13 @@ public:
         return StatisticsOffloadPool_->GetInvoker();
     }
 
+    const IInvokerPtr& GetPushBasedShuffleInvoker()
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        return PushBasedShuffleThreadPool_->GetInvoker();
+    }
+
     const IInvokerPtr& GetExecNodesUpdateInvoker()
     {
         YT_ASSERT_THREAD_AFFINITY_ANY();
@@ -421,6 +451,20 @@ public:
         YT_ASSERT_THREAD_AFFINITY_ANY();
 
         return JobTracker_.Get();
+    }
+
+    const TPushBasedShuffleRegistryPtr& GetPushBasedShuffleRegistry() const
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        return PushBasedShuffleRegistry_;
+    }
+
+    const IDistributedChunkSessionSealMonitorPtr& GetPushBasedShuffleSealMonitor() const
+    {
+        YT_ASSERT_THREAD_AFFINITY_ANY();
+
+        return PushBasedShuffleSealMonitor_;
     }
 
     const TMediumDirectoryPtr& GetMediumDirectory() const
@@ -456,8 +500,10 @@ public:
 
         ControllerThreadPool_->SetThreadCount(Config_->ControllerThreadCount);
         ChunkScraperHeavyThreadPool_->SetThreadCount(Config_->ChunkScraperHeavyThreadCount);
+        PushBasedShuffleThreadPool_->SetThreadCount(Config_->PushBasedShuffle->ThreadCount);
 
         JobTracker_->UpdateConfig(Config_);
+        PushBasedShuffleSealMonitor_->Reconfigure(Config_->PushBasedShuffle->SealMonitor);
 
         ChunkLocationThrottlerManager_->Reconfigure(Config_->ChunkLocationThrottler);
 
@@ -790,6 +836,7 @@ public:
                 const auto& transactionIds = result.TransactionIds;
                 std::vector<TTransactionId> watchTransactionIds({
                     transactionIds.AsyncId,
+                    transactionIds.JournalNbdId,
                     transactionIds.InputId,
                     transactionIds.OutputId,
                     transactionIds.DebugId,
@@ -1188,6 +1235,7 @@ private:
     const IThreadPoolPtr ChunkScraperHeavyThreadPool_;
     const IThreadPoolPtr JobSpecBuildPool_;
     const IThreadPoolPtr StatisticsOffloadPool_;
+    const IThreadPoolPtr PushBasedShuffleThreadPool_;
     const TActionQueuePtr ExecNodesUpdateQueue_;
     const TActionQueuePtr SnapshotIOQueue_;
     const TThrottlerManagerPtr ChunkLocationThrottlerManager_;
@@ -1199,6 +1247,8 @@ private:
     const TOperationEventReporterPtr OperationEventsReporter_;
     const std::unique_ptr<TMasterConnector> MasterConnector_;
     const TJobTrackerPtr JobTracker_;
+    const TPushBasedShuffleRegistryPtr PushBasedShuffleRegistry_;
+    const IDistributedChunkSessionSealMonitorPtr PushBasedShuffleSealMonitor_;
 
     bool Connected_ = false;
     bool ConnectScheduled_ = false;
@@ -1212,7 +1262,7 @@ private:
 
     TOperationIdToOperationMap IdToOperation_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, ExecNodeDescriptorsLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, ExecNodeDescriptorsLock_);
     TRefCountedExecNodeDescriptorMapPtr CachedExecNodeDescriptors_ = New<TRefCountedExecNodeDescriptorMap>();
 
     struct TFilteredExecNodeDescriptors
@@ -1259,7 +1309,7 @@ private:
 
     DECLARE_THREAD_AFFINITY_SLOT(ControlThread);
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ClusterToNetworkBandwidthAvailabilityLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ClusterToNetworkBandwidthAvailabilityLock_);
     std::shared_ptr<const THashMap<TClusterName, bool>> ClusterToNetworkBandwidthAvailability_;
     std::map<TClusterName, TCallbackList<void()>> ClusterToNetworkBandwidthAvailabilityCallbackLists_;
 
@@ -1503,6 +1553,7 @@ private:
 
         // TODO(pogorelov): Do not call it directly, subscribe on signal when job tracker becomes stable.
         JobTracker_->OnSchedulerConnected(IncarnationId_);
+        PushBasedShuffleRegistry_->OnSchedulerConnected(IncarnationId_);
 
         SchedulerConnected_.Fire(IncarnationId_);
     }
@@ -1546,12 +1597,13 @@ private:
         IdToOperation_.clear();
 
         if (CancelableContext_) {
-            CancelableContext_->Cancel(TError("Scheduler disconnected"));
+            CancelableContext_->Cancel(TError(NYT::EErrorCode::Canceled, "Scheduler disconnected"));
             CancelableContext_.Reset();
         }
         CancelableControlInvoker_.Reset();
 
         JobTracker_->Cleanup();
+        PushBasedShuffleRegistry_->Cleanup();
 
         ExecNodeDescriptorsByTagsCache_->Clear();
 
@@ -1705,11 +1757,18 @@ private:
         ScheduleAllocationRequestsInbox_->ReportStatus(request->mutable_scheduler_to_agent_schedule_allocation_requests());
 
         auto now = TInstant::Now();
-        preparedRequest.ExecNodesRequested = LastExecNodesUpdateTime_ + Config_->ExecNodesUpdatePeriod < now;
-        preparedRequest.OperationsSent = LastOperationsSendTime_ + Config_->OperationsPushPeriod < now;
-        preparedRequest.OperationJobMetricsSent = LastOperationJobMetricsSendTime_ + Config_->OperationJobMetricsPushPeriod < now;
-        preparedRequest.OperationAlertsSent = LastOperationAlertsSendTime_ + Config_->OperationAlertsPushPeriod < now;
-        preparedRequest.SuspiciousJobsSent = LastSuspiciousJobsSendTime_ + Config_->SuspiciousJobsPushPeriod < now;
+        auto isDue = [&] (TInstant lastTime, TDuration period) {
+            return lastTime + period < now;
+        };
+
+        preparedRequest.ExecNodesRequested = isDue(LastExecNodesUpdateTime_, Config_->ExecNodesUpdatePeriod);
+        preparedRequest.OperationsSent = isDue(LastOperationsSendTime_, Config_->OperationsPushPeriod);
+        preparedRequest.OperationJobMetricsSent = preparedRequest.OperationsSent &&
+            isDue(LastOperationJobMetricsSendTime_, Config_->OperationJobMetricsPushPeriod);
+        preparedRequest.OperationAlertsSent = preparedRequest.OperationsSent &&
+            isDue(LastOperationAlertsSendTime_, Config_->OperationAlertsPushPeriod);
+        preparedRequest.SuspiciousJobsSent = preparedRequest.OperationsSent &&
+            isDue(LastSuspiciousJobsSendTime_, Config_->SuspiciousJobsPushPeriod);
 
         for (const auto& [operationId, operation] : GetOperations()) {
             bool flushJobMetrics = flushJobMetricsOperationIds.contains(operationId);
@@ -1722,7 +1781,7 @@ private:
             auto* protoOperation = request->add_operations();
             ToProto(protoOperation->mutable_operation_id(), operationId);
 
-            // We must to sent job metrics for finished operations.
+            // We must send job metrics for finished operations.
             if (preparedRequest.OperationJobMetricsSent || flushJobMetrics) {
                 auto jobMetricsDelta = controller->PullJobMetricsDelta(/*force*/ flushJobMetrics);
                 ToProto(protoOperation->mutable_job_metrics(), jobMetricsDelta);
@@ -1833,6 +1892,7 @@ private:
         YT_TLOG_DEBUG("Sending heartbeat")
             .With("ExecNodesRequested", preparedRequest.ExecNodesRequested)
             .With("OperationsSent", preparedRequest.OperationsSent)
+            .With("OperationJobMetricsSent", preparedRequest.OperationJobMetricsSent)
             .With("OperationAlertsSent", preparedRequest.OperationAlertsSent)
             .With("SuspiciousJobsSent", preparedRequest.SuspiciousJobsSent)
             .With("OperationEventCount", preparedRequest.RpcRequest->agent_to_scheduler_operation_events().items_size());
@@ -2466,6 +2526,11 @@ const IInvokerPtr& TControllerAgent::GetStatisticsOffloadInvoker()
     return Impl_->GetStatisticsOffloadInvoker();
 }
 
+const IInvokerPtr& TControllerAgent::GetPushBasedShuffleInvoker()
+{
+    return Impl_->GetPushBasedShuffleInvoker();
+}
+
 const IInvokerPtr& TControllerAgent::GetExecNodesUpdateInvoker()
 {
     return Impl_->GetExecNodesUpdateInvoker();
@@ -2484,6 +2549,16 @@ TMasterConnector* TControllerAgent::GetMasterConnector()
 TJobTracker* TControllerAgent::GetJobTracker() const
 {
     return Impl_->GetJobTracker();
+}
+
+const TPushBasedShuffleRegistryPtr& TControllerAgent::GetPushBasedShuffleRegistry() const
+{
+    return Impl_->GetPushBasedShuffleRegistry();
+}
+
+const IDistributedChunkSessionSealMonitorPtr& TControllerAgent::GetPushBasedShuffleSealMonitor() const
+{
+    return Impl_->GetPushBasedShuffleSealMonitor();
 }
 
 bool TControllerAgent::IsConnected() const

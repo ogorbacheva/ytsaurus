@@ -45,18 +45,31 @@ public:
         auto predicate = attributes->Find<std::string>("predicate");
         auto evaluatedColumnsSchema = attributes->Find<TTableSchemaPtr>("evaluated_columns_schema");
 
-        auto mountInfos = WaitFor(AllSucceeded(std::vector{
-                Client_->Connection_->GetTableMountCache()->GetTableInfo(tablePath),
-                Client_->Connection_->GetTableMountCache()->GetTableInfo(indexTablePath),
+        NApi::TGetNodeOptions getNodeOptions;
+        getNodeOptions.Attributes = {"id", "schema", "schema_id", "external_cell_tag"};
+        getNodeOptions.ReadFrom = EMasterChannelKind::Cache;
+
+        auto tablesMetadata = WaitFor(AllSucceeded(std::vector{
+                Client_->GetNode(tablePath, getNodeOptions),
+                Client_->GetNode(indexTablePath, getNodeOptions),
             }))
             .ValueOrThrow();
 
+        auto tableNode = ConvertToNode(tablesMetadata[0]);
+        auto indexTableNode = ConvertToNode(tablesMetadata[1]);
 
-        auto indexTableSchema = mountInfos[1]->Schemas[ETableSchemaKind::Primary];
+        auto tableSchema = tableNode->Attributes().Get<TTableSchema>("schema");
+        auto indexTableSchema = indexTableNode->Attributes().Get<TTableSchema>("schema");
 
-        auto tableId = mountInfos[0]->TableId;
-        auto indexTableId = mountInfos[1]->TableId;
+        auto tableId = tableNode->Attributes().Get<TTableId>("id");
+        auto indexTableId = indexTableNode->Attributes().Get<TTableId>("id");
+
         auto tableType = TypeFromId(tableId);
+
+        THROW_ERROR_EXCEPTION_UNLESS(IsSequoiaId(tableId) == IsSequoiaId(indexTableId),
+            "Cannot bind table and index table from different metadata trees (TableIsSequoia: %v, IndexTableIsSequoia: %v)",
+            IsSequoiaId(tableId),
+            IsSequoiaId(indexTableId));
 
         if (tableType != TypeFromId(indexTableId)) {
             THROW_ERROR_EXCEPTION("Table type mismatch")
@@ -73,11 +86,12 @@ public:
             THROW_ERROR_EXCEPTION("Unsupported table type %Qlv", tableType);
         }
 
-        auto cellTag = CellTagFromId(tableId);
-        if (cellTag != CellTagFromId(indexTableId)) {
+        auto tableCellTag = CellTagFromId(tableId);
+        auto indexTableCellTag = CellTagFromId(indexTableId);
+        if (!IsSequoiaId(tableId) && tableCellTag != indexTableCellTag) {
             THROW_ERROR_EXCEPTION("Table and index table native cell tags differ")
-                .With("table_cell_tag", cellTag)
-                .With("index_table_cell_tag", CellTagFromId(indexTableId));
+                .With("table_cell_tag", tableCellTag)
+                .With("index_table_cell_tag", indexTableCellTag);
         }
 
         auto getUnfoldedColumns = [&] {
@@ -100,8 +114,8 @@ public:
 
         ValidateIndexSchema(
             kind,
-            *mountInfos[0]->Schemas[ETableSchemaKind::Primary],
-            *indexTableSchema,
+            tableSchema,
+            indexTableSchema,
             predicate,
             evaluatedColumnsSchema,
             unfoldedColumns);
@@ -109,9 +123,18 @@ public:
         attributes->Set("table_id", tableId);
         attributes->Set("index_table_id", indexTableId);
 
+        if (IsSequoiaId(tableId)) {
+            TGetNodeOptions getNodeOptions;
+
+            attributes->Set("table_schema_id", tableNode->Attributes().Get<TMasterTableSchemaId>("schema_id"));
+            attributes->Set("index_table_schema_id", indexTableNode->Attributes().Get<TMasterTableSchemaId>("schema_id"));
+
+            attributes->Set("table_external_cell_tag", tableNode->Attributes().Get<TCellTag>("external_cell_tag"));
+        }
+
         return Client_->CreateObjectImpl(
             type,
-            cellTag,
+            tableCellTag,
             *attributes,
             options);
     }

@@ -17,6 +17,7 @@
 #include <yt/yt/core/concurrency/scheduler_api.h>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <set>
 
@@ -28,7 +29,7 @@ using namespace NConcurrency;
 
 namespace {
 
-ui64 GetRangeHashLength(const TKeyRange& range)
+ui64 GetRangeHashSpan(const TKeyRange& range)
 {
     if (range.Lower == range.Upper) {
         return 0;
@@ -38,10 +39,18 @@ ui64 GetRangeHashLength(const TKeyRange& range)
     const auto upper = ExtractFirstUintFromKey(range.Upper)
         .value_or(std::numeric_limits<ui64>::max());
     YT_VERIFY(upper >= lower);
+    return upper - lower;
+}
+
+ui64 GetRangeHashLength(const TKeyRange& range)
+{
+    if (range.Lower == range.Upper) {
+        return 0;
+    }
     // A non-empty range always spans at least one unit: keys that differ only
     // beyond the hash column (e.g. [[5u, "a"]; [5u, "z"])) have an equal hash
     // bound but still contain keys, so they must be read, not skipped.
-    return std::max<ui64>(1, upper - lower);
+    return std::max<ui64>(1, GetRangeHashSpan(range));
 }
 
 TKeyRange TruncateRangeHashLength(const TKeyRange& range, ui64 length)
@@ -78,6 +87,21 @@ double ComputeKeyVisitorSweepRate(double span, double periodSeconds)
 
 ////////////////////////////////////////////////////////////////////////////////
 
+namespace {
+
+////////////////////////////////////////////////////////////////////////////////
+
+bool NamesContain(const std::optional<THashSet<std::string>>& names, const std::string& name)
+{
+    return names && names->contains(name);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+} // namespace
+
+////////////////////////////////////////////////////////////////////////////////
+
 TKeyVisitor::TKeyVisitor(
     TKeyVisitorContextPtr context,
     TDynamicKeyVisitorContextPtr dynamicContext)
@@ -101,8 +125,53 @@ TKeyVisitor::TKeyVisitor(
     , PersistedCounter_(Context_->Profiler.Counter("/persisted_count"))
 {
     YT_VERIFY(Context_->Spec);
-    EmittedRate_.Update(0);
-    ProcessedRate_.Update(0);
+
+    // A state manager that cannot serve List() would fail every sweep
+    // iteration behind the retryable background fill and the cursor would
+    // never advance; refuse the combination when the visitor is built.
+    const auto& names = Context_->Spec->Names;
+    const auto& externalNames = Context_->Spec->ExternalNames;
+    const auto& weakExternalNames = Context_->Spec->WeakExternalNames;
+    const bool scanAll = !names && !externalNames;
+    if (Context_->StateManager && (scanAll || (externalNames && !externalNames->empty()))) {
+        for (const auto& [name, manager] : Context_->StateManager->GetExternalStateManagers()) {
+            if (externalNames && !externalNames->contains(name)) {
+                continue;
+            }
+            try {
+                manager->ValidateListable();
+            } catch (const std::exception& ex) {
+                THROW_ERROR_EXCEPTION(
+                    "External state manager %Qv cannot serve key visitor stream %Qv",
+                    name,
+                    Context_->StreamId)
+                    .With(ex);
+            }
+        }
+    }
+    if (Context_->StateManager) {
+        for (const auto& [name, joiner] : Context_->StateManager->GetExternalStateJoiners()) {
+            if ((!NamesContain(externalNames, name) && !NamesContain(weakExternalNames, name)) ||
+                !joiner->IsVisitorDriven())
+            {
+                continue;
+            }
+            try {
+                joiner->ValidateListable();
+            } catch (const std::exception& ex) {
+                THROW_ERROR_EXCEPTION(
+                    "External state joiner %Qv cannot serve key visitor stream %Qv",
+                    name,
+                    Context_->StreamId)
+                    .With(ex);
+            }
+        }
+    }
+
+    const auto now = TInstant::Now();
+    ScannedKeyRate_.Update(0, now);
+    ScannedHashRate_.Update(0, now);
+    ProcessedRate_.Update(0, now);
 }
 
 TFuture<void> TKeyVisitor::Init(bool upstreamCompleted)
@@ -209,18 +278,40 @@ std::vector<TVisit> TKeyVisitor::GetNextBatch(i64 batchSize)
     return result;
 }
 
-THashMap<TStreamId, TInflightStreamTraverseDataPtr> TKeyVisitor::BuildInflight() const
+THashMap<TStreamId, TInflightStreamTraverseDataPtr> TKeyVisitor::BuildInflight(TSystemTimestamp now) const
 {
     YT_ASSERT_SERIALIZED_INVOKER_AFFINITY(Context_->SerializedInvoker);
     auto inflight = New<TInflightStreamTraverseData>();
     inflight->Suspended = DynamicContext_->Draining;
     inflight->Empty =
         Store_->IsCurrentPassFinal() && Store_->IsAllCommitted() && Buffer_.empty();
-    inflight->InflightMetrics->Count = inflight->Empty ? 0 : BufferRowCount_;
     inflight->InflightMetrics->ReadyCount = BufferRowCount_;
-    inflight->InflightMetrics->NewCountPerSec = EmittedRate_.GetRate();
+    if (inflight->Empty) {
+        inflight->InflightMetrics->NewCountPerSec = 0;
+    } else {
+        // Bootstrap from paired totals until the EMA window matures, even if the buffer fills first.
+        const auto keyRate = ScannedKeyRate_.GetLastRate().value_or(ScannedKeyRate_.GetTotal());
+        const auto hashRate = ScannedHashRate_.GetLastRate().value_or(ScannedHashRate_.GetTotal());
+        if (hashRate > 0) {
+            double estimatedKeyCount = keyRate / hashRate * GetRangeHashSpan(Context_->PartitionRange);
+            double periodSeconds = DynamicContext_->DynamicSpec->Period.SecondsFloat();
+            inflight->InflightMetrics->NewCountPerSec = estimatedKeyCount / periodSeconds;
+            if (auto passStartedAt = Store_->GetMinPassStartedAt(); passStartedAt && now > *passStartedAt) {
+                double elapsedSeconds = now.Underlying() - passStartedAt->Underlying();
+                // Missed periods do not enqueue extra passes; scanned work already includes the buffer.
+                double overdueFraction = std::max(
+                    0.0,
+                    std::min(1.0, elapsedSeconds / periodSeconds) - Store_->GetScannedFraction());
+                double readyCount = BufferRowCount_ + std::ceil(estimatedKeyCount * overdueFraction);
+                inflight->InflightMetrics->ReadyCount = readyCount >= static_cast<double>(std::numeric_limits<i64>::max())
+                    ? std::numeric_limits<i64>::max()
+                    : static_cast<i64>(readyCount);
+            }
+        }
+    }
+    inflight->InflightMetrics->Count = *inflight->InflightMetrics->ReadyCount;
     inflight->InflightMetrics->OfferedCountPerSec = inflight->InflightMetrics->NewCountPerSec;
-    inflight->InflightMetrics->ProcessedCountPerSec = ProcessedRate_.GetRate();
+    inflight->InflightMetrics->ProcessedCountPerSec = ProcessedRate_.GetDecayedRate();
     if (!inflight->Empty && !Buffer_.empty() && !Buffer_.front().Visits.empty()) {
         const auto& head = Buffer_.front().Visits.front();
         inflight->MinSystemTimestamp = head.SystemTimestamp;
@@ -240,9 +331,6 @@ void TKeyVisitor::Sync(NApi::IDynamicTableTransactionPtr transaction)
 void TKeyVisitor::Commit()
 {
     YT_ASSERT_SERIALIZED_INVOKER_AFFINITY(Context_->SerializedInvoker);
-    if (PendingProcessedCount_ == 0) {
-        return;
-    }
     ProcessedRate_.Inc(PendingProcessedCount_);
     PersistedCounter_.Increment(PendingProcessedCount_);
     PendingProcessedCount_ = 0;
@@ -338,9 +426,12 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
 
     const auto& names = Context_->Spec->Names;
     const auto& externalNames = Context_->Spec->ExternalNames;
+    const auto& weakExternalNames = Context_->Spec->WeakExternalNames;
     const bool scanAll = !names && !externalNames;
     const bool scanInternal = scanAll || (names && !names->empty());
     const bool scanExternal = scanAll || (externalNames && !externalNames->empty());
+    const bool scanJoiners = (externalNames && !externalNames->empty()) ||
+        (weakExternalNames && !weakExternalNames->empty());
 
     YT_VERIFY(!BackgroundFillInProgress_);
     BackgroundFillInProgress_ = true;
@@ -351,7 +442,17 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
     const i64 maxRows = DynamicContext_->DynamicSpec->MaxScanRowsPerIteration;
     YT_VERIFY(maxRows > 0);
 
-    std::vector<TFuture<std::vector<TKey>>> futures;
+    //! One swept source: its keys in the range, and whether they become visits. A weak joiner is
+    //! read so that its rows are served to the visits of the range, but contributes no keys.
+    struct TSweptSource
+    {
+        TFuture<std::vector<TKey>> Keys;
+        bool ContributesKeys = true;
+        //! Set for a weak joiner, which is told which of its listed keys got visits.
+        IExternalStateJoinerPtr WeakJoiner;
+    };
+
+    std::vector<TSweptSource> sources;
     if (scanInternal) {
         NTables::IKeyStates::TTableKeyFilter filter;
         filter.ComputationId = Context_->ComputationId;
@@ -360,7 +461,8 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
         }
         filter.LowerKey = throttledRange.Lower;
         filter.UpperKey = throttledRange.Upper;
-        futures.push_back(Context_->KeyStates->List(filter, maxRows, std::nullopt)
+        sources.push_back({
+            .Keys = Context_->KeyStates->List(filter, maxRows, std::nullopt)
                 .AsUnique()
                 .Apply(BIND([] (NTables::IKeyStates::TListResult&& result) {
                     std::vector<TKey> keys;
@@ -369,7 +471,8 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
                         keys.push_back(std::move(tableKey.Key));
                     }
                     return keys;
-                })));
+                })),
+        });
     }
     if (scanExternal && Context_->StateManager) {
         IExternalStateManager::TFilter managerFilter;
@@ -379,20 +482,26 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
             if (externalNames && !externalNames->contains(name)) {
                 continue;
             }
-            futures.push_back(manager->List(managerFilter, maxRows, std::nullopt)
+            sources.push_back({
+                .Keys = manager->List(managerFilter, maxRows, std::nullopt)
                     .AsUnique()
                     .Apply(BIND([] (IExternalStateManager::TListResult&& result) {
                         return std::move(result.Keys);
-                    })));
+                    })),
+            });
         }
+    }
+    if (scanJoiners && Context_->StateManager) {
         IExternalStateJoiner::TFilter joinerFilter;
         joinerFilter.LowerKey = throttledRange.Lower;
         joinerFilter.UpperKey = throttledRange.Upper;
         for (const auto& [name, joiner] : Context_->StateManager->GetExternalStateJoiners()) {
             // Unlike a state manager, a joiner is swept only when explicitly named in
-            // external_names — scan-all never sweeps joiners. A visitor-driven joiner holds a
-            // single sweep cursor and is bound to at most one stream (validated at construction).
-            if (!externalNames || !externalNames->contains(name)) {
+            // external_names or weak_external_names — scan-all never sweeps joiners. A
+            // visitor-driven joiner holds a single sweep cursor and is bound to at most one
+            // stream (validated at construction).
+            const bool contributesKeys = NamesContain(externalNames, name);
+            if (!contributesKeys && !NamesContain(weakExternalNames, name)) {
                 continue;
             }
             if (!joiner->IsVisitorDriven()) {
@@ -404,18 +513,22 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
                 }
                 continue;
             }
-            futures.push_back(joiner->List(joinerFilter, maxRows, std::nullopt)
+            sources.push_back({
+                .Keys = joiner->List(joinerFilter, maxRows, std::nullopt)
                     .AsUnique()
                     .Apply(BIND([] (IExternalStateJoiner::TListResult&& result) {
                         return std::move(result.Keys);
-                    })));
+                    })),
+                .ContributesKeys = contributesKeys,
+                .WeakJoiner = contributesKeys ? nullptr : joiner,
+            });
         }
     }
 
     std::vector<TFuture<void>> waits;
-    waits.reserve(futures.size());
-    for (const auto& future : futures) {
-        waits.push_back(future.AsVoid());
+    waits.reserve(sources.size());
+    for (const auto& source : sources) {
+        waits.push_back(source.Keys.AsVoid());
     }
     WaitFor(AllSucceeded(std::move(waits))).ThrowOnError();
 
@@ -423,16 +536,21 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
     // unread rows past its last returned key. Truncating the read-range at
     // the smallest such last-key across all hit-cap sources keeps the tail
     // Pending in the store so the next iteration re-reads it from scratch —
-    // no keys are lost.
+    // no keys are lost. A weak source takes part in the truncation too: a
+    // visit must not run ahead of the rows the weak joiner has read for it.
     std::set<TKey> sortedKeys;
     std::optional<TKey> truncationUpper;
-    for (auto& future : futures) {
-        auto keys = WaitFor(future).ValueOrThrow();
+    for (auto& source : sources) {
+        auto keys = WaitFor(source.Keys)
+            .ValueOrThrow();
         if (std::ssize(keys) >= maxRows) {
             auto& candidate = keys.back();
             if (!truncationUpper || candidate < *truncationUpper) {
                 truncationUpper = candidate;
             }
+        }
+        if (!source.ContributesKeys) {
+            continue;
         }
         for (auto& key : keys) {
             sortedKeys.insert(std::move(key));
@@ -443,6 +561,14 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
     if (truncationUpper) {
         sortedKeys.erase(sortedKeys.lower_bound(*truncationUpper), sortedKeys.end());
         readRange.Upper = *truncationUpper;
+    }
+
+    // Over the whole throttled range: what lies past a truncation is listed again with the
+    // Pending tail, and a key with no visit here would otherwise stay cached in the joiner.
+    for (const auto& source : sources) {
+        if (source.WeakJoiner) {
+            source.WeakJoiner->RetainListed(throttledRange, sortedKeys);
+        }
     }
 
     if (truncationUpper && readRange.Upper == readRange.Lower) {
@@ -456,6 +582,10 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
     const auto [now, uniqueSeqNo] = WaitFor(Context_->TimeProvider->GenerateGlobalUniqueSeqNo())
         .ValueOrThrow();
     Store_->MarkBuffered(readRange, now);
+
+    const auto observationTime = TInstant::Now();
+    ScannedKeyRate_.Inc(std::ssize(sortedKeys), observationTime);
+    ScannedHashRate_.Inc(GetRangeHashSpan(readRange), observationTime);
 
     // Snapshot schedule lag once: anchors both the per-visit EventTimestamp
     // stamp and the catch-up toggle. Sweep anchor = oldest non-Pending
@@ -501,9 +631,7 @@ TKeyVisitor::EIterationOutcome TKeyVisitor::DoRunBackgroundFillIterationGuarded(
         }
     }
     if (!entry.Visits.empty()) {
-        const auto emitted = static_cast<double>(std::ssize(entry.Visits));
-        EmittedRate_.Inc(emitted);
-        RegisteredCounter_.Increment(static_cast<i64>(emitted));
+        RegisteredCounter_.Increment(std::ssize(entry.Visits));
     }
     BufferRowCount_ += std::ssize(entry.Visits);
     Buffer_.push_back(std::move(entry));

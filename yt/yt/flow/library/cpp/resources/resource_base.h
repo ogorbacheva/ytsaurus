@@ -1,6 +1,7 @@
 #pragma once
 
 #include "public.h"
+#include "resource_controller_base.h"
 
 #include <yt/yt/flow/library/cpp/common/resource.h>
 #include <yt/yt/flow/library/cpp/misc/reconfigurable.h>
@@ -9,13 +10,62 @@ namespace NYT::NFlow {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+DECLARE_REFCOUNTED_CLASS(TMaterializedFileProvider);
+
+//! One exact file-provider revision pinned in local file storage.
+class TMaterializedFileProvider
+    : public TRefCounted
+{
+public:
+    TMaterializedFileProvider(
+        TFileProviderRevisionPtr revision,
+        NFileStorage::IFileStorageObjectPtr storageObject);
+
+    const TFileProviderRevisionPtr& GetRevision() const;
+    const std::string& GetRootPath() const;
+
+private:
+    const TFileProviderRevisionPtr Revision_;
+    const NFileStorage::IFileStorageObjectPtr StorageObject_;
+    const std::string RootPath_;
+};
+
+DEFINE_REFCOUNTED_TYPE(TMaterializedFileProvider);
+
+DECLARE_REFCOUNTED_CLASS(TMaterializedFileProviderSnapshot);
+
+//! An immutable file snapshot with its named materialized providers.
+class TMaterializedFileProviderSnapshot
+    : public TRefCounted
+{
+public:
+    TMaterializedFileProviderSnapshot(
+        TFileSnapshotPtr fileSnapshot,
+        THashMap<TFileProviderId, TMaterializedFileProviderPtr> fileProviders);
+
+    const TFileSnapshotPtr& GetFileSnapshot() const;
+    const THashMap<TFileProviderId, TMaterializedFileProviderPtr>& GetFileProviders() const;
+    const TMaterializedFileProviderPtr& GetFileProvider(const TFileProviderId& id) const;
+    const TMaterializedFileProviderPtr& GetOnlyFileProvider() const;
+
+private:
+    const TFileSnapshotPtr FileSnapshot_;
+    const THashMap<TFileProviderId, TMaterializedFileProviderPtr> FileProviders_;
+};
+
+DEFINE_REFCOUNTED_TYPE(TMaterializedFileProviderSnapshot);
+
+////////////////////////////////////////////////////////////////////////////////
+
 //! Base class for Flow resources.
 //! @see IResource for details.
 class TResourceBase
-    : public IResource
+    : public TResourceLifecycleBase
     , public virtual TReconfigurable<TDynamicResourceContext>
 {
 public:
+    using TController = TResourceControllerBase;
+
     //! Constructor.
     /*!
      *  Resource constructor called at each Controller and Worker instances but loaded only when it is required
@@ -63,6 +113,20 @@ public:
     TResourceRevisionState GetRevisionState() const override;
 
 protected:
+    //! Invoker for background work canceled by #IResource::Stop().
+    const IInvokerPtr& GetBackgroundInvoker() const;
+
+    //! Materializes one exact named file revision from a delivered file snapshot.
+    TFuture<TMaterializedFileProviderPtr> MaterializeFileProvider(
+        const TFileSnapshotPtr& fileSnapshot,
+        const TFileProviderId& id) const;
+
+    //! Materializes the requested named revisions as one immutable input snapshot.
+    //! An empty |names| list means every provider declared by the resource spec.
+    TFuture<TMaterializedFileProviderSnapshotPtr> MaterializeFileProviders(
+        const TFileSnapshotPtr& fileSnapshot,
+        const std::vector<TFileProviderId>& ids = {}) const;
+
     //! Reports queue activity for this resource to the resource manager.
     /*!
      *  \param morePushedToQueue - Number of additional items pushed to the queue since the last call.
@@ -91,9 +155,11 @@ protected:
 
 private:
     const TResourceContextPtr Context_;
+    const IInvokerPtr BackgroundInvoker_;
     TAtomicIntrusivePtr<TDynamicResourceContext> DynamicContext_;
     const NYTree::TYsonStructPtr Parameters_;
     TAtomicIntrusivePtr<NYTree::TYsonStruct> DynamicParameters_;
+    THashMap<TFileProviderId, IFileProviderPtr> FileProviders_;
 
 protected:
     NLogging::TLogger Logger;

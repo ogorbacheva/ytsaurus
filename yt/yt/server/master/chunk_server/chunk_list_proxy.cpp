@@ -1,9 +1,8 @@
 #include "chunk_list_proxy.h"
-#include "private.h"
+
+#include "chunk_list.h"
 #include "chunk_view.h"
 #include "dynamic_store.h"
-#include "chunk_list.h"
-#include "chunk_manager.h"
 #include "helpers.h"
 
 #include <yt/yt/server/master/cell_master/bootstrap.h>
@@ -164,8 +163,8 @@ private:
 
             case EInternedAttributeKey::ParentIds:
                 BuildYsonFluently(consumer)
-                    .DoListFor(chunkList->Parents(), [=] (TFluentList fluent, const TChunkList* chunkList) {
-                        fluent.Item().Value(chunkList->GetId());
+                    .DoListFor(chunkList->Parents(), [=] (TFluentList fluent, const TChunkTree* chunkTree) {
+                        fluent.Item().Value(chunkTree->GetId());
                     });
                 return true;
 

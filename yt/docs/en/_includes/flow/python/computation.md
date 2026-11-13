@@ -64,6 +64,8 @@ For more on specs, see the [Spec, DynamicSpec, and Config](../../../flow/concept
 
 In Python, you create a `SourceComputation` by passing `source=True` to `Pipeline.add()`. You filter [messages](../../../flow/concepts/glossary.md#message) inside the Process Function using the [distribute](../../../flow/python/distribute.md) flag.
 
+For deterministic processing without user state, set `TSwiftOrderedSourceCompanionComputation` in the static spec. If the source uses internal state or nondeterministic logic, use `TTransformOrderedSourceCompanionComputation`: the worker materializes its output and commits that output atomically with state and the source offset. The internal-state key is the source partition key.
+
 ### Parameters
 
 | Parameter | Required | Description |
@@ -132,7 +134,7 @@ Let’s go line by line:
 
 A batch corresponds to one worker request and may contain messages with **different [keys](../../../flow/concepts/glossary.md#key)** (see [Companion](../../../flow/concepts/companion.md#schema)). By default, all messages of the batch become the parents of every output message.
 
-`output.set_parent_ids(ids)` replaces this default: the method takes the `message_id` (a string or a list of strings) of input messages of the current batch and returns a new collector — all output added through it gets exactly these messages as parents. Pass the `message_id` of the input messages the given output was actually derived from. When the call is mandatory (see [When to set lineage explicitly](../../../flow/concepts/lineage.md#explicit-lineage)):
+`output.set_parent_ids(ids)` replaces this default: the method takes the `message_id` (a string or a list of strings) of input messages of the current batch and returns a new collector — all output added through it gets exactly these messages as parents. Parents are message ids and are unrelated to keys; pass the `message_id` of the input messages the given output was actually derived from. When the call is mandatory (see [When to set lineage explicitly](../../../flow/concepts/lineage.md#explicit-lineage)):
 
 - **Swift**: mandatory when the batch has more than one message — every output message must have exactly one parent (`out = output.set_parent_ids(message.message_id)`), otherwise processing fails with an error. Multiple parents are allowed only with [`allow_batching_with_relaxed_guarantees`](../../../flow/concepts/guarantees.md#swift-allow-batching-with-relaxed-guarantees).
 - **Transform**: optional, but with the "whole batch" default the event timestamp of every output message equals the minimum over the whole batch.
@@ -150,14 +152,14 @@ def on_messages(self, messages, output, ctx):
         ...  # Process the group, emit via out.
 ```
 
-In a Swift computation the grouping and the parent assignment must be deterministic, including the order of groups. A Python `dict` preserves insertion order, so the example above is reproducible; unordered structures (such as `set`) must not be used. For details, see [Determinism requirement](../../../flow/concepts/swift.md#determinism).
+In a Swift computation the grouping and the parent assignment must be deterministic, including the order of groups. A Python `dict` preserves insertion order, so the example above is reproducible; unordered structures (such as `set`) must not be used. For details, see [Determinism requirement](../../../flow/concepts/swift.md#determinism). For a complete example, see [batch_compaction]({{source-root}}/yt/yt/flow/examples/python/batch_compaction): a Swift computation with `allow_batching_with_relaxed_guarantees` that collapses same-key messages into one.
 
 {% endnote %}
 
 #### Example of a batch function
 
 ```python
-from yt.yt.flow.library/python/companion.computation import BatchFunction
+from yt.yt.flow.library.python.companion.computation import BatchFunction
 
 
 class X2BatchMapper(BatchFunction):
@@ -273,8 +275,20 @@ Use `OutputCollector` to send processing results:
 | Method | Description |
 | --- | --- |
 | `output.add_message(message)` | Add an output message (a `Message` object obtained via `builder.finish()`) |
+| `output.add_message(message, options)` | Add a message with `AddMessageOptions` controlling distribution and the Swift message ID suffix |
 | `output.add_timer(trigger_timestamp, event_timestamp, stream_id)` | Add a [timer](../../../flow/concepts/glossary.md#timer) with the specified trigger time |
 | `output.set_parent_ids(parent_ids)` | Set parent IDs to track the [lineage](../../../flow/concepts/lineage.md) of messages. Returns a new `OutputCollector` |
+
+For a Swift computation, `MessageIdSuffix.payload_hash()` or `MessageIdSuffix.user_defined(value)` makes message identity independent of emission order:
+
+```python
+output.add_message(
+    message,
+    AddMessageOptions(message_id_suffix=MessageIdSuffix.payload_hash()),
+)
+```
+
+Default options use the message sequence number. Payload-hash and user-defined suffixes are supported only by Swift computations.
 
 Example of creating an output message and a timer:
 

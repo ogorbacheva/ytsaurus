@@ -117,6 +117,9 @@ DEFINE_REFCOUNTED_TYPE(TMinHashDigestConfig)
 struct TCompactionHintsConfig
     : public NYTree::TYsonStruct
 {
+    // Minimum total compressed size of stores selected for compaction by digest hints.
+    i64 MinCompactionDataSize;
+
     TRowDigestConfigPtr RowDigest;
     TMinHashDigestConfigPtr MinHashDigest;
 
@@ -262,6 +265,9 @@ struct TCustomTableMountConfig
     int MinPartitioningStoreCount;
     i64 MaxPartitioningDataSize;
     int MaxPartitioningStoreCount;
+    // If set, Eden chunk stores whose min timestamp lags behind the max
+    // timestamp of partition chunks by more than this duration are forcibly partitioned
+    std::optional<TDuration> MaxOldEdenChunkPartitioningLag;
 
     int MinCompactionStoreCount;
     int MaxCompactionStoreCount;
@@ -387,6 +393,8 @@ struct TCustomTableMountConfig
 
     bool InsertMetaUponStoreUpdate;
 
+    bool ForceZeroMajorTimestamp;
+
     //! In case of non-block reads will open partition readers instantly at the start of the lookup session
     //! so chunk read sessions corresponding to this amount of keys will be opened.
     std::optional<int> PartitionReaderPrefetchKeyLimit;
@@ -407,6 +415,9 @@ struct TCustomTableMountConfig
     TTestingTableMountConfig Testing;
 
     bool TablePullerForceSameClusterQueue;
+    int TablePullerMaxPartialFailures;
+
+    bool EnableChunkProlongation;
 
     REGISTER_YSON_STRUCT(TCustomTableMountConfig);
 

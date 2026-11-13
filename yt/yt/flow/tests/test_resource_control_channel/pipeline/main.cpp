@@ -41,11 +41,14 @@ struct TCounterParameters
     : public virtual TYsonStruct
 {
     TDuration GenerationPeriod;
+    bool FailFirstLoad = false;
 
     REGISTER_YSON_STRUCT(TCounterParameters);
 
     static void Register(TRegistrar registrar)
     {
+        registrar.Parameter("fail_first_load", &TThis::FailFirstLoad)
+            .Default(false);
         registrar.Parameter("generation_period", &TThis::GenerationPeriod)
             .Default(TDuration::Seconds(1));
     }
@@ -61,7 +64,7 @@ public:
 
     using TResourceControllerBase::TResourceControllerBase;
 
-    INodePtr BuildTargetRevisionSpec() override
+    INodePtr DoBuildTargetRevisionSpec() override
     {
         auto now = TInstant::Now();
         if (Value_ == 0 || now - LastBumpTime_ >= GetParameters()->GenerationPeriod) {
@@ -76,7 +79,7 @@ public:
         // clang-format on
     }
 
-    void CollectStatuses(
+    void DoCollectStatuses(
         const THashMap<std::string, TWorkerResourceStatusPtr>& workerStatuses,
         const TWorkerResourceStatusPtr& controllerStatus) override
     {
@@ -84,7 +87,7 @@ public:
         ControllerStatus_ = controllerStatus;
     }
 
-    IMapNodePtr GetView() override
+    IMapNodePtr DoGetView() override
     {
         THashMap<i64, int> workersPerValue;
         for (const auto& [workerAddress, status] : WorkerStatuses_) {
@@ -132,6 +135,15 @@ public:
     using TController = TCounterResourceController;
 
     using TResourceBase::TResourceBase;
+
+    TFuture<void> Load(const THashMap<TResourceId, IResourcePtr>& dependencies) override
+    {
+        static std::atomic<bool> failed = false;
+        if (GetParameters()->FailFirstLoad && !failed.exchange(true)) {
+            return MakeFuture<void>(TError("Injected first preload failure"));
+        }
+        return TResourceBase::Load(dependencies);
+    }
 
     TResourceRevisionState GetRevisionState() const override
     {

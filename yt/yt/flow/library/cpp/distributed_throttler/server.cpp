@@ -9,7 +9,7 @@
 #include <yt/yt/core/rpc/response_keeper.h>
 #include <yt/yt/core/rpc/service_detail.h>
 
-#include <library/cpp/yt/threading/rw_spin_lock.h>
+#include <library/cpp/yt/system/rw_spin_lock.h>
 
 namespace NYT::NFlow::NDistributedThrottler {
 
@@ -129,7 +129,7 @@ private:
     const NProfiling::TProfiler Profiler_;
     const IResponseKeeperPtr ResponseKeeper_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, BucketsLock_);
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, BucketsLock_);
     THashMap<std::string, TDistributedThrottlerBucketPtr> Buckets_;
 
     DECLARE_RPC_SERVICE_METHOD(NProto, RequestQuota);
@@ -147,13 +147,12 @@ DEFINE_RPC_SERVICE_METHOD(TDistributedThrottlerService, RequestQuota)
     // separately counts classless requests on buckets with weighted classes.
     const auto& quotaClassId = request->quota_class_id();
 
-    context->SetRequestInfo(
-        "ThrottlerId: %v, ClientId: %v, Amount: %v, Timestamp: %v, QuotaClassId: %v",
-        throttlerId,
-        clientId,
-        amount,
-        timestamp,
-        quotaClassId.empty() ? DefaultQuotaClassId : quotaClassId);
+    context->AnnotateRequest()
+        .With("ThrottlerId", throttlerId)
+        .With("ClientId", clientId)
+        .With("Amount", amount)
+        .With("Timestamp", timestamp)
+        .With("QuotaClassId", quotaClassId.empty() ? DefaultQuotaClassId : quotaClassId);
 
     // The token bucket YT_VERIFYs non-negative amounts; a malformed client
     // request must not abort the controller.

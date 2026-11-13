@@ -162,7 +162,7 @@ private:
 
     std::atomic<TInstant> LastSuccessTimestamp_ = Now();
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ProxySpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ProxySpinLock_);
 
     struct TProxy
     {
@@ -452,7 +452,8 @@ private:
             : DefaultAddressType;
         auto networkName = request->has_network_name() ? request->network_name() : DefaultNetworkName;
 
-        context->SetRequestInfo("Role: %v", roleFilter);
+        context->AnnotateRequest()
+            .With("Role", roleFilter);
 
         {
             auto guard = Guard(ProxySpinLock_);
@@ -468,7 +469,8 @@ private:
             }
         }
 
-        context->SetResponseInfo("ProxyCount: %v", response->addresses_size());
+        context->AnnotateResponse()
+            .With("ProxyCount", response->addresses_size());
         context->Reply();
     }
 };

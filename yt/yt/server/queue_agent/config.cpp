@@ -4,11 +4,11 @@
 
 #include <yt/yt/ytlib/api/native/config.h>
 
-#include <yt/yt/library/discovery_client/config.h>
-
 #include <yt/yt/ytlib/queue_client/config.h>
 
 #include <yt/yt/client/security_client/public.h>
+
+#include <yt/yt/library/discovery_client/config.h>
 
 #include <yt/yt/library/re2/re2.h>
 
@@ -42,6 +42,8 @@ void TCypressSynchronizerDynamicConfig::Register(TRegistrar registrar)
         .Default(false);
     registrar.Parameter("chaos_replicated_table_queue_agent_stage", &TThis::ChaosReplicatedTableQueueAgentStage)
         .Default(NQueueClient::ProductionStage);
+    registrar.Parameter("ignored_object_list", &TThis::IgnoredObjectList)
+        .Default();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -96,6 +98,10 @@ void TQueueExporterDynamicConfig::Register(TRegistrar registrar)
         .Default(EQueueExporterImplementation::Old);
     registrar.Parameter("enable_row_count_check", &TThis::EnableRowCountCheck)
         .Default(true);
+    registrar.Parameter("max_hunk_chunk_count_per_fetch", &TThis::MaxHunkChunkCountPerFetch)
+        .Default(1000)
+        .GreaterThan(0)
+        .DontSerializeDefault();
 
     registrar.Postprocessor([] (TQueueExporterDynamicConfig* config) {
         THROW_ERROR_EXCEPTION_UNLESS(config->RetryBackoff.InvocationCount == DefaultRetryBackoff.InvocationCount, "Invalid value of \"invocation_count\"");
@@ -207,6 +213,8 @@ void TQueueAgentBootstrapConfig::Register(TRegistrar registrar)
             .BeginMap()
             .EndMap()
         ->AsMap());
+    registrar.Parameter("group_id", &TThis::GroupId)
+        .Default("/queue_agents");
     registrar.Parameter("dynamic_state", &TThis::DynamicState)
         .DefaultNew();
     registrar.Parameter("cypress_synchronizer_election_manager", &TThis::CypressSynchronizerElectionManager)

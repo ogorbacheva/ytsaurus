@@ -8,8 +8,8 @@
 
 #include <yt/yt/core/ytree/yson_struct.h>
 
-#include <yt/yt/flow/library/cpp/connectors/common/delegating_async_sink_base.h>
 #include <yt/yt/flow/library/cpp/connectors/common/ordered_source_base.h>
+#include <yt/yt/flow/library/cpp/connectors/common/sink_base.h>
 #include <yt/yt/flow/library/cpp/connectors/common/sync_sink_base.h>
 
 namespace NYT::NFlow {
@@ -96,7 +96,7 @@ DEFINE_REFCOUNTED_TYPE(TDynamicCommonQueueSinkParameters);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-//! Optional expression-based routing of sync queue-sink rows to tablets via
+//! Optional expression-based routing of queue-sink rows to tablets via
 //! YT's column evaluator (builtins only). Neither expression set => no
 //! $tablet_index is written (today's behavior).
 struct TQueueSinkTabletRoutingParameters
@@ -113,7 +113,8 @@ struct TQueueSinkTabletRoutingParameters
     //! Required with |TabletIndexRoutingHashExpression|; the hash reduction policy.
     std::optional<EQueueTabletIndexRoutingHashPolicy> TabletIndexRoutingHashPolicy;
 
-    //! Optional for the hash mode; when unset the target queue's @tablet_count is resolved at init.
+    //! Optional for the hash mode; when unset the target queue's @tablet_count is resolved on the
+    //! first non-empty write.
     std::optional<i64> TabletCount;
 
     REGISTER_YSON_STRUCT(TQueueSinkTabletRoutingParameters);
@@ -165,6 +166,8 @@ struct TAsyncQueueWriterParametersBase
     static void Register(TRegistrar registrar);
 };
 
+DEFINE_REFCOUNTED_TYPE(TAsyncQueueWriterParametersBase);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TAsyncQueueWriterParameters
@@ -176,20 +179,6 @@ struct TAsyncQueueWriterParameters
 };
 
 DEFINE_REFCOUNTED_TYPE(TAsyncQueueWriterParameters);
-
-////////////////////////////////////////////////////////////////////////////////
-
-struct TAsyncMultiClusterQueueWriterParameters
-    : public virtual TAsyncQueueWriterParametersBase
-{
-    bool UseClusters{};
-
-    REGISTER_YSON_STRUCT(TAsyncMultiClusterQueueWriterParameters);
-
-    static void Register(TRegistrar registrar);
-};
-
-DEFINE_REFCOUNTED_TYPE(TAsyncMultiClusterQueueWriterParameters);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -211,36 +200,49 @@ DEFINE_REFCOUNTED_TYPE(TDynamicAsyncQueueWriterParameters);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-//! Routing is not supported on async queue sinks yet (tracked by YTFLOW-766). The routing params
-//! are mixed into the async spec only so they are recognized and this rejects them loudly instead
-//! of silently ignoring them.
-void ValidateAsyncSinkTabletRoutingUnsupported(const TQueueSinkTabletRoutingParameters& parameters);
-
-////////////////////////////////////////////////////////////////////////////////
-
-struct TAsyncQueueSinkParametersBase
-    : public TDelegatingAsyncSinkBase::TParameters
-    , public virtual TAsyncQueueWriterParametersBase
-    , public virtual TQueueSinkTabletRoutingParameters
+struct TAtMostOnceStrategyParameters
+    : public NYTree::TYsonStruct
 {
-    std::optional<THashSet<std::string>> ColumnFilter;
+    bool Enabled{};
 
-    REGISTER_YSON_STRUCT(TAsyncQueueSinkParametersBase);
+    REGISTER_YSON_STRUCT(TAtMostOnceStrategyParameters);
 
     static void Register(TRegistrar registrar);
 };
 
-DEFINE_REFCOUNTED_TYPE(TAsyncQueueSinkParametersBase);
+DEFINE_REFCOUNTED_TYPE(TAtMostOnceStrategyParameters);
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct TAtMostOnceStrategyDynamicParameters
+    : public NYTree::TYsonStruct
+{
+    TDuration SuspendDestructionDuration;
+    NYTree::TSize TotalQueueBytesLimit;
+
+    REGISTER_YSON_STRUCT(TAtMostOnceStrategyDynamicParameters);
+
+    static void Register(TRegistrar registrar);
+};
+
+DEFINE_REFCOUNTED_TYPE(TAtMostOnceStrategyDynamicParameters);
 
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TAsyncQueueSinkParameters
-    : public TAsyncQueueSinkParametersBase
-    , public virtual TAsyncQueueWriterParameters
+    : public TSinkBase::TParameters
+    , public virtual TAsyncQueueWriterParametersBase
+    , public virtual TQueueSinkTabletRoutingParameters
 {
+    std::optional<THashSet<std::string>> ColumnFilter;
+    TAtMostOnceStrategyParametersPtr AtMostOnceStrategy;
+
     REGISTER_YSON_STRUCT(TAsyncQueueSinkParameters);
 
     static void Register(TRegistrar registrar);
+
+protected:
+    virtual void ValidateClusters() const;
 };
 
 DEFINE_REFCOUNTED_TYPE(TAsyncQueueSinkParameters);
@@ -248,12 +250,16 @@ DEFINE_REFCOUNTED_TYPE(TAsyncQueueSinkParameters);
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TAsyncMultiClusterQueueSinkParameters
-    : public TAsyncQueueSinkParametersBase
-    , public TAsyncMultiClusterQueueWriterParameters
+    : public TAsyncQueueSinkParameters
 {
+    bool UseClusters{};
+
     REGISTER_YSON_STRUCT(TAsyncMultiClusterQueueSinkParameters);
 
     static void Register(TRegistrar registrar);
+
+protected:
+    void ValidateClusters() const override;
 };
 
 DEFINE_REFCOUNTED_TYPE(TAsyncMultiClusterQueueSinkParameters);
@@ -261,9 +267,11 @@ DEFINE_REFCOUNTED_TYPE(TAsyncMultiClusterQueueSinkParameters);
 ////////////////////////////////////////////////////////////////////////////////
 
 struct TDynamicAsyncQueueSinkParameters
-    : public TDelegatingAsyncSinkBase::TDynamicParameters
+    : public TSinkBase::TDynamicParameters
     , public TDynamicAsyncQueueWriterParameters
 {
+    TAtMostOnceStrategyDynamicParametersPtr AtMostOnceStrategy;
+
     REGISTER_YSON_STRUCT(TDynamicAsyncQueueSinkParameters);
 
     static void Register(TRegistrar registrar);

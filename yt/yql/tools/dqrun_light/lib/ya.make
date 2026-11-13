@@ -1,4 +1,4 @@
-LIBRARY()
+YQL_LIBRARY()
 
 SRCS(
     dqrun_light_lib.cpp
@@ -13,10 +13,11 @@ PEERDIR(
     contrib/ydb/library/yql/dq/transform
     contrib/ydb/library/yql/providers/dq/helper
     contrib/ydb/library/yql/providers/dq/interface
+    contrib/ydb/library/yql/providers/dq/common
     contrib/ydb/library/yql/providers/dq/provider
     contrib/ydb/library/yql/providers/dq/provider/exec
-    contrib/ydb/library/yql/providers/yt/actors
-    contrib/ydb/library/yql/providers/yt/dq_task_preprocessor
+    yt/yql/providers/yt/actors
+    yt/yql/providers/yt/dq_task_preprocessor
     contrib/ydb/library/yql/utils/bindings
     yql/essentials/core/cbo
     yql/essentials/core/dq_integration
@@ -39,8 +40,6 @@ PEERDIR(
     yt/yql/providers/yt/provider
     yt/yql/tools/ytrun/lib
 )
-
-YQL_LAST_ABI_VERSION()
 
 SUPPRESSIONS(
     lsan.supp

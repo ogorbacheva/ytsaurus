@@ -7,6 +7,7 @@
 #include "controller_agent_connector.h"
 #include "gpu_manager.h"
 #include "job_controller.h"
+#include "job_environment.h"
 #include "job_fs_secretary.h"
 #include "job_gpu_checker.h"
 #include "job_input_cache.h"
@@ -28,6 +29,7 @@
 #include <yt/yt/server/node/job_agent/job_resource_manager.h>
 
 #include <yt/yt/server/lib/controller_agent/helpers.h>
+#include <yt/yt/server/lib/controller_agent/job_statistics_wire.h>
 #include <yt/yt/server/lib/controller_agent/statistics.h>
 
 #include <yt/yt/server/lib/io/io_tracker.h>
@@ -101,6 +103,7 @@
 
 #include <yt/yt/core/net/address.h>
 
+#include <yt/yt/core/misc/pattern_formatter.h>
 #include <yt/yt/core/misc/statistics.h>
 
 #include <yt/yt/core/rpc/dispatcher.h>
@@ -126,7 +129,7 @@
 
 #include <library/cpp/yt/system/handle_eintr.h>
 
-#include <util/system/env.h>
+#include <limits>
 
 namespace NYT::NExecNode {
 
@@ -178,10 +181,6 @@ using NCypressClient::EObjectType;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static constexpr auto DisableSandboxCleanupEnv = "YT_DISABLE_SANDBOX_CLEANUP";
-
-////////////////////////////////////////////////////////////////////////////////
-
 namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -204,6 +203,9 @@ static const std::string GpuRdmaTxBytesSensorName = "gpu/rdma/tx_bytes";
 static const std::string GpuTensorActivitySensorName = "gpu/tensor_activity";
 static const std::string GpuDramActivitySensorName = "gpu/dram_activity";
 static const std::string GpuSlowdownSensorName = "gpu/slowdown";
+
+// Matches HOST_NAME_MAX on Linux.
+constexpr int MaxHostNameLength = 64;
 
 const THashMap<std::string, TUserJobSensorPtr>& GetSupportedGpuMonitoringSensors()
 {
@@ -513,18 +515,24 @@ void TJob::Start() noexcept
         return;
     }
 
-    if (auto slot = GetUserSlot()) {
-        try {
-            slot->ValidateEnabled();
-        } catch (const std::exception& ex) {
-            auto error = TError("Can not start job")
-                .With("abort_reason", EAbortReason::UserSlotDisabled)
-                .With(ex);
-            YT_LOG_WARNING(error);
-            Abort(std::move(error));
-            return;
-        }
+    auto slot = GetUserSlot();
+    YT_VERIFY(slot);
+
+    try {
+        slot->ValidateEnabled();
+    } catch (const std::exception& ex) {
+        static constexpr auto Message = "Cannot start job"_sb;
+        YT_TLOG_WARNING(Message)
+            .With("AbortReason", EAbortReason::UserSlotDisabled)
+            .With(ex);
+        auto error = TError(Message)
+            .With("abort_reason", EAbortReason::UserSlotDisabled)
+            .With(ex);
+        Abort(std::move(error));
+        return;
     }
+
+    slot->Prepare();
 
     YT_VERIFY(!std::exchange(Started_, true));
 
@@ -662,8 +670,8 @@ void TJob::PrepareArtifact(
                     .With("CompressedDataSize", artifact.Key.GetCompressedDataSize());
 
                 const auto& artifactCache = Bootstrap_->GetArtifactCache();
-                auto downloadOptions = MakeArtifactDownloadOptions();
-                auto producer = artifactCache->MakeArtifactDownloadProducer(artifact.Key, downloadOptions);
+                auto downloadContext = MakeArtifactDownloadContext();
+                auto producer = artifactCache->MakeArtifactDownloadProducer(artifact.Key, downloadContext);
 
                 auto bypassCpuStartTime = GetCpuInstant();
                 ArtifactPrepareFutures_.push_back(
@@ -811,6 +819,7 @@ void TJob::Terminate(EJobState finalState, TError error)
         case EJobPhase::DownloadingArtifacts:
         case EJobPhase::CachingArtifacts:
         case EJobPhase::PreparingLayers:
+        case EJobPhase::PreparingSlotDirectories:
         case EJobPhase::PreparingVolumes:
         case EJobPhase::PreparingGpuCheckVolume:
         case EJobPhase::LinkingVolumes:
@@ -949,9 +958,9 @@ void TJob::OnJobFinalized()
 
     FinishTime_ = TInstant::Now();
     // Copy info from traffic meter to statistics.
-    auto statistics = ConvertTo<TStatistics>(StatisticsYson_);
+    auto statistics = ConvertTo<TStatistics>(StatisticsWithoutDataYson_);
     FillTrafficStatistics("exec_agent"_L, statistics, TrafficMeter_);
-    StatisticsYson_ = ConvertToYsonString(statistics);
+    UpdateStatisticsYson(std::move(statistics));
 
     // NB(eshcherbin): We need to destroy this producer, otherwise it will continue
     // to send metrics for some time after the job is finished.
@@ -1391,7 +1400,9 @@ void TJob::AddProfile(TJobProfile profile)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
-    if (profile.ProfilingBinary == EProfilingBinary::JobProxy && profile.ProfilerType == EProfilerType::PeakMemory) {
+    if (profile.GetProfilingBinary() == EProfilingBinary::JobProxy &&
+        profile.GetProfilerType() == EProfilerType::PeakMemory)
+    {
         // NB(coteeq): JobProxy's peak memory profile is a special case.
         // We want the most recent profile and since it's peak profile,
         // it's okay to overwrite previous one.
@@ -1422,6 +1433,29 @@ TYsonString TJob::GetStatistics() const
     return StatisticsYson_;
 }
 
+TYsonString TJob::GetStatisticsForHeartbeat(bool omitDataStatisticsFromYson) const
+{
+    YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+    return omitDataStatisticsFromYson ? StatisticsWithoutDataYson_ : StatisticsYson_;
+}
+
+void TJob::FillStatisticsForHeartbeat(
+    TNonNullPtr<NControllerAgent::NProto::TJobStatus> status,
+    bool omitDataStatisticsFromYson) const
+{
+    YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+    EncodeJobStatisticsForHeartbeat(
+        status,
+        GetStatisticsForHeartbeat(omitDataStatisticsFromYson),
+        omitDataStatisticsFromYson
+            ? EJobStatisticsWireFormat::OmitDataStatistics
+            : EJobStatisticsWireFormat::Legacy,
+        HasInputDataStatisticsInFullYson_,
+        FullYsonOutputTableCount_);
+}
+
 TDataStatistics TJob::GetTotalInputDataStatistics() const
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
@@ -1450,11 +1484,30 @@ void TJob::ResetStatisticsLastSendTime()
     StatisticsLastSendTime_ = TInstant::Now();
 }
 
-void TJob::SetStatistics(const TYsonString& statisticsYson)
+void TJob::SetStatistics(
+    const TYsonString& statisticsYson,
+    TDataStatistics inputDataStatistics,
+    std::vector<TDataStatistics> outputDataStatistics)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
     if (JobPhase_.load() != EJobPhase::Running && JobPhase_.load() != EJobPhase::FinalizingJobProxy) {
+        // A final result can arrive while cleanup waits for job proxy.
+        // Keep its data counters with the statistics enriched before cleanup.
+        TotalInputDataStatistics_ = std::move(inputDataStatistics);
+        OutputDataStatistics_ = std::move(outputDataStatistics);
+        if (HasJobProxyStatistics_) {
+            auto previousFullYsonOutputTableCount = FullYsonOutputTableCount_;
+            FullYsonOutputTableCount_ = std::min<int>(
+                StatisticsOutputTableCountLimit_.value_or(std::numeric_limits<int>::max()),
+                OutputDataStatistics_.size());
+            if (HasInputDataStatisticsInFullYson_ ||
+                previousFullYsonOutputTableCount > 0 ||
+                FullYsonOutputTableCount_ > 0)
+            {
+                UpdateStatisticsYson(ConvertTo<TStatistics>(StatisticsWithoutDataYson_));
+            }
+        }
         return;
     }
 
@@ -1475,9 +1528,38 @@ void TJob::SetStatistics(const TYsonString& statisticsYson)
 
     UpdateIOStatistics(statistics);
 
-    StatisticsYson_ = ConvertToYsonString(statistics);
+    TotalInputDataStatistics_ = std::move(inputDataStatistics);
+    OutputDataStatistics_ = std::move(outputDataStatistics);
+    HasInputDataStatisticsInFullYson_ = HasInput();
+    FullYsonOutputTableCount_ = std::min<int>(
+        StatisticsOutputTableCountLimit_.value_or(std::numeric_limits<int>::max()),
+        OutputDataStatistics_.size());
+    UpdateStatisticsYson(std::move(statistics));
+    HasJobProxyStatistics_ = true;
 
     UpdateUserJobMonitoring();
+}
+
+bool TJob::HasInput() const
+{
+    YT_ASSERT_THREAD_AFFINITY_ANY();
+
+    return !HasUserJobSpec() ||
+        (Type_ != EJobType::Vanilla && !UserJobSpec_->is_secondary_distributed());
+}
+
+void TJob::UpdateStatisticsYson(TStatistics statisticsWithoutData)
+{
+    YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+    StatisticsWithoutDataYson_ = ConvertToYsonString(statisticsWithoutData);
+    AddJobDataStatistics(
+        GetPtr(statisticsWithoutData),
+        TotalInputDataStatistics_,
+        OutputDataStatistics_,
+        HasInputDataStatisticsInFullYson_,
+        FullYsonOutputTableCount_);
+    StatisticsYson_ = ConvertToYsonString(statisticsWithoutData);
 }
 
 void TJob::UpdateUserJobMonitoring()
@@ -1490,20 +1572,6 @@ void TJob::UpdateUserJobMonitoring()
     CollectSensorsFromStatistics(&userJobSensors);
     CollectSensorsFromGpuAndRdmaDeviceInfo(&userJobSensors);
     UserJobSensorProducer_->Update(std::move(userJobSensors));
-}
-
-void TJob::SetTotalInputDataStatistics(TDataStatistics datastatistics)
-{
-    YT_ASSERT_THREAD_AFFINITY(JobThread);
-
-    TotalInputDataStatistics_ = std::move(datastatistics);
-}
-
-void TJob::SetOutputDataStatistics(std::vector<TDataStatistics> dataStatistics)
-{
-    YT_ASSERT_THREAD_AFFINITY(JobThread);
-
-    OutputDataStatistics_ = std::move(dataStatistics);
 }
 
 TBriefJobInfo TJob::GetBriefInfo() const
@@ -1605,7 +1673,23 @@ IYPathServicePtr TJob::CreateDynamicOrchidService()
 
     return CreateCompositeMapService()
         ->AddChild("job_proxy", CreateJobProxyOrchidService())
+        ->AddChild("preliminary_gpu_check", CreatePreliminaryGpuCheckOrchidService())
         ->AddChild("testing", CreateTestingOrchidService());
+}
+
+IYPathServicePtr TJob::CreatePreliminaryGpuCheckOrchidService()
+{
+    YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+    return IYPathService::FromProducer(
+        BIND([this, this_ = MakeStrong(this)] (IYsonConsumer* consumer) {
+            BuildYsonFluently(consumer)
+                .BeginMap()
+                    .OptionalItem("start_time", PreliminaryGpuCheckStartTime_)
+                    .OptionalItem("finish_time", PreliminaryGpuCheckFinishTime_)
+                .EndMap();
+        }))
+        ->Via(Invoker_);
 }
 
 IYPathServicePtr TJob::CreateTestingOrchidService()
@@ -1924,7 +2008,9 @@ void TJob::DoInterrupt(
             InterruptionDeadline_ = now + timeout;
         }
     } catch (const std::exception& ex) {
-        YT_LOG_INFO(ex, "Failed to interrupt job via job prober service; graceful job phase check scheduled (Tmeout: %v)", timeout);
+        YT_TLOG_INFO("Failed to interrupt job via job prober service; graceful job phase check scheduled")
+            .With("Timeout", timeout)
+            .With(ex);
 
         TError error(ex);
         TDelayedExecutor::Submit(
@@ -1950,6 +2036,11 @@ void TJob::Fail(TError error)
 void TJob::DoFail(TError error)
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
+
+    if (std::exchange(FailRequested_, true)) {
+        YT_TLOG_DEBUG("Repeating job failure request; ignored");
+        return;
+    }
 
     if (JobPhase_.load() != EJobPhase::Running) {
         error = TError("Failing job that is not running").With(std::move(error));
@@ -2534,7 +2625,7 @@ void TJob::PrepareWorkspace()
         .Job = MakeStrong(this),
         .CommandUser = CommonConfig_->SetupCommandUser,
 
-        .ArtifactDownloadOptions = MakeArtifactDownloadOptions(),
+        .ArtifactDownloadContext = MakeArtifactDownloadContext(),
 
         .FSSecretary = FSSecretary_,
         .Binds = binds,
@@ -2546,16 +2637,11 @@ void TJob::PrepareWorkspace()
         .GpuCheckOptions = NeedsGpuCheck()
             ? std::make_optional(GetGpuCheckOptions())
             : std::nullopt,
-
-        .TestRootFS = Bootstrap_->GetConfig()->ExecNode->JobProxy->TestRootFS,
     };
 
     auto workspaceBuilder = GetUserSlot()->CreateJobWorkspaceBuilder(
         Invoker_,
         std::move(context));
-
-    workspaceBuilder->SubscribeUpdateArtifactStatistics(
-        BIND_NO_PROPAGATE(&TJob::UpdateArtifactStatistics, MakeWeak(this)));
 
     // TODO(pogorelov): Refactor it. Phase should be changed in callback, not in signal handler.
     // We intentionally subscribe here without Via(Invoker_) to prevent data race.
@@ -2646,8 +2732,7 @@ void TJob::OnExtraGpuCheckCommandFinished(const TError& error)
 
     ValidateJobPhase(EJobPhase::RunningExtraGpuCheckCommand);
 
-    YT_TLOG_FATAL_IF(!Error_ || Error_->IsOK(), "Job error is not set during running extra GPU check")
-        .With("Error", Error_);
+    YT_TLOG_FATAL_IF(!Error_ || Error_->IsOK(), "Job error is not set during running extra GPU check");
 
     auto initialError = std::move(*Error_);
 
@@ -2656,14 +2741,14 @@ void TJob::OnExtraGpuCheckCommandFinished(const TError& error)
         Error_ = {};
         JobResultExtension_.reset();
 
+        YT_TLOG_WARNING("Extra GPU check command executed after job failure is also failed")
+            .With(error);
+
         auto checkError = TError(NExecNode::EErrorCode::GpuCheckCommandFailed, "Extra GPU check command failed")
             .With(error)
             .With(initialError)
             .With("job_id", GetId())
             .With("operation_id", GetOperationId());
-
-        YT_TLOG_WARNING("Extra GPU check command executed after job failure is also failed")
-            .With(checkError);
         Finalize(std::move(checkError));
     } else {
         YT_TLOG_DEBUG("Extra GPU check command finished");
@@ -2680,9 +2765,7 @@ void TJob::RunJobProxy()
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
-    if (JobPhase_.load() != EJobPhase::RunningCustomPreparations &&
-        JobPhase_.load() != EJobPhase::RunningGpuCheckCommand)
-    {
+    if (JobPhase_.load() != EJobPhase::RunningCustomPreparations) {
         YT_TLOG_ALERT("Unexpected phase before run job proxy")
             .With("ActualPhase", JobPhase_.load());
     }
@@ -2958,7 +3041,6 @@ void TJob::Cleanup()
         try {
             WaitFor(StopJobProxy())
                 .ThrowOnError();
-            // TODO(pogorelov): Maybe we should wait until the process is actually stopped?
         } catch (const std::exception& ex) {
             // Errors during cleanup phase do not affect job outcome.
             YT_TLOG_ERROR("Failed to clean processes")
@@ -3027,23 +3109,12 @@ void TJob::Cleanup()
 
     if (const auto& slot = GetUserSlot()) {
         try {
-            THashSet<std::string> preservedVolumePaths;
-            if (const auto& rootVolume = FSSecretary_->GetRootVolume()) {
-                preservedVolumePaths.insert(rootVolume->GetPath());
-            }
-            if (const auto& gpuCheckVolume = FSSecretary_->GetGpuCheckVolume()) {
-                preservedVolumePaths.insert(gpuCheckVolume->GetPath());
-            }
-            for (const auto& [_, volumeResult] : FSSecretary_->GetNonRootVolumes()) {
-                preservedVolumePaths.insert(volumeResult->Volume->GetPath());
-            }
-            YT_TLOG_DEBUG("Clean user imported porto resources")
-                .With("SlotIndex", slot->GetSlotIndex())
-                .With("PreservedVolumePaths", preservedVolumePaths);
-            slot->CleanUserImportedPortoResources(preservedVolumePaths);
+            YT_TLOG_DEBUG("Clean job workspace resources")
+                .With("SlotIndex", slot->GetSlotIndex());
+            slot->CleanJobWorkspaceResources(*FSSecretary_);
         } catch (const std::exception& ex) {
             // Errors during cleanup phase do not affect job outcome.
-            YT_TLOG_ERROR("Failed to clean user imported porto resources")
+            YT_TLOG_ERROR("Failed to clean job workspace resources")
                 .With("SlotIndex", slot->GetSlotIndex())
                 .With(ex);
         }
@@ -3059,21 +3130,15 @@ void TJob::Cleanup()
     removeVolume(FSSecretary_->ReleaseGpuCheckVolume());
 
     if (const auto& slot = GetUserSlot()) {
-        if (ShouldCleanSandboxes()) {
-            try {
-                YT_TLOG_DEBUG("Clean sandbox")
-                    .With("SlotIndex", slot->GetSlotIndex());
-                slot->CleanSandbox();
-            } catch (const std::exception& ex) {
-                // Errors during cleanup phase do not affect job outcome.
-                YT_TLOG_ERROR("Failed to clean sandbox")
-                    .With("SlotIndex", slot->GetSlotIndex())
-                    .With(ex);
-            }
-        } else {
-            YT_LOG_WARNING(
-                "Sandbox cleanup is disabled by environment variable %v; should be used for testing purposes only",
-                DisableSandboxCleanupEnv);
+        try {
+            YT_TLOG_DEBUG("Clean sandbox")
+                .With("SlotIndex", slot->GetSlotIndex());
+            slot->CleanSandbox();
+        } catch (const std::exception& ex) {
+            // Errors during cleanup phase do not affect job outcome.
+            YT_TLOG_ERROR("Failed to clean sandbox")
+                .With("SlotIndex", slot->GetSlotIndex())
+                .With(ex);
         }
     }
 
@@ -3211,11 +3276,17 @@ std::unique_ptr<NNodeTrackerClient::NProto::TNodeDirectory> TJob::PrepareNodeDir
 
         auto validateNodeIds = [&] (
             const ::google::protobuf::RepeatedPtrField<NChunkClient::NProto::TChunkSpec>& chunkSpecs,
-            const TNodeDirectoryPtr& nodeDirectory)
+            const TNodeDirectoryPtr& nodeDirectory,
+            bool isInputTableChunk)
         {
             for (const auto& chunkSpec : chunkSpecs) {
-                auto tableIndex = chunkSpec.table_index();
-                bool isTableRemote = maybeDataSourceDirectory && !IsLocal(maybeDataSourceDirectory->DataSources()[tableIndex]->GetClusterName());
+                // Only input table indices refer to the data source directory.
+                // Artifact and layer chunk specs have independent table indices.
+                bool isTableRemote = false;
+                if (isInputTableChunk && maybeDataSourceDirectory) {
+                    auto tableIndex = chunkSpec.table_index();
+                    isTableRemote = !IsLocal(maybeDataSourceDirectory->DataSources()[tableIndex]->GetClusterName());
+                }
                 if (isTableRemote) {
                     // NB(coteeq): We cannot come to this branch if data source was missing,
                     // so there is a chance that we will try to resolve remote node ids.
@@ -3241,7 +3312,7 @@ std::unique_ptr<NNodeTrackerClient::NProto::TNodeDirectory> TJob::PrepareNodeDir
 
         auto validateTableSpecs = [&] (const ::google::protobuf::RepeatedPtrField<TTableInputSpec>& tableSpecs) {
             for (const auto& tableSpec : tableSpecs) {
-                validateNodeIds(tableSpec.chunk_specs(), nodeDirectory);
+                validateNodeIds(tableSpec.chunk_specs(), nodeDirectory, /*isInputTableChunk*/ true);
             }
         };
 
@@ -3250,15 +3321,25 @@ std::unique_ptr<NNodeTrackerClient::NProto::TNodeDirectory> TJob::PrepareNodeDir
 
         // NB: No need to add these descriptors to the input node directory.
         for (const auto& artifact : FSSecretary_->GetArtifactDescriptors()) {
-            validateNodeIds(artifact.Key.chunk_specs(), nodeDirectory);
+            validateNodeIds(artifact.Key.chunk_specs(), nodeDirectory, /*isInputTableChunk*/ false);
         }
 
-        for (const auto& artifactKey : FSSecretary_->GetRootVolumeLayerArtifactKeys()) {
-            validateNodeIds(artifactKey.chunk_specs(), nodeDirectory);
+        if (auto rootVolumeParams = FSSecretary_->GetRootVolumeParams(); rootVolumeParams) {
+            for (const auto& artifactKey : rootVolumeParams->LayerArtifactKeys.GetAll()) {
+                validateNodeIds(artifactKey.chunk_specs(), nodeDirectory, /*isInputTableChunk*/ false);
+            }
         }
 
-        for (const auto& artifactKey : FSSecretary_->GetGpuCheckVolumeLayerArtifactKeys()) {
-            validateNodeIds(artifactKey.chunk_specs(), nodeDirectory);
+        if (auto gpuVolumeParams = FSSecretary_->GetGpuCheckVolumeParams(); gpuVolumeParams) {
+            for (const auto& artifactKey : gpuVolumeParams->LayerArtifactKeys.GetAll()) {
+                validateNodeIds(artifactKey.chunk_specs(), nodeDirectory, /*isInputTableChunk*/ false);
+            }
+        }
+
+        for (const auto& nonRootVolumeParams : FSSecretary_->GetNonRootVolumeParams()) {
+            for (const auto& artifactKey : nonRootVolumeParams->LayerArtifactKeys.GetAll()) {
+                validateNodeIds(artifactKey.chunk_specs(), nodeDirectory, /*isInputTableChunk*/ false);
+            }
         }
 
         if (!unresolvedNodeId) {
@@ -3338,9 +3419,18 @@ TNetworkAttributes TJob::BuildNetworkAttributes(NControllerAgent::TNetworkProjec
         result.Addresses.push_back(std::move(networkAddress));
     }
 
-    result.HostName = Format("slot-%v.%v",
-        GetUserSlot()->GetSlotIndex(),
+    auto hostNamePrefix = TPatternFormatter()
+        .SetProperty("SlotIndex", ToString(GetUserSlot()->GetSlotIndex()))
+        .Format(CommonConfig_->JobHostNamePrefixPattern);
+    result.HostName = Format("%v.%v",
+        hostNamePrefix,
         Bootstrap_->GetConfig()->Addresses[0].second);
+
+    if (std::ssize(result.HostName) > MaxHostNameLength) {
+        THROW_ERROR_EXCEPTION("Job container host name %Qv is too long", result.HostName)
+            .With("length", std::ssize(result.HostName))
+            .With("max_length", MaxHostNameLength);
+    }
 
     return result;
 }
@@ -3358,6 +3448,7 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
     proxyInternalConfig->LocalHostName = Bootstrap_->GetLocalHostName();
 
     proxyInternalConfig->BusServer = GetUserSlot()->GetBusServerConfig();
+    proxyInternalConfig->PrivateBusServer = GetUserSlot()->GetPrivateBusServerConfig();
     proxyInternalConfig->GrpcServer = GetUserSlot()->GetGrpcServerConfig();
     proxyInternalConfig->HttpServerUdsPath = GetUserSlot()->GetJobProxyHttpUnixDomainSocketPath();
 
@@ -3521,8 +3612,7 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
         ExecAttributes_.SlotIndex = userSlot->GetSlotIndex();
         ExecAttributes_.SandboxPath = userSlot->GetSandboxPath(
             ESandboxKind::User,
-            FSSecretary_->GetRootVolume(),
-            Bootstrap_->GetConfig()->ExecNode->JobProxy->TestRootFS);
+            FSSecretary_->GetRootVolume());
         ExecAttributes_.MediumName = userSlot->GetMediumName();
 
         ExecAttributes_.JobProxySocketPath = userSlot->GetJobProxyUnixDomainSocketPath();
@@ -3545,6 +3635,8 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
         if (auto jaegerConfig = proxyInternalConfig->TryGetSingletonConfig<NTracing::TJaegerTracerConfig>()) {
             proxyInternalConfig->SetSingletonConfig(jaegerConfig->ApplyDynamic(proxyDynamicConfig->Jaeger));
         }
+        proxyInternalConfig->EnableJobIoStatistics = proxyDynamicConfig->EnableJobIoStatistics;
+        proxyInternalConfig->IOConsumedReportWindow = proxyDynamicConfig->IOConsumedReportWindow;
         proxyInternalConfig->EnableJobShellSeccopm = proxyDynamicConfig->EnableJobShellSeccopm;
         proxyInternalConfig->UsePortoKillForSignalling = proxyDynamicConfig->UsePortoKillForSignalling;
         proxyInternalConfig->ForceIdleCpuPolicy = proxyDynamicConfig->ForceIdleCpuPolicy;
@@ -3587,6 +3679,7 @@ TJobProxyInternalConfigPtr TJob::CreateConfig()
     proxyInternalConfig->JobThrottler = CloneYsonStruct(CommonConfig_->JobThrottler);
 
     proxyInternalConfig->StatisticsOutputTableCountLimit = CommonConfig_->StatisticsOutputTableCountLimit;
+    StatisticsOutputTableCountLimit_ = proxyInternalConfig->StatisticsOutputTableCountLimit;
 
     proxyInternalConfig->OperationsArchiveVersion = Bootstrap_->GetJobController()->GetOperationsArchiveVersion();
 
@@ -3677,15 +3770,18 @@ TUserSandboxOptions TJob::BuildUserSandboxOptions()
 
     options.SlotPath = GetUserSlot()->GetSlotPath();
     options.JobVolumeMounts = FSSecretary_->GetJobVolumeMounts();
-    options.DiskSpaceLimit = FSSecretary_->GetRootVolumeDiskSpace();
-    options.InodeLimit = FSSecretary_->GetRootVolumeInodeLimit();
+
+    options.DiskSpaceLimit = FSSecretary_->GetSandboxDiskSpace();
+    options.InodeLimit = FSSecretary_->GetSandboxInodeLimit();
+
+    options.RootVolumeParams = FSSecretary_->GetRootVolumeParams();
 
     options.VirtualSandboxOptions = FSSecretary_->GetVirtualSandboxOptions();
 
     return options;
 }
 
-TArtifactDownloadOptions TJob::MakeArtifactDownloadOptions()
+TArtifactDownloadContext TJob::MakeArtifactDownloadContext()
 {
     YT_ASSERT_THREAD_AFFINITY(JobThread);
 
@@ -3695,18 +3791,52 @@ TArtifactDownloadOptions TJob::MakeArtifactDownloadOptions()
         Format("AuthenticatedUser: %v", JobSpecExt_.authenticated_user()),
     };
 
-    auto options = TArtifactDownloadOptions{
+    auto context = TArtifactDownloadContext{
         .TrafficMeter = TrafficMeter_,
+        .OnLayerCacheHit = BIND_NO_PROPAGATE([this, this_ = MakeStrong(this)] (i64 compressedDataSize) {
+            ArtifactStatistics_.CacheHitArtifactsSize += compressedDataSize;
+            ArtifactStatistics_.LayersCachedSize += compressedDataSize;
+            ArtifactStatistics_.LayersLayerCacheHitSize += compressedDataSize;
+        }).Via(Invoker_),
+        .OnChunkCacheHit = BIND_NO_PROPAGATE([this, this_ = MakeStrong(this)] (i64 compressedDataSize) {
+            ArtifactStatistics_.CacheHitArtifactsSize += compressedDataSize;
+            ArtifactStatistics_.LayersCachedSize += compressedDataSize;
+            ArtifactStatistics_.LayersChunkCacheHitSize += compressedDataSize;
+        }).Via(Invoker_),
+        .OnLayerCacheAsyncHit = BIND_NO_PROPAGATE([this, this_ = MakeStrong(this)] (
+            TCpuDuration asyncHitCpuDuration,
+            i64 compressedDataSize)
+        {
+            ArtifactStatistics_.LayersCachedSize += compressedDataSize;
+            ArtifactStatistics_.LayersLayerCacheAsyncHitSize += compressedDataSize;
+            ArtifactStatistics_.LayersLayerCacheAsyncHitCpuDuration += asyncHitCpuDuration;
+        }).Via(Invoker_),
+        .OnChunkCacheAsyncHit = BIND_NO_PROPAGATE([this, this_ = MakeStrong(this)] (
+            TCpuDuration asyncHitCpuDuration,
+            i64 compressedDataSize)
+        {
+            ArtifactStatistics_.LayersCachedSize += compressedDataSize;
+            ArtifactStatistics_.LayersChunkCacheAsyncHitSize += compressedDataSize;
+            ArtifactStatistics_.LayersChunkCacheAsyncHitCpuDuration += asyncHitCpuDuration;
+        }).Via(Invoker_),
         .OnLayerDownloaded = BIND_NO_PROPAGATE([this, this_ = MakeStrong(this)] (
             TCpuDuration downloadCpuDuration,
-            TCpuDuration importCpuDuration)
+            i64 downloadedSize)
         {
+            ArtifactStatistics_.CacheMissArtifactsSize += downloadedSize;
+            ArtifactStatistics_.LayersDownloadedSize += downloadedSize;
             ArtifactStatistics_.LayersDownloadCpuDuration += downloadCpuDuration;
+        }).Via(Invoker_),
+        .OnLayerImported = BIND_NO_PROPAGATE([this, this_ = MakeStrong(this)] (
+            TCpuDuration importCpuDuration,
+            i64 importedSize)
+        {
             ArtifactStatistics_.LayersImportCpuDuration += importCpuDuration;
+            ArtifactStatistics_.LayersImportedSize += importedSize;
         }).Via(Invoker_),
     };
 
-    return options;
+    return context;
 }
 
 // Start async artifacts download.
@@ -3733,17 +3863,18 @@ TFuture<std::vector<TArtifactPtr>> TJob::DownloadArtifacts()
             .With("SandboxKind", artifact.SandboxKind)
             .With("CompressedDataSize", artifact.Key.GetCompressedDataSize());
 
-        auto downloadOptions = MakeArtifactDownloadOptions();
-        bool fetchedFromCache = false;
+        auto downloadContext = MakeArtifactDownloadContext();
+        auto cacheEventState = New<TCacheEventState>();
         auto downloadCpuStart = GetCpuInstant();
-        auto asyncArtifact = artifactCache->DownloadArtifact(artifact.Key, downloadOptions, &fetchedFromCache)
+        auto asyncArtifact = artifactCache->DownloadArtifact(artifact.Key, downloadContext, cacheEventState)
             .Apply(BIND(
                 [
                     fileName = artifact.Name,
                     this,
                     this_ = MakeStrong(this),
                     downloadCpuStart,
-                    fetchedFromCache
+                    compressedDataSize = artifact.Key.GetCompressedDataSize(),
+                    cacheEventState
                 ] (const TErrorOr<TArtifactPtr>& chunkOrError) {
                     THROW_ERROR_EXCEPTION_IF_FAILED(
                         chunkOrError,
@@ -3756,20 +3887,31 @@ TFuture<std::vector<TArtifactPtr>> TJob::DownloadArtifacts()
                         .With("FileName", fileName)
                         .With("LocationId", chunk->GetLocation()->GetId())
                         .With("ChunkId", chunk->GetId());
-                    if (!fetchedFromCache) {
+                    Invoker_->Invoke(BIND_NO_PROPAGATE(
+                        [this, this_ = MakeStrong(this), compressedDataSize, cacheEventState] {
+                            UpdateFileArtifactStatistics(compressedDataSize, cacheEventState->CacheEventType);
+                        }));
+                    if (cacheEventState->CacheEventType == ECacheEventType::Miss) {
                         auto downloadCpuFinish = GetCpuInstant();
                         Invoker_->Invoke(BIND_NO_PROPAGATE(
                             [this, this_ = MakeStrong(this), downloadCpuStart, downloadCpuFinish] {
                                 ArtifactStatistics_.FilesDownloadCpuDuration +=
                                     downloadCpuFinish - downloadCpuStart;
                             }));
+                    } else if (cacheEventState->CacheEventType == ECacheEventType::AsyncHit) {
+                        auto downloadCpuFinish = GetCpuInstant();
+                        Invoker_->Invoke(BIND_NO_PROPAGATE(
+                            [this, this_ = MakeStrong(this), downloadCpuStart, downloadCpuFinish, compressedDataSize] {
+                                ArtifactStatistics_.FilesChunkCacheAsyncHitCpuDuration +=
+                                    downloadCpuFinish - downloadCpuStart;
+                                ArtifactStatistics_.FilesCachedSize += compressedDataSize;
+                                ArtifactStatistics_.FilesChunkCacheAsyncHitSize += compressedDataSize;
+                            }));
                     }
                     return chunk;
             }));
 
         asyncArtifacts.push_back(std::move(asyncArtifact));
-
-        UpdateArtifactStatistics(artifact.Key.GetCompressedDataSize(), fetchedFromCache, /*isLayer*/ false);
     }
 
     return AllSucceeded(std::move(asyncArtifacts))
@@ -4010,6 +4152,7 @@ bool TJob::IsFatalError(const TError& error)
         error.FindMatching(NExecNode::EErrorCode::GpuCheckCommandPreparationFailed) ||
         error.FindMatching(NExecNode::EErrorCode::VolumeSizeLimitExceeded) ||
         error.FindMatching(NExecNode::EErrorCode::FatalJobPreparationTimeout) ||
+        error.FindMatching(NExecNode::EErrorCode::InvalidNbdDiskRequest) ||
         error.FindMatching(NFormats::EErrorCode::InvalidFormat);
 }
 
@@ -4169,13 +4312,28 @@ void TJob::EnrichStatisticsWithArtifactsInfo(TStatistics* statistics)
     statistics->AddSample("/exec_agent/artifacts/cache_miss_artifacts_size"_SP, ArtifactStatistics_.CacheMissArtifactsSize);
     statistics->AddSample("/exec_agent/artifacts/cache_bypassed_artifacts_size"_SP, ArtifactStatistics_.CacheBypassedArtifactsSize);
 
-    // Bytes served from cache (cache hit).
+    // Bytes served from cache (cache hit, including awaited files and layers).
     statistics->AddSample(
         "/exec_agent/artifacts/files_cached_size"_SP,
         ArtifactStatistics_.FilesCachedSize);
     statistics->AddSample(
+        "/exec_agent/artifacts/files_chunk_cache_async_hit_size"_SP,
+        ArtifactStatistics_.FilesChunkCacheAsyncHitSize);
+    statistics->AddSample(
         "/exec_agent/artifacts/layers_cached_size"_SP,
         ArtifactStatistics_.LayersCachedSize);
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_layer_cache_hit_size"_SP,
+        ArtifactStatistics_.LayersLayerCacheHitSize);
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_chunk_cache_hit_size"_SP,
+        ArtifactStatistics_.LayersChunkCacheHitSize);
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_layer_cache_async_hit_size"_SP,
+        ArtifactStatistics_.LayersLayerCacheAsyncHitSize);
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_chunk_cache_async_hit_size"_SP,
+        ArtifactStatistics_.LayersChunkCacheAsyncHitSize);
 
     // Bytes downloaded from data nodes (excludes cache hits).
     // Files: cache miss bytes + bypass bytes.
@@ -4186,10 +4344,14 @@ void TJob::EnrichStatisticsWithArtifactsInfo(TStatistics* statistics)
     statistics->AddSample(
         "/exec_agent/artifacts/files_copied_size"_SP,
         ArtifactStatistics_.FilesCopiedSize);
-    // Layers: cache miss bytes.
+    // Layers: bytes fetched over the network.
     statistics->AddSample(
         "/exec_agent/artifacts/layers_downloaded_size"_SP,
         ArtifactStatistics_.LayersDownloadedSize);
+    // Layers: bytes imported into Porto (excludes SquashFS layers).
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_imported_size"_SP,
+        ArtifactStatistics_.LayersImportedSize);
 
     // Download durations; monotonic CPU clock is used to avoid NTP jumps.
     // Files: sum of per-file download durations (cache miss + bypass).
@@ -4200,7 +4362,11 @@ void TJob::EnrichStatisticsWithArtifactsInfo(TStatistics* statistics)
     statistics->AddSample(
         "/exec_agent/artifacts/files_copied_total_duration"_SP,
         CpuDurationToDuration(ArtifactStatistics_.FilesCopyCpuDuration).MilliSeconds());
-    // Layers: sum of per-layer network download durations (DownloadArtifact), excludes porto import.
+    // Files: sum of per-file durations of awaiting a concurrent fetch into the chunk cache.
+    statistics->AddSample(
+        "/exec_agent/artifacts/files_chunk_cache_async_hit_total_duration"_SP,
+        CpuDurationToDuration(ArtifactStatistics_.FilesChunkCacheAsyncHitCpuDuration).MilliSeconds());
+    // Layers: sum of per-layer network fetch durations; excludes cache hits and porto import.
     statistics->AddSample(
         "/exec_agent/artifacts/layers_downloaded_total_duration"_SP,
         CpuDurationToDuration(ArtifactStatistics_.LayersDownloadCpuDuration).MilliSeconds());
@@ -4208,6 +4374,14 @@ void TJob::EnrichStatisticsWithArtifactsInfo(TStatistics* statistics)
     statistics->AddSample(
         "/exec_agent/artifacts/layers_import_total_duration"_SP,
         CpuDurationToDuration(ArtifactStatistics_.LayersImportCpuDuration).MilliSeconds());
+    // Layers: sum of per-layer durations of awaiting a concurrent insertion into the layer volume cache.
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_layer_cache_async_hit_total_duration"_SP,
+        CpuDurationToDuration(ArtifactStatistics_.LayersLayerCacheAsyncHitCpuDuration).MilliSeconds());
+    // Layers: sum of per-layer durations of awaiting a concurrent fetch into the chunk cache.
+    statistics->AddSample(
+        "/exec_agent/artifacts/layers_chunk_cache_async_hit_total_duration"_SP,
+        CpuDurationToDuration(ArtifactStatistics_.LayersChunkCacheAsyncHitCpuDuration).MilliSeconds());
 }
 
 void TJob::UpdateIOStatistics(const TStatistics& statistics)
@@ -4262,25 +4436,23 @@ void TJob::UpdateIOStatistics(const TStatistics& statistics)
     IORequestsWritten_ = newIORequestsWritten;
 }
 
-void TJob::UpdateArtifactStatistics(
+void TJob::UpdateFileArtifactStatistics(
     i64 compressedDataSize,
-    bool cacheHit,
-    bool isLayer)
+    ECacheEventType cacheEventType)
 {
-    if (cacheHit) {
-        ArtifactStatistics_.CacheHitArtifactsSize += compressedDataSize;
-        if (isLayer) {
-            ArtifactStatistics_.LayersCachedSize += compressedDataSize;
-        } else {
+    switch (cacheEventType) {
+        case ECacheEventType::Hit:
+            ArtifactStatistics_.CacheHitArtifactsSize += compressedDataSize;
             ArtifactStatistics_.FilesCachedSize += compressedDataSize;
-        }
-    } else {
-        ArtifactStatistics_.CacheMissArtifactsSize += compressedDataSize;
-        if (isLayer) {
-            ArtifactStatistics_.LayersDownloadedSize += compressedDataSize;
-        } else {
+            break;
+        case ECacheEventType::AsyncHit:
+            // NB: AsyncHit sizes are accounted for in the download continuation,
+            // success-only (a failed concurrent fetch must not count toward the async-hit bucket).
+            break;
+        case ECacheEventType::Miss:
+            ArtifactStatistics_.CacheMissArtifactsSize += compressedDataSize;
             ArtifactStatistics_.FilesDownloadedSize += compressedDataSize;
-        }
+            break;
     }
 }
 
@@ -4370,7 +4542,9 @@ void TJob::InitializeJobProbe()
 {
     YT_ASSERT_THREAD_AFFINITY_ANY();
 
-    auto probe = CreateJobProbe(GetUserSlot()->GetBusClientConfig(), CommonConfig_->JobProbe);
+    auto probe = CreateJobProbe(
+        GetUserSlot()->GetPrivateBusClientConfig(),
+        CommonConfig_->JobProbe);
     {
         auto guard = Guard(JobProbeLock_);
         std::swap(JobProbe_, probe);
@@ -4424,15 +4598,10 @@ void TJob::ReportJobProxyProcessFinish(const TError& error)
     Bootstrap_->GetJobController()->OnJobProxyProcessFinished(error, delay);
 }
 
-bool TJob::ShouldCleanSandboxes()
-{
-    return GetEnv(DisableSandboxCleanupEnv) != "1";
-}
-
 bool TJob::NeedGpuLayers()
 {
-    auto jobEnvironmentType = Bootstrap_->GetJobEnvironmentType();
-    if (jobEnvironmentType != EJobEnvironmentType::Porto) {
+    auto capabilities = Bootstrap_->GetJobEnvironmentCapabilities();
+    if (!capabilities.SupportsGpuLayers) {
         return false;
     }
 
@@ -4460,11 +4629,10 @@ void TJob::CollectSensorsFromStatistics(ISensorWriter* writer)
     try {
         statisticsNode = ConvertTo<IMapNodePtr>(StatisticsYson_);
     } catch (const std::exception& ex) {
-        YT_LOG_WARNING(
-            TError(ex),
-            "Failed to convert statistics to map node (JobId: %v, OperationId: %v)",
-            GetId(),
-            GetOperationId());
+        YT_TLOG_WARNING("Failed to convert statistics to map node")
+            .With("JobId", GetId())
+            .With("OperationId", GetOperationId())
+            .With(ex);
         return;
     }
 
@@ -4490,11 +4658,10 @@ void TJob::CollectSensorsFromStatistics(ISensorWriter* writer)
                 continue;
             }
         } catch (const std::exception& ex) {
-            YT_LOG_DEBUG(
-                TError(ex),
-                "Error looking for statistics node (SensorName: %v, Path: %v)",
-                sensorName,
-                sensor->Path);
+            YT_TLOG_DEBUG("Error looking for statistics node")
+                .With("SensorName", sensorName)
+                .With("Path", sensor->Path)
+                .With(ex);
             continue;
         }
 
@@ -4700,6 +4867,7 @@ void FillJobStatus(NControllerAgent::NProto::TJobStatus* status, const TJobPtr& 
 
     status->set_job_type(ToProto(job->GetType()));
     status->set_state(ToProto(job->GetState()));
+    status->set_phase_old(ToProto(ConvertJobPhaseToOld(job->GetPhase())));
     status->set_phase(ToProto(job->GetPhase()));
     status->set_job_execution_completed(job->IsJobProxyCompleted());
     status->set_interruption_reason(ToProto(job->GetInterruptionReason()));

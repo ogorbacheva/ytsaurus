@@ -77,7 +77,7 @@ class TestControllerAgentOrchid(YTEnvSetup):
 
         assert list(get(orchid_path)) == []
 
-        wait_breakpoint()
+        wait_breakpoint(op)
         op.wait_for_fresh_snapshot()
 
         assert list(get(orchid_path)) == [str(op.id)]
@@ -113,6 +113,7 @@ class TestControllerAgentRegistration(YTEnvSetup):
 
 class TestControllerMemoryUsage(YTEnvSetup):
     ENABLE_MULTIDAEMON = False  # Checks memory usage.
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_SCHEDULERS = 1
 
     DELTA_HTTP_PROXY_CONFIG = {
@@ -241,6 +242,7 @@ class TestControllerMemoryUsage(YTEnvSetup):
 
 class TestControllerAgentMemoryPickStrategy(YTEnvSetup):
     ENABLE_MULTIDAEMON = True
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_SCHEDULERS = 1
     NUM_CONTROLLER_AGENTS = 2
 
@@ -683,6 +685,7 @@ class TestOperationControllerResourcesCheck(YTEnvSetup):
 
 class TestOperationControllerLimit(YTEnvSetup):
     ENABLE_MULTIDAEMON = False  # Checks memory.
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_MASTERS = 1
     NUM_NODES = 1
     NUM_SCHEDULERS = 1
@@ -718,6 +721,7 @@ class TestOperationControllerLimit(YTEnvSetup):
 @pytest.mark.skipif(is_asan_build(), reason="Memory allocation is not reported under ASAN")
 class TestMemoryOverconsumptionThreshold(YTEnvSetup):
     ENABLE_MULTIDAEMON = False  # Checks memory.
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_MASTERS = 1
     NUM_NODES = 1
     NUM_SCHEDULERS = 1
@@ -747,12 +751,13 @@ class TestMemoryOverconsumptionThreshold(YTEnvSetup):
         })
 
         wait(lambda: "memory_overconsumption" in op.get_alerts())
-        wait_breakpoint()
+        wait_breakpoint(op)
 
 
 @pytest.mark.skipif(is_asan_build(), reason="Memory allocation is not reported under ASAN")
 class TestTotalControllerMemoryLimit(YTEnvSetup):
     ENABLE_MULTIDAEMON = False  # Checks memory.
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_MASTERS = 1
     NUM_NODES = 1
     NUM_SCHEDULERS = 1
@@ -804,6 +809,7 @@ class TestTotalControllerMemoryLimit(YTEnvSetup):
 @pytest.mark.skipif(is_asan_build(), reason="Memory allocation is not reported under ASAN")
 class TestTotalControllerMemoryExceedLimit(YTEnvSetup):
     ENABLE_MULTIDAEMON = False  # Checks memory.
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_MASTERS = 1
     NUM_NODES = 1
     NUM_SCHEDULERS = 1
@@ -859,6 +865,7 @@ class TestTotalControllerMemoryExceedLimit(YTEnvSetup):
 @pytest.mark.skipif(is_asan_build(), reason="Memory allocation is not reported under ASAN")
 class TestControllerAgentMemoryAlert(YTEnvSetup):
     ENABLE_MULTIDAEMON = False  # Checks memory.
+    ENABLE_TCMALLOC_PROFILING = True
     NUM_MASTERS = 1
     NUM_NODES = 3
     NUM_SCHEDULERS = 1
@@ -994,7 +1001,7 @@ class TestMemoryWatchdog(YTEnvSetup):
                 track=False,
             ))
 
-        wait_breakpoint()
+        wait_breakpoint(big_ops)
         release_breakpoint()
         small_ops = []
         for _ in range(2):
@@ -1047,7 +1054,7 @@ class TestMemoryWatchdog(YTEnvSetup):
 
         op = run_test_vanilla(with_breakpoint("BREAKPOINT"), job_count=1)
 
-        wait_breakpoint()
+        wait_breakpoint(op)
 
         wait(lambda: all(all(counter[name].get_delta() != 0 for name in counter_names) for _, counter in counters.items()))
 
@@ -1331,7 +1338,7 @@ class TestAllocationJobLimit(YTEnvSetup):
             spec={"data_size_per_job": 1, "enable_multiple_jobs_in_allocation": True},
         )
 
-        job_ids = wait_breakpoint()
+        job_ids = wait_breakpoint(op)
         assert len(job_ids) == 1
 
         job_id1 = job_ids[0]
@@ -1340,7 +1347,7 @@ class TestAllocationJobLimit(YTEnvSetup):
 
         release_breakpoint(job_id=job_id1)
 
-        job_ids = wait_breakpoint()
+        job_ids = wait_breakpoint(op)
         assert len(job_ids) == 1
 
         job_id2 = job_ids[0]
@@ -1380,7 +1387,7 @@ class TestAllocationJobLimit(YTEnvSetup):
             spec={"data_size_per_job": 1, "enable_multiple_jobs_in_allocation": True},
         )
 
-        job_id1, = wait_breakpoint()
+        job_id1, = wait_breakpoint(op)
 
         print_debug("job_id1: ", job_id1)
 
@@ -1388,7 +1395,7 @@ class TestAllocationJobLimit(YTEnvSetup):
 
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint()
+        job_id2, = wait_breakpoint(op)
 
         wait(lambda: normally_finished_allocation_counter.get_delta() == 1)
         assert aborted_allocation_counter.get_delta() == 0
@@ -1438,13 +1445,13 @@ class TestEnableMultipleJobsOption(YTEnvSetup):
             spec={"data_size_per_job": 1, "enable_multiple_jobs_in_allocation": True},
         )
 
-        job_id1, = wait_breakpoint()
+        job_id1, = wait_breakpoint(op)
 
         allocation_id1 = get_allocation_id_from_job_id(job_id1)
 
         release_breakpoint(job_id=job_id1)
 
-        job_id2, = wait_breakpoint()
+        job_id2, = wait_breakpoint(op)
 
         assert job_id1 != job_id2
         allocation_id2 = get_allocation_id_from_job_id(job_id2)

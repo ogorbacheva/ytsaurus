@@ -77,6 +77,27 @@ TEST(TSplitFilterTest, WhereOnly)
     EXPECT_FALSE(result.Having.has_value());
 }
 
+TEST(TSplitFilterTest, TupleOperandIsRejected)
+{
+    for (const std::string filterQuery : {
+        "([type], [kind]) AND [update_time] > 10",
+        "([type], [kind]) OR [update_time] > 10",
+        "[update_time] > 10 OR NOT ([type], [kind])",
+    }) {
+        SCOPED_TRACE(filterQuery);
+        TObjectsHolder objectsHolder;
+        auto filterExpression = ParseInto(filterQuery, &objectsHolder);
+
+        TFilterHints hints;
+        EXPECT_THROW_WITH_ERROR_CODE(
+            SplitFilterIntoWhereAndHaving(filterExpression, hints, &objectsHolder),
+            NClient::EErrorCode::InvalidRequestArguments);
+        EXPECT_THROW_WITH_SUBSTRING(
+            SplitFilterIntoWhereAndHaving(filterExpression, hints, &objectsHolder),
+            "scalar operands");
+    }
+}
+
 TEST(TSplitFilterTest, HavingOnly)
 {
     TObjectsHolder objectsHolder;
@@ -165,7 +186,7 @@ TEST(TSplitFilterTest, TopLevelLiteral)
             true))[0];
 
     TFilterHints hints;
-    hints.WhereAliases.insert("l");
+    hints.HavingAliases.insert("r");
     auto result = SplitFilterIntoWhereAndHaving(filterExpression, hints, &objectsHolder);
 
     ASSERT_TRUE(result.Having.has_value());

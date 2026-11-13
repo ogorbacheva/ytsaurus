@@ -1,4 +1,5 @@
 RECURSE(
+    source_read_delay
     pipeline_helpers
     buffers
     client
@@ -12,12 +13,17 @@ RECURSE(
     connectors
     controller
     controller/describe
+    file_providers
     file_storage
     misc
+    jobtruck
     multiplexer
     parsers
+    partitioning
+    pipeline_tables
     process_function
     tables
+    throughput_autoscaler
     vanilla
     worker
 )

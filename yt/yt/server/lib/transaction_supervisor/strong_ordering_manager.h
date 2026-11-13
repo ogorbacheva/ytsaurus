@@ -51,7 +51,7 @@ public:
         std::vector<std::string> strongOrderingTags);
 
     // Only called on participant.
-    [[nodiscard]] TCommitInfos OnCommitReadyToCommit(
+    [[nodiscard]] TCommitInfos OnCommitCommitTimestampKnown(
         TTransactionId transactionId,
         TTimestamp commitTimestamp,
         NApi::TClusterTag commitTimestampClusterTag);
@@ -68,6 +68,16 @@ public:
         TTransactionId transactionId,
         bool isCoordinator);
 
+    // If you feel like you need this, please think again. This is a hack, made
+    // for one specific scenario.
+    // Tags can be generated from the transaction itself. On the coordinator
+    // that is ok, the commit can be patched with the new tags easily. On the
+    // participant, however, it leads to a disconnect between what the
+    // coordinator sees and the reality. In cases where the commit has no tags
+    // on the participant from the coordinator's point of view, but in reality
+    // some additional tags were generated, an extra check is needed.
+    bool IsTransactionPresent(TTransactionId transactionId) const;
+
     // This is extra validation measure. Can be removed down the line.
     void PromoteLastCommitTimestamp(
         TTransactionId transactionId,
@@ -82,15 +92,16 @@ public:
 private:
     /*
      *  NB:
-     *  On the coordinator ReadyToCommit and Commit stages happen simultaneously.
-     *  On the participant ReadyToCommit and Commit stages happen simultaneously iff Commit request arrived before ReadyToCommit request.
+     *  On the coordinator CommitTimestampKnown and Commit stages happen simultaneously.
+     *  On the participant CommitTimestampKnown and Commit stages happen simultaneously
+     *  iff Commit request arrived before RecordCommitTimestamp request.
      *
      *                                                                              Note that commit and flush might happen at the same time!
-     *  Logical stages:                 Prepare                  ReadyToCommit                  Commit                      Flush
+     *  Logical stages:                 Prepare               CommitTimestampKnown               Commit                      Flush
      *  +---------------------------+      |                           |                           |                           |
      *  |    Commit Ts Estimation   |      |###########################|---------------------------|---------------------------|
      *  +---------------------------+      |                           |                           |                           |
-     *  |    Ready to commit Txs    |      |---------------------------|###########################|###########################|
+     *  |    Commit Ts Generated    |      |---------------------------|###########################|###########################|
      *  +---------------------------+      |                           |                           |                           |
      *  |  Transaction to tx info   |      |###########################|###########################|###########################|
      *  +---------------------------+      |                           |                           |                           |
@@ -105,7 +116,7 @@ private:
         // for T must be greater than X.
         // Example:
         // T1 Prepare request received with prepare timestamp 5.
-        // T1 ReadyToCommit request received with commit timestamp is 7.
+        // T1 RecordCommitTimestamp request received with commit timestamp 7.
         // T2 Prepare request is received with prepare timestamp 2.
         // Since T2 Prepare request is currently being processed, and timestamp 7 was seen,
         // it can be assumed that T2 commit timestamp is greater than 7.
@@ -119,7 +130,7 @@ private:
         // than all commit timestamp lower bounds.
         // If current cell is a participant, then T can be committed only after "Commit"
         // request was received in addition to all of the above.
-        std::map<TTimestamp, TTransactionId> ReadyToCommitTransactions;
+        std::map<TTimestamp, TTransactionId> CommitTimestampToTransactionId;
 
         // This field is used for validation only. It can be removed.
         TTimestamp LastCommitTimestamp = NTransactionClient::NullTimestamp;
@@ -171,11 +182,11 @@ private:
 
     // Used by profiling only.
     std::atomic<int> PreparedTransactionCount_ = 0;
-    std::atomic<int> ReadyToCommitTransactionCount_ = 0;
+    std::atomic<int> CommitTimestampKnownTransactionCount_ = 0;
     std::atomic<int> ReadyToFlushTransactionCount_ = 0;
 
     std::atomic<int> PreparedCommitCount_ = 0;
-    NThreading::TAtomicObject<TPromise<void>> PreparedCommitsFinished_;
+    TAtomicObject<TPromise<void>> PreparedCommitsFinished_;
 
     TStrongOrderingShard* GetOrCreateShard(const std::string& tag);
     TStrongOrderingShard* GetShardOrCrash(const std::string& tag);

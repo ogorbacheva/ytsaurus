@@ -3,15 +3,11 @@ package chyt
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"hash"
 	"maps"
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -43,20 +39,24 @@ type ResourcesConfig struct {
 type Config struct {
 	// LocalBinariesDir is set if we want to execute local binaries on the clique.
 	// This directory should contain trampoline and chyt binaries.
-	LocalBinariesDir           *string                 `yson:"local_binaries_dir"`
-	LogRotationMode            *LogRotationModeType    `yson:"log_rotation_mode"`
-	AddressResolver            map[string]any          `yson:"address_resolver"`
-	BusServer                  map[string]any          `yson:"bus_server"`
-	EnableYandexSpecificLinks  *bool                   `yson:"enable_yandex_specific_links"`
-	ExportSystemLogTables      *bool                   `yson:"export_system_log_tables"`
-	EnableGeodata              *bool                   `yson:"enable_geodata"`
-	EnableRuntimeData          *bool                   `yson:"enable_runtime_data"`
-	ResourcesConfig            *ResourcesConfig        `yson:"resources_config"`
-	SecureVaultFiles           map[string]string       `yson:"secure_vault_files"`
-	DefaultSpeclet             *Speclet                `yson:"default_speclet"`
-	SpecletConfigExclusionTree map[string]any          `yson:"speclet_config_exclusion_tree"`
-	DefaultOpletHealth         *strawberry.OpletHealth `yson:"default_oplet_health"`
-	EnableDiscoveryHealthCheck *bool                   `yson:"enable_discovery_health_check"`
+	LocalBinariesDir *string `yson:"local_binaries_dir"`
+	// LocalLogsDir persists local clique logs outside job sandboxes.
+	LocalLogsDir                              *string                             `yson:"local_logs_dir"`
+	LogRotationMode                           *LogRotationModeType                `yson:"log_rotation_mode"`
+	AddressResolver                           map[string]any                      `yson:"address_resolver"`
+	BusServer                                 map[string]any                      `yson:"bus_server"`
+	ServerConfig                              map[string]any                      `yson:"server_config"`
+	EnableYandexSpecificLinks                 *bool                               `yson:"enable_yandex_specific_links"`
+	ExportSystemLogTables                     *bool                               `yson:"export_system_log_tables"`
+	EnableGeodata                             *bool                               `yson:"enable_geodata"`
+	EnableRuntimeData                         *bool                               `yson:"enable_runtime_data"`
+	ResourcesConfig                           *ResourcesConfig                    `yson:"resources_config"`
+	SecureVaultFiles                          map[string]string                   `yson:"secure_vault_files"`
+	DefaultSpeclet                            *Speclet                            `yson:"default_speclet"`
+	SpecletConfigExclusionTree                map[string]any                      `yson:"speclet_config_exclusion_tree"`
+	DefaultOpletHealth                        *strawberry.OpletHealth             `yson:"default_oplet_health"`
+	EnableDiscoveryHealthCheck                *bool                               `yson:"enable_discovery_health_check"`
+	DefaultClusterConnectionDynamicConfigMode *ClusterConnectionDynamicConfigMode `yson:"default_cluster_connection_dynamic_config_mode"`
 }
 
 type controllerSnapshot struct {
@@ -78,6 +78,13 @@ func (c *Config) LogRotationModeOrDefault() LogRotationModeType {
 		return *c.LogRotationMode
 	}
 	return DefaultLogRotationMode
+}
+
+func (c *Config) DefaultClusterConnectionDynamicConfigModeOrDefault() ClusterConnectionDynamicConfigMode {
+	if c.DefaultClusterConnectionDynamicConfigMode != nil {
+		return *c.DefaultClusterConnectionDynamicConfigMode
+	}
+	return ClusterConnectionFromStaticConfig
 }
 
 func (c *Config) EnableYandexSpecificLinksOrDefault() bool {
@@ -137,10 +144,11 @@ func (c *Config) getDefaultMemory() uint64 {
 }
 
 type chytOpletInfo struct {
-	CHYTRunningVersion     string       `yson:"chyt_running_version"`
-	CHYTRunningVersionPath string       `yson:"chyt_running_version_path"`
-	BinaryNodeId           *string      `yson:"binary_node_id"`
-	BinaryRevision         *yt.Revision `yson:"binary_revision"`
+	CHYTRunningVersion                 string                             `yson:"chyt_running_version"`
+	CHYTRunningVersionPath             string                             `yson:"chyt_running_version_path"`
+	BinaryNodeId                       *string                            `yson:"binary_node_id"`
+	BinaryRevision                     *yt.Revision                       `yson:"binary_revision"`
+	ClusterConnectionDynamicConfigMode ClusterConnectionDynamicConfigMode `yson:"cluster_connection_dynamic_config_mode,omitempty"`
 }
 
 type Controller struct {
@@ -179,42 +187,15 @@ func (c *Controller) getTvmID() (int64, bool) {
 	return tvmID, true
 }
 
-var (
-	clusterConnectionFields = []string{
-		"bus_client",
-		"discovery_connection",
-		"master_cache",
-		"primary_master",
-		"secondary_masters",
-		"timestamp_provider",
-		"tvm_id",
-		"chyt",
-	}
-)
-
-type ysonHashEncoder struct {
-	*yson.Encoder
-	hasher hash.Hash
-}
-
-func (encoder *ysonHashEncoder) Sum() string {
-	return hex.EncodeToString(encoder.hasher.Sum(nil))
-}
-
-func newYsonHashEncoder() ysonHashEncoder {
-	hasher := sha256.New()
-	return ysonHashEncoder{
-		Encoder: yson.NewEncoderWriter(
-			yson.NewWriterConfig(
-				hasher,
-				yson.WriterConfig{
-					Format: yson.FormatBinary,
-					Kind:   yson.StreamListFragment,
-				},
-			),
-		),
-		hasher: hasher,
-	}
+var clusterConnectionFields = []string{
+	"bus_client",
+	"discovery_connection",
+	"master_cache",
+	"primary_master",
+	"secondary_masters",
+	"timestamp_provider",
+	"tvm_id",
+	"chyt",
 }
 
 func (c *Controller) updateClusterConnection(ctx context.Context) (changed bool, err error) {
@@ -228,31 +209,29 @@ func (c *Controller) updateClusterConnection(ctx context.Context) (changed bool,
 		c.l.Error("failed to update cluster connection: cluster connection contains block_cache section")
 		return false, fmt.Errorf("chyt: cluster connection contains block_cache section; looks like a misconfiguration")
 	}
-	encoder := newYsonHashEncoder()
+	encoder := strawberry.NewYsonHashEncoder()
 	for _, field := range clusterConnectionFields {
-		newValue, newValueExists := clusterConnection[field]
-		cachedValue, cachedValueExists := c.cachedClusterConnection[field]
-		if newValueExists != cachedValueExists ||
-			newValueExists && cachedValueExists && !reflect.DeepEqual(newValue, cachedValue) {
-			c.cachedClusterConnection = clusterConnection
-			changed = true
-		}
-		if newValueExists {
-			if err = encoder.Encode(field); err != nil {
+		if value, ok := clusterConnection[field]; ok {
+			if err := encoder.Encode(field); err != nil {
 				return false, err
 			}
-			if err = encoder.Encode(newValue); err != nil {
+			if err := encoder.Encode(value); err != nil {
 				return false, err
 			}
 		}
 	}
-	c.snapshot.ClusterConnectionHash = encoder.Sum()
+	connectionHash := encoder.Sum()
+	changed = c.snapshot.ClusterConnectionHash != connectionHash
+	c.snapshot.ClusterConnectionHash = connectionHash
+	if changed {
+		c.cachedClusterConnection = clusterConnection
+	}
 	c.l.Info("cluster connection updated", log.Bool("changed", changed), log.String("hash", c.snapshot.ClusterConnectionHash))
 	return changed, nil
 }
 
 func (c *Controller) updateSecrets() (changed bool, err error) {
-	encoder := newYsonHashEncoder()
+	encoder := strawberry.NewYsonHashEncoder()
 	for _, secret := range slices.Sorted(maps.Keys(c.config.SecureVaultFiles)) {
 		var value []byte
 		if value, err = os.ReadFile(c.config.SecureVaultFiles[secret]); err != nil {
@@ -291,45 +270,70 @@ func (c *Controller) buildCommand(speclet *Speclet) string {
 	if speclet.ODBCConfig.EnableOrDefault() {
 		args = append(args, "--prepare-odbc")
 	}
+	if speclet.JDBCConfig.EnableOrDefault() {
+		jdbcTrampolinePath := binariesDir + "jdbc-trampoline"
+		args = append(args, "--prepare-jdbc", "--jdbc-trampoline-bin", jdbcTrampolinePath)
+	}
+
+	if speclet.logsDir != nil {
+		args = append(
+			args,
+			"--log-file", filepath.Join(*speclet.logsDir, "trampoline-$YT_JOB_INDEX.debug.log"),
+			"--stderr-file", filepath.Join(*speclet.logsDir, "stderr.clickhouse-$YT_JOB_INDEX"),
+		)
+	}
 	return strings.Join(args, " ")
+}
+
+func (c *Controller) prepareLocalLogs(oplet *strawberry.Oplet) (*string, error) {
+	if c.config.LocalLogsDir == nil {
+		return nil, nil
+	}
+
+	dir := filepath.Join(
+		*c.config.LocalLogsDir,
+		oplet.Alias(),
+		fmt.Sprint(oplet.NextIncarnationIndex()),
+	)
+	if err := os.MkdirAll(dir, 0777); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(dir, 0777); err != nil {
+		return nil, err
+	}
+	return &dir, nil
 }
 
 func (c *Controller) Root() ypath.Path {
 	return c.root
 }
 
-func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
-	spec map[string]any, description map[string]any, annotations map[string]any, runAsUser bool, err error) {
+func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (*strawberry.PrepareResult, error) {
+	result := &strawberry.PrepareResult{}
 	alias := oplet.Alias()
 
-	description = buildDescription(c.cluster, alias, c.config.EnableYandexSpecificLinksOrDefault())
+	result.Description = buildDescription(c.cluster, alias, c.config.EnableYandexSpecificLinksOrDefault())
 	speclet := oplet.ControllerSpeclet().(Speclet)
 
-	var opletInfo chytOpletInfo
+	var info chytOpletInfo
 	var filePaths []ypath.Rich
 
 	// Populate resources.
-	err = c.populateResources(&speclet)
+	err := c.populateResources(&speclet)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	err = c.prepareCypressDirectories(ctx, oplet.Alias())
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	if speclet.ODBCConfig.EnableOrDefault() {
 		if speclet.ODBCConfig == nil {
 			speclet.ODBCConfig = &ODBCConfig{}
 		}
-		// DriversDir points to a pre-populated Cypress directory.
-		// The controller reads config.yson from it and merges the discovered drivers and
-		// extra files into the speclet's own Drivers/ExtraFiles lists, so that a cluster
-		// admin can deploy a shared set of drivers once and have all ODBC-enabled cliques
-		// pick them up automatically without each user having to list them explicitly.
-		driversDir := speclet.ODBCConfig.DriversDirOrDefault()
-		odbcCfg, err := c.loadODBCDriversConfig(ctx, driversDir)
+		odbcCfg, err := c.loadODBCDriversConfig(ctx)
 		if err != nil || odbcCfg == nil {
 			c.l.Warn("failed to load ODBC drivers config, no default drivers will be added", log.Error(err))
 		} else {
@@ -340,34 +344,49 @@ func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
 
 	// Build artifacts if there are no local binaries.
 	if c.config.LocalBinariesDir == nil {
-		err = c.appendOpArtifacts(ctx, &speclet, &filePaths, &description, &opletInfo)
+		err = c.appendOpArtifacts(ctx, &speclet, &filePaths, &result.Description, &info)
 		if err != nil {
-			return
+			return nil, err
 		}
 	} else {
-		opletInfo.CHYTRunningVersion = "LocalVersion"
-		opletInfo.CHYTRunningVersionPath = filepath.Join(*c.config.LocalBinariesDir, "ytserver-clickhouse")
+		info.CHYTRunningVersion = "LocalVersion"
+		info.CHYTRunningVersionPath = filepath.Join(*c.config.LocalBinariesDir, "ytserver-clickhouse")
 	}
-	oplet.SetOpletInfo(opletInfo)
+	speclet.logsDir, err = c.prepareLocalLogs(oplet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare local logs directory: %w", err)
+	}
 
 	// Build configs.
+	info.ClusterConnectionDynamicConfigMode = speclet.ClusterConnectionDynamicConfigModeOrDefault(c.config.DefaultClusterConnectionDynamicConfigModeOrDefault())
 	err = c.appendConfigs(ctx, oplet, &speclet, &filePaths)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	// Upload odbcinst.ini and odbc.ini as Cypress file artifacts so they land in the job sandbox.
 	if speclet.ODBCConfig.EnableOrDefault() {
 		err = c.appendODBCConfigs(ctx, oplet, &speclet, &filePaths)
 		if err != nil {
-			return
+			return nil, err
+		}
+	}
+
+	if speclet.JDBCConfig.EnableOrDefault() {
+		err = c.appendJDBCConfig(ctx, oplet, &speclet, &filePaths)
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	// Build command.
 	command := c.buildCommand(&speclet)
+	portCount := 5
+	if speclet.JDBCConfig.EnableOrDefault() {
+		portCount++
+	}
 
-	spec = map[string]any{
+	result.Spec = map[string]any{
 		"tasks": map[string]any{
 			"instances": map[string]any{
 				"command":                            command,
@@ -375,7 +394,7 @@ func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
 				"file_paths":                         filePaths,
 				"memory_limit":                       speclet.Resources.InstanceMemory.totalMemory(),
 				"cpu_limit":                          speclet.Resources.InstanceCPU,
-				"port_count":                         5,
+				"port_count":                         portCount,
 				"max_stderr_size":                    1024 * 1024 * 1024,
 				"user_job_memory_digest_lower_bound": 1.0,
 				"restart_completed_jobs":             true,
@@ -386,7 +405,7 @@ func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
 		"max_stderr_count":     150,
 		"title":                "CHYT clique *" + alias,
 	}
-	annotations = map[string]any{
+	result.Annotations = map[string]any{
 		"is_clique": true,
 		"expose":    true,
 	}
@@ -401,18 +420,27 @@ func (c *Controller) Prepare(ctx context.Context, oplet *strawberry.Oplet) (
 
 	// Prepare runtime stuff if need: stderr/core-table, etc.
 	if speclet.EnableRuntimeDataOrDefault(c.config.EnableRuntimeDataOrDefault()) {
-		var runtimePaths runtimePaths
-		runtimePaths, err = c.prepareRuntime(ctx, speclet.RuntimeDataSpecOrDefault(), alias, oplet.NextIncarnationIndex())
-		if err != nil {
-			return
+		runtimeSpec := speclet.RuntimeDataSpecOrDefault(c.root.Child(alias))
+		if speclet.RuntimeDataPath != nil {
+			runtimeSpec.RuntimeDataPath = speclet.RuntimeDataPath.Child(alias)
 		}
-		spec["stderr_table_path"] = runtimePaths.StderrTable
-		spec["core_table_path"] = runtimePaths.CoreTable
+		var runtimePaths runtimePaths
+		runtimePaths, err = c.prepareRuntime(ctx, runtimeSpec, oplet.NextIncarnationIndex())
+		if err != nil {
+			return nil, err
+		}
+		result.Spec["stderr_table_path"] = runtimePaths.StderrTable
+		result.Spec["core_table_path"] = runtimePaths.CoreTable
 	}
 
-	runAsUser = false
+	result.RunAsUser = false
 
-	return
+	opletInfo, err := yson.Marshal(info)
+	if err != nil {
+		return nil, err
+	}
+	result.OpletInfo = opletInfo
+	return result, nil
 }
 
 func (c *Controller) Family() string {
@@ -425,12 +453,20 @@ func (c *Controller) ParseSpeclet(specletYson yson.RawValue) (any, error) {
 	if err != nil {
 		return nil, yterrors.Err("failed to parse speclet", err)
 	}
+	mode := speclet.ClusterConnectionDynamicConfigModeOrDefault(c.config.DefaultClusterConnectionDynamicConfigModeOrDefault())
+	if mode != ClusterConnectionFromStaticConfig && mode != ClusterConnectionFromDirectory {
+		return nil, fmt.Errorf("unsupported cluster_connection_dynamic_config_mode %q", mode)
+	}
 	return speclet, nil
 }
 
 func (c *Controller) needsRestart(ctx context.Context, oplet *strawberry.Oplet) (bool, error) {
 	speclet := oplet.ControllerSpeclet().(Speclet)
 	if !speclet.RestartOnVersionDriftOrDefault() {
+		return false, nil
+	}
+
+	if len(oplet.OpletInfo()) == 0 {
 		return false, nil
 	}
 
@@ -531,6 +567,32 @@ func (c *Controller) GetControllerSnapshot() (yson.RawValue, error) {
 	return yson.MarshalFormat(c.snapshot, yson.FormatBinary)
 }
 
+func (c *Controller) IsControllerSnapshotOutdated(snapshot yson.RawValue, oplet *strawberry.Oplet) (bool, error) {
+	if len(snapshot) == 0 {
+		return true, nil
+	}
+	var previousSnapshot controllerSnapshot
+	if err := yson.Unmarshal(snapshot, &previousSnapshot); err != nil {
+		return false, fmt.Errorf("failed to parse stored controller snapshot: %w", err)
+	}
+	currentSnapshot := c.snapshot
+	if previousSnapshot == currentSnapshot {
+		return false, nil
+	}
+
+	var info chytOpletInfo
+	if rawInfo := oplet.OpletInfo(); len(rawInfo) != 0 {
+		if err := yson.Unmarshal(rawInfo, &info); err != nil {
+			return false, fmt.Errorf("failed to parse oplet info: %w", err)
+		}
+	}
+	if info.ClusterConnectionDynamicConfigMode == ClusterConnectionFromDirectory {
+		previousSnapshot.ClusterConnectionHash = ""
+		currentSnapshot.ClusterConnectionHash = ""
+	}
+	return previousSnapshot != currentSnapshot, nil
+}
+
 func (c *Controller) DescribeOptions(parsedSpeclet any) []strawberry.OptionGroupDescriptor {
 	speclet := parsedSpeclet.(Speclet)
 
@@ -553,7 +615,7 @@ func (c *Controller) DescribeOptions(parsedSpeclet any) []strawberry.OptionGroup
 					Name:         "instance_cpu",
 					Type:         strawberry.TypeInt64,
 					CurrentValue: speclet.InstanceCPU,
-					DefaultValue: defaultInstanceCPU,
+					DefaultValue: c.config.getDefaultInstanceCPU(),
 					MinValue:     1,
 					MaxValue:     100,
 					Description:  "Number of CPU cores per instance.",
@@ -563,7 +625,7 @@ func (c *Controller) DescribeOptions(parsedSpeclet any) []strawberry.OptionGroup
 					Name:         "instance_total_memory",
 					Type:         strawberry.TypeByteCount,
 					CurrentValue: speclet.InstanceTotalMemory,
-					DefaultValue: (&InstanceMemory{}).totalMemory(),
+					DefaultValue: c.config.getDefaultMemory(),
 					MinValue:     memNonElastic,
 					MaxValue:     300 * gib,
 					Description:  "Amount of RAM per instance in bytes.",
@@ -574,6 +636,15 @@ func (c *Controller) DescribeOptions(parsedSpeclet any) []strawberry.OptionGroup
 			Title:  "Advanced",
 			Hidden: true,
 			Options: []strawberry.OptionDescriptor{
+				{
+					Title:        "Cluster connection dynamic config mode",
+					Name:         "cluster_connection_dynamic_config_mode",
+					Type:         strawberry.TypeString,
+					CurrentValue: speclet.ClusterConnectionDynamicConfigMode,
+					DefaultValue: c.config.DefaultClusterConnectionDynamicConfigModeOrDefault(),
+					Choices:      []any{ClusterConnectionFromStaticConfig, ClusterConnectionFromDirectory},
+					Description:  "In from_cluster_directory mode, cluster connection changes do not trigger restarts; a server-side configured synchronizer is required.",
+				},
 				{
 					Title:        "CHYT version",
 					Name:         "chyt_version",
@@ -716,55 +787,6 @@ func getVersionMetric(opletInfo yson.RawValue) (strawberry.Metric, bool) {
 	}, true
 }
 
-func (c *Controller) GetOpletInfo(ctx context.Context, oplet *strawberry.Oplet) (any, error) {
-	opID := oplet.GetBriefInfo().YTOperation.ID
-	if opID == yt.NullOperationID {
-		return chytOpletInfo{}, nil
-	}
-
-	opInfo, err := c.ytc.GetOperation(
-		ctx,
-		opID,
-		&yt.GetOperationOptions{
-			Attributes: []string{"full_spec"},
-			MasterReadOptions: &yt.MasterReadOptions{
-				ReadFrom: yt.ReadFromFollower,
-			},
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	var s struct {
-		Description struct {
-			Artifacts struct {
-				CH struct {
-					Version string `yson:"version"`
-				} `yson:"ytserver-clickhouse"`
-			} `yson:"artifacts"`
-		} `yson:"description"`
-
-		Tasks struct {
-			Instances struct {
-				FilePaths []ypath.Rich `yson:"file_paths"`
-			} `yson:"instances"`
-		} `yson:"tasks"`
-	}
-	err = yson.Unmarshal(opInfo.FullSpec, &s)
-	if err != nil {
-		return nil, err
-	}
-
-	opletInfo := chytOpletInfo{CHYTRunningVersion: s.Description.Artifacts.CH.Version}
-	for _, fp := range s.Tasks.Instances.FilePaths {
-		if fp.FileName == "ytserver-clickhouse" {
-			opletInfo.CHYTRunningVersionPath = fp.Path.String()
-			break
-		}
-	}
-	return opletInfo, nil
-}
-
 func (c *Controller) RunAsUser() bool {
 	return false
 }
@@ -791,6 +813,5 @@ func NewController(l log.Logger, ytc yt.Client, root ypath.Path, cluster string,
 		config:  config,
 	}
 	c.prepareTvmSecret()
-	c.initDiscoveryClient(context.Background())
 	return c
 }

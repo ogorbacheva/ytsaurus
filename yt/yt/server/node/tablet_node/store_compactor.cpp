@@ -2,8 +2,10 @@
 
 #include "background_activity_orchid.h"
 #include "bootstrap.h"
+#include "chunk_prolongator.h"
 #include "config.h"
 #include "error_manager.h"
+#include "global_stores_update_throttler.h"
 #include "in_memory_manager.h"
 #include "partition.h"
 #include "public.h"
@@ -77,7 +79,6 @@
 #include <yt/yt/core/ytree/helpers.h>
 #include <yt/yt/core/ytree/virtual.h>
 
-#include <yt/yt/core/misc/finally.h>
 #include <yt/yt/core/misc/heap.h>
 
 #include <yt/yt/core/yson/consumer.h>
@@ -116,6 +117,7 @@ using NYT::ToProto;
 
 static const i64 MaxRowsPerRead = 8 * 1024;
 static const i64 MaxRowsPerWrite = 8 * 1024;
+static const int MaxExpiredChunksPerBatch = 128;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -414,9 +416,11 @@ protected:
 
     IVersionedMultiChunkWriterPtr CreateWriter()
     {
-        auto chunkWriterFactory = [this, weakThis = MakeWeak(this)] (IChunkWriterPtr underlyingWriter) {
+        auto compressionInvoker = ComputeCompressionInvoker();
+
+        auto chunkWriterFactory = [this, weakThis = MakeWeak(this), compressionInvoker = std::move(compressionInvoker)] (IChunkWriterPtr underlyingWriter) {
             if (auto this_ = weakThis.Lock()) {
-                return CreateUnderlyingWriterAdapter(std::move(underlyingWriter));
+                return CreateUnderlyingWriterAdapter(std::move(underlyingWriter), compressionInvoker);
             } else {
                 THROW_ERROR_EXCEPTION(NYT::EErrorCode::Canceled, "Store compactor session destroyed");
             }
@@ -597,7 +601,9 @@ private:
         return result;
     }
 
-    IVersionedChunkWriterPtr CreateUnderlyingWriterAdapter(IChunkWriterPtr underlyingWriter) const
+    IVersionedChunkWriterPtr CreateUnderlyingWriterAdapter(
+        IChunkWriterPtr underlyingWriter,
+        IInvokerPtr compressionInvoker) const
     {
         auto writer = CreateHunkEncodingVersionedWriter(
             CreateVersionedChunkWriter(
@@ -608,7 +614,7 @@ private:
                 WriteBlocksOptions_,
                 /*dataSink*/ std::nullopt,
                 BlockCache_,
-                ComputeCompressionInvoker()),
+                std::move(compressionInvoker)),
             TabletSnapshot_->PhysicalSchema,
             HunkChunkPayloadWriter_,
             HunkChunkWriterStatistics_,
@@ -984,35 +990,60 @@ public:
             Bootstrap_->GetTabletNodeDynamicConfig()->StoreCompactor->Orchid,
             Profiler_.WithTag("activity", "partitioning")))
         , OrchidService_(CreateOrchidService())
+        , GlobalStoresUpdateThrottler_(New<TGlobalStoresUpdateThrottler>(
+            /*config*/ nullptr,
+            Bootstrap_->GetConnection(),
+            Profiler_))
     {
         Bootstrap_->SubscribeTabletNodeConfigChanged(BIND_NO_PROPAGATE(&TStoreCompactor::OnDynamicConfigChanged, MakeWeak(this)));
     }
 
     void OnBeginSlotScan() override
     {
-        // NB: Strictly speaking, redundant.
-        auto guard = Guard(ScanSpinLock_);
-
-        // Save some scheduling resources by skipping unnecessary work.
-        ScanForPartitioning_ = PartitioningSemaphore_->IsReady();
-        ScanForCompactions_ = CompactionSemaphore_->IsReady();
-        PartitioningCandidates_.clear(); // Though must be clear already.
-        CompactionCandidates_.clear(); // Though must be clear already.
-
         CompactionOrchid_->OnProfiling();
         PartitioningOrchid_->OnProfiling();
     }
 
     void ProcessLsmActionBatch(const NLsm::TLsmActionBatch& batch) override
     {
-        TEventTimerGuard timerGuard(ScanTimer_);
-
-        auto dynamicConfig = Bootstrap_->GetTabletNodeDynamicConfig()->StoreCompactor;
-        if (!dynamicConfig->Enable) {
+        if (!Bootstrap_->GetTabletNodeDynamicConfig()->StoreCompactor->Enable) {
             return;
         }
 
+        if (IsProcessingActionBatch_) {
+            const auto& Logger = TabletNodeLogger;
+            YT_TLOG_DEBUG("Store compactor is already processing an action batch, skipping the new one");
+            return;
+        }
+
+        IsProcessingActionBatch_ = true;
+
+        // NB: Process the action batch asynchronously to avoid performing long operations during slot scan.
+        GetCurrentInvoker()->Invoke(BIND(&TStoreCompactor::DoProcessLsmActionBatch, MakeStrong(this), batch));
+    }
+
+    void DoProcessLsmActionBatch(const NLsm::TLsmActionBatch& batch)
+    {
+        auto finallyGuard = Finally([&] {
+            IsProcessingActionBatch_ = false;
+        });
+
+        TEventTimerGuard timerGuard(ScanTimer_);
+
         const auto& Logger = TabletNodeLogger;
+        auto dynamicConfig = Bootstrap_->GetTabletNodeDynamicConfig()->StoreCompactor;
+
+        // Save some scheduling resources by skipping unnecessary work.
+        auto scanForPartitioning = PartitioningSemaphore_->IsReady();
+        auto scanForCompactions = CompactionSemaphore_->IsReady();
+
+        {
+            // NB: Strictly speaking, redundant.
+            auto guard = Guard(ScanSpinLock_);
+
+            PartitioningCandidates_.clear(); // Though must be clear already.
+            CompactionCandidates_.clear(); // Though must be clear already.
+        }
 
         YT_TLOG_DEBUG("Store compactor started processing action batch");
 
@@ -1135,7 +1166,7 @@ public:
             orchid->AddPendingTasks(std::move(pendingTaskInfos));
         };
 
-        if (ScanForCompactions_) {
+        if (scanForCompactions) {
             scanForCandidates(
                 batch.Compactions,
                 "Compaction",
@@ -1145,7 +1176,7 @@ public:
                 CompactionOrchid_);
         }
 
-        if (ScanForPartitioning_) {
+        if (scanForPartitioning) {
             scanForCandidates(
                 batch.Partitionings,
                 "Partitioning",
@@ -1157,16 +1188,24 @@ public:
 
         YT_TLOG_DEBUG("Store compactor finished processing action batch");
 
-        // NB: Strictly speaking, redundant.
-        auto guard = Guard(ScanSpinLock_);
+        {
+            // NB: Strictly speaking, redundant.
+            auto guard = Guard(ScanSpinLock_);
 
-        if (ScanForPartitioning_) {
-            PickMorePartitionings(guard);
+            if (scanForPartitioning) {
+                PickMorePartitionings(guard);
+            }
+
+            if (scanForCompactions) {
+                PickMoreCompactions(guard);
+            }
+        }
+
+        if (scanForPartitioning) {
             ScheduleMorePartitionings();
         }
 
-        if (ScanForCompactions_) {
-            PickMoreCompactions(guard);
+        if (scanForCompactions) {
             ScheduleMoreCompactions();
         }
     }
@@ -1211,21 +1250,19 @@ private:
     const TAsyncSemaphorePtr PartitioningSemaphore_;
     const TAsyncSemaphorePtr CompactionSemaphore_;
 
+    bool IsProcessingActionBatch_ = false;
+
     // Variables below contain per-iteration state for slot scan.
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, ScanSpinLock_);
-    bool ScanForPartitioning_;
-    bool ScanForCompactions_;
+    YT_DECLARE_SPIN_LOCK(TSpinLock, ScanSpinLock_);
     std::vector<std::unique_ptr<TCompactionTask>> PartitioningCandidates_;
     std::vector<std::unique_ptr<TCompactionTask>> CompactionCandidates_;
 
     // Variables below are actually used during the scheduling.
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, TaskSpinLock_);
-    std::vector<std::unique_ptr<TCompactionTask>> PartitioningTasks_; // Queue.
-    size_t PartitioningTaskIndex_ = 0; // Queue begin boundary.
-    std::vector<std::unique_ptr<TCompactionTask>> CompactionTasks_; // Queue.
-    size_t CompactionTaskIndex_ = 0; // Queue begin boundary.
+    YT_DECLARE_SPIN_LOCK(TSpinLock, TaskSpinLock_);
+    std::vector<std::unique_ptr<TCompactionTask>> PartitioningTasks_;
+    std::vector<std::unique_ptr<TCompactionTask>> CompactionTasks_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TSpinLock, StartedTasksSpinLock_);
+    YT_DECLARE_SPIN_LOCK(TSpinLock, StartedTasksSpinLock_);
     std::vector<NLsm::TStartedCompactionTask> StartedCompactionTasks_;
     std::vector<NLsm::TStartedCompactionTask> StartedPartitioningTasks_;
 
@@ -1233,9 +1270,12 @@ private:
     const TCompactionOrchidPtr PartitioningOrchid_;
     const IYPathServicePtr OrchidService_;
 
-    YT_DECLARE_SPIN_LOCK(NThreading::TReaderWriterSpinLock, PoolNamesLock_);
+    const TGlobalStoresUpdateThrottlerPtr GlobalStoresUpdateThrottler_;
+
+    YT_DECLARE_SPIN_LOCK(TReaderWriterSpinLock, PoolNamesLock_);
     std::optional<std::string> CompactionFairSharePool_;
     std::optional<std::string> PartitioningFairSharePool_;
+    bool UseQueryPool_ = false;
 
     IYPathServicePtr CreateOrchidService()
     {
@@ -1261,11 +1301,13 @@ private:
         CompactionSemaphore_->SetTotal(config->MaxConcurrentCompactions.value_or(Config_->MaxConcurrentCompactions));
         PartitioningOrchid_->Reconfigure(config->Orchid);
         CompactionOrchid_->Reconfigure(config->Orchid);
+        GlobalStoresUpdateThrottler_->Reconfigure(newNodeConfig->GlobalStoresUpdateThrottler);
 
         {
             auto guard = WriterGuard(PoolNamesLock_);
             CompactionFairSharePool_ = config->CompactionFairSharePool;
             PartitioningFairSharePool_ = config->PartitioningFairSharePool;
+            UseQueryPool_ = config->UseQueryPool;
         }
     }
 
@@ -1370,7 +1412,6 @@ private:
     void PickMoreTasks(
         std::vector<std::unique_ptr<TCompactionTask>>* candidates,
         std::vector<std::unique_ptr<TCompactionTask>>* tasks,
-        size_t* index,
         const NProfiling::TGauge& counter)
     {
         counter.Update(candidates->size());
@@ -1378,44 +1419,72 @@ private:
         {
             auto guard = Guard(TaskSpinLock_);
             tasks->swap(*candidates);
-            *index = 0;
         }
 
         candidates->clear();
     }
 
-    void PickMorePartitionings(TGuard<NThreading::TSpinLock>& /*guard*/)
+    void PickMorePartitionings(TGuard<TSpinLock>& /*guard*/)
     {
         PickMoreTasks(
             &PartitioningCandidates_,
             &PartitioningTasks_,
-            &PartitioningTaskIndex_,
             FeasiblePartitioningsCounter_);
     }
 
-    void PickMoreCompactions(TGuard<NThreading::TSpinLock>& /*guard*/)
+    void PickMoreCompactions(TGuard<TSpinLock>& /*guard*/)
     {
         PickMoreTasks(
             &CompactionCandidates_,
             &CompactionTasks_,
-            &CompactionTaskIndex_,
             FeasibleCompactionsCounter_);
+    }
+
+    std::vector<bool> ThrottleStoresUpdateAtMaster(
+        std::vector<std::unique_ptr<TCompactionTask>>* tasks,
+        const TAsyncSemaphorePtr& semaphore,
+        ETabletStoresUpdateReason updateReason)
+    {
+        std::vector<TGlobalStoresUpdateThrottler::TRequest> requests;
+        {
+            auto taskGuard = Guard(TaskSpinLock_);
+
+            int scheduleLimit = std::min<int>(tasks->size(), std::max<int>(semaphore->GetFree(), 0));
+            if (!scheduleLimit) {
+                return {};
+            }
+
+            requests.reserve(scheduleLimit);
+            for (int index = 0; index < scheduleLimit; ++index) {
+                auto& task = tasks->at(index);
+                requests.push_back({
+                    .BundleName = task->Slot->GetTabletCellBundleName(),
+                    .CellTag = CellTagFromId(task->Info->TabletId),
+                    .StoreCount = static_cast<int>(ssize(task->Info->StoreIds)),
+                });
+            }
+        }
+
+        return GlobalStoresUpdateThrottler_->Throttle(requests, updateReason);
     }
 
     void ScheduleMoreTasks(
         std::vector<std::unique_ptr<TCompactionTask>>* tasks,
-        size_t* index,
         const TAsyncSemaphorePtr& semaphore,
         const TCounter& counter,
-        void (TStoreCompactor::*action)(TCompactionTask*))
+        void (TStoreCompactor::*action)(TCompactionTask*),
+        ETabletStoresUpdateReason updateReason)
     {
+        auto throttlerAcquired = ThrottleStoresUpdateAtMaster(tasks, semaphore, updateReason);
+
         auto taskGuard = Guard(TaskSpinLock_);
 
         size_t scheduled = 0;
 
-        while (true) {
-            if (*index == tasks->size()) {
-                break;
+        YT_VERIFY(tasks->size() >= throttlerAcquired.size());
+        for (auto&& [task, isThrottlerAcquired] : Zip(*tasks, throttlerAcquired)) {
+            if (!isThrottlerAcquired) {
+                continue;
             }
 
             auto semaphoreGuard = TAsyncSemaphoreGuard::TryAcquire(semaphore);
@@ -1423,9 +1492,6 @@ private:
                 break;
             }
 
-            // Extract the next task.
-            auto&& task = tasks->at(*index);
-            ++*index;
             task->Prepare(this, std::move(semaphoreGuard));
             ++scheduled;
 
@@ -1449,20 +1515,20 @@ private:
     {
         ScheduleMoreTasks(
             &PartitioningTasks_,
-            &PartitioningTaskIndex_,
             PartitioningSemaphore_,
             ScheduledPartitioningsCounter_,
-            &TStoreCompactor::PartitionEden);
+            &TStoreCompactor::PartitionEden,
+            ETabletStoresUpdateReason::Partitioning);
     }
 
     void ScheduleMoreCompactions()
     {
         ScheduleMoreTasks(
             &CompactionTasks_,
-            &CompactionTaskIndex_,
             CompactionSemaphore_,
             ScheduledCompactionsCounter_,
-            &TStoreCompactor::CompactPartition);
+            &TStoreCompactor::CompactPartition,
+            ETabletStoresUpdateReason::Compaction);
     }
 
     NNative::ITransactionPtr StartMasterTransaction(const TTabletSnapshotPtr& tabletSnapshot, const std::string& title)
@@ -1555,12 +1621,6 @@ private:
         auto Logger = TabletNodeLogger()
             .WithTags(task->TabletLoggingTags)
             .WithTag("ReadSessionId", chunkReadOptions.ReadSessionId);
-
-        auto doneGuard = Finally([&] {
-            if (Bootstrap_->GetTabletNodeDynamicConfig()->StoreCompactor->ScheduleNewTasksAfterTaskCompletion) {
-                ScheduleMorePartitionings();
-            }
-        });
 
         auto traceId = task->Info->TaskId;
         auto traceContext = TTraceContext::NewRoot("StoreCompactor", traceId);
@@ -1771,7 +1831,6 @@ private:
 
             // We can release semaphore, because we are no longer actively using resources.
             task->SemaphoreGuard.Release();
-            doneGuard.Release();
 
             if (RandomNumber<double>() < mountConfig->Testing.PartitioningFailureProbability) {
                 THROW_ERROR_EXCEPTION("Partitioning failed for testing purposes");
@@ -1780,11 +1839,12 @@ private:
             NTabletServer::NProto::TReqUpdateTabletStores actionRequest;
             actionRequest.set_create_hunk_chunks_during_prepare(true);
             actionRequest.set_update_reason(ToProto(ETabletStoresUpdateReason::Partitioning));
+            actionRequest.set_throttle_at_master(GlobalStoresUpdateThrottler_->IsEnabled());
             for (const auto& [writer, partitionIndex] : partitionWriters) {
                 AddStoresToAdd(&actionRequest, writer);
             }
             AddStoresToAdd(&actionRequest, partitioningResult.HunkWriter);
-            AddStoresToRemove(&actionRequest, stores);
+            AddStoresToRemove(&actionRequest, stores, tablet->ChunkProlongator());
 
             std::vector<TStoreId> storeIdsToAdd;
             for (const auto& [writer, partitionIndex] : partitionWriters) {
@@ -1797,18 +1857,16 @@ private:
             }
             tabletSnapshot->PerformanceCounters->Increment(chunkReadOptions, /*isSystemWorkload*/ true);
 
-            YT_LOG_INFO("Eden partitioning completed "
-                "(RowCount: %v, StoreIdsToAdd: %v, StoreIdsToRemove: %v%v, WallTime: %v)",
-                partitioningResult.RowCount,
-                storeIdsToAdd,
-                MakeFormattableView(stores, TStoreIdFormatter()),
-                MakeFormatterWrapper([&] (auto* builder) {
-                    if (partitioningResult.HunkWriter->HasHunks()) {
-                        builder->AppendFormat(", HunkChunkIdToAdd: %v",
-                            partitioningResult.HunkWriter->GetChunkId());
-                    }
-                }),
-                timer.GetElapsedTime());
+            auto hunkChunkIdToAdd = partitioningResult.HunkWriter->HasHunks()
+                ? partitioningResult.HunkWriter->GetChunkId()
+                : NullChunkId;
+
+            YT_TLOG_INFO("Eden partitioning completed")
+                .With("RowCount", partitioningResult.RowCount)
+                .With("StoreIdsToAdd", storeIdsToAdd)
+                .With("StoreIdsToRemove", MakeFormattableView(stores, TStoreIdFormatter()))
+                .WithIf(hunkChunkIdToAdd != NullChunkId, "HunkChunkIdToAdd", hunkChunkIdToAdd)
+                .With("WallTime", timer.GetElapsedTime());
 
             structuredLogger->LogEvent("end_partitioning")
                 .Item("partition_id").Value(eden->GetId())
@@ -1840,14 +1898,17 @@ private:
             tabletSnapshot->TabletRuntimeData->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Partitioning].Store(TError());
         } catch (const std::exception& ex) {
-            auto error = TError(ex)
+            static constexpr auto Message = "Error partitioning Eden, backing off"_sb;
+            auto error = TError(Message)
                 .With("tablet_id", tabletSnapshot->TabletId)
-                .With("background_activity", ETabletBackgroundActivity::Partitioning);
+                .With("background_activity", ETabletBackgroundActivity::Partitioning)
+                .With(ex);
 
             tabletSnapshot->TabletRuntimeData->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Partitioning].Store(error);
-            YT_TLOG_ERROR("Error partitioning Eden, backing off")
-                .With(error);
+            YT_TLOG_ERROR(Message)
+                .With("BackgroundActivity", ETabletBackgroundActivity::Partitioning)
+                .With(ex);
 
             structuredLogger->LogEvent("backoff_partitioning")
                 .Item("partition_id").Value(eden->GetId())
@@ -1923,7 +1984,8 @@ private:
             actionRequest.set_create_hunk_chunks_during_prepare(true);
             actionRequest.set_retained_timestamp(ToProto(retainedTimestamp));
             actionRequest.set_update_reason(ToProto(ETabletStoresUpdateReason::Compaction));
-            AddStoresToRemove(&actionRequest, stores);
+            actionRequest.set_throttle_at_master(GlobalStoresUpdateThrottler_->IsEnabled());
+            AddStoresToRemove(&actionRequest, stores, tablet->ChunkProlongator());
 
             YT_TLOG_INFO("Partition stores discarded by TTL")
                 .With("UnmergedRowCount", partition->GetUnmergedRowCount())
@@ -1942,14 +2004,17 @@ private:
             tabletSnapshot->TabletRuntimeData->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Compaction].Store(TError());
         } catch (const std::exception& ex) {
-            auto error = TError(ex)
+            static constexpr auto Message = "Error discarding expired partition stores, backing off"_sb;
+            auto error = TError(Message)
                 .With("tablet_id", tabletSnapshot->TabletId)
-                .With("background_activity", ETabletBackgroundActivity::Compaction);
+                .With("background_activity", ETabletBackgroundActivity::Compaction)
+                .With(ex);
 
             tabletSnapshot->TabletRuntimeData->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Compaction].Store(error);
-            YT_TLOG_ERROR("Error discarding expired partition stores, backing off")
-                .With(error);
+            YT_TLOG_ERROR(Message)
+                .With("BackgroundActivity", ETabletBackgroundActivity::Compaction)
+                .With(ex);
 
             structuredLogger->LogEvent("backoff_discard_stores")
                 .Item("partition_id").Value(partition->GetId());
@@ -1974,12 +2039,6 @@ private:
         auto Logger = TabletNodeLogger()
             .WithTags(task->TabletLoggingTags)
             .WithTag("ReadSessionId", chunkReadOptions.ReadSessionId);
-
-        auto doneGuard = Finally([&] {
-            if (Bootstrap_->GetTabletNodeDynamicConfig()->StoreCompactor->ScheduleNewTasksAfterTaskCompletion) {
-                ScheduleMoreCompactions();
-            }
-        });
 
         auto traceId = task->Info->TaskId;
         auto traceContext = TTraceContext::NewRoot("StoreCompactor", traceId);
@@ -2061,6 +2120,7 @@ private:
             }
             stores.push_back(std::move(typedStore));
         }
+
         {
             auto guard = Guard(task->Info->RuntimeData.SpinLock);
             task->Info->RuntimeData.TotalReaderStatistics = TBackgroundActivityTaskInfoBase::TReaderStatistics(stores);
@@ -2200,7 +2260,6 @@ private:
 
             // We can release semaphore, because we are no longer actively using resources.
             task->SemaphoreGuard.Release();
-            doneGuard.Release();
 
             if (RandomNumber<double>() < mountConfig->Testing.CompactionFailureProbability) {
                 THROW_ERROR_EXCEPTION("Compaction failed for testing purposes");
@@ -2210,9 +2269,10 @@ private:
             actionRequest.set_create_hunk_chunks_during_prepare(true);
             actionRequest.set_retained_timestamp(ToProto(retainedTimestamp));
             actionRequest.set_update_reason(ToProto(ETabletStoresUpdateReason::Compaction));
+            actionRequest.set_throttle_at_master(GlobalStoresUpdateThrottler_->IsEnabled());
             AddStoresToAdd(&actionRequest, compactionResult.StoreWriter);
             AddStoresToAdd(&actionRequest, compactionResult.HunkWriter);
-            AddStoresToRemove(&actionRequest, stores);
+            AddStoresToRemove(&actionRequest, stores, tablet->ChunkProlongator());
 
             std::vector<TStoreId> storeIdsToAdd;
             for (const auto& chunkSpec : compactionResult.StoreWriter->GetWrittenChunkSpecs()) {
@@ -2228,18 +2288,16 @@ private:
                 outputTotalDataWeight += statistics.data_weight();
             }
 
-            YT_LOG_INFO("Partition compaction completed "
-                "(RowCount: %v, StoreIdsToAdd: %v, StoreIdsToRemove: %v%v, WallTime: %v)",
-                compactionResult.RowCount,
-                storeIdsToAdd,
-                MakeFormattableView(stores, TStoreIdFormatter()),
-                MakeFormatterWrapper([&] (auto* builder) {
-                    if (compactionResult.HunkWriter->HasHunks()) {
-                        builder->AppendFormat(", HunkChunkIdToAdd: %v",
-                            compactionResult.HunkWriter->GetChunkId());
-                    }
-                }),
-                timer.GetElapsedTime());
+            auto hunkChunkIdToAdd = compactionResult.HunkWriter->HasHunks()
+                ? compactionResult.HunkWriter->GetChunkId()
+                : NullChunkId;
+
+            YT_TLOG_INFO("Partition compaction completed")
+                .With("RowCount", compactionResult.RowCount)
+                .With("StoreIdsToAdd", storeIdsToAdd)
+                .With("StoreIdsToRemove", MakeFormattableView(stores, TStoreIdFormatter()))
+                .WithIf(hunkChunkIdToAdd != NullChunkId, "HunkChunkIdToAdd", hunkChunkIdToAdd)
+                .With("WallTime", timer.GetElapsedTime());
 
             structuredLogger->LogEvent("end_compaction")
                 .Item("partition_id").Value(partition->GetId())
@@ -2261,14 +2319,17 @@ private:
             tabletSnapshot->TabletRuntimeData->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Compaction].Store(TError());
         } catch (const std::exception& ex) {
-            auto error = TError(ex)
+            static constexpr auto Message = "Error compacting partition, backing off"_sb;
+            auto error = TError(Message)
                 .With("tablet_id", tabletSnapshot->TabletId)
-                .With("background_activity", ETabletBackgroundActivity::Compaction);
+                .With("background_activity", ETabletBackgroundActivity::Compaction)
+                .With(ex);
 
             tabletSnapshot->TabletRuntimeData->Errors
                 .BackgroundErrors[ETabletBackgroundActivity::Compaction].Store(error);
-            YT_TLOG_ERROR("Error compacting partition, backing off")
-                .With(error);
+            YT_TLOG_ERROR(Message)
+                .With("BackgroundActivity", ETabletBackgroundActivity::Compaction)
+                .With(ex);
 
             structuredLogger->LogEvent("backoff_compaction")
                 .Item("partition_id").Value(partition->GetId())
@@ -2318,12 +2379,15 @@ private:
         const TTabletSnapshotPtr& tabletSnapshot,
         const std::vector<TSortedChunkStorePtr>& stores,
         const THashSet<TChunkId>& hunkChunkIds,
-        const TClientChunkReadOptions& chunkReadOptions,
+        TClientChunkReadOptions chunkReadOptions,
         TTimestamp currentTimestamp,
         TTimestamp majorTimestamp,
         IThroughputThrottlerPtr inboundThrottler,
         IMemoryUsageTrackerPtr rowMergerMemoryUsageTracker)
     {
+        chunkReadOptions.ReuseSessionInvokerForDecompression = Bootstrap_->GetTabletNodeDynamicConfig()
+            ->StoreCompactor->ReuseCompactionInvokerForReaderDecompression;
+
         return CreateHunkInliningVersionedReader(
             tablet->GetSettings().HunkReaderConfig,
             CreateCompactionTabletReader(
@@ -2351,14 +2415,16 @@ private:
     {
         auto guard = ReaderGuard(PoolNamesLock_);
 
-        if (partition && PartitioningFairSharePool_.has_value()) {
+        static constexpr TStringBuf StoreCompactorPoolName = "$store_compact";
+
+        if (partition && (UseQueryPool_ || PartitioningFairSharePool_.has_value())) {
             return Bootstrap_->GetQueryPoolInvoker(
-                *PartitioningFairSharePool_,
+                PartitioningFairSharePool_.value_or(std::string(StoreCompactorPoolName)),
                 ToString(readSessionId));
         }
-        if (!partition && CompactionFairSharePool_.has_value()) {
+        if (!partition && (UseQueryPool_ || CompactionFairSharePool_.has_value())) {
             return Bootstrap_->GetQueryPoolInvoker(
-                *CompactionFairSharePool_,
+                CompactionFairSharePool_.value_or(std::string(StoreCompactorPoolName)),
                 ToString(readSessionId));
         }
 
@@ -2442,12 +2508,32 @@ private:
 
     static void AddStoresToRemove(
         NTabletServer::NProto::TReqUpdateTabletStores* actionRequest,
-        const std::vector<TSortedChunkStorePtr>& stores)
+        const std::vector<TSortedChunkStorePtr>& stores,
+        const IChunkProlongatorPtr& chunkProlongator)
     {
+        // NB(sabdenovch): Technically a race that triggers alerts on master and tablet node is possible.
+        // If two compactions on two different partitions initialized at the same time, each
+        // containing a chunk view referencing some chunk C, manage to order their respective transactions -
+        // PrepareA, CommitA, PrepareB, CommitB - both compactions will HAVE to include chunk C in
+        // their prolongation lists and both will reach commit, triggering double prolongation.
+        // It's harmless, since both tablet node and mastet ignore the second prolongation, but unusual.
+        THashSet<TChunkId> uniqueChunkIds;
+        uniqueChunkIds.reserve(stores.size());
+
         for (const auto& store : stores) {
-            auto storeId = store->GetId();
             auto* descriptor = actionRequest->add_stores_to_remove();
-            ToProto(descriptor->mutable_store_id(), storeId);
+            ToProto(descriptor->mutable_store_id(), store->GetId());
+
+            auto chunkId = store->GetChunkId();
+            if (chunkProlongator->IsChunkProlongationRequired(chunkId) && uniqueChunkIds.insert(chunkId).second) {
+                ToProto(actionRequest->add_prolonged_chunks_to_add(), chunkId);
+            }
+        }
+
+        auto expiredChunkIds = chunkProlongator->GetNotReferencedProlongedChunkIds(
+            MaxExpiredChunksPerBatch);
+        for (auto chunkId : expiredChunkIds) {
+            ToProto(actionRequest->add_prolonged_chunks_to_remove(), chunkId);
         }
     }
 

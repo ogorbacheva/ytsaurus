@@ -7,16 +7,16 @@
 
 #|
 || **Параметр** | **Описание** ||
-|| `computation_id` | **Тип**: `NYT::NFlow::TStrongIdentifierTypedef<NYT::NFlow::TComputationIdTag>`
+|| `computation_id` | **Тип**: [NYT::NFlow::TComputationId](./all_yson_structs#NYT_NFlow_TComputationId)
 **Обязательный параметр**
 Идентификатор Computation'а, которому принадлежит ключ. ||
-|| `key` | **Тип**: `NYT::TStrongTypedef<NYT::NFlow::TCompactUnversionedOwningRow, NYT::NFlow::TKeyTag, NYT::TStrongTypedefOptions{true}>`
+|| `key` | **Тип**: [NYT::NFlow::TKey](./all_yson_structs#NYT_NFlow_TKey)
 **Обязательный параметр**
 Значение ключа (YSON-словарь `{column = value; ...}` по `key_schema`). ||
 || `states` | **Тип**: `THashMap<std::string, NYT::NYson::TYsonString>`
 **Обязательный параметр**
 Содержимое стейтов под этим ключом: словарь `имя_стейта → YSON-значение`. YSON-значение здесь — это сериализованный пользовательский payload стейта (тип определяется конкретным `State`/`ExternalState` в коде Computation'а; для встроенных типов вроде счётчиков это просто число, для произвольных пользовательских структур &mdash; YSON-словарь со всеми их полями).
 
-Для секций `external_key_states` / `joined_external_key_states` имя стейта совпадает с именем external_state-клиента (то, что передаётся в `IJobInitContext::InitExternalStateClient`, например `/state`). ||
+Для секций `external_key_states` / `joined_external_key_states` имя стейта совпадает с именем external_state-клиента (то, что process function передаёт в `IRuntimeInitContext::InitExternalStateClient`, например `/state`). ||
 |#
 

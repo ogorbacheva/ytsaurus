@@ -1,17 +1,24 @@
-import test_simple
-import test_udfs
+from . import test_simple
+from . import test_udfs
 
 from common import TestQueriesYqlBase, TestUpdateYqlAgentQtWorkerDynamicConfigMixin
 
 from yt.environment.helpers import assert_items_equal
 
-from yt_commands import authors, create, create_user, issue_token, write_table, raises_yt_error, wait, update_access_control_object_acl
+from yt_commands import (abort_transaction, authors, create, create_pool, create_user,
+                         generate_timestamp, generate_uuid, get, insert_rows, remount_table,
+                         select_rows, set, sync_compact_table, raises_yt_error, wait,
+                         write_table, update_access_control_object_acl)
+
+from yt_queries import get_query
+
+from yt.wrapper import yson
 
 from dirty_equals import AnyThing
 
-import yql.tools.yqlworker.interface.proto.task_pb2 as task_pb2
-
 import pytest
+import time
+import zstandard as zstd
 
 
 class TestQTWorkerStart(TestQueriesYqlBase):
@@ -22,8 +29,261 @@ class TestQTWorkerStart(TestQueriesYqlBase):
         pass
 
 
+class TestQTWorkerNotReady(test_simple.TestQueriesYqlSimpleBase):
+    YQL_QTWORKER = True
+    NUM_YQL_AGENTS = 2
+    # The second agent starts without a qtworker, so it cannot execute queries at all.
+    YQL_QTWORKER_SKIP_INSTANCES = [1]
+
+    @staticmethod
+    def _is_ready(address):
+        return get(f"//sys/yql_agent/instances/{address}/orchid/yql_agent/ready")
+
+    @authors("mpereskokova")
+    @pytest.mark.timeout(300)
+    def test_not_ready_agent_is_skipped(self, query_tracker, yql_agent):
+        ready_address, not_ready_address = yql_agent.yql_agent.addresses
+
+        assert self._is_ready(ready_address)
+        assert not self._is_ready(not_ready_address)
+
+        for _ in range(3):
+            query = self.start_query("yql", "select 1 as a")
+            query.track()
+            assert_items_equal(query.read_result(0), [{"a": 1}])
+            assert query.get()["annotations"]["assigned_engine"] == ready_address
+
+        yql_agent.yql_agent.start_qtworker(1)
+        wait(lambda: self._is_ready(not_ready_address), timeout=120)
+
+        def is_assigned_to_recovered_agent():
+            query = self.start_query("yql", "select 1 as a")
+            query.track()
+            assert_items_equal(query.read_result(0), [{"a": 1}])
+            return query.get()["annotations"]["assigned_engine"] == not_ready_address
+
+        wait(is_assigned_to_recovered_agent)
+
+
+class TestQTWorkerProgress(test_simple.TestQueriesYqlSimpleBase):
+    YQL_QTWORKER = True
+    QUERY_TRACKER_DYNAMIC_CONFIG = {"not_indexed_queries_ttl": 2000}
+
+    def _progress_parts(self, query, finished=False, **kwargs):
+        table = "finished_query_progresses" if finished else "active_query_progresses"
+        return list(select_rows(f"* from [//sys/query_tracker/{table}] where [query_id] = '{query.id}'", **kwargs))
+
+    def _assert_progress_parts(self, query, finished=False):
+        timestamp = generate_timestamp()
+        parts = self._progress_parts(query, finished=finished, timestamp=timestamp)
+        progress_parts = [row for row in parts if row["part_name"] == "yql_progress"]
+        main_parts = [row for row in parts if row["part_name"] != "yql_progress"]
+        assert progress_parts
+        assert main_parts
+
+        full = query.get(timestamp=timestamp)["progress"]
+        assert {*full} == {row["part_name"] for row in parts} | {"main_revision", "progress_revision"}
+        assert {*full["yql_progress"]} == {row["subpart_name"] for row in progress_parts}
+        assert all(isinstance(value, dict) for value in full["yql_progress"].values())
+        assert full["progress_revision"] == max(row["revision"] for row in progress_parts)
+        assert full["main_revision"] == max(row["revision"] for row in main_parts)
+
+        def get_progress(**options):
+            return query.get(timestamp=timestamp, progress_options=options)["progress"]
+
+        assert get_progress() == full
+        assert get_progress(progress_parts=[]) == full
+        assert get_progress(after_main_revision=0, after_progress_revision=0) == full
+
+        for selected in (["yql_progress"], ["yql_plan"], ["yql_progress", "yql_plan"]):
+            expected = {name: full[name] for name in selected}
+            if "yql_progress" in selected:
+                expected["progress_revision"] = full["progress_revision"]
+            selected_main_parts = [row for row in main_parts if row["part_name"] in selected]
+            if selected_main_parts:
+                expected["main_revision"] = max(row["revision"] for row in selected_main_parts)
+            assert get_progress(progress_parts=selected) == expected
+
+        assert get_progress(after_main_revision=full["main_revision"] + 1) == {
+            "yql_progress": full["yql_progress"],
+            "progress_revision": full["progress_revision"],
+        }
+        assert get_progress(after_progress_revision=full["progress_revision"] + 1) == {
+            key: value for key, value in full.items() if key not in ("yql_progress", "progress_revision")
+        }
+        assert get_progress(
+            after_main_revision=full["main_revision"] + 1,
+            after_progress_revision=full["progress_revision"] + 1,
+        ) == {}
+
+        # Revision cursors are exclusive and apply independently.
+        assert get_progress(
+            after_main_revision=full["main_revision"],
+            after_progress_revision=full["progress_revision"],
+        ) == {}
+
+    @authors("mpereskokova")
+    @pytest.mark.timeout(180)
+    def test_progress_parts(self, query_tracker, yql_agent):
+        create("table", "//tmp/t", attributes={
+            "schema": [{"name": "a", "type": "int64"}]
+        })
+        write_table("//tmp/t", [{"a": 42}])
+
+        create_pool("small", attributes={"resource_limits": {"user_slots": 0}})
+        query = self.start_query("yql", 'pragma yt.StaticPool = "small"; select a+1 as result from primary.`//tmp/t`')
+        wait(lambda: self._exists_pending_stage_in_progress(query))
+
+        assert not self._progress_parts(query, finished=True)
+        self._assert_progress_parts(query)
+
+        set("//sys/pools/small/@resource_limits/user_slots", 1)
+        query.track()
+
+        assert not self._progress_parts(query)
+        self._assert_progress_parts(query, finished=True)
+
+    @authors("mpereskokova")
+    def test_truncation_flags_are_top_level(self, query_tracker, yql_agent):
+        query = self.start_query("yql", "select 1 as result")
+        query.track()
+        original = query.get()["progress"]
+        progress_revision = original.get("progress_revision", 0) + 1
+        main_revision = original.get("main_revision", 0) + 1
+        flags = [
+            "yql_plan_truncated",
+            "yql_statistics_truncated",
+            "yql_progress_truncated",
+            "yql_task_info_truncated",
+            "yql_ast_truncated",
+        ]
+        compressed_true = zstd.ZstdCompressor().compress(yson.dumps(True))
+        insert_rows("//sys/query_tracker/finished_query_progresses", [{
+            "query_id": query.id,
+            "part_name": flag,
+            "subpart_name": "",
+            "revision": progress_revision if flag == "yql_progress_truncated" else main_revision,
+            "part_value": compressed_true,
+        } for flag in flags])
+
+        timestamp = generate_timestamp()
+
+        def get_progress(**options):
+            return query.get(timestamp=timestamp, progress_options=options)["progress"]
+
+        full = get_progress()
+        assert all(full[flag] for flag in flags)
+        assert not any(flag in full.get("yql_progress", {}) for flag in flags)
+        assert full["progress_revision"] == progress_revision
+        assert full["main_revision"] == main_revision
+
+        for flag in flags:
+            revision_key = "progress_revision" if flag == "yql_progress_truncated" else "main_revision"
+            revision = full[revision_key]
+            assert get_progress(progress_parts=[flag]) == {flag: True, revision_key: revision}
+            assert get_progress(progress_parts=[flag], **{f"after_{revision_key}": revision}) == {}
+
+        assert get_progress(
+            after_main_revision=main_revision,
+            after_progress_revision=progress_revision - 1,
+        ) == {"yql_progress_truncated": True, "progress_revision": progress_revision}
+        assert get_progress(
+            progress_parts=flags,
+            after_progress_revision=progress_revision,
+        ) == {flag: True for flag in flags if flag != "yql_progress_truncated"} | {"main_revision": main_revision}
+
+    @authors("mpereskokova")
+    @pytest.mark.timeout(180)
+    def test_progress_parts_preserved_on_detach(self, query_tracker, yql_agent):
+        create("table", "//tmp/t_detach", attributes={
+            "schema": [{"name": "a", "type": "int64"}]
+        })
+        write_table("//tmp/t_detach", [{"a": 42}])
+
+        create_pool("small_detach", attributes={"resource_limits": {"user_slots": 0}})
+        query = self.start_query(
+            "yql",
+            'pragma yt.StaticPool = "small_detach"; select a+1 as result from primary.`//tmp/t_detach`')
+        wait(lambda: self._exists_pending_stage_in_progress(query))
+        assert len(self._progress_parts(query)) > 0
+
+        lease_transaction_id = query.get(attributes=["lease_transaction_id"])["lease_transaction_id"]
+        abort_transaction(lease_transaction_id)
+
+        with raises_yt_error("Query lease was lost; restarting query execution is unsafe"):
+            query.track()
+        wait(lambda: len(self._progress_parts(query)) == 0)
+        self._assert_progress_parts(query, finished=True)
+
+    @authors("mpereskokova")
+    @pytest.mark.timeout(180)
+    def test_progress_ttl(self, query_tracker, yql_agent):
+        set("//sys/query_tracker/finished_query_progresses/@min_data_ttl", 1000)
+        remount_table("//sys/query_tracker/finished_query_progresses")
+
+        create("table", "//tmp/t_ttl", attributes={
+            "schema": [{"name": "a", "type": "int64"}]
+        })
+        write_table("//tmp/t_ttl", [{"a": 42}])
+
+        indexed = self.start_query("yql", "select a+1 as result from primary.`//tmp/t_ttl`")
+        indexed.track()
+
+        not_indexed = self.start_query(
+            "yql",
+            "select a+2 as result from primary.`//tmp/t_ttl`",
+            settings={"is_indexed": False})
+        not_indexed.track()
+
+        assert not self._progress_parts(indexed)
+        assert not self._progress_parts(not_indexed)
+        assert len(self._progress_parts(indexed, finished=True)) > 0
+        assert len(self._progress_parts(not_indexed, finished=True)) > 0
+
+        time.sleep(4)  # > row TTL (two seconds)
+        sync_compact_table("//sys/query_tracker/finished_query_progresses")
+
+        assert len(self._progress_parts(indexed, finished=True)) > 0
+        assert len(self._progress_parts(not_indexed, finished=True)) == 0
+
+    @authors("mpereskokova")
+    def test_get_query_compact_form(self, query_tracker):
+        guid = generate_uuid()
+        progress = {"yql_plan": {"some_field": 1}}
+
+        compressor = zstd.ZstdCompressor(level=9)
+        insert_rows("//sys/query_tracker/finished_queries", [{
+            "query_id": guid,
+            "engine": "yql",
+            "user": "root",
+            "query": "run_forever",
+            "start_time": 0,
+            "state": "running",
+            "settings": {},
+            "annotations": {},
+            "progress": compressor.compress(yson.dumps(progress, yson_format="text")),
+        }])
+
+        assert get_query(guid)["progress"] == progress
+        assert get_query(guid, progress_options={})["progress"] == progress
+
+        for options in (
+            {"progress_parts": ["yql_plan"]},
+            {"after_main_revision": 5},
+            {"after_progress_revision": 5},
+            {"progress_parts": ["yql_plan"], "after_main_revision": 5, "after_progress_revision": 5},
+        ):
+            with raises_yt_error("stores progress in compact form"):
+                get_query(guid, progress_options=options)
+
+
 @authors("mpereskokova")
 class TestSimpleQueriesYqlWithQtWorker(test_simple.TestSimpleQueriesYql):
+    YQL_QTWORKER = True
+
+
+@authors("ziganshinmr")
+class TestDynamicTokenResolutionWithQtWorker(test_simple.TestDynamicTokenResolution):
     YQL_QTWORKER = True
 
 
@@ -343,7 +603,6 @@ class TestUdfRegistry(TestQueriesYqlBase):
     @pytest.mark.timeout(120)
     def test_udf_meta(self, query_tracker, yql_agent):
         cluster = yql_agent.yql_agent.env.id
-        addresss = yql_agent.yql_agent.env.get_http_proxy_address()
 
         with raises_yt_error("Query of type \"udf_meta\" must not be indexed"):
             self.start_query(
@@ -396,7 +655,7 @@ class TestUdfRegistry(TestQueriesYqlBase):
                     {
                         "CustomUdfPrefix": "",
                         "Modules": ["SimpleUdf"],
-                        "FileAlias": f"yt://{addresss}//sys/yql_agent/udfs/libsimple_udf.so",
+                        "FileAlias": "yt://primary//sys/yql_agent/udfs/libsimple_udf.so",
                     }
                 ],
                 "Udfs": AnyThing(),
@@ -404,39 +663,7 @@ class TestUdfRegistry(TestQueriesYqlBase):
         ]
 
 
-class TaskDataFlavorsMixin:
-    YQL_SERVICE_TOKEN = "fake-yql-service-token"
-
-    @staticmethod
-    def _make_task_data(**fields):
-        # These fields are filled by the yql service in production and must be
-        # taken from the task data as is, unlike the fields overwritten by the plugin.
-        fields = {
-            "Syntax": task_pb2.SQLv1,
-            "PersistedId": True,
-            "Runner": "yql-agent",
-            "Program": "select \"the program from the task data must not be used\"",
-            "Id": "the id from the task data must not be used",
-            **fields,
-        }
-        return task_pb2.TTaskData(**fields).SerializeToString()
-
-    @classmethod
-    def _yql_service_settings(self, task_data=None, tokens=None, **extra):
-        settings = {
-            "yql_flavor": "yql-service",
-            "tokens": {
-                "yql_service_token": self.YQL_SERVICE_TOKEN,
-                **(tokens or {}),
-            },
-        }
-        if task_data is not None:
-            settings["yql_task_data"] = task_data
-        settings.update(extra)
-        return settings
-
-
-class TestTaskDataFlavors(TaskDataFlavorsMixin, test_simple.TestQueriesYqlSimpleBase):
+class TestTaskDataFlavors(test_simple.TestQueriesYqlSimpleBase):
     YQL_QTWORKER = True
 
     @authors("mpereskokova")
@@ -449,126 +676,3 @@ class TestTaskDataFlavors(TaskDataFlavorsMixin, test_simple.TestQueriesYqlSimple
         with raises_yt_error("No task data builder registered for flavor 'unknown-flavor'") as err:
             self._run_simple_query("select 1", settings={"yql_flavor": "unknown-flavor"})
         assert err[0].contains_text("default")
-
-    @authors("mpereskokova")
-    def test_yql_service_flavor_without_token(self, query_tracker, yql_agent):
-        self._test_simple_query_error(
-            "select 1",
-            "Missed yql_service_token setting for yql-service flavor",
-            settings={"yql_flavor": "yql-service", "yql_task_data": self._make_task_data()},
-        )
-
-    @authors("mpereskokova")
-    def test_yql_service_flavor_without_task_data(self, query_tracker, yql_agent):
-        self._test_simple_query_error(
-            "select 1",
-            "Missed yql_task_data setting for yql-service flavor",
-            settings=self._yql_service_settings(),
-        )
-
-    @authors("mpereskokova")
-    def test_yql_service_flavor_with_malformed_task_data(self, query_tracker, yql_agent):
-        self._test_simple_query_error(
-            "select 1",
-            "Failed to deserialize TTaskData",
-            settings=self._yql_service_settings("not-a-serialized-task-data"),
-        )
-
-    @authors("mpereskokova")
-    def test_yql_service_flavor_with_malformed_user_auth_data(self, query_tracker, yql_agent):
-        self._test_simple_query_error(
-            "select 1",
-            "Failed to deserialize UserAuthData",
-            settings=self._yql_service_settings(
-                self._make_task_data(),
-                tokens={"yql_user_auth_data": "not-a-serialized-user-auth-data"},
-            ),
-        )
-
-    @authors("mpereskokova")
-    def test_yql_service_flavor(self, query_tracker, yql_agent):
-        result = self._run_simple_query(
-            "select CurrentLanguageVersion() as result",
-            settings=self._yql_service_settings(
-                self._make_task_data(),
-                yql_version="2025.02",
-                tokens={"yql_auth_data": task_pb2.TTaskAuthTokens().SerializeToString()},
-            ),
-        )
-        assert_items_equal(result, [{"result": "2025.02"}])
-
-    @authors("mpereskokova")
-    def test_yql_service_flavor_files(self, query_tracker, yql_agent):
-        task_data = self._make_task_data(Files=[
-            task_pb2.TTaskFile(
-                Name="test_file_raw",
-                Type=task_pb2.TTaskFile.CONTENT,
-                Content="the file from the task data must not be used",
-            ),
-        ])
-
-        self._test_simple_query(
-            "select FileContent(\"test_file_raw\") as column",
-            [{"column": "test_content"}],
-            files=[{"name": "test_file_raw", "content": "test_content", "type": "raw_inline_data"}],
-            settings=self._yql_service_settings(task_data),
-        )
-
-    @authors("mpereskokova")
-    def test_yql_service_flavor_reads_table(self, query_tracker, yql_agent):
-        cluster = yql_agent.yql_agent.env.id
-
-        create("table", "//tmp/t", attributes={"schema": [{"name": "a", "type": "int64"}]})
-        rows = [{"a": 42}, {"a": 43}]
-        write_table("//tmp/t", rows)
-
-        task_data = self._make_task_data(DefaultTranslationCluster=cluster, Url=cluster)
-
-        self._test_simple_query(
-            f"select * from {cluster}.`//tmp/t`",
-            rows,
-            settings=self._yql_service_settings(task_data),
-        )
-
-
-class TestTaskDataFlavorsAuth(TaskDataFlavorsMixin, test_simple.TestQueriesYqlAuthBase):
-    # //tmp/t with a = 42 is created by the base class, it is readable by "allowed_user" only.
-    YQL_QTWORKER = True
-
-    def _run_yql_service_query(self, username, auth_tokens=None):
-        cluster = self.Env.id
-
-        tokens = {}
-        if auth_tokens is not None:
-            tokens["yql_auth_data"] = auth_tokens.SerializeToString()
-
-        self._test_simple_query(
-            f"select a + 1 as b from {cluster}.`//tmp/t`",
-            [{"b": 43}],
-            authenticated_user=username,
-            settings=self._yql_service_settings(
-                self._make_task_data(DefaultTranslationCluster=cluster, Url=cluster),
-                tokens=tokens,
-            ),
-        )
-
-    @staticmethod
-    def _make_auth_tokens(token):
-        return task_pb2.TTaskAuthTokens(Tokens=[
-            task_pb2.TTaskAuthToken(Alias="default_yt", Category="yt", Content=token.encode("utf-8")),
-        ])
-
-    @authors("mpereskokova")
-    @pytest.mark.timeout(180)
-    def test_yql_service_flavor_auth_data(self, query_tracker, yql_agent):
-        allowed_token, _ = issue_token("allowed_user")
-        self._run_yql_service_query("allowed_user", self._make_auth_tokens(allowed_token))
-
-        denied_token, _ = issue_token("denied_user")
-        with raises_yt_error("Access denied for user \"denied_user\""):
-            self._run_yql_service_query("denied_user", self._make_auth_tokens(denied_token))
-
-        self._run_yql_service_query(
-            "allowed_user",
-            self._make_auth_tokens(allowed_token),
-        )

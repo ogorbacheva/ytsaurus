@@ -364,8 +364,6 @@ private:
         options.Recursive = true;
         options.IgnoreExisting = true;
 
-        TimerCookieHolder.Reset(NActors::ISchedulerCookie::Make2Way());
-
         IEventBase* event = nullptr;
         if (!FollowingMode) {
             YQL_CLOG(DEBUG, ProviderDq) << "TryLock: creating prefix=" << Prefix
@@ -377,15 +375,22 @@ private:
             event = new TEvGetNode(InfoNodePath, NYT::NApi::TGetNodeOptions());
         }
 
-        TActivationContext::Schedule(
-            TDuration::Seconds(5),
-            new IEventHandle(YtWrapper, SelfId(), event, 0), TimerCookieHolder.Get());
+        if (FirstAttempt) {
+            FirstAttempt = false;
+            Send(YtWrapper, event);
+        } else {
+            TimerCookieHolder.Reset(NActors::ISchedulerCookie::Make2Way());
+            TActivationContext::Schedule(
+                TDuration::Seconds(5),
+                new IEventHandle(YtWrapper, SelfId(), event, 0), TimerCookieHolder.Get());
+        }
     }
 
     void OnFollowingForever() {
         FollowingMode = true;
         YQL_CLOG(DEBUG, ProviderDq) << "Unlock and follow " << LockName;
         Send(LockRequestActorId, new TEvents::TEvPoison());
+        TryLock();
     }
 
     void SendBecomeFollower(TEvGetNodeResponse::TPtr& ev, const TActorContext& ctx) {
@@ -403,6 +408,9 @@ private:
     void OnCreateNode(TEvCreateNodeResponse::TPtr& ev, const TActorContext& ctx) {
         Y_UNUSED(ctx);
         auto result = std::get<0>(*ev->Get());
+        if (FollowingMode) {
+            return;
+        }
         if (result.IsOK()) {
             YQL_CLOG(INFO, ProviderDq) << "Lock: prefix ready, starting transaction"
                 << " lock=" << LockName
@@ -422,6 +430,27 @@ private:
         auto result = std::get<0>(*ev->Get());
 
         if (result.IsOK()) {
+            if (FollowingMode) {
+                auto transaction = result.Value();
+                auto txnId = ToString(transaction->GetId());
+                auto lockName = LockName;
+                YQL_CLOG(INFO, ProviderDq) << "Lock: aborting transaction started after switching to follower mode"
+                    << " lock=" << lockName
+                    << " tx=" << txnId;
+                transaction->Abort().Subscribe(BIND([txnId, lockName](const NYT::TError& error) {
+                    if (!error.IsOK()) {
+                        YQL_CLOG(WARN, ProviderDq) << "Failed to abort transaction started after switching to follower mode"
+                            << " lock=" << lockName
+                            << " tx=" << txnId
+                            << " error=" << ToString(error);
+                    } else {
+                        YQL_CLOG(DEBUG, ProviderDq) << "Transaction started after switching to follower mode aborted"
+                            << " lock=" << lockName
+                            << " tx=" << txnId;
+                    }
+                }));
+                return;
+            }
             YQL_CLOG(INFO, ProviderDq) << "Lock: transaction started"
                 << " lock=" << LockName
                 << " tx=" << ToString(result.Value()->GetId());
@@ -470,6 +499,7 @@ private:
 
     const TString Revision;
     NActors::TSchedulerCookieHolder TimerCookieHolder;
+    bool FirstAttempt = true;
     bool FollowingMode = false;
 };
 

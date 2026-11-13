@@ -1,8 +1,6 @@
-# Release notes
+# Список изменений
 
-> Note: This page is only available in English.
-
-Thanks to multiple outside contributors for the active participation in {{product-name}} development.
+Благодарим многочисленных сторонних участников за активное участие в разработке {{product-name}}.
 
 
 ## {{product-name}} Server {#server}
@@ -17,13 +15,17 @@ Thanks to multiple outside contributors for the active participation in {{produc
 
 {% include notitle [Strawberry](../_includes/releases/strawberry.md) %}
 
-## CHYT {#chyt}
+## CHYT {#chyt} {#chyt-releases}
 
 {% include notitle [CHYT](../_includes/releases/chyt.md) %}
 
 ## SPYT {#spyt}
 
 {% include notitle [SPYT](../_includes/releases/spyt.md) %}
+
+## Flow {#flow}
+
+{% include notitle [Flow](../_includes/releases/flow.md) %}
 
 ## Kubernetes operator {#kubernetes-operator}
 

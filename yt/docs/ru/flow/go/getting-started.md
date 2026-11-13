@@ -6,7 +6,7 @@
 
 [Примеры]({{source-root}}/yt/yt/flow/examples/go)
 
-SDK импортируется как `a.yandex-team.ru/yt/go/flow`.
+{% if audience == "internal" %}SDK импортируется как `a.yandex-team.ru/yt/go/flow`.{% else %}Импортируйте SDK как `go.ytsaurus.tech/yt/go/flow`.{% endif %}
 
 ## Архитектура приложения {#architecture}
 
@@ -101,7 +101,7 @@ func (*wordCountMapper) OnMessage(
 
 Точка входа в Go-компаньон — функция `main`. В ней необходимо сконфигурировать компьютейшены через `flow.Pipeline` и вызвать `pipeline.Run()`. Функция `main` из [WordCount](examples/wordcount.md):
 
-{% code '/yt/yt/flow/examples/go/word_count/main.go' lang='go' %}
+[Исходный код: `main.go`]({{source-root}}/yt/yt/flow/examples/go/word_count/main.go)
 
 Если пользовательским функциям нужны дополнительные ресурсы (словарь, кэш, HTTP-клиент и т. п.), `main` — подходящее место для их создания: они складываются в поля значения, которое связывается с компьютейшеном.
 
@@ -156,6 +156,18 @@ cd yt/yt/flow
 ya make examples/go/word_count bin/flow_server
 ```
 
+## Подключение SDK как Go-модуля {#go-module}
+
+Вне сборки репозитория SDK — это Go-модуль `go.ytsaurus.tech/yt/go/flow`. Он выпускается вместе с остальными компонентами Flow в версии релиза Flow, поэтому закрепляйте версию того релиза, который запускаете:
+
+```bash
+go get go.ytsaurus.tech/yt/go/flow@vX.Y.Z
+```
+
+Модуль сам называет нужный ему релиз `go.ytsaurus.tech/yt/go`, и `go get` его подтягивает. Не закрепляйте `go.ytsaurus.tech/yt/go` ниже этого релиза: более ранние релизы ещё содержат пакеты `flow` сами, и сборка падает с `ambiguous import`.
+
+Соберите бинарь пайплайна через `go build` и запустите его, как описано ниже, передав в `--flow-bin` `flow_server` того же релиза. Запуск из выпущенного образа Flow описан в разделе [Запуск в docker-окружении](../devops/docker-environment.md#languages).
+
 ## Запуск пайплайна {#launch}
 
 Собранный бинарь запускается командой:
@@ -171,7 +183,7 @@ ya make examples/go/word_count bin/flow_server
 
 Неизвестные флаги командной строки пропускаются, а не отвергаются: бинарь пайплайна — это ваша собственная программа, и она вправе объявлять свои флаги.
 
-`flow_server` передаётся явно через `--flow-bin` и не встроен в Go-бинарь: так пайплайн остаётся лёгким, а версию `flow_server` выбирает тот, кто запускает пайплайн.
+`flow_server` не встроен в Go-бинарь: так пайплайн остаётся лёгким, а версию `flow_server` выбирает тот, кто запускает пайплайн. Без `--flow-bin` раннер берёт путь из переменной окружения `YT_FLOW_BIN`.
 
 Весь запуск выполняет именно `flow_server`: он валидирует спеку, при необходимости создаёт vanilla-операцию, **устанавливает спеку пайплайна** (`set-pipeline-specs`) и стартует пайплайн. Go-сторона только *строит* и обогащает спеку и никогда не устанавливает её напрямую.
 
@@ -203,14 +215,15 @@ ya make examples/go/word_count bin/flow_server
 
 Обязательные параметры: `pool` и `worker.count`. Для остальных полей (`cpu_limit`, `memory_limit`, число контроллеров и т. д.) есть разумные значения по умолчанию — полный список полей и их описание см. в [TVanillaConfig](../../flow/generated_docs/all_yson_structs.md#NYT_NFlow_TVanillaConfig) и [TVanillaTaskConfig](../../flow/generated_docs/all_yson_structs.md#NYT_NFlow_TVanillaTaskConfig).
 
-Обогащение спеки выполняется именно для vanilla-запуска и состоит из двух правок:
+Go-раннер добавляет схемы зарегистрированных стримов в `spec.streams`, если их там ещё нет. При включённой Vanilla он также:
 
-- Бинарь пайплайна добавляется в `vanilla.worker.local_files` под именем `go_companion` — под этим именем `flow_server` доставляет его в сэндбокс джобы.
-- Каждому ресурсу с `resource_class_name = "NYT::NFlow::NCompanion::TCompanionManager"` проставляется `parameters.entrypoint.executable = "./go_companion"`, то есть воркер сам запускает компаньон из сэндбокса.
+- добавляет бинарь пайплайна в `vanilla.worker.local_files` под именем `go_companion` — под этим именем `flow_server` доставляет его в сэндбокс джобы;
+- проставляет каждому ресурсу с `resource_class_name = "NYT::NFlow::NCompanion::TCompanionManager"` без заданного `parameters.entrypoint.executable` (или с `./go_companion`) значение `parameters.entrypoint.executable = "./go_companion"`, чтобы воркер запускал компаньон из сэндбокса; заданный раннер сохраняет, а если он задан во всех таких ресурсах, бинарь не загружается;
+- увеличивает `vanilla.worker.port_count` минимум до `3` для компаньона.
 
 {% note info %}
 
-Пайплайн, запущенный не через vanilla-операцию, работает с компаньоном по пути на хосте, уже прописанному в его спеке, — обогащение в этом случае ничего не меняет.
+Без Vanilla раннер всё равно добавляет схемы зарегистрированных стримов, но не меняет путь к компаньону на хосте, уже прописанный в спеке.
 
 {% endnote %}
 

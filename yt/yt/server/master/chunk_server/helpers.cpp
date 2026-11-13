@@ -1,13 +1,15 @@
 #include "helpers.h"
-#include "private.h"
+
 #include "chunk.h"
-#include "chunk_owner_base.h"
-#include "chunk_manager.h"
-#include "chunk_view.h"
 #include "chunk_location.h"
+#include "chunk_manager.h"
+#include "chunk_owner_base.h"
+#include "chunk_view.h"
+#include "data_node_tracker.h"
 #include "domestic_medium.h"
 #include "dynamic_store.h"
 #include "job.h"
+#include "private.h"
 #include "s3_medium.h"
 
 #include <yt/yt/server/master/cypress_server/cypress_manager.h>
@@ -20,11 +22,14 @@
 
 #include <yt/yt/server/master/object_server/helpers.h>
 
+#include <yt/yt/server/master/security_server/security_manager.h>
+
 #include <yt/yt/ytlib/object_client/object_service_proxy.h>
 
-#include <yt/yt/ytlib/table_client/chunk_meta_extensions.h>
-#include <yt/yt/ytlib/chunk_client/chunk_service_proxy.h>
 #include <yt/yt/ytlib/chunk_client/chunk_meta_extensions.h>
+#include <yt/yt/ytlib/chunk_client/chunk_service_proxy.h>
+
+#include <yt/yt/ytlib/table_client/chunk_meta_extensions.h>
 
 #include <yt/yt/ytlib/cypress_client/rpc_helpers.h>
 
@@ -41,6 +46,8 @@
 #include <yt/yt/core/ytree/fluent.h>
 
 #include <yt/yt/core/misc/protobuf_helpers.h>
+
+#include <library/cpp/yt/compact_containers/compact_queue.h>
 
 namespace NYT::NChunkServer {
 
@@ -189,7 +196,7 @@ std::optional<i64> GetJournalChunkStartRowIndex(const TChunk* chunk)
     return chunkList->CumulativeStatistics().GetPreviousSum(chunkIndex).RowCount;
 }
 
-TChunkList* GetUniqueParent(const TChunkTree* chunkTree)
+TChunkTree* GetUniqueParent(const TChunkTree* chunkTree)
 {
     switch (chunkTree->GetType()) {
         case EObjectType::Chunk:
@@ -204,7 +211,7 @@ TChunkList* GetUniqueParent(const TChunkTree* chunkTree)
             auto [parent, cardinality] = *parents.begin();
             YT_VERIFY(cardinality == 1);
             YT_VERIFY(parent->GetType() == EObjectType::ChunkList);
-            return parent->AsChunkList();
+            return parent;
         }
 
         case EObjectType::ChunkView: {
@@ -224,7 +231,7 @@ TChunkList* GetUniqueParent(const TChunkTree* chunkTree)
             }
             YT_VERIFY(parents.size() == 1);
             YT_VERIFY(parents[0]->GetType() == EObjectType::ChunkList);
-            return parents[0]->AsChunkList();
+            return parents[0];
         }
 
         case EObjectType::ChunkList: {
@@ -446,9 +453,10 @@ void DetachFromChunkList(
         // NB: We do not call this method to detach chunk lists from hunk roots.
         YT_VERIFY(!chunkList->IsHunkRoot());
 
-        auto rootChunkList = GetUniqueParent(chunkList);
-        YT_VERIFY(rootChunkList &&
-            rootChunkList->Parents().empty() &&
+        auto* rootChunkTree = GetUniqueParent(chunkList);
+        YT_VERIFY(rootChunkTree);
+        auto* rootChunkList = rootChunkTree->AsChunkList();
+        YT_VERIFY(rootChunkList->Parents().empty() &&
             rootChunkList->IsHunkRoot());
 
         for (auto child : children) {
@@ -610,7 +618,8 @@ void DetachFromChunkList(
     // Go upwards and recompute statistics.
     VisitUniqueAncestors(
         chunkList,
-        [&] (TChunkList* current, TChunkTree* child) {
+        [&] (TChunkTree* currentChunkTree, TChunkTree* child) {
+            auto* current = currentChunkTree->AsChunkList();
             TCumulativeStatisticsEntry cumulativeStatisticsDelta;
             if (hunkCumulativeStatisticsDelta) {
                 cumulativeStatisticsDelta -= *hunkCumulativeStatisticsDelta;
@@ -696,7 +705,7 @@ void ResetChunkTreeParent(TChunkTree* parent, TChunkTree* child)
             break;
 
         case EObjectType::ChunkList:
-            child->AsChunkList()->RemoveParent(parent->AsChunkList());
+            child->AsChunkList()->RemoveParent(parent);
             break;
 
         default:
@@ -838,15 +847,17 @@ void AccumulateUniqueAncestorsStatistics(
     // TODO(aleksandra-zh): remove copypaste.
     VisitUniqueAncestors(
         parent,
-        [&] (TChunkList* parent, TChunkTree* child) {
+        [&] (TChunkTree* parent, TChunkTree* child) {
+            YT_VERIFY(parent->IsChunkList());
+            auto* chunkList = parent->AsChunkList();
             ++mutableStatisticsDelta.Rank;
-            parent->Statistics().Accumulate(mutableStatisticsDelta);
+            chunkList->Statistics().Accumulate(mutableStatisticsDelta);
 
-            if (parent->HasCumulativeStatistics()) {
-                auto& cumulativeStatistics = parent->CumulativeStatistics();
+            if (chunkList->HasCumulativeStatistics()) {
+                auto& cumulativeStatistics = chunkList->CumulativeStatistics();
                 TCumulativeStatisticsEntry entry{mutableStatisticsDelta};
 
-                int index = GetChildIndex(parent, child);
+                int index = GetChildIndex(chunkList, child);
                 cumulativeStatistics.Update(index, entry);
             }
         },
@@ -878,10 +889,11 @@ void AccumulateHunkStatisticsInUniqueAncestors(
                 parent->AccumulateHunkStatistics(child->AsChunk());
             }
 
-            auto* grandparent = GetUniqueParent(parent);
-            if (!grandparent) {
+            auto* grandparentChunkTree = GetUniqueParent(parent);
+            if (!grandparentChunkTree) {
                 return;
             }
+            auto* grandparent = grandparentChunkTree->AsChunkList();
 
             YT_VERIFY(grandparent->IsHunkRoot());
             YT_VERIFY(grandparent->Parents().empty());
@@ -967,12 +979,12 @@ bool IsHunkChunkUniquelyPresentInChunkList(
             .With("ChunkListKind", chunkList->GetKind())
             .With("ChunkId", chunk->GetId());
 
-        for (auto grandparent : parent->AsChunkList()->Parents()) {
-            YT_VERIFY(grandparent->GetType() == EObjectType::ChunkList);
+        for (auto grandparentChunkTree : parent->AsChunkList()->Parents()) {
+            const auto* grandparent = grandparentChunkTree->AsChunkList();
             YT_VERIFY(grandparent->IsHunkRoot());
             YT_VERIFY(grandparent->Parents().empty());
 
-            if (grandparent->AsChunkList() == chunkList) {
+            if (grandparent == chunkList) {
                 if (++occurrenceCount > 1) {
                     return false;
                 }
@@ -1059,22 +1071,25 @@ void RecomputeChildToIndexMapping(TChunkList* chunkList)
     }
 }
 
-std::vector<TChunkOwnerBase*> GetOwningNodes(TChunkTree* chunkTree)
+namespace {
+
+void VisitChunkTreeAndAncestors(TChunkTree* chunkTree, auto functor)
 {
-    THashSet<TChunkOwnerBase*> owningNodes;
     THashSet<TChunkTree*> visitedTrees;
-    std::vector<TChunkTree*> queue{chunkTree};
+    TCompactQueue<TChunkTree*, 64> queue;
 
     auto visit = [&] (TChunkTree* chunkTree) {
         if (visitedTrees.insert(chunkTree).second) {
-            queue.push_back(chunkTree);
+            functor(chunkTree);
+            queue.Push(chunkTree);
         }
     };
 
     visit(chunkTree);
 
-    for (int index = 0; index < std::ssize(queue); ++index) {
-        chunkTree = queue[index];
+    while (!queue.Empty()) {
+        chunkTree = queue.Pop();
+        functor(chunkTree);
 
         switch (chunkTree->GetType()) {
             case EObjectType::Chunk:
@@ -1101,8 +1116,7 @@ std::vector<TChunkOwnerBase*> GetOwningNodes(TChunkTree* chunkTree)
             }
             case EObjectType::ChunkList: {
                 auto* chunkList = chunkTree->AsChunkList();
-                owningNodes.insert(chunkList->TrunkOwningNodes().begin(), chunkList->TrunkOwningNodes().end());
-                owningNodes.insert(chunkList->BranchedOwningNodes().begin(), chunkList->BranchedOwningNodes().end());
+
                 for (auto parent : chunkList->Parents()) {
                     visit(parent);
                 }
@@ -1112,11 +1126,7 @@ std::vector<TChunkOwnerBase*> GetOwningNodes(TChunkTree* chunkTree)
                 YT_ABORT();
         }
     }
-
-    return std::vector<TChunkOwnerBase*>(owningNodes.begin(), owningNodes.end());
 }
-
-namespace {
 
 TYsonString DoGetMulticellOwningNodes(
     NCellMaster::TBootstrap* bootstrap,
@@ -1215,6 +1225,21 @@ TYsonString DoGetMulticellOwningNodes(
 }
 
 } // namespace
+
+std::vector<TChunkOwnerBase*> GetOwningNodes(TChunkTree* chunkTree)
+{
+    THashSet<TChunkOwnerBase*> owningNodes;
+
+    VisitChunkTreeAndAncestors(chunkTree, [&] (const TChunkTree* currentChunkTree) {
+        if (currentChunkTree->IsChunkList()) {
+            const auto* chunkList = currentChunkTree->AsChunkList();
+            owningNodes.insert(chunkList->TrunkOwningNodes().begin(), chunkList->TrunkOwningNodes().end());
+            owningNodes.insert(chunkList->BranchedOwningNodes().begin(), chunkList->BranchedOwningNodes().end());
+        }
+    });
+
+    return std::vector<TChunkOwnerBase*>(owningNodes.begin(), owningNodes.end());
+}
 
 TFuture<TYsonString> GetMulticellOwningNodes(
     NCellMaster::TBootstrap* bootstrap,
@@ -1812,9 +1837,9 @@ i64 ComputeDiskSpaceFromDataSize(i64 dataSize, NErasure::ECodec erasureCodec)
         return dataSize;
     }
 
-    auto* codec = NErasure::GetCodec(erasureCodec);
-    auto dataPartCount = codec->GetDataPartCount();
-    auto totalPartCount = codec->GetTotalPartCount();
+    const auto& codecParams = NErasure::GetCodecOrThrow(erasureCodec)->GetParams();
+    auto dataPartCount = codecParams.DataPartCount;
+    auto totalPartCount = codecParams.TotalPartCount;
 
     return dataSize * totalPartCount / dataPartCount;
 }
@@ -1854,9 +1879,26 @@ int EncodeRepairQueueKey(int mediumIndex, int priority)
 
 std::pair<int, int> DecodeRepairQueueKey(int key)
 {
-    return std::make_pair(
+    return std::pair(
         key / RepairPriorityCount,      // mediumIndex
         key % RepairPriorityCount);     // priority
+}
+
+ESealPriority GetChunkSealPriority(const TChunk* chunk)
+{
+    switch (chunk->GetChunkFormat()) {
+        case EChunkFormat::JournalDefault:
+            return ESealPriority::JournalDefault;
+        case EChunkFormat::HunkJournal:
+            return ESealPriority::HunkJournal;
+        case EChunkFormat::JournalDistributed:
+            return ESealPriority::JournalDistributed;
+        default:
+            YT_TLOG_ALERT("Unexpected journal chunk format encountered in chunk sealer")
+                .With("ChunkId", chunk->GetId())
+                .With("ChunkFormat", chunk->GetChunkFormat());
+            return TEnumTraits<ESealPriority>::GetMaxValue();
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1911,9 +1953,32 @@ bool IsReplicaDecommissioned(TChunkLocation* replica)
     return replica->GetNode()->IsDecommissioned();
 }
 
-bool IsReplicaOnPendingRestartNode(TChunkLocation* replica)
+int ComputeReplicaDeficit(
+    int targetReplicaCount,
+    int availableReplicaCount,
+    int temporarilyUnavailableReplicaCount,
+    int additionalRackFailureTolerance,
+    int maxReplicasPerRack)
 {
-    return replica->GetNode()->IsPendingRestart();
+    constexpr int MinSurvivingReplicaCount = 1;
+
+    auto targetReplicaDeficit = std::max<i64>(
+        static_cast<i64>(targetReplicaCount) -
+            availableReplicaCount -
+            temporarilyUnavailableReplicaCount,
+        0);
+    auto availableReplicaCountAfterTargetReplication = availableReplicaCount + targetReplicaDeficit;
+
+    auto replicaReserveForAdditionalRackFailures =
+        static_cast<i64>(additionalRackFailureTolerance) * maxReplicasPerRack;
+    auto requiredAvailableReplicaCount = std::min<i64>(
+        targetReplicaCount,
+        MinSurvivingReplicaCount + replicaReserveForAdditionalRackFailures);
+    auto failureToleranceReplicaDeficit = std::max<i64>(
+        requiredAvailableReplicaCount - availableReplicaCountAfterTargetReplication,
+        0);
+
+    return static_cast<int>(targetReplicaDeficit + failureToleranceReplicaDeficit);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

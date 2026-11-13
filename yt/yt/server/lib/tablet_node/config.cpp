@@ -119,6 +119,10 @@ void TMinHashDigestConfig::Register(TRegistrar registrar)
 
 void TCompactionHintsConfig::Register(TRegistrar registrar)
 {
+    registrar.Parameter("min_compaction_data_size", &TThis::MinCompactionDataSize)
+        .GreaterThanOrEqual(0)
+        .Default(8_MB);
+
     registrar.Parameter("row_digest", &TThis::RowDigest)
         .DefaultNew();
     registrar.Parameter("min_hash_digest", &TThis::MinHashDigest)
@@ -289,6 +293,8 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
     registrar.Parameter("max_partitioning_store_count", &TThis::MaxPartitioningStoreCount)
         .Default(5)
         .GreaterThan(0);
+    registrar.Parameter("max_old_eden_chunk_partitioning_lag", &TThis::MaxOldEdenChunkPartitioningLag)
+        .Optional();
 
     registrar.Parameter("min_compaction_store_count", &TThis::MinCompactionStoreCount)
         .Default(3)
@@ -538,6 +544,9 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
         .Default(true)
         .DontSerializeDefault();
 
+    registrar.Parameter("force_zero_major_timestamp", &TThis::ForceZeroMajorTimestamp)
+        .Default(false);
+
     registrar.Parameter("partition_reader_prefetch_key_limit", &TThis::PartitionReaderPrefetchKeyLimit)
         .Default()
         .DontSerializeDefault();
@@ -563,6 +572,13 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
     registrar.Parameter("table_puller_force_same_cluster_queue", &TThis::TablePullerForceSameClusterQueue)
         .Default(false);
 
+    registrar.Parameter("table_puller_max_partial_failures", &TThis::TablePullerMaxPartialFailures)
+        .GreaterThan(0)
+        .Default(5);
+
+    registrar.Parameter("enable_chunk_prolongation", &TThis::EnableChunkProlongation)
+        .Default(false);
+
     registrar.Postprocessor([&] (TCustomTableMountConfig* config) {
         if (config->MaxDynamicStoreRowCount > config->MaxDynamicStoreValueCount) {
             THROW_ERROR_EXCEPTION("\"max_dynamic_store_row_count\" must be less than or equal to \"max_dynamic_store_value_count\"");
@@ -584,6 +600,9 @@ void TCustomTableMountConfig::Register(TRegistrar registrar)
         }
         if (config->MaxHunkCompactionChunkCount < config->MinHunkCompactionChunkCount) {
             THROW_ERROR_EXCEPTION("\"max_hunk_compaction_chunk_count\" must be greater than or equal to \"min_hunk_compaction_chunk_count\"");
+        }
+        if (config->ForceZeroMajorTimestamp && config->IgnoreMajorTimestamp) {
+            THROW_ERROR_EXCEPTION("Parameters \"force_zero_major_timestamp\" and \"ignore_major_timestamp\" are incompatible");
         }
     });
 }

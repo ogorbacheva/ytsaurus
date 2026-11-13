@@ -35,6 +35,8 @@ YT_DEFINE_STRONG_TYPEDEF(TWatermarkAlignmentGroup, std::string);
 
 YT_FLOW_DEFINE_IDENTIFIER_TYPEDEF(TStreamId);
 YT_FLOW_DEFINE_IDENTIFIER_TYPEDEF(TResourceId);
+YT_DEFINE_STRONG_TYPEDEF(TFileProviderId, std::string);
+YT_DEFINE_STRONG_TYPEDEF(TFileSnapshotId, i64);
 YT_FLOW_DEFINE_IDENTIFIER_TYPEDEF(TComputationId);
 YT_FLOW_DEFINE_IDENTIFIER_TYPEDEF(TSinkId);
 YT_FLOW_DEFINE_IDENTIFIER_TYPEDEF(TThrottlerId);
@@ -78,11 +80,14 @@ static constexpr auto InfinitySystemTimestamp = TSystemTimestamp(0xfffffffffffff
 static constexpr auto ZeroSystemTimestamp = TSystemTimestamp(0);
 
 DECLARE_REFCOUNTED_STRUCT(ITimeProvider);
+DECLARE_REFCOUNTED_STRUCT(ITimerPageCatalogue);
 DECLARE_REFCOUNTED_STRUCT(TDynamicPartitionSpec);
 DECLARE_REFCOUNTED_STRUCT(IPartitionBufferState);
+DECLARE_REFCOUNTED_STRUCT(IJobLineageTracker);
 
 struct TMessageMeta;
 struct TMessage;
+struct TParsedPipelineParameters;
 
 DECLARE_REFCOUNTED_STRUCT(TInputMessage);
 using TInputMessageConstPtr = TIntrusivePtr<const TInputMessage>;
@@ -110,7 +115,7 @@ DEFINE_ENUM(EPartitionState,
     ((Executing)       (1))
     // Partition processing is interrupting. It cannot receive input messages, but can distribute output.
     ((Interrupting)    (2))
-    // Partition processing has been successfully completed. Cleaning states and other partition data.
+    // Partition processing has completed. It only distributes persisted output, then cleans owned state.
     ((Completing)      (3))
     // Partition processing has been successfully completed and fully cleaned. So, it will never start again.
     ((Completed)       (4))
@@ -158,6 +163,14 @@ DEFINE_ENUM(EJobFinishReason,
     ((PartitionUpdated)      (6))
 );
 
+//! Where a computation keeps its timers.
+DEFINE_ENUM(ETimerStoreBackend,
+    // All timers of a partition are resident in worker memory, persisted in the "timers" table.
+    ((InMemory)    (0))
+    // Timers live in pages of a dynamic table; only the pages needed for firing are resident.
+    ((Paged)       (1))
+);
+
 DEFINE_ENUM(EDistributionOrdering,
     // Output messages (created from input messages with the same key) are distributed in their creation order.
     // Ordering survives repartitioning (race between finishing and executing partitions is not possible).
@@ -181,6 +194,7 @@ DECLARE_REFCOUNTED_STRUCT(TNodeTraverseData);
 DECLARE_REFCOUNTED_STRUCT(TFromPartitionTraverseData);
 DECLARE_REFCOUNTED_STRUCT(TToPartitionTraverseData);
 DECLARE_REFCOUNTED_STRUCT(TPipelineTraverseData);
+DECLARE_REFCOUNTED_STRUCT(TPipelineWatermarkHistory);
 
 DECLARE_REFCOUNTED_STRUCT(TWatermarks);
 DECLARE_REFCOUNTED_STRUCT(TWatermarkState);
@@ -198,6 +212,7 @@ DECLARE_REFCOUNTED_STRUCT(TAggregatedNodeInputMetrics);
 DECLARE_REFCOUNTED_STRUCT(TJobStatus);
 DECLARE_REFCOUNTED_STRUCT(TMessageDistributorStatus);
 DECLARE_REFCOUNTED_STRUCT(TWorkerResourceStatus);
+DECLARE_REFCOUNTED_STRUCT(TWorkerStatistics);
 DECLARE_REFCOUNTED_STRUCT(TWorkerStatus);
 DECLARE_REFCOUNTED_STRUCT(TWorkerSpec);
 DECLARE_REFCOUNTED_STRUCT(TPartitionJobStatus);
@@ -231,6 +246,7 @@ DECLARE_REFCOUNTED_STRUCT(TInputOrderingSpec);
 
 DECLARE_REFCOUNTED_STRUCT(IExternalStateManager);
 DECLARE_REFCOUNTED_STRUCT(IExternalStateJoiner);
+DECLARE_REFCOUNTED_STRUCT(ICompanionStateAdapter);
 DECLARE_REFCOUNTED_STRUCT(TExternalStateManagerContext);
 DECLARE_REFCOUNTED_STRUCT(TDynamicExternalStateManagerContext);
 DECLARE_REFCOUNTED_STRUCT(TExternalStateJoinerContext);
@@ -243,8 +259,24 @@ DECLARE_REFCOUNTED_STRUCT(TDynamicExternalStateJoinerSpec);
 DECLARE_REFCOUNTED_STRUCT(TStateJoinerSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicStateJoinerSpec);
 
+DECLARE_REFCOUNTED_STRUCT(TPartitioningSpec);
+DECLARE_REFCOUNTED_STRUCT(TDynamicPartitioningSpec);
+DECLARE_REFCOUNTED_STRUCT(TKeyCountPartitioningSpec);
+
 DECLARE_REFCOUNTED_STRUCT(TComputationSpec);
+DECLARE_REFCOUNTED_STRUCT(TProcessFunctionGraphNodeSpec);
+DECLARE_REFCOUNTED_STRUCT(TProcessFunctionGraphSpec);
+DECLARE_REFCOUNTED_STRUCT(TProcessFunctionGraphParameters);
+DECLARE_REFCOUNTED_STRUCT(TProcessFunctionGraphDynamicParameters);
 DECLARE_REFCOUNTED_STRUCT(TPipelineSpec);
+DECLARE_REFCOUNTED_STRUCT(TFailureHandlerSpec);
+
+//! Computation classes that can host a process function graph.
+DEFINE_ENUM(EProcessFunctionGraphHost,
+    ((Transform)      (0))
+    ((SwiftMap)       (1))
+    ((SwiftSource)    (2))
+);
 
 DECLARE_REFCOUNTED_STRUCT(TExtendedComputationSpec);
 DECLARE_REFCOUNTED_STRUCT(TExtendedPipelineSpec);
@@ -261,8 +293,10 @@ DECLARE_REFCOUNTED_STRUCT(TDynamicOutputStoreSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicRetryableClientSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicRetryableRequestSpec);
 DECLARE_REFCOUNTED_STRUCT(TMessageBatcherSettings);
+DECLARE_REFCOUNTED_STRUCT(TDynamicKeyCountPartitioningSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicComputationSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicPartitionTracerSpec);
+DECLARE_REFCOUNTED_STRUCT(TDynamicFileProviderSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicResourceSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicThrottlerSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicThrottlerClassSpec);
@@ -274,14 +308,16 @@ DECLARE_REFCOUNTED_STRUCT(TDynamicMessageDistributorSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicJobTrackerSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicControllerConnectorSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicStateCacheSpec);
+DECLARE_REFCOUNTED_STRUCT(TThroughputSpec);
+DECLARE_REFCOUNTED_STRUCT(TDynamicPartitioningCoordinatorSpec);
 DECLARE_REFCOUNTED_STRUCT(TDynamicPipelineSpec);
 
 using TVersionedPipelineSpec = TVersionedValue<TPipelineSpecPtr>;
 DECLARE_REFCOUNTED_TYPE(TVersionedPipelineSpec);
 using TVersionedExtendedPipelineSpec = TVersionedValue<TExtendedPipelineSpecPtr>;
 DECLARE_REFCOUNTED_TYPE(TVersionedExtendedPipelineSpec);
-using TVersionedDynamicPipelineSpec = TVersionedValue<TDynamicPipelineSpecPtr>;
-DECLARE_REFCOUNTED_TYPE(TVersionedDynamicPipelineSpec);
+DECLARE_REFCOUNTED_STRUCT(TVersionedDynamicPipelineSpec);
+DECLARE_REFCOUNTED_STRUCT(TDynamicSpecPatch);
 
 using TStreamsTraverse = THashMap<TStreamId, TStreamTraverseDataPtr>;
 using TVersionedStreamsTraverse = TVersionedValue<TStreamsTraverse>;
@@ -291,6 +327,9 @@ DECLARE_REFCOUNTED_STRUCT(TExecutionSpec);
 DECLARE_REFCOUNTED_STRUCT(TExecutionSpecVersions);
 
 DECLARE_REFCOUNTED_STRUCT(TJobManagerState);
+DECLARE_REFCOUNTED_STRUCT(TPartitionMetricsHistory);
+DECLARE_REFCOUNTED_STRUCT(TBalancerGroupState);
+DECLARE_REFCOUNTED_STRUCT(TBalancerState);
 
 DECLARE_REFCOUNTED_STRUCT(TFlowFeedback);
 DECLARE_REFCOUNTED_STRUCT(TPartitionEphemeralState);
@@ -313,8 +352,8 @@ DECLARE_REFCOUNTED_STRUCT(IInitContext);
 DECLARE_REFCOUNTED_CLASS(TStreamLimitUsageState);
 DECLARE_REFCOUNTED_STRUCT(TComputationContext);
 DECLARE_REFCOUNTED_STRUCT(IComputationRunContext);
-DECLARE_REFCOUNTED_STRUCT(TComputationOrchidState);
 DECLARE_REFCOUNTED_STRUCT(TComputationStatus);
+DECLARE_REFCOUNTED_STRUCT(TProcessingObservation);
 DECLARE_REFCOUNTED_STRUCT(TDynamicComputationContext);
 DECLARE_REFCOUNTED_STRUCT(IComputation);
 
@@ -325,6 +364,7 @@ DECLARE_REFCOUNTED_STRUCT(IKeyedBatchProcessFunction);
 struct ISyncProcessFunction;
 DECLARE_REFCOUNTED_STRUCT(IRuntimeContext);
 DECLARE_REFCOUNTED_STRUCT(IRuntimeInitContext);
+DECLARE_REFCOUNTED_STRUCT(TProcessFunctionContext);
 
 DECLARE_REFCOUNTED_STRUCT(TSourceContext);
 DECLARE_REFCOUNTED_STRUCT(TDynamicSourceContext);
@@ -341,31 +381,50 @@ DECLARE_REFCOUNTED_STRUCT(TDynamicSinkControllerContext);
 DECLARE_REFCOUNTED_STRUCT(ISinkController);
 
 DECLARE_REFCOUNTED_STRUCT(TProcessPartitionTraverseDataResult);
-DECLARE_REFCOUNTED_STRUCT(TComputationControllerCommonContext);
 DECLARE_REFCOUNTED_STRUCT(TComputationControllerContext);
 DECLARE_REFCOUNTED_STRUCT(TDynamicComputationControllerContext);
 DECLARE_REFCOUNTED_STRUCT(IComputationController);
+DECLARE_REFCOUNTED_STRUCT(TComputationPartitionStatus);
 
 DECLARE_REFCOUNTED_STRUCT(TResourceContext);
 DECLARE_REFCOUNTED_STRUCT(TDynamicResourceContext);
 DECLARE_REFCOUNTED_STRUCT(IResource);
 DECLARE_REFCOUNTED_STRUCT(TResourceManagerContext);
 DECLARE_REFCOUNTED_STRUCT(IResourceManager);
+DECLARE_REFCOUNTED_STRUCT(TResourceInstance);
+DECLARE_REFCOUNTED_STRUCT(TResourceInstanceDynamicSpec);
+
+DEFINE_ENUM(EResourceLoadState,
+    ((NotLoaded) (0))
+    ((Loading)   (1))
+    ((Loaded)    (2))
+    ((Failed)    (3))
+);
+DECLARE_REFCOUNTED_STRUCT(TFileSnapshot);
+DECLARE_REFCOUNTED_STRUCT(TFileSnapshotStatus);
 DECLARE_REFCOUNTED_STRUCT(TResourceRevision);
 DECLARE_REFCOUNTED_STRUCT(TResourceControllerContext);
 DECLARE_REFCOUNTED_STRUCT(TDynamicResourceControllerContext);
 DECLARE_REFCOUNTED_STRUCT(IResourceController);
 
-DECLARE_REFCOUNTED_STRUCT(TFileSourceSpec);
-DECLARE_REFCOUNTED_STRUCT(TFileSourceRevision);
-DECLARE_REFCOUNTED_STRUCT(TFileSourceContext);
-DECLARE_REFCOUNTED_STRUCT(IFileSource);
+DECLARE_REFCOUNTED_STRUCT(TFileProviderSpec);
+DECLARE_REFCOUNTED_STRUCT(TFileProviderRevision);
+DECLARE_REFCOUNTED_STRUCT(TFileProviderContext);
+DECLARE_REFCOUNTED_STRUCT(TDynamicFileProviderContext);
+DECLARE_REFCOUNTED_STRUCT(IFileProvider);
 
-DEFINE_ENUM(EFileResourceUpdateState,
-    ((Downloading)     (0))
-    ((Initializing)    (1))
-    ((Validating)      (2))
-    ((WaitingForRetry) (3))
+DEFINE_ENUM(EFileSnapshotState,
+    ((Preparing) (0))
+    ((Validated) (1))
+    ((Draining)  (2))
+    ((Active)    (3))
+);
+
+DEFINE_ENUM(EFileSnapshotPreparationStage,
+    ((Waiting)       (0))
+    ((Materializing) (1))
+    ((Initializing)  (2))
+    ((Validating)    (3))
 );
 
 using TVersionedResourceTargetRevisions = TVersionedValue<THashMap<TResourceId, TResourceRevisionPtr>>;
@@ -400,6 +459,7 @@ DECLARE_REFCOUNTED_STRUCT(TYsonMessage);
 template <class T>
 concept CYsonMessage = std::derived_from<T, TYsonMessage>;
 
+DECLARE_REFCOUNTED_STRUCT(TStateCacheNamespace);
 DECLARE_REFCOUNTED_CLASS(TStateCache);
 DECLARE_REFCOUNTED_CLASS(TJobStateCache);
 DECLARE_REFCOUNTED_CLASS(TJobNamedStateCache);

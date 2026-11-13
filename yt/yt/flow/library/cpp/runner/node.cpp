@@ -5,6 +5,7 @@
 #include "config.h"
 #include "debug_build_warning.h"
 #include "endpoint_provider.h"
+#include "jobtruck_log_writer.h"
 #include "network_bandwidth.h"
 #include "node_info.h"
 #include "porto_tracker.h"
@@ -12,9 +13,9 @@
 #include "queue_log_writer.h"
 #include "root_clients_cache.h"
 
-#include <yt/yt/flow/library/cpp/companion/companion_proxy.h>
-#include <yt/yt/flow/library/cpp/companion/companion_singleton_state.h>
-#include <yt/yt/flow/library/cpp/companion/config.h>
+#include <yt/yt/flow/library/cpp/companion/client/companion_proxy.h>
+#include <yt/yt/flow/library/cpp/companion/client/companion_singleton_state.h>
+#include <yt/yt/flow/library/cpp/companion/client/config.h>
 
 #include <yt/yt/flow/library/cpp/controller/config.h>
 #include <yt/yt/flow/library/cpp/controller/controller.h>
@@ -41,6 +42,7 @@
 #include <yt/yt/flow/library/cpp/common/column_evaluator_cache.h>
 #include <yt/yt/flow/library/cpp/common/internal_urls.h>
 #include <yt/yt/flow/library/cpp/common/job_directory.h>
+#include <yt/yt/flow/library/cpp/common/job_proxy_client.h>
 #include <yt/yt/flow/library/cpp/common/payload_converter.h>
 #include <yt/yt/flow/library/cpp/common/spec.h>
 #include <yt/yt/flow/library/cpp/common/stream_spec_storage.h>
@@ -82,6 +84,7 @@
 #include <yt/yt/core/http/server.h>
 
 #include <yt/yt/core/https/client.h>
+#include <yt/yt/core/https/config.h>
 
 #include <yt/yt/core/concurrency/action_queue.h>
 #include <yt/yt/core/concurrency/fair_share_action_queue.h>
@@ -114,7 +117,10 @@
 #include <library/cpp/yt/mlock/mlock.h>
 #include <library/cpp/yt/phdr_cache/phdr_cache.h>
 
+#include <util/string/cast.h>
 #include <util/string/split.h>
+
+#include <util/system/env.h>
 
 #include <cstdlib>
 
@@ -135,6 +141,22 @@ using namespace NYTree;
 constinit const auto Logger = NodeLogger;
 
 constexpr auto& JaegerCollectorAddressSuffix = NInternalUrls::JaegerCollectorAddressSuffix;
+
+////////////////////////////////////////////////////////////////////////////////
+
+//! Parsed once at startup: the leadership publication must never fail on a malformed value, since
+//! it runs in a fiber that owns the already published leadership.
+bool ParseSkipLeaderProxyConfirmation()
+{
+    auto value = GetEnv(TString(NController::SkipLeaderProxyConfirmationEnvVarName), "0");
+    bool result = false;
+    if (!TryFromString(value, result)) {
+        THROW_ERROR_EXCEPTION("Cannot parse environment variable %v as a boolean",
+            NController::SkipLeaderProxyConfirmationEnvVarName)
+            .With("Value", value);
+    }
+    return result;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -169,6 +191,12 @@ private:
     TFlowNodeConfigPtr Config_;
     NYTree::INodePtr ConfigNode_;
     TNodeInfoPtr NodeInfo_;
+    //! Whether the config gives the bus server its own certificate and key; otherwise a controller
+    //! serves TLS with its incarnation certificate.
+    bool BusServerHasConfiguredTlsMaterial_ = false;
+    //! Equals #Config_->BusServer unless a controller adds its incarnation certificate, whose private
+    //! key must stay out of #Config_.
+    NBus::NTcp::TBusServerConfigPtr BusServerConfig_;
 
     TRichYPath PipelinePath_;
     NMonitoring::IMonitoringManagerPtr MonitoringManager_;
@@ -183,6 +211,7 @@ private:
     NHttp::IServerPtr HttpServer_;
     NHttp::IClientPtr HttpClient_;
     NHttp::IClientPtr HttpsClient_;
+    NHttp::IClientPtr FileProviderHttpClient_;
 
     NProfiling::TSolomonProxyPtr SolomonProxy_;
 
@@ -209,6 +238,30 @@ private:
     NWorker::IControllerConnectorPtr ControllerConnector_;
 
 private:
+    static void PatchLogManagerConfig(
+        TFlowNodeConfigPtr config,
+        TRichYPath pipelinePath,
+        EFlowRunMode mode)
+    {
+        if (!Any(mode & EFlowRunMode::Controller)) {
+            return;
+        }
+
+        static const std::string QueueWriterName = "ControllerLogWriter";
+        static const std::string JobtruckWriterName = "JobtruckLogWriter";
+        static const std::string PublicControllerCategory = "PublicFlowController";
+
+        auto logManagerConfig = config->GetSingletonConfig<TLogManagerConfig>();
+        EmplaceOrCrash(logManagerConfig->Writers, QueueWriterName, GetQueueLogWriterConfig(pipelinePath));
+        EmplaceOrCrash(logManagerConfig->Writers, JobtruckWriterName, GetJobtruckLogWriterConfig(pipelinePath));
+
+        auto ruleConfig = New<TRuleConfig>();
+        ruleConfig->IncludeCategories = THashSet<std::string>({PublicControllerCategory});
+        ruleConfig->Writers = {QueueWriterName, JobtruckWriterName};
+        ruleConfig->MinLevel = ELogLevel::Info;
+        logManagerConfig->Rules.push_back(ruleConfig);
+    }
+
     void DoRunNode()
     {
         // Unconditional configuring.
@@ -226,6 +279,7 @@ private:
 
         TErrorCodicils::Initialize();
         RegisterQueueLogWriterFactory();
+        RegisterJobtruckLogWriterFactory();
 
         // Config-dependent configuring.
         Mode_ = ParseMode();
@@ -235,11 +289,8 @@ private:
             config = PatchNode(config, ConvertToNode(NYson::TYsonString(TStringBuf(overridesEnvValue))));
         }
         Config_ = ConvertTo<TFlowNodeConfigPtr>(config);
-        // Ports come from the config by default. When the operation requests YT-allocated
-        // ports (port_count > 0, e.g. on a shared-network host), YT exposes them via
-        // YT_PORT_<i> — honor those over the config: YT_PORT_0 → rpc_port (and bus_server.port),
-        // YT_PORT_1 → monitoring_port, YT_PORT_2 → companion.port (any worker running an
-        // out-of-process companion).
+        // YT ports override fixed ports on shared-network hosts: 0/1 serve the node and 2/3
+        // serve companion RPC/monitoring. Missing port 3 disables only companion metrics.
         if (const char* port0Env = std::getenv("YT_PORT_0")) {
             int rpcPort = FromString<int>(port0Env);
             Config_->RpcPort = rpcPort;
@@ -254,6 +305,12 @@ private:
                 Config_->Companion = New<NCompanion::TCompanionConfig>();
             }
             Config_->Companion->Port = FromString<int>(port2Env);
+        }
+        if (const char* port3Env = std::getenv("YT_PORT_3")) {
+            if (!Config_->Companion) {
+                Config_->Companion = New<NCompanion::TCompanionConfig>();
+            }
+            Config_->Companion->MonitoringPort = FromString<int>(port3Env);
         }
         ConfigNode_ = ConvertToNode(Config_);
 
@@ -280,6 +337,11 @@ private:
 
         NodeInfo_ = GetNodeInfo(Config_, Logger());
         NNet::SetLocalHostName(NodeInfo_->Name);
+
+        BusServerHasConfiguredTlsMaterial_ = Config_->BusServer->CertificateChain && Config_->BusServer->PrivateKey;
+        BusServerConfig_ = Any(Mode_ & EFlowRunMode::Controller)
+            ? CreateBusServerConfigWithIncarnationCertificate(NodeInfo_.Get(), Config_->BusServer, Logger())
+            : Config_->BusServer;
 
         if (NodeInfo_->VcpuFactor.has_value()) {
             NProfiling::TResourceTracker::SetCpuToVCpuFactor(*NodeInfo_->VcpuFactor);
@@ -333,12 +395,15 @@ private:
 
     void Prepare()
     {
-        BusServer_ = NBus::NTcp::CreateBusServer(Config_->BusServer);
+        BusServer_ = NBus::NTcp::CreateBusServer(BusServerConfig_);
         RpcServer_ = NRpc::NBus::CreateBusServer(BusServer_);
         HttpPoller_ = CreateThreadPoolPoller(Config_->HttpPollerThreads, "HttpPoller");
         HttpServer_ = NHttp::CreateServer(Config_->CreateMonitoringHttpServerConfig(), HttpPoller_);
         HttpClient_ = NHttp::CreateClient(Config_->HttpClientConfig, HttpPoller_);
         HttpsClient_ = NHttps::CreateClient(Config_->HttpsClientConfig, HttpPoller_);
+        auto fileProviderHttpClientConfig = CloneYsonStruct(Config_->HttpsClientConfig);
+        fileProviderHttpClientConfig->AllowHttp = true;
+        FileProviderHttpClient_ = NHttps::CreateClient(fileProviderHttpClientConfig, HttpPoller_);
 
         Config_->SolomonExporter->InstanceTags["pipeline_path"] = Config_->Path;
         Config_->SolomonExporter->InstanceTags["pipeline_cluster"] = Config_->ClusterUrl;
@@ -352,9 +417,15 @@ private:
         // Uses a dedicated prefix because the exporter already owns "/solomon/sensors".
         SolomonProxy_ = New<NProfiling::TSolomonProxy>(Config_->SolomonProxy, HttpPoller_);
         SolomonProxy_->Register("/solomon_proxy", HttpServer_);
+        // Only workers with an enabled exporter advertise companion metrics. Vanilla SDKs
+        // without a |/metrics| endpoint leave the companion monitoring port unset.
+        auto companionMonitoringPort =
+            Any(Mode_ & EFlowRunMode::Worker) && Config_->Companion && Config_->SolomonExporter->Enable
+            ? Config_->Companion->MonitoringPort
+            : 0;
         SolomonProxy_->RegisterEndpointProvider(New<TFlowEndpointProvider>(
             Config_->MonitoringPort,
-            Config_->Companion ? Config_->Companion->MonitoringPort : 0));
+            companionMonitoringPort));
 
         SetNodeByYPath(
             OrchidRoot_,
@@ -446,6 +517,7 @@ private:
             .ClientOptions = PipelineAuthenticator_->GetClientOptions(),
             .Parameters = Config_->ClientsCacheFactory,
         });
+        clientsCache = CreateJobProxyClientsCache(std::move(clientsCache));
         CommonYTConnector_ = CreateCommonYTConnector(clientsCache, PipelinePath_);
         SetQueueLogWriterClient(CommonYTConnector_->GetClient());
 
@@ -566,7 +638,8 @@ private:
             JobTracker_,
             streamSpecStorage,
             Config_->IgnoreSingletonsDynamicConfig,
-            WorkerStatusProfiler_);
+            WorkerStatusProfiler_,
+            Config_->Worker->InitialControllerConnector);
         ControllerConnector_->Initialize();
 
         SetNodeByYPath(
@@ -591,13 +664,23 @@ private:
     void PrepareController()
     {
         ChannelFactory_ = NRpc::NBus::CreateTcpBusChannelFactory(Config_->Controller->Bus);
-        ControllerYTConnector_ = CreateYTConnector(Config_->Controller, NodeInfo_, CommonYTConnector_, ControlQueue_);
+        ControllerYTConnector_ = CreateYTConnector(
+            Config_->Controller,
+            NodeInfo_,
+            CommonYTConnector_,
+            ControlQueue_,
+            ParseSkipLeaderProxyConfirmation(),
+            /*busServerHasTlsMaterial*/ BusServerHasConfiguredTlsMaterial_);
 
         ControllerStatusProfiler_ = CreateStatusProfiler(
             ControlQueue_->GetInvoker(NController::EControlQueue::Default),
             NController::PublicControllerLogger(),
             {},
             NController::ControllerProfiler());
+        SetJobtruckLogWriterContext(
+            CommonYTConnector_->GetClient(),
+            NodeInfo_,
+            ControllerStatusProfiler_->ErrorState("/jobtruck_log_writer"));
 
         WorkerTracker_ = CreateWorkerTracker(ControlQueue_, ControllerYTConnector_, NodeInfo_);
         ControllerThreadPool_ = NConcurrency::CreateFairShareThreadPool(Config_->Controller->ControllerThreads, "Controller");
@@ -614,6 +697,7 @@ private:
             ControllerYTConnector_,
             PersistedStateManager_,
             PipelineAuthenticator_,
+            FileProviderHttpClient_,
             Config_->IgnoreSingletonsDynamicConfig,
             GetFlowTablesCellTag(),
             ControllerStatusProfiler_);
@@ -639,7 +723,7 @@ private:
             PipelineAuthenticator_));
         RpcServer_->RegisterService(CreateControllerService(
             FlowExecutor_,
-            PipelineAuthenticator_,
+            PipelineAuthenticator_->CreateYTControllerRpcAuthenticator(),
             ControlQueue_->GetInvoker(NController::EControlQueue::Admin)));
         RpcServer_->RegisterService(ThrottlerHost_->GetRpcService());
     }
@@ -653,7 +737,8 @@ private:
                 NCompanion::BuildCompanionExecutionConfig(
                     Config_->Companion,
                     Config_->ClusterUrl,
-                    Config_->Path));
+                    Config_->Path,
+                    Config_->SolomonExporter));
         }
     }
 
@@ -794,26 +879,6 @@ private:
             tracerConfig->CollectorChannelConfig->Address = Format("%v%v", pipelineYTAttributes.MonitoringProject, JaegerCollectorAddressSuffix);
         }
         return tracerConfig;
-    }
-
-    static void PatchLogManagerConfig(TFlowNodeConfigPtr config, NYPath::TRichYPath pipelinePath, EFlowRunMode mode)
-    {
-        if (!Any(mode & EFlowRunMode::Controller)) {
-            return;
-        }
-        static const std::string logWriterName = "ControllerLogWriter";
-        auto logManagerConfig = config->GetSingletonConfig<NLogging::TLogManagerConfig>();
-        EmplaceOrCrash(logManagerConfig->Writers, logWriterName, GetQueueLogWriterConfig(pipelinePath));
-
-        auto ruleConfig = New<NLogging::TRuleConfig>();
-        ruleConfig->IncludeCategories = THashSet<std::string>({
-            "PublicFlowController",
-        });
-        ruleConfig->Writers = {
-            TString(logWriterName),
-        };
-        ruleConfig->MinLevel = NLogging::ELogLevel::Info;
-        logManagerConfig->Rules.push_back(ruleConfig);
     }
 };
 
